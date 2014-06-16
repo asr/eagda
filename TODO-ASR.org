@@ -1,1 +1,2 @@
-* To change the currentInterfaceVersion in Agda.TypeChecking.Serialise.
+* To change the currentInterfaceVersion in Agda.TypeChecking.Serialise
+* Use the README.md from Agda
