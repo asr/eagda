@@ -1,4 +1,5 @@
 
+VERSION			= 2.4.1
 MACRO_DIR		= $(TOP)/macros
 
 SRC_DIR			= $(TOP)/src
@@ -16,4 +17,4 @@ TRANSL_OUT_DIR	= $(OUT_DIR)/transl
 DOC_DIR			= $(TOP)/doc
 HADDOCK_DIR		= $(DOC_DIR)/haddock
 
-AGDA_BIN		= $(TOP)/dist/build/agda/agda
+AGDA_BIN		= $(TOP)/dist/$(VERSION)/build/agda/agda
