@@ -1,6 +1,6 @@
 # Description
 
-  We have modified the development version of Agda in order to handle
+  We have extended the development version of Agda in order to handle
   a new built-in ATP-pragma.
 
 # Use
@@ -11,28 +11,28 @@
 
 # Installation
 
-   You can download our modified version of Agda using
+   You can download our extended version of Agda using
    [Git](http://git-scm.com/) with the following command:
 
    ````bash
-   $ git clone https://github.com/asr/magda.git
+   $ git clone https://github.com/asr/eagda.git
    ````
 
-   This will create a directory called `magda`. Installing our
-   modified version is similar to the installation of Agda (see
+   This will create a directory called `eagda`. Installing our
+   extended version is similar to the installation of Agda (see
    [README.md](https://github.com/agda/agda/blob/master/README.md) for
-   more information). In our setup, we run the first time the following
-   commands:
+   more information). In our setup, we run the first time the
+   following commands:
 
    ````bash
-   $ cd magda
+   $ cd eagda
    $ autoconf
    $ ./configure
    $ make install-bin
    $ agda-mode setup
    ````
 
-   To test the installation of the modified version of Agda, type-check
+   To test the installation of the extended version of Agda, type-check
    a module which uses the new built-in ATP-pragma, for example
 
    ````Agda
@@ -53,4 +53,4 @@
    In order to avoid conflicts with other installed versions of Agda,
    we have added extra information to the version number of Agda,
    i.e. if the development version number of Agda is A.B.C, our
-   modified version number is A.B.C.1.
+   extended version number is A.B.C.1.
