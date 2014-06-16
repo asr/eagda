@@ -460,6 +460,8 @@ instance Pretty Pragma where
     pretty (EtaPragma _ x) =
       hsep $ [text "ETA", pretty x]
     pretty (NoTerminationCheckPragma _) = text "NO_TERMINATION_CHECK"
+    pretty (ATPPragma _ role qs) =
+      hsep $ [ text "ATP", pretty role] ++ map pretty qs
     pretty (MeasurePragma _ x) =
       hsep $ [text "MEASURE", pretty x]
 
@@ -538,3 +540,9 @@ instance Pretty UsingOrHiding where
 instance Pretty ImportedName where
     pretty (ImportedName x)	= pretty x
     pretty (ImportedModule x)	= text "module" <+> pretty x
+
+instance Pretty ATPRole where
+    pretty ATPAxiom      = text "axiom"
+    pretty ATPConjecture = text "prove"
+    pretty ATPDefinition = text "definition"
+    pretty ATPHint       = text "hint"

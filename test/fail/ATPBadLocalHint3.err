@@ -1,0 +1,5 @@
+ATPBadLocalHint3.agda:11,1-30
+Panic: Bad ATP-pragma. A conjecture cannot have duplicate local
+hints
+when scope checking the declaration
+  {-# ATP prove foo bar bar #-}

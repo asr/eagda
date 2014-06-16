@@ -120,6 +120,7 @@ import Agda.Utils.Tuple
     'quote'         { TokKeyword KwQuote $$ }
     'quoteTerm'     { TokKeyword KwQuoteTerm $$ }
     'unquote'       { TokKeyword KwUnquote $$ }
+    'ATP'           { TokKeyword KwATP $$ }
 
     setN	{ TokSetN $$ }
     tex		{ TokTeX $$ }
@@ -228,6 +229,7 @@ Token
     | 'quote'         { TokKeyword KwQuote $1 }
     | 'quoteTerm'     { TokKeyword KwQuoteTerm $1 }
     | 'unquote'       { TokKeyword KwUnquote $1 }
+    | 'ATP'           { TokKeyword KwATP $1 }
 
     | setN	    { TokSetN $1 }
     | tex	    { TokTeX $1 }
@@ -492,6 +494,12 @@ PragmaName : string {% mkName $1 }
 
 PragmaQName :: { QName }
 PragmaQName : string {% fmap QName (mkName $1) }
+
+-- Space separated list of QNames in a pragma.
+PragmaQNames :: { [QName] }
+PragmaQNames
+    : {- empty -}               { [] }
+    | PragmaQName PragmaQNames  { $1 : $2 }
 
 {--------------------------------------------------------------------------
     Expressions (terms and types)
@@ -1227,6 +1235,7 @@ DeclarationPragma
     -- Andreas, 2014-03-06
     -- OPTIONS pragma not allowed everywhere, but don't give parse error.
     -- Give better error during type checking instead.
+  | ATPPragma                { $1 }
 
 OptionsPragma :: { Pragma }
 OptionsPragma : '{-#' 'OPTIONS' PragmaStrings '#-}' { OptionsPragma (getRange ($1,$2,$4)) $3 }
@@ -1304,6 +1313,23 @@ ImportPragma
 
 ImpossiblePragma :: { Pragma }
   : '{-#' 'IMPOSSIBLE' '#-}'  { ImpossiblePragma (getRange ($1,$2,$3)) }
+
+-- For compatibility reasons the roles are not reserved words.
+ATPPragma :: { Pragma }
+ATPPragma
+  : '{-#' 'ATP' string PragmaQNames '#-}'
+    {% let s = snd $3 in
+       case s of
+         "axiom"      -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                  ATPAxiom $4
+         "definition" -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                  ATPDefinition $4
+         "hint"       -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                  ATPHint $4
+         "prove"      -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                  ATPConjecture $4
+         _            -> parseError $ "Invalid role: " ++ s ++ "."
+    }
 
 {--------------------------------------------------------------------------
     Sequences of declarations

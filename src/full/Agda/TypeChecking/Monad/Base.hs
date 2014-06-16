@@ -790,6 +790,11 @@ data Projection = Projection
 
 data Defn = Axiom
             -- ^ Postulate.
+            { axATPRole :: Maybe ATPRole
+              -- ^ ATP axiom or conjecture?
+            , axATPHints :: [QName]
+              -- ^ ATP hints for a conjecture.
+            }
 	  | Function
             { funClauses        :: [Clause]
             , funCompiled       :: Maybe CompiledClauses
@@ -822,6 +827,8 @@ data Defn = Axiom
             , funWith           :: Maybe QName
               -- ^ Is this a generated with-function? If yes, then what's the
               --   name of the parent function.
+            , funATPRole        :: Maybe ATPRole
+              -- ^ ATP definition or hint?
             }
 	  | Datatype
             { dataPars           :: Nat            -- ^ Number of parameters.
@@ -854,9 +861,10 @@ data Defn = Axiom
 	  | Constructor
             { conPars   :: Nat         -- ^ Number of parameters.
 	    , conSrcCon :: ConHead     -- ^ Name of (original) constructor and fields. (This might be in a module instance.)
-	    , conData   :: QName       -- ^ Name of datatype or record type.
-	    , conAbstr  :: IsAbstract
-            , conInd    :: Induction   -- ^ Inductive or coinductive?
+	    , conData    :: QName       -- ^ Name of datatype or record type.
+	    , conAbstr   :: IsAbstract
+            , conInd     :: Induction   -- ^ Inductive or coinductive?
+            , conATPRole :: Maybe ATPRole -- ^ ATP axiom?
             }
 	  | Primitive
             { primAbstr :: IsAbstract
@@ -885,6 +893,7 @@ emptyFunction = Function
   , funTerminates  = Nothing
   , funExtLam      = Nothing
   , funWith        = Nothing
+  , funATPRole     = Nothing
   }
 
 

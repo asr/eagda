@@ -1,0 +1,5 @@
+ATPBadLocalHint2.agda:10,1-22
+Panic: Bad ATP-pragma. A local hint is equal to the conjecture in
+which it is used
+when scope checking the declaration
+  {-# ATP prove p p #-}

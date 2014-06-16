@@ -168,6 +168,51 @@ markStatic q = modifySignature $ updateDefinition q $ mark
       def{theDef = fun{funStatic = True}}
     mark def = def
 
+-- | Add the information of an ATP-pragma to the signature.
+addATPPragma :: ATPRole -> QName -> [QName] -> TCM ()
+addATPPragma role q qs = do
+    sig <- getSignature
+
+    unless (HMap.member q (sigDefinitions sig))
+           (typeError $ GenericError "An ATP-pragma must appear in the same module where its argument is defined")
+
+    whenJustM (getATPRole q)
+              (\_ -> typeError $ GenericError $ show q ++ " has already an ATP role")
+
+    modifySignature $ updateDefinition q addATP
+    where
+      addATP :: Definition -> Definition
+      addATP def = case role of
+        ATPDefinition -> case def of
+                           def@Defn{ theDef = fun@Function{} } ->
+                             def{ theDef = fun{ funATPRole = Just role }}
+
+                           _ ->  __IMPOSSIBLE__
+
+        ATPHint -> case def of
+                     def@Defn{ theDef = fun@Function{} } ->
+                       def{ theDef = fun{ funATPRole = Just role }}
+
+                     _ -> __IMPOSSIBLE__
+
+        ATPAxiom -> case def of
+                      def@Defn{ theDef = ax@Axiom{} } ->
+                        def{ theDef = ax{ axATPRole = Just role }}
+
+                      def@Defn{ theDef = con@Constructor{} } ->
+                        def{ theDef = con{ conATPRole = Just role }}
+
+                      _ -> __IMPOSSIBLE__
+
+        ATPConjecture  -> case def of
+                            def@Defn{ theDef = ax@Axiom{} } ->
+                              def{ theDef = ax{ axATPRole = Just role
+                                              , axATPHints = qs
+                                              }
+                                 }
+
+                            _ -> __IMPOSSIBLE__
+
 unionSignatures :: [Signature] -> Signature
 unionSignatures ss = foldr unionSignature emptySignature ss
   where
@@ -366,6 +411,7 @@ applySection new ptel old ts rd rm = do
                         , funTerminates     = Just True
                         , funExtLam         = extlam
                         , funWith           = with
+                        , funATPRole        = Nothing
                         }
                   reportSLn "tc.mod.apply" 80 $ "new def for " ++ show x ++ "\n  " ++ show newDef
                   return newDef
@@ -578,6 +624,16 @@ setMutual d m = modifySignature $ updateDefinition d $ updateTheDef $ \ def ->
     Record{}   -> def { recMutual = m }
     _          -> __IMPOSSIBLE__
 
+-- | Look up the ATP role of a definition.
+getATPRole :: QName -> TCM (Maybe ATPRole)
+getATPRole qname = do
+  defn <- theDef <$> getConstInfo qname
+  case defn of
+    Axiom{ axATPRole = r }        -> return r
+    Function{ funATPRole = r }    -> return r
+    Constructor{ conATPRole = r } -> return r
+    _                             -> __IMPOSSIBLE__
+
 -- | Check whether two definitions are mutually recursive.
 mutuallyRecursive :: QName -> QName -> TCM Bool
 mutuallyRecursive d d' = (d `elem`) <$> getMutual d'
@@ -635,11 +691,11 @@ makeAbstract d =
                , theDef = def
                }
   where
-    makeAbs Datatype   {} = Just Axiom
-    makeAbs Function   {} = Just Axiom
+    makeAbs Datatype   {} = Just $ Axiom Nothing []
+    makeAbs Function   {} = Just $ Axiom Nothing []
     makeAbs Constructor{} = Nothing
     -- Andreas, 2012-11-18:  Make record constructor and projections abstract.
-    makeAbs d@Record{}    = Just Axiom
+    makeAbs d@Record{}    = Just $ Axiom Nothing []
     -- Q: what about primitive?
     makeAbs d             = Just d
 

@@ -518,6 +518,19 @@ instance Hashable NameId where
 
 newtype Constr a = Constr a
 
+-- | The role of an ATP-pragma.
+data ATPRole = ATPAxiom
+             | ATPConjecture
+             | ATPDefinition
+             | ATPHint
+               deriving (Eq, Typeable)
+
+instance Show ATPRole where
+    show ATPAxiom      = "axiom"
+    show ATPConjecture = "prove"
+    show ATPDefinition = "definition"
+    show ATPHint       = "hint"
+
 ---------------------------------------------------------------------------
 -- * Interaction meta variables
 ---------------------------------------------------------------------------

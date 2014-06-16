@@ -18,6 +18,7 @@ module Agda.Interaction.Options
     , parsePluginOptions
     , defaultOptions
     , defaultInteractionOptions
+    , defaultPragmaOptions
     , defaultVerbosity
     , defaultCutOff
     , standardOptions_
@@ -121,6 +122,8 @@ data PragmaOptions = PragmaOptions
   , optWithoutK                  :: Bool
   , optCopatterns                :: Bool  -- ^ Allow definitions by copattern matching?
   , optPatternMatching           :: Bool  -- ^ Is pattern matching allowed in the current file?
+  , optFOLPropositionalFunctions :: Bool
+  , optFOLPropositionalSymbols   :: Bool
   }
   deriving Show
 
@@ -193,6 +196,8 @@ defaultPragmaOptions = PragmaOptions
   , optWithoutK                  = False
   , optCopatterns                = False
   , optPatternMatching           = True
+  , optFOLPropositionalFunctions = False
+  , optFOLPropositionalSymbols   = False
   }
 
 -- | The default termination depth.
@@ -308,7 +313,6 @@ guardingTypeConstructorFlag  o = return $ o { optGuardingTypeConstructors  = Tru
 universePolymorphismFlag     o = return $ o { optUniversePolymorphism      = True  }
 noUniversePolymorphismFlag   o = return $ o { optUniversePolymorphism      = False }
 noForcingFlag                o = return $ o { optForcing                   = False }
-withKFlag                    o = return $ o { optWithoutK                  = False }
 withoutKFlag                 o = return $ o { optWithoutK                  = True  }
 copatternsFlag               o = return $ o { optCopatterns                = True  }
 noPatternMatchingFlag        o = return $ o { optPatternMatching           = False }
@@ -349,6 +353,9 @@ terminationDepthFlag s o =
        when (k < 1) $ usage -- or: turn termination checking off for 0
        return $ o { optTerminationDepth = CutOff $ k-1 }
     where usage = throwError "argument to termination-depth should be >= 1"
+
+folPropositionalFunctionsFlag o = return $ o { optFOLPropositionalFunctions = True }
+folPropositionalSymbolsFlag o = return $ o { optFOLPropositionalSymbols = True }
 
 integerArgument :: String -> String -> Either String Int
 integerArgument flag s =
@@ -446,14 +453,16 @@ pragmaOptions =
                     "disable projection of irrelevant record fields"
     , Option []     ["experimental-irrelevance"] (NoArg experimentalIrrelevanceFlag)
                     "enable potentially unsound irrelevance features (irrelevant levels, irrelevant data matching)"
-    , Option []     ["with-K"] (NoArg withKFlag)
-                    "enable the K rule in pattern matching"
     , Option []     ["without-K"] (NoArg withoutKFlag)
                     "disable the K rule in pattern matching"
     , Option []     ["copatterns"] (NoArg copatternsFlag)
                     "enable definitions by copattern matching"
     , Option []     ["no-pattern-matching"] (NoArg noPatternMatchingFlag)
                     "disable pattern matching completely"
+    , Option []	    ["schematic-propositional-functions"] (NoArg folPropositionalFunctionsFlag)
+		    "the Apia program translates universal quantified FOL propositional functions"
+    , Option []	    ["schematic-propositional-symbols"] (NoArg folPropositionalSymbolsFlag)
+		    "the Apia program translates universal quantified FOL propositional symbols"
     ]
 
 -- | Used for printing usage info.

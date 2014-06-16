@@ -164,6 +164,7 @@ data Pragma = OptionsPragma [String]
             | CompiledJSPragma QName String
             | StaticPragma QName
             | EtaPragma QName
+            | ATPPragma ATPRole [QName]
   deriving (Typeable, Show)
 
 -- | Bindings that are valid in a @let@.

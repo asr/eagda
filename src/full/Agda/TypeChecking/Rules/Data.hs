@@ -228,7 +228,7 @@ checkConstructor d tel nofIxs s con@(A.Axiom _ i _ c e) =
         escapeContext (size tel) $
           addConstant c $
 	    defaultDefn defaultArgInfo c (telePi tel t') $
-              Constructor (size tel) con d (Info.defAbstract i) Inductive
+              Constructor (size tel) con d (Info.defAbstract i) Inductive Nothing
 
         return nonLinPars
   where

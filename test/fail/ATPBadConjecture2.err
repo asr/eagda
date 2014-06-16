@@ -1,0 +1,4 @@
+ATPBadConjecture2.agda:15,1-22
+ATP directive with the role <prove> only works on postulates
+when checking the pragma ATP prove sym
+

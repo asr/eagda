@@ -217,9 +217,9 @@ definition (q,d) = do
   return (Export ls e)
 
 defn :: QName -> [MemberId] -> Type -> Maybe JSCode -> Defn -> TCM Exp
-defn q ls t (Just e) Axiom =
+defn q ls t (Just e) (Axiom {}) =
   return e
-defn q ls t Nothing Axiom = do
+defn q ls t Nothing (Axiom {}) = do
   t <- normalise t
   s <- isSingleton t
   case s of

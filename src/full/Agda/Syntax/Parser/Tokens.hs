@@ -24,6 +24,7 @@ data Keyword
         | KwREWRITE
 	| KwQuoteGoal | KwQuoteContext | KwQuote | KwQuoteTerm | KwUnquote | KwSyntax
         | KwPatternSyn
+        | KwATP
     deriving (Eq, Show)
 
 layoutKeywords :: [Keyword]

@@ -93,6 +93,7 @@ tokens :-
 <pragma_>   "NO_TERMINATION_CHECK" { keyword KwNO_TERMINATION_CHECK }
 <pragma_>   "MEASURE"              { keyword KwMEASURE }
 <pragma_>   "LINE"                 { keyword KwLINE }
+<pragma_>   "ATP"                  { keyword KwATP }
 <pragma_>   . # [ $white ] +       { withInterval $ TokString }
 
 -- Comments

@@ -158,6 +158,7 @@ checkRecDef i name ind con ps contel fields =
                          , conData   = name
                          , conAbstr  = Info.defAbstract conInfo
                          , conInd    = indCo
+                         , conATPRole = Nothing
                          }
 
       -- Check that the fields fit inside the sort
@@ -436,6 +437,7 @@ checkRecordProjections m r con tel ftel fs = do
                      , funTerminates     = Just True
                      , funExtLam         = Nothing
                      , funWith           = Nothing
+                     , funATPRole        = Nothing
                      })
             { defArgOccurrences = [StrictPos] }
         computePolarity projname

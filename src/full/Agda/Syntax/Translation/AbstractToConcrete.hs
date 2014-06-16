@@ -811,6 +811,9 @@ instance ToConcrete RangeAndPragma C.Pragma where
             x <- toConcrete x
             return $ C.StaticPragma r x
         A.EtaPragma x -> C.EtaPragma r <$> toConcrete x
+        A.ATPPragma role qs -> do
+          qs' <- mapM toConcrete qs
+          return $ C.ATPPragma r role qs'
 
 -- Left hand sides --------------------------------------------------------
 

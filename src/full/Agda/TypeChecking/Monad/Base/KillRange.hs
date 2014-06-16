@@ -43,12 +43,12 @@ instance KillRange CompiledRepresentation where
 instance KillRange Defn where
   killRange def =
     case def of
-      Axiom -> Axiom
-      Function cls comp inv mut isAbs delayed proj static copy term extlam with ->
-        killRange12 Function cls comp inv mut isAbs delayed proj static copy term extlam with
+      Axiom role hints -> killRange2 Axiom role hints
+      Function cls comp inv mut isAbs delayed proj static copy term extlam with role ->
+        killRange13 Function cls comp inv mut isAbs delayed proj static copy term extlam with role
       Datatype a b c d e f g h i j   -> killRange10 Datatype a b c d e f g h i j
       Record a b c d e f g h i j k l -> killRange12 Record a b c d e f g h i j k l
-      Constructor a b c d e          -> killRange5 Constructor a b c d e
+      Constructor a b c d e f        -> killRange6 Constructor a b c d e f
       Primitive a b c d              -> killRange4 Primitive a b c d
 
 instance KillRange MutualId where
@@ -86,6 +86,9 @@ instance KillRange DisplayTerm where
       DDef q dts        -> killRange2 DDef q dts
       DDot v            -> killRange1 DDot v
       DTerm v           -> killRange1 DTerm v
+
+instance KillRange ATPRole where
+  killRange = id
 
 -- * KillRange on CompiledClause
 

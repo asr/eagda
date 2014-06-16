@@ -1012,20 +1012,20 @@ instance EmbPrj CompiledRepresentation where
                            valu _         = malformed
 
 instance EmbPrj Defn where
-  icode Axiom                                   = icode0 0
-  icode (Function    a b c d e f g h i j k l)   = icode12 1 a b c d e f g h i j k l
+  icode (Axiom       a b)                       = icode2 0 a b
+  icode (Function    a b c d e f g h i j k l m) = icode13 1 a b c d e f g h i j k l m
   icode (Datatype    a b c d e f g h i j)       = icode10 2 a b c d e f g h i j
   icode (Record      a b c d e f g h i j k l)   = icode12 3 a b c d e f g h i j k l
-  icode (Constructor a b c d e)                 = icode5 4 a b c d e
+  icode (Constructor a b c d e f)               = icode6 4 a b c d e f
   icode (Primitive   a b c d)                   = icode4 5 a b c d
   value = vcase valu where
-    valu [0]                                     = valu0 Axiom
-    valu [1, a, b, c, d, e, f, g, h, i, j, k, l] = valu12 Function a b c d e f g h i j k l
-    valu [2, a, b, c, d, e, f, g, h, i, j]       = valu10 Datatype a b c d e f g h i j
-    valu [3, a, b, c, d, e, f, g, h, i, j, k, l] = valu12 Record  a b c d e f g h i j k l
-    valu [4, a, b, c, d, e]                      = valu5 Constructor a b c d e
-    valu [5, a, b, c, d]                         = valu4 Primitive   a b c d
-    valu _                                       = malformed
+    valu [0, a, b]                                  = valu2 Axiom a b
+    valu [1, a, b, c, d, e, f, g, h, i, j, k, l, m] = valu13 Function a b c d e f g h i j k l m
+    valu [2, a, b, c, d, e, f, g, h, i, j]          = valu10 Datatype a b c d e f g h i j
+    valu [3, a, b, c, d, e, f, g, h, i, j, k, l]    = valu12 Record  a b c d e f g h i j k l
+    valu [4, a, b, c, d, e, f]                      = valu6 Constructor a b c d e f
+    valu [5, a, b, c, d]                            = valu4 Primitive   a b c d
+    valu _                                          = malformed
 
 instance EmbPrj a => EmbPrj (WithArity a) where
   icode (WithArity a b) = icode2' a b
@@ -1265,6 +1265,18 @@ instance EmbPrj Epic.Tag where
     valu [0, a] = valu1 Epic.Tag a
     valu [1, a] = valu1 Epic.PrimTag a
     valu _      = malformed
+
+-- Based on EmbPrj Occurence instance.
+instance EmbPrj ATPRole where
+  icode ATPAxiom      = icode0'
+  icode ATPConjecture = icode0 1
+  icode ATPDefinition = icode0 2
+  icode ATPHint       = icode0 3
+  value = vcase valu where valu []  = valu0 ATPAxiom
+                           valu [1] = valu0 ATPConjecture
+                           valu [2] = valu0 ATPDefinition
+                           valu [3] = valu0 ATPHint
+                           valu _   = malformed
 
 icodeX :: (Eq k, Hashable k) =>
           (Dict -> HashTable k Int32) -> (Dict -> IORef Int32) ->

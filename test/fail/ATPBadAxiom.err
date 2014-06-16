@@ -1,0 +1,4 @@
+ATPBadAxiom.agda:10,1-22
+ATP directive with the role <axiom> works only on postulates or
+data constructors
+when checking the pragma ATP axiom foo

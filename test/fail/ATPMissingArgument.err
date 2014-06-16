@@ -1,0 +1,4 @@
+ATPMissingArgument.agda:7,1-18
+Panic: Bad ATP-pragma. Missing argument
+when scope checking the declaration
+  {-# ATP axiom #-}

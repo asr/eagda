@@ -1353,6 +1353,79 @@ instance ToAbstract C.Pragma [A.Pragma] where
     toAbstract (C.NoTerminationCheckPragma _) = __IMPOSSIBLE__
     toAbstract (C.MeasurePragma{}) = __IMPOSSIBLE__
 
+    -- The ATP-pragma.
+    toAbstract (C.ATPPragma _ _ []) =
+      fail "Bad ATP-pragma. Missing argument"
+
+    toAbstract (C.ATPPragma _ ATPAxiom qs) = do
+      aqs <- mapM helper qs
+      return [ A.ATPPragma ATPAxiom aqs ]
+        where
+          helper :: C.QName -> ScopeM A.QName
+          helper q = do
+            e <- toAbstract $ OldQName q
+            case e of
+              A.Def aq -> return aq
+
+              -- TODO: Is it correct to use only the first ambiguous qname?
+              A.Con (AmbQ (h : _)) -> return h
+
+              _                    -> __IMPOSSIBLE__
+
+    toAbstract (C.ATPPragma _ ATPConjecture (q : qs)) = do
+      when (q `elem` qs)
+           (fail "Bad ATP-pragma. A local hint is equal to the conjecture in which it is used")
+      when (qs /= nub qs)
+           (fail "Bad ATP-pragma. A conjecture cannot have duplicate local hints")
+
+      e  <- toAbstract $ OldQName q
+      es <- mapM toAbstract (map OldQName qs)
+      case e of
+        A.Def postulate -> do
+               -- The only accepted local hints are postulates,
+               -- functions or data constructors.
+               let aHints :: [A.Expr] -> Maybe [A.QName]
+                   aHints [] = Just []
+                   aHints (A.Def h : hs) =
+                     case aHints hs of
+                       Nothing -> Nothing
+                       Just aqs -> Just (h : aqs)
+                   -- TODO: Is it correct to use only the first
+                   -- ambiguous name?
+                   aHints (A.Con (AmbQ (h : _)) : hs) =
+                     case aHints hs of
+                       Nothing -> Nothing
+                       Just aqs -> Just (h : aqs)
+                   aHints _  = Nothing
+
+               case aHints es of
+                 Nothing -> fail "Bad ATP-pragma. The local hints can be only with postulates, functions or data constructors"
+                 Just ahs -> return [ A.ATPPragma ATPConjecture (postulate : ahs) ]
+
+        _  -> fail "Bad ATP-pragma. The role <prove> must be used with postulates"
+
+    toAbstract (C.ATPPragma _ ATPDefinition qs) = do
+      aqs <- mapM helper qs
+      return [ A.ATPPragma ATPDefinition aqs ]
+        where
+          helper :: C.QName -> ScopeM A.QName
+          helper q = do
+            e <- toAbstract $ OldQName q
+            case e of
+              A.Def aqs -> return aqs
+              _         -> fail "Bad ATP-pragma. The role <definition> must be used with functions"
+
+    toAbstract (C.ATPPragma _ ATPHint qs) = do
+      aqs <- mapM helper qs
+      return [ A.ATPPragma ATPHint aqs ]
+        where
+          helper :: C.QName -> ScopeM A.QName
+          helper q = do
+            e <- toAbstract $ OldQName q
+            case e of
+              A.Def aq -> return aq
+              _        -> fail "Bad ATP-pragma. The role <hint> must be used with functions"
+
 instance ToAbstract C.Clause A.Clause where
     toAbstract (C.Clause top C.Ellipsis{} _ _ _) = fail "bad '...'" -- TODO: errors message
     toAbstract (C.Clause top lhs@(C.LHS p wps eqs with) rhs wh wcs) = withLocalVars $ do

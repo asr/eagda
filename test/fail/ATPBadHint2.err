@@ -1,0 +1,3 @@
+ATPBadHint2.agda:13,1-24
+ATP directive with the role <hint> only works on functions
+when checking the pragma ATP hint ∨-comm

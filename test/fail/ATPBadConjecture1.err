@@ -1,0 +1,5 @@
+ATPBadConjecture1.agda:15,1-21
+Panic: Bad ATP-pragma. The role <prove> must be used with
+postulates
+when scope checking the declaration
+  {-# ATP prove zN #-}
