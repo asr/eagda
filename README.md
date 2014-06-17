@@ -37,20 +37,3 @@
 
    ````Agda
    module Test where
-
-   data _∨_ (A B : Set) : Set where
-     inj₁ : A → A ∨ B
-     inj₂ : B → A ∨ B
-
-   postulate
-     A B    : Set
-     ∨-comm : A ∨ B → B ∨ A
-   {-# ATP prove ∨-comm #-}
-   ````
-
-# Agda version
-
-   In order to avoid conflicts with other installed versions of Agda,
-   we have added extra information to the version number of Agda,
-   i.e. if the development version number of Agda is A.B.C, our
-   extended version number is A.B.C.1.
