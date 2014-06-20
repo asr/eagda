@@ -380,8 +380,9 @@ library
                     -fwarn-overlapping-patterns
                     -fwarn-unrecognised-pragmas
                     -fwarn-warnings-deprecations
-                    -pgmPcpphs
-                    -optP--cpp
+                    -- Using cpphs as the C preprocessor.
+                    -pgmPcpphs -optP--cpp
+
   -- The Cabal-generated module Paths_Agda triggers a warning under
   -- GHC 7.2.1/7.2.2 (at least when certain versions of Cabal are
   -- used).
@@ -420,9 +421,6 @@ executable agda
     -- Agda's memory usage, so we want this functionality enabled by
     -- default.
     ghc-options:  -rtsopts
-                  -pgmPcpphs
-                  -optP--cpp
-
 
 executable agda-mode
   hs-source-dirs:   src/agda-mode
