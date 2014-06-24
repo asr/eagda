@@ -119,6 +119,7 @@ import Agda.Utils.Tuple
     'quoteContext'  { TokKeyword KwQuoteContext $$ }
     'quote'         { TokKeyword KwQuote $$ }
     'quoteTerm'     { TokKeyword KwQuoteTerm $$ }
+    'tactic'        { TokKeyword KwTactic $$ }
     'unquote'       { TokKeyword KwUnquote $$ }
     'ATP'           { TokKeyword KwATP $$ }
 
@@ -228,6 +229,7 @@ Token
     | 'quoteContext'     { TokKeyword KwQuoteContext $1 }
     | 'quote'         { TokKeyword KwQuote $1 }
     | 'quoteTerm'     { TokKeyword KwQuoteTerm $1 }
+    | 'tactic'        { TokKeyword KwTactic $1 }
     | 'unquote'       { TokKeyword KwUnquote $1 }
     | 'ATP'           { TokKeyword KwATP $1 }
 
@@ -558,7 +560,9 @@ Expr2
     | 'let' Declarations 'in' Expr { Let (getRange ($1,$2,$3,$4)) $2 $4 }
     | Expr3			   { $1 }
     | 'quoteGoal' Id 'in' Expr     { QuoteGoal (getRange ($1,$2,$3,$4)) $2 $4 }
-    | 'quoteContext' Id 'in' Expr     { QuoteContext (getRange ($1,$2,$3,$4)) $2 $4 }
+    | 'quoteContext' Id 'in' Expr  { QuoteContext (getRange ($1,$2,$3,$4)) $2 $4 }
+    | 'tactic' Application3               { Tactic (getRange ($1, $2)) (RawApp (getRange $2) $2) [] }
+    | 'tactic' Application3 '|' WithExprs { Tactic (getRange ($1, $2, $3, $4)) (RawApp (getRange $2) $2) $4 }
 
 ExtendedOrAbsurdLam :: { Expr }
 ExtendedOrAbsurdLam
