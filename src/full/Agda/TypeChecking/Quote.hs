@@ -19,34 +19,42 @@ import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Substitute
 
+import Agda.Utils.String
+
 #include "../undefined.h"
 import Agda.Utils.Impossible
 
 quotingKit :: TCM ((Term -> Term), (Type -> Term))
 quotingKit = do
-  hidden <- primHidden
-  instanceH <- primInstance
-  visible <- primVisible
-  relevant <- primRelevant
-  irrelevant <- primIrrelevant
-  nil <- primNil
-  cons <- primCons
-  arg <- primArgArg
-  arginfo <- primArgArgInfo
-  var <- primAgdaTermVar
-  lam <- primAgdaTermLam
-  def <- primAgdaTermDef
-  con <- primAgdaTermCon
-  pi <- primAgdaTermPi
-  sort <- primAgdaTermSort
-  set <- primAgdaSortSet
-  setLit <- primAgdaSortLit
+  hidden          <- primHidden
+  instanceH       <- primInstance
+  visible         <- primVisible
+  relevant        <- primRelevant
+  irrelevant      <- primIrrelevant
+  nil             <- primNil
+  cons            <- primCons
+  arg             <- primArgArg
+  arginfo         <- primArgArgInfo
+  var             <- primAgdaTermVar
+  lam             <- primAgdaTermLam
+  def             <- primAgdaTermDef
+  con             <- primAgdaTermCon
+  pi              <- primAgdaTermPi
+  sort            <- primAgdaTermSort
+  lit             <- primAgdaTermLit
+  litNat          <- primAgdaLitNat
+  litFloat        <- primAgdaLitFloat
+  litChar         <- primAgdaLitChar
+  litString       <- primAgdaLitString
+  litQName        <- primAgdaLitQName
+  set             <- primAgdaSortSet
+  setLit          <- primAgdaSortLit
   unsupportedSort <- primAgdaSortUnsupported
-  sucLevel <- primLevelSuc
-  lub <- primLevelMax
-  el <- primAgdaTypeEl
-  Con z _ <- ignoreSharing <$> primZero
-  Con s _ <- ignoreSharing <$> primSuc
+  sucLevel        <- primLevelSuc
+  lub             <- primLevelMax
+  el              <- primAgdaTypeEl
+  Con z _         <- ignoreSharing <$> primZero
+  Con s _         <- ignoreSharing <$> primSuc
   unsupported <- primAgdaTermUnsupported
   let t @@ u = apply t [defaultArg u]
       quoteHiding Hidden    = hidden
@@ -61,8 +69,11 @@ quotingKit = do
       quoteArgInfo (ArgInfo h r cs) = arginfo @@ quoteHiding h
                                               @@ quoteRelevance r
                                 --              @@ quoteColors cs
-      quoteLit (LitInt   _ n)   = iterate suc zero !! fromIntegral n
-      quoteLit _                = unsupported
+      quoteLit l@LitInt{}    = lit @@ (litNat    @@ Lit l)
+      quoteLit l@LitFloat{}  = lit @@ (litFloat  @@ Lit l)
+      quoteLit l@LitChar{}   = lit @@ (litChar   @@ Lit l)
+      quoteLit l@LitString{} = lit @@ (litString @@ Lit l)
+      quoteLit l@LitQName{}  = lit @@ (litQName  @@ Lit l)
       -- We keep no ranges in the quoted term, so the equality on terms
       -- is only on the structure.
       quoteSortLevelTerm (Max [])              = setLit @@ Lit (LitInt noRange 0)
@@ -182,6 +193,27 @@ instance Unquote Integer where
       Lit (LitInt _ n) -> return n
       _ -> unquoteFailed "Integer" "not a literal integer" t
 
+instance Unquote Double where
+  unquote t = do
+    t <- reduce t
+    case ignoreSharing t of
+      Lit (LitFloat _ x) -> return x
+      _ -> unquoteFailed "Float" "not a literal float" t
+
+instance Unquote Char where
+  unquote t = do
+    t <- reduce t
+    case ignoreSharing t of
+      Lit (LitChar _ x) -> return x
+      _ -> unquoteFailed "Char" "not a literal char" t
+
+instance Unquote Str where
+  unquote t = do
+    t <- reduce t
+    case ignoreSharing t of
+      Lit (LitString _ x) -> return (Str x)
+      _ -> unquoteFailed "String" "not a literal string" t
+
 instance Unquote a => Unquote [a] where
   unquote t = do
     t <- reduce t
@@ -265,6 +297,20 @@ instance Unquote Type where
           (unquoteFailed "Type" "arity 2 and not the `el' constructor" t)
       _ -> unquoteFailed "Type" "not of arity 2" t
 
+instance Unquote Literal where
+  unquote t = do
+    t <- reduce t
+    case ignoreSharing t of
+      Con c [x] ->
+        choice
+          [ (c `isCon` primAgdaLitNat,    LitInt    noRange <$> unquoteN x)
+          , (c `isCon` primAgdaLitFloat,  LitFloat  noRange <$> unquoteN x)
+          , (c `isCon` primAgdaLitChar,   LitChar   noRange <$> unquoteN x)
+          , (c `isCon` primAgdaLitString, LitString noRange . getStr <$> unquoteN x)
+          , (c `isCon` primAgdaLitQName,  LitQName  noRange <$> unquoteN x) ]
+          (unquoteFailed "Literal" "not a literal constructor" t)
+      _ -> unquoteFailed "Literal" "not a literal constructor" t
+
 instance Unquote Term where
   unquote t = do
     t <- reduce t
@@ -276,8 +322,9 @@ instance Unquote Term where
 
       Con c [x] -> do
         choice
-          [(c `isCon` primAgdaTermSort, Sort <$> unquoteN x)]
-          (unquoteFailed "Term" "arity 1 and not the `sort' constructor" t)
+          [ (c `isCon` primAgdaTermSort, Sort <$> unquoteN x)
+          , (c `isCon` primAgdaTermLit,  Lit <$> unquoteN x) ]
+          (unquoteFailed "Term" "arity 1 and none of Sort or Lit" t)
 
       Con c [x,y] ->
         choice
