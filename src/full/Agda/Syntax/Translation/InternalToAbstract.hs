@@ -833,6 +833,7 @@ reifyPatterns tel perm ps = evalStateT (reifyArgs ps) 0
 
     reifyPat :: I.Pattern -> StateT Nat TCM A.Pattern
     reifyPat p = case p of
+      I.VarP "()" -> A.AbsurdP patNoRange <$ tick   -- HACK
       I.VarP s -> do
         i <- tick
         let j = translate i
