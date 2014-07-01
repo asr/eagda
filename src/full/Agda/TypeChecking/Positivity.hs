@@ -96,15 +96,15 @@ checkStrictlyPositive qs = disableDestructiveUpdate $ do
           setCurrentRange (getRange q) $ typeError $ GenericError (show err)
 
       -- if we find an unguarded record, mark it as such
-      (\ just noth -> maybe noth just (mhead [ how | Edge o how <- loops, o <= StrictPos ]))
-        (\ how -> do
+      case mhead [ how | Edge o how <- loops, o <= StrictPos ] of
+        Just how -> do
           reportSDoc "tc.pos.record" 5 $ sep
             [ prettyTCM q <+> text "is not guarded, because it occurs"
             , prettyTCM how
             ]
-          unguardedRecord q) $
+          unguardedRecord q
         -- otherwise, if the record is recursive, mark it as well
-        forM_ (take 1 [ how | Edge GuardPos how <- loops ]) $ \ how -> do
+        Nothing -> forM_ (take 1 [ how | Edge GuardPos how <- loops ]) $ \ how -> do
           reportSDoc "tc.pos.record" 5 $ sep
             [ prettyTCM q <+> text "is recursive, because it occurs"
             , prettyTCM how
@@ -415,6 +415,7 @@ instance ComputeOccurrences Term where
     Sort{}       -> return $ Map.empty
     DontCare _   -> return $ Map.empty -- Andreas, 2011-09-09: do we need to check for negative occurrences in irrelevant positions?
     Shared p     -> occurrences $ derefPtr p
+    ExtLam{}     -> __IMPOSSIBLE__
     where
       -- Apparently some development version of GHC chokes if the
       -- following line is replaced by vs ! i.
@@ -552,6 +553,7 @@ instance PrettyTCM Occurrence where
   prettyTCM Mixed     = text "-[*]->"
   prettyTCM Unused    = text "-[ ]->"
 
+-- | Pairing something with a node (for printing only).
 data WithNode n a = WithNode n a
 
 instance PrettyTCM n => PrettyTCM (WithNode n Edge) where
@@ -569,6 +571,7 @@ instance (PrettyTCM n, PrettyTCM (WithNode n e)) => PrettyTCM (Graph n e) where
         , nest 2 $ vcat $ map (prettyTCM . uncurry WithNode) $ Map.assocs es
         ]
 
+-- | Edge labels for the positivity graph.
 data Edge = Edge Occurrence OccursWhere
   deriving (Show)
 

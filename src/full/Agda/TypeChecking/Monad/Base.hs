@@ -804,6 +804,7 @@ data Defn = Axiom
             , funInv            :: FunctionInverse
             , funMutual         :: [QName]
               -- ^ Mutually recursive functions, @data@s and @record@s.
+              --   Does not include this function.
             , funAbstr          :: IsAbstract
             , funDelayed        :: Delayed
               -- ^ Are the clauses of this definition delayed?
@@ -839,7 +840,7 @@ data Defn = Axiom
             , dataClause         :: (Maybe Clause) -- ^ This might be in an instantiated module.
             , dataCons           :: [QName]        -- ^ Constructor names.
             , dataSort           :: Sort
-            , dataMutual         :: [QName]        -- ^ Mutually recursive functions, @data@s and @record@s.
+            , dataMutual         :: [QName]        -- ^ Mutually recursive functions, @data@s and @record@s.  Does not include this data type.
             , dataAbstr          :: IsAbstract
             }
 	  | Record
@@ -852,7 +853,7 @@ data Defn = Axiom
             , recTel            :: Telescope            -- ^ The record field telescope. (Includes record parameters.)
                                                         --   Note: @TelV recTel _ == telView' recConType@.
                                                         --   Thus, @recTel@ is redundant.
-            , recMutual         :: [QName]              -- ^ Mutually recursive functions, @data@s and @record@s.
+            , recMutual         :: [QName]              -- ^ Mutually recursive functions, @data@s and @record@s.  Does not include this record.
             , recEtaEquality    :: Bool                 -- ^ Eta-expand at this record type.  @False@ for unguarded recursive records and coinductive records.
             , recInduction      :: Induction            -- ^ 'Inductive' or 'Coinductive'?  Matters only for recursive records.
             , recRecursive      :: Bool                 -- ^ Recursive record.  Implies @recEtaEquality = False@.  Projections are not size-preserving.
@@ -1656,6 +1657,12 @@ runReduceM m = do
   e <- ask
   s <- get
   return $ runReader (unReduceM m) (ReduceEnv e s)
+
+runReduceF :: (a -> ReduceM b) -> TCM (a -> b)
+runReduceF f = do
+  e <- ask
+  s <- get
+  return $ \x -> runReader (unReduceM (f x)) (ReduceEnv e s)
 
 instance MonadReader TCEnv ReduceM where
   ask = redEnv <$> ReduceM ask
