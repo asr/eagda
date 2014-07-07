@@ -97,6 +97,8 @@ import Agda.Utils.Tuple
     'forall'        { TokKeyword KwForall $$ }
     'syntax'        { TokKeyword KwSyntax $$ }
     'pattern'       { TokKeyword KwPatternSyn $$ }
+     -- ASR-TODO (07 July 2014): Move the ATP-pragma to the end. We
+     -- wrote it here for avoiding conflicts with Agda upstream.
     'ATP'           { TokKeyword KwATP $$ }
     'OPTIONS'       { TokKeyword KwOPTIONS $$ }
     'BUILTIN'       { TokKeyword KwBUILTIN $$ }
@@ -105,6 +107,7 @@ import Agda.Utils.Tuple
     'IMPOSSIBLE'    { TokKeyword KwIMPOSSIBLE $$ }
     'ETA'           { TokKeyword KwETA $$ }
     'NO_TERMINATION_CHECK' { TokKeyword KwNO_TERMINATION_CHECK $$ }
+    'NON_TERMINATING' { TokKeyword KwNON_TERMINATING $$ }
     'MEASURE'       { TokKeyword KwMEASURE $$ }
     'COMPILED'      { TokKeyword KwCOMPILED $$ }
     'COMPILED_EXPORT'      { TokKeyword KwCOMPILED_EXPORT $$ }
@@ -223,6 +226,7 @@ Token
     | 'IMPOSSIBLE'    { TokKeyword KwIMPOSSIBLE $1 }
     | 'ETA'           { TokKeyword KwETA $1 }
     | 'NO_TERMINATION_CHECK' { TokKeyword KwNO_TERMINATION_CHECK $1 }
+    | 'NON_TERMINATING' { TokKeyword KwNON_TERMINATING $1 }
     | 'MEASURE'       { TokKeyword KwMEASURE $1 }
     | 'quoteGoal'     { TokKeyword KwQuoteGoal $1 }
     | 'quoteContext'     { TokKeyword KwQuoteContext $1 }
@@ -1237,6 +1241,7 @@ DeclarationPragma
   | ImportPragma             { $1 }
   | ImpossiblePragma         { $1 }
   | RecordEtaPragma          { $1 }
+  | NonTerminatingPragma     { $1 }
   | NoTerminationCheckPragma { $1 }
   | MeasurePragma            { $1 }
   | OptionsPragma            { $1 }
@@ -1303,12 +1308,18 @@ RecordEtaPragma
 NoTerminationCheckPragma :: { Pragma }
 NoTerminationCheckPragma
   : '{-#' 'NO_TERMINATION_CHECK' '#-}'
-    { NoTerminationCheckPragma (getRange ($1,$2,$3)) }
+    { TerminationCheckPragma (getRange ($1,$2,$3)) NoTerminationCheck }
+
+NonTerminatingPragma :: { Pragma }
+NonTerminatingPragma
+  : '{-#' 'NON_TERMINATING' '#-}'
+    { TerminationCheckPragma (getRange ($1,$2,$3)) NonTerminating }
 
 MeasurePragma :: { Pragma }
 MeasurePragma
   : '{-#' 'MEASURE' PragmaName '#-}'
-    { MeasurePragma (getRange($1,$2,$3,$4)) $3 }
+    { let r = getRange ($1, $2, $3, $4) in
+      TerminationCheckPragma r (TerminationMeasure r $3) }
 
 ImportPragma :: { Pragma }
 ImportPragma

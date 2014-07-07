@@ -1,0 +1,10 @@
+Before merging
+
+* Revert versions on Agda.cabal, mk/paths and
+  src/data/emacs-mode/aagda2-mode.el
+
+* Fix ASR-TODO in .hs and .y files
+
+* Update the currentInterfaceVersion in Agda.TypeChecking.Serialise
+
+* Use the original README.md from Agda

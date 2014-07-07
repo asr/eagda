@@ -343,6 +343,10 @@ data OpenShortHand = DoOpen | DontOpen
 -- Pragmas ----------------------------------------------------------------
 
 data Pragma = OptionsPragma     !Range [String]
+            -- ASR-TODO (07 July 2014): Move the ATP-pragma to the
+            -- end. We wrote it here for avoiding conflicts with Agda
+            -- upstream.
+            | ATPPragma !Range ATPRole [QName]
 	    | BuiltinPragma     !Range String Expr
 	    | RewritePragma     !Range QName
             | CompiledDataPragma !Range QName String [String]
@@ -357,10 +361,7 @@ data Pragma = OptionsPragma     !Range [String]
               -- module name.
             | ImpossiblePragma !Range
             | EtaPragma !Range QName
-            | NoTerminationCheckPragma !Range
-            | MeasurePragma !Range Name
-              -- ^ {-# MEASURE variable  #-}
-            | ATPPragma !Range ATPRole [QName]
+            | TerminationCheckPragma !Range (TerminationCheck Name)
     deriving (Typeable)
 
 ---------------------------------------------------------------------------
@@ -550,6 +551,9 @@ instance HasRange RHS where
     getRange (RHS e)   = getRange e
 
 instance HasRange Pragma where
+    -- ASR-TODO (07 July 2014): Move the ATP-pragma to the end. We
+    -- wrote it here for avoiding conflicts with Agda upstream.
+    getRange (ATPPragma r _ _)            = r
     getRange (OptionsPragma r _)          = r
     getRange (BuiltinPragma r _ _)        = r
     getRange (RewritePragma r _)          = r
@@ -563,9 +567,7 @@ instance HasRange Pragma where
     getRange (ImportPragma r _)           = r
     getRange (ImpossiblePragma r)         = r
     getRange (EtaPragma r _)              = r
-    getRange (NoTerminationCheckPragma r) = r
-    getRange (MeasurePragma r _)          = r
-    getRange (ATPPragma r _ _)            = r
+    getRange (TerminationCheckPragma r _) = r
 
 instance HasRange UsingOrHiding where
     getRange (Using xs)	    = getRange xs
@@ -704,6 +706,9 @@ instance KillRange Pattern where
   killRange (QuoteP _)      = QuoteP noRange
 
 instance KillRange Pragma where
+  -- ASR-TODO (07 July 2014): Move the ATP-pragma to the end. We wrote
+  -- it here for avoiding conflicts with Agda upstream.
+  killRange (ATPPragma _ role qs)         = ATPPragma noRange role (killRange qs)
   killRange (OptionsPragma _ s)           = OptionsPragma noRange s
   killRange (BuiltinPragma _ s e)         = killRange1 (BuiltinPragma noRange s) e
   killRange (RewritePragma _ q)           = killRange1 (RewritePragma noRange) q
@@ -717,9 +722,7 @@ instance KillRange Pragma where
   killRange (ImportPragma _ s)            = ImportPragma noRange s
   killRange (ImpossiblePragma _)          = ImpossiblePragma noRange
   killRange (EtaPragma _ q)               = killRange1 (EtaPragma noRange) q
-  killRange (NoTerminationCheckPragma _)  = NoTerminationCheckPragma noRange
-  killRange (MeasurePragma _ q)           = killRange1 (MeasurePragma noRange) q
-  killRange (ATPPragma _ role qs)         = ATPPragma noRange role (killRange qs)
+  killRange (TerminationCheckPragma _ t)  = TerminationCheckPragma noRange (killRange t)
 
 instance KillRange Renaming where
   killRange (Renaming i n _) = killRange2 (\i n -> Renaming i n noRange) i n
