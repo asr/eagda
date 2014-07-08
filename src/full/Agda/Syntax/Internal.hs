@@ -470,6 +470,13 @@ impossibleTerm file line = Lit $ LitString noRange $ unlines
 sgTel :: Dom (String, Type) -> Telescope
 sgTel (Common.Dom ai (x, t)) = ExtendTel (Common.Dom ai t) $ Abs x EmptyTel
 
+hackReifyToMeta :: Term
+hackReifyToMeta = DontCare $ Lit $ LitInt noRange (-42)
+
+isHackReifyToMeta :: Term -> Bool
+isHackReifyToMeta (DontCare (Lit (LitInt r (-42)))) = r == noRange
+isHackReifyToMeta _ = False
+
 ---------------------------------------------------------------------------
 -- * Handling blocked terms.
 ---------------------------------------------------------------------------
