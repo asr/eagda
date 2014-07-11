@@ -7,6 +7,7 @@ module Agda.TypeChecking.Quote where
 import Control.Applicative
 import Control.Monad.State (evalState, get, put)
 import Control.Monad.Writer (execWriterT, tell)
+import Control.Monad.Error (catchError)
 import Data.Maybe (fromMaybe)
 import Data.Traversable (traverse)
 
@@ -213,6 +214,28 @@ choice [] dflt = dflt
 choice ((mb, mx) : mxs) dflt = do b <- mb
                                   if b then mx else choice mxs dflt
 
+ensureDef :: QName -> TCM QName
+ensureDef x = do
+  i <- (theDef <$> getConstInfo x) `catchError` \_ -> return Axiom  -- for recursive unquoteDecl
+  case i of
+    Constructor{} -> do
+      def <- prettyTCM =<< primAgdaTermDef
+      con <- prettyTCM =<< primAgdaTermCon
+      c   <- prettyTCM x
+      setCurrentRange (getRange x) $ typeError $ GenericError $ "Use " ++ show con ++ " instead of " ++ show def ++ " for constructor " ++ show c
+    _ -> return x
+
+ensureCon :: QName -> TCM QName
+ensureCon x = do
+  i <- (theDef <$> getConstInfo x) `catchError` \_ -> return Axiom  -- for recursive unquoteDecl
+  case i of
+    Constructor{} -> return x
+    _ -> do
+      def <- prettyTCM =<< primAgdaTermDef
+      con <- prettyTCM =<< primAgdaTermCon
+      f   <- prettyTCM x
+      setCurrentRange (getRange x) $ typeError $ GenericError $ "Use " ++ show def ++ " instead of " ++ show con ++ " for non-constructor " ++ show f
+
 instance Unquote I.ArgInfo where
   unquote t = do
     t <- reduce t
@@ -315,7 +338,7 @@ instance Unquote QName where
       _                  -> unquoteFailed "QName" "not a literal qname value" t
 
 instance Unquote ConHead where
-  unquote t = getConHead =<< unquote t
+  unquote t = getConHead =<< ensureCon =<< unquote t
 
 instance Unquote a => Unquote (Abs a) where
   unquote t = do x <- freshNoName_
@@ -369,7 +392,7 @@ instance Unquote Term where
     case ignoreSharing t of
       Con c [] ->
         choice
-          [(c `isCon` primAgdaTermUnsupported, unquoteFailed "Term" "unsupported term" t)]
+          [(c `isCon` primAgdaTermUnsupported, pure hackReifyToMeta)]
           (unquoteFailed "Term" "arity 0 and not the `unsupported' constructor" t)
 
       Con c [x] -> do
@@ -382,7 +405,7 @@ instance Unquote Term where
         choice
           [ (c `isCon` primAgdaTermVar, Var <$> (fromInteger <$> unquoteN x) <*> unquoteN y)
           , (c `isCon` primAgdaTermCon, Con <$> unquoteN x <*> unquoteN y)
-          , (c `isCon` primAgdaTermDef, Def <$> unquoteN x <*> unquoteN y)
+          , (c `isCon` primAgdaTermDef, Def <$> (ensureDef =<< unquoteN x) <*> unquoteN y)
           , (c `isCon` primAgdaTermLam, Lam <$> (flip setHiding defaultArgInfo <$> unquoteN x) <*> unquoteN y)
           , (c `isCon` primAgdaTermPi,  Pi  <$> (domFromArg <$> unquoteN x) <*> unquoteN y)
           , (c `isCon` primAgdaTermExtLam, mkExtLam <$> unquoteN x <*> unquoteN y) ]
