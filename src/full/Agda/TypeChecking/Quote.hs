@@ -216,7 +216,7 @@ choice ((mb, mx) : mxs) dflt = do b <- mb
 
 ensureDef :: QName -> TCM QName
 ensureDef x = do
-  i <- (theDef <$> getConstInfo x) `catchError` \_ -> return Axiom  -- for recursive unquoteDecl
+  i <- (theDef <$> getConstInfo x) `catchError` \_ -> return $ Axiom Nothing [] -- for recursive unquoteDecl
   case i of
     Constructor{} -> do
       def <- prettyTCM =<< primAgdaTermDef
@@ -227,7 +227,7 @@ ensureDef x = do
 
 ensureCon :: QName -> TCM QName
 ensureCon x = do
-  i <- (theDef <$> getConstInfo x) `catchError` \_ -> return Axiom  -- for recursive unquoteDecl
+  i <- (theDef <$> getConstInfo x) `catchError` \_ -> return $ Axiom Nothing []  -- for recursive unquoteDecl
   case i of
     Constructor{} -> return x
     _ -> do
