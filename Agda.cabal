@@ -334,6 +334,7 @@ library
                     Agda.Utils.Maybe
                     Agda.Utils.Maybe.Strict
                     Agda.Utils.Monad
+                    Agda.Utils.Null
                     Agda.Utils.PartialOrd
                     Agda.Utils.Permutation
                     Agda.Utils.Pointer
