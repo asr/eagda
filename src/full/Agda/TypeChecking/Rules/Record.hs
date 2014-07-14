@@ -156,6 +156,9 @@ checkRecDef i name ind con ps contel fields =
                          , conATPRole = Nothing
                          }
 
+      -- Declare the constructor as eligible for instance search
+      addNamedInstance conName name
+
       -- Check that the fields fit inside the sort
       let dummy = Sort Prop  -- We're only interested in the sort here
       telePi ftel (El (raise (size ftel) s) dummy) `fitsIn` s
