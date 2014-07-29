@@ -292,7 +292,7 @@ checkAbsurdLambda i h e t = do
           addConstant aux
             $ Defn (setRelevance rel info') aux t'
                    [Nonvariant] [Unused] (defaultDisplayForm aux)
-                   0 noCompiledRep []
+                   0 noCompiledRep [] Nothing
             $ Function
               { funClauses        =
                   [Clause
@@ -784,13 +784,19 @@ checkApplication hd args e t = do
     -- Subcase: unquote
     A.Unquote _
       | [arg] <- args -> do
-          v <- unquote =<< checkExpr (namedArg arg) =<< el primAgdaTerm
-          reportSDoc "tc.term.unquote" 20 $ text "unquoted:" <+> prettyTCM v
-          checkTerm v t
+          e <- unquoteTerm (namedArg arg)
+          checkExpr e t
       | arg : args <- args -> do
-          v  <- unquote =<< checkExpr (namedArg arg) =<< el primAgdaTerm
-          e' <- disableDisplayForms $ withShowAllArguments $ reify (v :: Term)    -- TODO: use checkInternal (but see comment on checkTerm)
-          checkHeadApplication e t e' $ map convColor args
+          e <- unquoteTerm (namedArg arg)
+          checkHeadApplication e t e $ map convColor args
+      where
+        unquoteTerm qv = do
+          v <- unquote =<< checkExpr qv =<< el primAgdaTerm
+          e <- reifyUnquoted (v :: Term)
+          reportSDoc "tc.unquote.term" 10 $
+            vcat [ text "unquote" <+> prettyTCM qv
+                 , nest 2 $ text "-->" <+> prettyA e ]
+          return (killRange e)
 
     -- Subcase: defined symbol or variable.
     _ -> checkHeadApplication e t hd $ map convColor args
@@ -1145,7 +1151,7 @@ checkHeadApplication e t hd args = do
       rel <- asks envRelevance
       addConstant c' (Defn (setRelevance rel defaultArgInfo)
                            c' t [] [] (defaultDisplayForm c')
-                  i noCompiledRep [] $ emptyFunction)
+                  i noCompiledRep [] Nothing $ emptyFunction)
 
       -- Define and type check the fresh function.
       ctx <- getContext >>= mapM (\d -> flip Dom (unDom d) <$> reify (domInfo d))
@@ -1385,12 +1391,6 @@ inferExprForWith e = do
           (args, t1) <- implicitArgs (-1) (NotHidden /=) t
           return (v `apply` args, t1)
     _ -> return (v, t)
-
--- TODO: should really use CheckInternal but doesn't quite work at the moment,
--- since CheckInternal can't instantiate metas to sorts or to function types.
-checkTerm :: Term -> Type -> TCM Term
-checkTerm tm ty = do atm <- disableDisplayForms $ withShowAllArguments $ reify tm
-                     checkExpr (killRange atm) ty
 
 ---------------------------------------------------------------------------
 -- * Let bindings

@@ -702,6 +702,8 @@ data Definition = Defn
   , defCompiledRep    :: CompiledRepresentation
   , defRewriteRules   :: RewriteRules
     -- ^ Rewrite rules for this symbol, (additional to function clauses).
+  , defInstance       :: Maybe QName
+    -- ^ @Just q@ when this definition is an instance of class q
   , theDef            :: Defn
   }
     deriving (Typeable, Show)
@@ -718,6 +720,7 @@ defaultDefn info x t def = Defn
   , defMutual         = 0
   , defCompiledRep    = noCompiledRep
   , defRewriteRules   = []
+  , defInstance       = Nothing
   , theDef            = def
   }
 
@@ -1280,6 +1283,10 @@ data TCEnv =
                 -- ^ Used by the scope checker to make sure that certain forms
                 --   of expressions are not used inside dot patterns: extended
                 --   lambdas and let-expressions.
+          , envReifyUnquoted :: Bool
+                -- ^ The rules for translating internal to abstract syntax are
+                --   slightly different when the internal term comes from an
+                --   unquote.
 	  }
     deriving (Typeable)
 
@@ -1322,6 +1329,7 @@ initEnv = TCEnv { envContext	         = []
                 , envCompareBlocked         = False
                 , envPrintDomainFreePi      = False
                 , envInsideDotPattern       = False
+                , envReifyUnquoted          = False
 		}
 
 ---------------------------------------------------------------------------
