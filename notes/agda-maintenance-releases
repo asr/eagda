@@ -1,32 +1,29 @@
-When releasing a new version of Agda, the following procedure can be
+2014-07-29, adapted from agda-releases
+
+[NOTE: The standard library does not have to be released with
+maintenance releases of Agda.  Instructions concerning the standard
+library are outdated.  Skip the steps talking about tagging or
+releasing the standard library.]
+
+When releasing a bugfix version of Agda, the following procedure can be
 followed:
 
 * Get a clean Agda repository.
 
-    darcs get http://code.haskell.org/Agda/ Agda.release
-    cd Agda.release
+    MAJORVERSION=<current-Agda-version-eg-2.4.0>
+    VERSION=<current-maintenance-version-eg-2.4.0.2>
+    git clone git@github.com:agda/agda.git agda.release
+    cd agda.release
+    git checkout maint-$MAJORVERSION
 
 * Clone the standard library
     git clone git@github.com:Agda/agda-stdlib std-lib
 
-* Finish the release notes in
-  doc/release-notes/<version-written-with-dashes>.txt.
-
-  Copy the contents of the release notes to the top of the CHANGELOG file.
+* Finish the CHANGELOG.
 
 * Update the README, if necessary.
 
 * Update the LICENSE file, if necessary.
-
-* Update the version numbers in Agda.cabal (thrice) and
-  src/data/emacs-mode/agda2-mode.el.
-
-* Add a second source-repository section to Agda.cabal:
-
-    source-repository this
-      type:     darcs
-      location: http://code.haskell.org/Agda/
-      tag:      <version>
 
 * Remove -Werror from Agda.cabal.
 
@@ -44,14 +41,19 @@ followed:
       emacs --batch -L . -f batch-byte-compile *.el; \
       rm -f *.elc)
 
+* In Agda.cabal add to "source-repository this"
+
+    tag: $VERSION
+
 * Tag and build source distributions. (Do not forget to record the
   changes above first.)
 
     VERSION=<version>
-    darcs tag $VERSION
+    git tag -a $VERSION -m "Agda $VERSION maintenance release"
     cabal configure && cabal sdist && cabal check
     cabal install
-    darcs dist --dist-name=Agda-$VERSION
+    git archive --prefix=Agda-$VERSION/ -o Agda-$VERSION.tar HEAD
+    gzip Agda-$VERSION.tar
 
 * Ensure that all the packages build properly.
 
@@ -66,7 +68,6 @@ followed:
     tar xzf $BASE/dist/Agda-$VERSION.tar.gz
     cd Agda-$VERSION
     cabal install
-    cd ..
 
   Do not forget to test the Emacs mode.
 
@@ -75,7 +76,7 @@ followed:
     cd $BASE
     cabal upload dist/Agda-$VERSION.tar.gz
 
-* Upload the darcs tar-ball to code.haskell.org.
+* Upload the archived tar-ball to code.haskell.org.
 
     scp Agda-$VERSION.tar.gz code.haskell.org:/srv/code/Agda/
 
@@ -104,19 +105,31 @@ followed:
 
 * Announce the release of the new version on the Agda mailing list.
 
-* Update the version numbers again (so that released and development
-  versions are not confused) in:
+* Update the version numbers in:
 
   Agda.cabal (thrice),
-  src/data/emacs-mode/agda2-mode.el and
+  src/data/emacs-mode/agda2-mode.el, and
   mk/paths.mk.
 
-* Remove the "this" source-repository section from the Cabal
-  file. (This would be unnecessary if we had two repositories, one
-  stable and one for development.)
+* Remove the tag from the "this" source-repository section from the Cabal
+  file.
 
-* Remove the release notes for the released version from doc/release-notes.
+* Add a new header to CHANGELOG.
 
-* Push all changes.
+* Push all changes and merge into 'master' branch.
 
-    darcs push
+    git push --tags
+
+    git checkout master
+    git merge maint-$MAJORVERSION
+
+* Restore version numbers in 'master'
+  (possibly by just resolving the merge conflicts).
+
+    Agda.cabal (thrice),
+    src/data/emacs-mode/agda2-mode.el, and
+    mk/paths.mk.
+
+* Push master
+
+    git push
