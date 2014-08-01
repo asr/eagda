@@ -239,8 +239,8 @@ std-lib :
 
 up-to-date-std-lib : std-lib
 	@(cd std-lib && \
-          git fetch && git checkout master && git merge origin/master && \
-          make setup)
+	  git fetch && git checkout master && git merge origin/master && \
+	  make setup)
 
 library-test : # up-to-date-std-lib
 	@echo "======================================================================"
