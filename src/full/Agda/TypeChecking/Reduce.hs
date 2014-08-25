@@ -596,7 +596,7 @@ appDefE' v cls es = goCls cls $ map ignoreReduced es
               DontKnow Nothing  -> cantReduce es
               DontKnow (Just m) -> return $ NoReduction $ blocked m $ v `applyE` es
               Yes simpl vs -- vs is the subst. for the variables bound in body
-                | isJust (getBody body)  -- clause has body?
+                | isJust (getBodyUnraised body)  -- clause has body?
                                 -> return $ YesReduction simpl $
                     -- TODO: let matchPatterns also return the reduced forms
                     -- of the original arguments!
@@ -1172,7 +1172,7 @@ instance InstantiateFull Clause where
 
 instance InstantiateFull Interface where
     instantiateFull' (Interface h ms mod scope inside
-                               sig b hsImports highlighting pragmas patsyns instdefs) =
+                               sig b hsImports highlighting pragmas patsyns) =
 	Interface h ms mod scope inside
 	    <$> instantiateFull' sig
 	    <*> instantiateFull' b
@@ -1180,7 +1180,6 @@ instance InstantiateFull Interface where
             <*> return highlighting
             <*> return pragmas
             <*> return patsyns
-            <*> return instdefs
 
 instance InstantiateFull a => InstantiateFull (Builtin a) where
     instantiateFull' (Builtin t) = Builtin <$> instantiateFull' t
