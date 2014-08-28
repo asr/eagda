@@ -28,7 +28,7 @@ Language
 ========
 
 * Instance search is now more efficient and recursive (see issue 938)
-  (but without termination check yet)
+  (but without termination check yet).
 
   A new keyword `instance' has been introduced (in the style of
   `abstract' and  `private') which must now be used for every
@@ -90,7 +90,7 @@ Language
 
   Additionally:
 
-  * Uniqueness of instances is up to definitional equality (see issue 899)
+  * Uniqueness of instances is up to definitional equality (see issue 899).
 
   * Instances of the following form are allowed:
 
@@ -98,18 +98,18 @@ Language
                   {{EqB : {a : A} → Eq (B a)}}
                   → Eq (Σ A B)
 
-      When searching recursively for an instance of type
-      `{a : A} → Eq (B a)', a lambda will automatically be introduced and
-      instance search will search for something of type `Eq (B a)' in
-      the context extended by `a : A'. When searching for an instance, the
-      `a' argument does not have to be implicit, but in the definition of
-      EqSigma, instance search will only be able to use EqB if `a' is implicit.
+    When searching recursively for an instance of type
+    `{a : A} → Eq (B a)', a lambda will automatically be introduced and
+    instance search will search for something of type `Eq (B a)' in
+    the context extended by `a : A'. When searching for an instance, the
+    `a' argument does not have to be implicit, but in the definition of
+    EqSigma, instance search will only be able to use EqB if `a' is implicit.
 
   * There is no longer any attempt to solve irrelevant metas by instance
-    search
+    search.
 
   * Constructors of records and datatypes are automatically added to the
-    instance table
+    instance table.
 
 * You can now use 'quote' in patterns.
 
@@ -238,6 +238,22 @@ Language
 
   [See Issue 1245.]
 
+* Minor change in module application semantics. [Issue 892]
+
+  Previously re-exported functions were not redefined when instantiating a
+  module. For instance
+
+    module A where f = ...
+    module B (X : Set) where
+      open A public
+    module C = B Nat
+
+  In this example C.f would be an alias for A.f, so if both A and C were opened
+  f would not be ambiguous. However, this behaviour is not correct when A and B
+  share some module parameters (issue 892). To fix this C now defines its own
+  copy of f (which evaluates to A.f), which means that opening A and C results
+  in an ambiguous f.
+
 Goal and error display
 ======================
 
@@ -295,3 +311,39 @@ Emacs mode
 
 LaTeX-backend
 -------------
+
+* New experimental option ``references'' has been added. When specified,
+  i.e.:
+
+      \usepackage[references]{agda}
+
+  a new command called \AgdaRef is provided, which lets you reference
+  previously typeset commands, e.g.:
+
+      Let us postulate \AgdaRef{apa}.
+
+      \begin{code}
+      postulate
+        apa : Set
+      \end{code}
+
+  Above ``apa'' will be typeset (highlighted) the same in the text as in
+  the code, provided that the LaTeX output is post-processed using
+  src/data/postprocess-latex.pl, e.g.:
+
+    cp $(dirname $(dirname $(agda-mode locate)))/postprocess-latex.pl .
+    agda -i. --latex Example.lagda
+    cd latex/
+    perl ../postprocess-latex.pl Example.tex > Example.processed
+    mv Example.processed Example.tex
+    xelatex Example.tex
+
+  Mix-fix and unicode should work as expected (unicode requires
+  XeLaTeX/LuaLaTeX), but there are limitations:
+
+    + Overloading identifiers should be avoided, if multiples exist
+      \AgdaRef will typeset according to the first it finds.
+
+    + Only the current module is used, should you need to reference
+      identifiers in other modules then you need to specify which other
+      module manually, i.e. \AgdaRef[module]{identifier}.
