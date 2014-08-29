@@ -1,5 +1,5 @@
 name:            Agda
-version:         2.4.1.1
+version:         2.4.3.1
 cabal-version:   >= 1.8
 build-type:      Custom
 license:         OtherLicense
@@ -37,7 +37,7 @@ tested-with:        GHC == 7.2.2
                     GHC == 7.6.3
                     GHC == 7.8.3
 extra-source-files: src/full/Agda/undefined.h
-                    README
+                    README.md
                     CHANGELOG
 data-dir:           src/data
 data-files:         Agda.css
@@ -405,7 +405,7 @@ library
 executable agda
   hs-source-dirs: src/main
   main-is:        Main.hs
-  build-depends:  Agda == 2.4.1.1,
+  build-depends:  Agda == 2.4.3.1,
                   -- Nothing is used from the following package, except
                   -- for the prelude.
                   base >= 3 && < 6
