@@ -730,7 +730,7 @@ atTopLevel m = inConcreteMode $ do
       -- Get the names of the local variables from @scope@
       -- and put them into the context.
       let names :: [A.Name]
-          names = reverse $ map snd $ scopeLocals scope
+          names = reverse $ map snd $ notShadowedLocals $ scopeLocals scope
           types :: [I.Dom I.Type]
           types = map (snd <$>) $ telToList tel
           gamma :: ListTel' A.Name
@@ -776,7 +776,7 @@ moduleContents norm rng s = do
                            Map.toList names)
   return (Map.keys modules, types)
 
-whyInScope :: String -> TCM (Maybe A.Name, [AbstractName], [AbstractModule])
+whyInScope :: String -> TCM (Maybe LocalVar, [AbstractName], [AbstractModule])
 whyInScope s = do
   x     <- parseName noRange s
   scope <- getScope
