@@ -32,7 +32,6 @@ import Data.Int
 import qualified Data.List as List
 import Data.Map as Map
 import Data.Set as Set
-import Data.Sequence as Seq
 import Data.Typeable (Typeable)
 import Data.Foldable
 import Data.Traversable
@@ -85,7 +84,6 @@ data TCState =
          , stTokens            :: CompressedFile
            -- ^ Highlighting info for tokens (but not those tokens for
            -- which highlighting exists in 'stSyntaxInfo').
-         , stTermErrs          :: Seq TerminationError
 	 , stMetaStore	       :: MetaStore
 	 , stInteractionPoints :: InteractionPoints
 	 , stAwakeConstraints    :: Constraints
@@ -174,7 +172,6 @@ initState = TCSt
   , stMetaStore            = Map.empty
   , stSyntaxInfo           = mempty
   , stTokens               = mempty
-  , stTermErrs             = Seq.empty
   , stInteractionPoints    = Map.empty
   , stAwakeConstraints     = []
   , stSleepingConstraints  = []
@@ -269,8 +266,7 @@ sourceToModule =
   Map.fromList
      .  List.map (\(m, f) -> (f, m))
      .  Map.toList
-     .  stModuleToSource
-    <$> get
+    <$> gets stModuleToSource
 
 ---------------------------------------------------------------------------
 -- ** Interface
@@ -666,7 +662,7 @@ data DisplayTerm
     --   The list of 'DisplayTerm's are the with expressions @ws@.
     --   The 'Args' are additional arguments @us@
     --   (possible in case the with-application is of function type).
-  | DCon QName [Arg DisplayTerm]
+  | DCon ConHead [Arg DisplayTerm]
     -- ^ @c vs@.
   | DDef QName [Arg DisplayTerm]
     -- ^ @d vs@.
@@ -1413,9 +1409,8 @@ data CallInfo = CallInfo
 -- no Eq, Ord instances: too expensive! (see issues 851, 852)
 
 -- | We only 'show' the name of the callee.
-instance Show CallInfo where show = show . callInfoTarget
-
-instance Pretty CallInfo where pretty = text . show . callInfoTarget
+instance Show   CallInfo where show   = show . callInfoTarget
+instance Pretty CallInfo where pretty = text . show
 
 -- | Information about a mutual block which did not pass the
 -- termination checker.

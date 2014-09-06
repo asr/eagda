@@ -86,7 +86,7 @@ checkDecl d = traceCall (SetRange (getRange d)) $ do
     let -- What kind of final checks/computations should be performed
         -- if we're not inside a mutual block?
         none        m = m >> return Nothing
-        meta        m = m >> return (Just (return []))
+        meta        m = m >> return (Just (return ()))
         mutual i ds m = m >>= return . Just . mutualChecks i ds
         impossible  m = m >> return __IMPOSSIBLE__
                        -- We're definitely inside a mutual block.
@@ -124,45 +124,18 @@ checkDecl d = traceCall (SetRange (getRange d)) $ do
                                   -- highlighting purposes.
       A.UnquoteDecl mi i x e   -> checkUnquoteDecl mi i x e
 
-    unlessM (isJust . envMutualBlock <$> ask) $ do
-      -- The termination errors are not returned, but used for highlighting.
-      termErrs <- caseMaybe finalChecks (return []) $ \ theMutualChecks -> do
+    unlessM (isJust <$> asks envMutualBlock) $ do
+
+      -- Syntax highlighting.
+      highlight_ d
+
+      -- Post-typing checks.
+      whenJust finalChecks $ \ theMutualChecks -> do
         solveSizeConstraints
-        wakeupConstraints_   -- solve emptyness constraints
+        wakeupConstraints_   -- solve emptiness constraints
         freezeMetas
 
         theMutualChecks
-
-      -- Syntax highlighting.
-      let highlight d = generateAndPrintSyntaxInfo d (Full termErrs)
-      reimburseTop Bench.Typing $ billTop Bench.Highlighting $ case d of
-        A.Axiom{}                -> highlight d
-        A.Field{}                -> __IMPOSSIBLE__
-        A.Primitive{}            -> highlight d
-        A.Mutual{}               -> highlight d
-        A.Apply{}                -> highlight d
-        A.Import{}               -> highlight d
-        A.Pragma{}               -> highlight d
-        A.ScopedDecl{}           -> return ()
-        A.FunDef{}               -> __IMPOSSIBLE__
-        A.DataDef{}              -> __IMPOSSIBLE__
-        A.DataSig{}              -> __IMPOSSIBLE__
-        A.Open{}                 -> highlight d
-        A.PatternSynDef{}        -> highlight d
-        A.UnquoteDecl{}          -> highlight d
-        A.Section i x tel _      -> highlight (A.Section i x tel [])
-          -- Each block in the section has already been highlighted,
-          -- all that remains is the module declaration.
-        A.RecSig{}               -> highlight d
-        A.RecDef i x ind c ps tel cs ->
-          highlight (A.RecDef i x ind c [] tel (fields cs))
-          -- The telescope and all record module declarations except
-          -- for the fields have already been highlighted.
-          where
-          fields (A.ScopedDecl _ ds1 : ds2) = fields ds1 ++ fields ds2
-          fields (d@A.Field{}        : ds)  = d : fields ds
-          fields (_                  : ds)  = fields ds
-          fields []                         = []
 
     where
     unScope (A.ScopedDecl scope ds) = setScope scope >> unScope d
@@ -192,7 +165,7 @@ checkDecl d = traceCall (SetRange (getRange d)) $ do
       mapM_ instantiateDefinitionType $ Set.toList names
       -- Andreas, 2013-02-27: check termination before injectivity,
       -- to avoid making the injectivity checker loop.
-      termErrs <- case d of
+      case d of
         A.UnquoteDecl{} -> checkTermination_ $ A.Mutual i ds
         _               -> checkTermination_ d
       checkPositivity_         names
@@ -202,7 +175,6 @@ checkDecl d = traceCall (SetRange (getRange d)) $ do
       -- so do it here.
       checkInjectivity_        names
       checkProjectionLikeness_ names
-      return termErrs
 
     checkUnquoteDecl mi i x e = do
       reportSDoc "tc.unquote.decl" 20 $ text "Checking unquoteDecl" <+> prettyTCM x
@@ -253,20 +225,51 @@ instantiateDefinitionType q = do
 --   def <- instantiateFull def
 --   modifySignature $ updateDefinition q $ const def
 
+-- | Highlight a declaration.
+highlight_ :: A.Declaration -> TCM ()
+highlight_ d = do
+  let highlight d = generateAndPrintSyntaxInfo d Full
+  reimburseTop Bench.Typing $ billTop Bench.Highlighting $ case d of
+    A.Axiom{}                -> highlight d
+    A.Field{}                -> __IMPOSSIBLE__
+    A.Primitive{}            -> highlight d
+    A.Mutual{}               -> highlight d
+    A.Apply{}                -> highlight d
+    A.Import{}               -> highlight d
+    A.Pragma{}               -> highlight d
+    A.ScopedDecl{}           -> return ()
+    A.FunDef{}               -> __IMPOSSIBLE__
+    A.DataDef{}              -> __IMPOSSIBLE__
+    A.DataSig{}              -> __IMPOSSIBLE__
+    A.Open{}                 -> highlight d
+    A.PatternSynDef{}        -> highlight d
+    A.UnquoteDecl{}          -> highlight d
+    A.Section i x tel _      -> highlight (A.Section i x tel [])
+      -- Each block in the section has already been highlighted,
+      -- all that remains is the module declaration.
+    A.RecSig{}               -> highlight d
+    A.RecDef i x ind c ps tel cs ->
+      highlight (A.RecDef i x ind c [] tel (fields cs))
+      -- The telescope and all record module declarations except
+      -- for the fields have already been highlighted.
+      where
+      fields (A.ScopedDecl _ ds1 : ds2) = fields ds1 ++ fields ds2
+      fields (d@A.Field{}        : ds)  = d : fields ds
+      fields (_                  : ds)  = fields ds
+      fields []                         = []
 
--- | Termination check a declaration and return a list of termination errors.
-checkTermination_ :: A.Declaration -> TCM [TerminationError]
+-- | Termination check a declaration.
+checkTermination_ :: A.Declaration -> TCM ()
 checkTermination_ d = reimburseTop Bench.Typing $ billTop Bench.Termination $ do
   reportSLn "tc.decl" 20 $ "checkDecl: checking termination..."
-  ifNotM (optTerminationCheck <$> pragmaOptions) (return []) $ {- else -} do
+  whenM (optTerminationCheck <$> pragmaOptions) $ do
     case d of
       -- Record module definitions should not be termination-checked twice.
-      A.RecDef {} -> return []
+      A.RecDef {} -> return ()
       _ -> disableDestructiveUpdate $ do
-        termErrs <- {- nubList <$> -} termDecl d
-        modify $ \st ->
-          st { stTermErrs = Fold.foldl' (|>) (stTermErrs st) termErrs }
-        return termErrs
+        termErrs <- termDecl d
+        unless (null termErrs) $
+          typeError $ TerminationCheckFailed termErrs
 
 -- | Check a set of mutual names for positivity.
 checkPositivity_ :: Set QName -> TCM ()
