@@ -1,6 +1,6 @@
-{-# LANGUAGE CPP #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE CPP                  #-}
+{-# LANGUAGE FlexibleInstances    #-}
+{-# LANGUAGE TupleSections        #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 
 module Agda.TypeChecking.Errors
@@ -14,7 +14,6 @@ module Agda.TypeChecking.Errors
 import Prelude hiding (null)
 
 import Control.Monad.State
-import Control.Monad.Error
 
 import Data.Function
 import Data.List (nub, sortBy)
@@ -41,6 +40,7 @@ import Agda.TypeChecking.Monad.Options
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Reduce (instantiate)
 
+import Agda.Utils.Except ( MonadError(catchError) )
 import Agda.Utils.FileName
 import Agda.Utils.Function
 import Agda.Utils.Monad
@@ -206,6 +206,8 @@ errorString err = case err of
     SafeFlagPostulate{}                      -> "SafeFlagPostulate"
     SafeFlagPragma{}                         -> "SafeFlagPragma"
     SafeFlagNoTerminationCheck{}             -> "SafeFlagNoTerminationCheck"
+    SafeFlagNonTerminating{}                 -> "SafeFlagNonTerminating"
+    SafeFlagTerminating{}                    -> "SafeFlagTerminating"
     SafeFlagPrimTrustMe{}                    -> "SafeFlagPrimTrustMe"
     ShadowedModule{}                         -> "ShadowedModule"
     ShouldBeASort{}                          -> "ShouldBeASort"
@@ -792,6 +794,8 @@ instance PrettyTCM TypeError where
                 in fsep $ [fwords ("Cannot set OPTION pragma" ++ plural)]
                           ++ map text xs ++ [fwords "with safe flag."]
             SafeFlagNoTerminationCheck -> fsep (pwords "Cannot use NO_TERMINATION_CHECK pragma with safe flag.")
+            SafeFlagNonTerminating -> fsep (pwords "Cannot use NON_TERMINATING pragma with safe flag.")
+            SafeFlagTerminating -> fsep (pwords "Cannot use TERMINATING pragma with safe flag.")
             SafeFlagPrimTrustMe -> fsep (pwords "Cannot use primTrustMe with safe flag")
             NeedOptionCopatterns -> fsep (pwords "Option --copatterns needed to enable destructor patterns")
           where
