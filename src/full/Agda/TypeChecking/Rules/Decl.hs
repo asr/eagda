@@ -384,15 +384,15 @@ checkPrimitive i x e =
       defaultDefn defaultArgInfo x t $
         Primitive (Info.defAbstract i) s [] Nothing
     where
-	nameString (Name _ x _ _) = show x
+        nameString (Name _ x _ _) = show x
 
 
 -- | Check a pragma.
 checkPragma :: Range -> A.Pragma -> TCM ()
 checkPragma r p =
     traceCall (CheckPragma r p) $ case p of
-	A.BuiltinPragma x e -> bindBuiltin x e
-	A.RewritePragma q   -> addRewriteRule q
+        A.BuiltinPragma x e -> bindBuiltin x e
+        A.RewritePragma q   -> addRewriteRule q
         A.CompiledTypePragma x hs -> do
           def <- getConstInfo x
           case theDef def of
@@ -484,7 +484,7 @@ checkPragma r p =
           case theDef def of
             Function{} -> markStatic x
             _          -> typeError $ GenericError "STATIC directive only works on functions"
-	A.OptionsPragma{} -> typeError $ GenericError $ "OPTIONS pragma only allowed at beginning of file, before top module declaration"
+        A.OptionsPragma{} -> typeError $ GenericError $ "OPTIONS pragma only allowed at beginning of file, before top module declaration"
         A.EtaPragma r -> do
           unlessM (isJust <$> isRecord r) $
             typeError $ GenericError $ "ETA pragma is only applicable to records"
@@ -499,7 +499,7 @@ checkPragma r p =
         -- This error must be detected by Agda.Syntax.Translation.ConcreteToAbstract.
         A.ATPPragma _ [] -> __IMPOSSIBLE__
 
-	A.ATPPragma ATPAxiom qs -> do
+        A.ATPPragma ATPAxiom qs -> do
           mapM_ helper qs
            where
              helper :: QName -> TCM ()
@@ -518,7 +518,7 @@ checkPragma r p =
 
                  _  -> typeError $ GenericError "ATP directive with the role <axiom> works only on postulates or data constructors"
 
-	A.ATPPragma ATPConjecture (q : qs) -> do
+        A.ATPPragma ATPConjecture (q : qs) -> do
           def <- getConstInfo q
           case theDef def of
             Axiom{} -> do
@@ -528,7 +528,7 @@ checkPragma r p =
 
             _   -> typeError $ GenericError "ATP directive with the role <prove> only works on postulates"
 
-       	A.ATPPragma ATPDefinition qs -> do
+        A.ATPPragma ATPDefinition qs -> do
           mapM_ helper qs
            where
              helper :: QName -> TCM ()
@@ -543,7 +543,7 @@ checkPragma r p =
                  _  -> typeError $ GenericError "ATP directive with the role <definition> only works on functions"
 
 
-       	A.ATPPragma ATPHint qs -> do
+        A.ATPPragma ATPHint qs -> do
           mapM_ helper qs
            where
              helper :: QName -> TCM ()
@@ -581,10 +581,10 @@ checkTypeSignature (A.ScopedDecl scope ds) = do
   mapM_ checkTypeSignature ds
 checkTypeSignature (A.Axiom funSig i info x e) =
     case Info.defAccess i of
-	PublicAccess  -> inConcreteMode $ checkAxiom funSig i info x e
-	PrivateAccess -> inAbstractMode $ checkAxiom funSig i info x e
+        PublicAccess  -> inConcreteMode $ checkAxiom funSig i info x e
+        PrivateAccess -> inAbstractMode $ checkAxiom funSig i info x e
         OnlyQualified -> __IMPOSSIBLE__
-checkTypeSignature _ = __IMPOSSIBLE__	-- type signatures are always axioms
+checkTypeSignature _ = __IMPOSSIBLE__   -- type signatures are always axioms
 
 -- | Type check a module.
 checkSection :: Info.ModuleInfo -> ModuleName -> A.Telescope -> [A.Declaration] -> TCM ()
