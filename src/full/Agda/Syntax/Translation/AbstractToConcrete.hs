@@ -967,13 +967,6 @@ recoverOpApp bracket opApp view e mDefault = case view e of
     where
       xs       = C.nameParts $ C.unqualify n
       numHoles = length (filter (== Hole) xs)
-{- UNUSED
-      msg      = concat [ "doQName "
-                        , showList xs ""
-                        , " on "
-                        , show (length es)
-                        , " args" ]
--}
 
   -- binary case
   doQName fixity n as

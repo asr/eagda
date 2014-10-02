@@ -787,7 +787,7 @@ checkApplication hd args e t = do
       -- over the ones we haven't.
       let meta r = A.Underscore $ A.emptyMetaInfo{ A.metaRange = r }   -- TODO: name suggestion
       case A.insertImplicitPatSynArgs meta (getRange n) ns args of
-        Nothing      -> typeError $ GenericError $ "Bad arguments to pattern synonym " ++ show n
+        Nothing      -> typeError $ BadArgumentsToPatternSynonym n
         Just (s, ns) -> do
           let p' = A.patternToExpr p
               e' = A.lambdaLiftExpr (map unArg ns) (A.substExpr s p')
@@ -824,7 +824,7 @@ domainFree info x =
       { A.metaRange          = r
       , A.metaScope          = emptyScopeInfo
       , A.metaNumber         = Nothing
-      , A.metaNameSuggestion = show x
+      , A.metaNameSuggestion = show $ A.nameConcrete x
       }
 
 ---------------------------------------------------------------------------
@@ -1145,7 +1145,7 @@ checkHeadApplication e t hd args = do
 
       -- The name of the fresh function.
       i <- fresh :: TCM Int
-      let name = filter (/= '_') (show $ A.qnameName c) ++ "-" ++ show i
+      let name = filter (/= '_') (show $ A.nameConcrete $ A.qnameName c) ++ "-" ++ show i
       c' <- setRange (getRange c) <$>
               liftM2 qualify (killRange <$> currentModule)
                              (freshName_ name)
