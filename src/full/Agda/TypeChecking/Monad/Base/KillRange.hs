@@ -44,8 +44,8 @@ instance KillRange Defn where
   killRange def =
     case def of
       Axiom role hints -> killRange2 Axiom role hints
-      Function cls comp inv mut isAbs delayed proj static copy term extlam with role ->
-        killRange13 Function cls comp inv mut isAbs delayed proj static copy term extlam with role
+      Function cls comp inv mut isAbs delayed proj static copy term extlam with cop role ->
+        killRange14 Function cls comp inv mut isAbs delayed proj static copy term extlam with cop role
       Datatype a b c d e f g h i j   -> killRange10 Datatype a b c d e f g h i j
       Record a b c d e f g h i j k l -> killRange12 Record a b c d e f g h i j k l
       Constructor a b c d e f        -> killRange6 Constructor a b c d e f

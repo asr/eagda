@@ -140,6 +140,7 @@ checkAlias t' ai delayed i name e = do
                       , funTerminates     = Nothing
                       , funExtLam         = Nothing
                       , funWith           = Nothing
+                      , funCopatternLHS   = False
                       , funATPRole        = Nothing
                       }
   reportSDoc "tc.def.alias" 20 $ text "checkAlias: leaving"
@@ -254,6 +255,7 @@ checkFunDef' t ai delayed extlam with i name cs =
              , funTerminates     = Nothing
              , funExtLam         = extlam
              , funWith           = with
+             , funCopatternLHS   = isCopatternLHS cs
              , funATPRole        = Nothing
              }
 

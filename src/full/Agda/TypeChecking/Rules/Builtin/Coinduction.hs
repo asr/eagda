@@ -158,6 +158,7 @@ bindBuiltinFlat e =
                    , funTerminates = Just True
                    , funExtLam     = Nothing
                    , funWith       = Nothing
+                   , funCopatternLHS = isCopatternLHS [clause]
                    , funATPRole    = Nothing
                    }
                 }
