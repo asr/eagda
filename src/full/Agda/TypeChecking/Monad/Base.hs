@@ -1928,4 +1928,4 @@ absurdLambdaName = ".absurdlambda"
 
 -- | Check whether we have an definition from an absurd lambda.
 isAbsurdLambdaName :: QName -> Bool
-isAbsurdLambdaName = (absurdLambdaName ==) . show . nameConcrete . qnameName
+isAbsurdLambdaName = (absurdLambdaName ==) . prettyShow . qnameName

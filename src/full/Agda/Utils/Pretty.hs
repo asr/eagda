@@ -1,3 +1,9 @@
+{-# OPTIONS_GHC -fwarn-missing-signatures #-}
+
+{-# LANGUAGE FlexibleInstances    #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+
+
 {-| Pretty printing functions.
 -}
 module Agda.Utils.Pretty
@@ -8,8 +14,14 @@ module Agda.Utils.Pretty
 import Data.Function
 import Text.PrettyPrint hiding (TextDetails(Str))
 
-instance Eq Doc where
-  (==) = (==) `on` render
+-- * Pretty class
+
+-- | While 'Show' is for rendering data in Haskell syntax,
+--   'Pretty' is for displaying data to the world, i.e., the
+--   user and the environment.
+--
+--   Atomic data has no inner document structure, so just
+--   implement 'pretty' as @pretty a = text $ ... a ...@.
 
 class Pretty a where
     pretty      :: a -> Doc
@@ -18,8 +30,32 @@ class Pretty a where
     pretty      = prettyPrec 0
     prettyPrec  = const pretty
 
+-- | Use instead of 'show' when printing to world.
+
+prettyShow :: Pretty a => a -> String
+prettyShow = render . pretty
+
+-- * Pretty instances
+
+instance Pretty Int where
+    pretty = text . show
+
+instance Pretty Integer where
+    pretty = text . show
+
+instance Pretty Char where
+    pretty c = text [c]
+
+instance Pretty String where
+    pretty = text
+
 instance Pretty Doc where
     pretty = id
+
+-- * 'Doc' utilities
+
+instance Eq Doc where
+  (==) = (==) `on` render
 
 pwords :: String -> [Doc]
 pwords = map text . words
