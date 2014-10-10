@@ -10,6 +10,8 @@ import Control.Monad
 
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as ByteString
+import Data.IntMap (IntMap)
+import qualified Data.IntMap as IntMap
 import qualified Data.List as List
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -18,6 +20,8 @@ import qualified Data.Sequence as Seq
 import Data.Set (Set)
 import qualified Data.Set as Set
 
+import Agda.Utils.Bag (Bag)
+import qualified Agda.Utils.Bag as Bag
 import Agda.Utils.Functor
 import Agda.Utils.Monad
 
@@ -33,6 +37,14 @@ instance Null ByteString where
 instance Null [a] where
   empty = []
   null  = List.null
+
+instance Null (Bag a) where
+  empty = Bag.empty
+  null  = Bag.null
+
+instance Null (IntMap a) where
+  empty = IntMap.empty
+  null  = IntMap.null
 
 instance Null (Map k a) where
   empty = Map.empty
