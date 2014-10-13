@@ -2,8 +2,9 @@
 
 {-# LANGUAGE CPP                  #-}
 {-# LANGUAGE FlexibleInstances    #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE PatternGuards        #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE UnicodeSyntax        #-}
 
 module Agda.TypeChecking.Quote where
 
@@ -11,37 +12,35 @@ import Control.Applicative
 import Control.Monad.State (evalState, get, put)
 import Control.Monad.Writer (execWriterT, tell)
 
+import Data.Char
 import Data.Maybe (fromMaybe)
 import Data.Traversable (traverse)
-import Data.Char
 
-import Agda.Syntax.Position
-import Agda.Syntax.Literal
-import Agda.Syntax.Internal as I
 import Agda.Syntax.Common
+import Agda.Syntax.Internal as I
+import Agda.Syntax.Literal
+import Agda.Syntax.Position
 import Agda.Syntax.Translation.InternalToAbstract
 
-import {-# SOURCE #-} Agda.TypeChecking.Datatypes
-import Agda.TypeChecking.Monad
-import Agda.TypeChecking.Monad.Builtin
-import Agda.TypeChecking.Reduce
-import Agda.TypeChecking.Reduce.Monad
-import Agda.TypeChecking.Pretty
-import Agda.TypeChecking.Substitute
-import Agda.TypeChecking.DropArgs
 import Agda.TypeChecking.CompiledClause
+import Agda.TypeChecking.Datatypes ( getConHead )
+import Agda.TypeChecking.DropArgs
 import Agda.TypeChecking.Free
 import Agda.TypeChecking.Level
+import Agda.TypeChecking.Monad
+import Agda.TypeChecking.Monad.Builtin
+import Agda.TypeChecking.Pretty
+import Agda.TypeChecking.Reduce
+import Agda.TypeChecking.Reduce.Monad
+import Agda.TypeChecking.Substitute
 
 import Agda.Utils.Except ( MonadError(catchError) )
-
-import Agda.Utils.String
-import Agda.Utils.Permutation
-
-import Agda.Utils.Monad
+import Agda.Utils.Impossible
+import Agda.Utils.Monad ( ifM )
+import Agda.Utils.Permutation ( Permutation(Perm) )
+import Agda.Utils.String ( Str(Str), unStr )
 
 #include "../undefined.h"
-import Agda.Utils.Impossible
 
 quotingKit :: TCM (Term -> ReduceM Term, Type -> ReduceM Term, Clause -> ReduceM Term)
 quotingKit = do
@@ -90,66 +89,98 @@ quotingKit = do
       t @@ u = apply <$> t <*> ((:[]) . defaultArg <$> u)
 
       (!@) :: Apply a => a -> ReduceM Term -> ReduceM a
-      t !@  u = pure t @@ u
+      t !@ u = pure t @@ u
 
       (!@!) :: Apply a => a -> Term -> ReduceM a
       t !@! u = pure t @@ pure u
 
+      quoteHiding ∷ Hiding → ReduceM Term
       quoteHiding Hidden    = pure hidden
       quoteHiding Instance  = pure instanceH
       quoteHiding NotHidden = pure visible
+
+      quoteRelevance ∷ Relevance → ReduceM Term
       quoteRelevance Relevant   = pure relevant
       quoteRelevance Irrelevant = pure irrelevant
       quoteRelevance NonStrict  = pure relevant
       quoteRelevance Forced     = pure relevant
       quoteRelevance UnusedArg  = pure relevant
-      quoteColors _ = nil -- TODO guilhem
+
+--      quoteColors _ = nil -- TODO guilhem
+
+      quoteArgInfo ∷ I.ArgInfo → ReduceM Term
       quoteArgInfo (ArgInfo h r cs) = arginfo !@ quoteHiding h
                                               @@ quoteRelevance r
                                 --              @@ quoteColors cs
+
+      quoteLit ∷ Literal → ReduceM Term
       quoteLit l@LitInt{}    = lit !@ (litNat    !@! Lit l)
       quoteLit l@LitFloat{}  = lit !@ (litFloat  !@! Lit l)
       quoteLit l@LitChar{}   = lit !@ (litChar   !@! Lit l)
       quoteLit l@LitString{} = lit !@ (litString !@! Lit l)
       quoteLit l@LitQName{}  = lit !@ (litQName  !@! Lit l)
+
       -- We keep no ranges in the quoted term, so the equality on terms
       -- is only on the structure.
+      quoteSortLevelTerm ∷ Level → ReduceM Term
       quoteSortLevelTerm (Max [])              = setLit !@! Lit (LitInt noRange 0)
       quoteSortLevelTerm (Max [ClosedLevel n]) = setLit !@! Lit (LitInt noRange n)
-      quoteSortLevelTerm l = set !@ quote (unlevelWithKit lkit l)
-      quoteSort (Type t)    = quoteSortLevelTerm t
-      quoteSort Prop        = pure unsupportedSort
-      quoteSort Inf         = pure unsupportedSort
-      quoteSort DLub{}      = pure unsupportedSort
-      quoteType (El s t) = el !@ quoteSort s @@ quote t
+      quoteSortLevelTerm l                     = set !@ quoteTerm (unlevelWithKit lkit l)
 
+      quoteSort ∷ Sort → ReduceM Term
+      quoteSort (Type t) = quoteSortLevelTerm t
+      quoteSort Prop     = pure unsupportedSort
+      quoteSort Inf      = pure unsupportedSort
+      quoteSort DLub{}   = pure unsupportedSort
+
+      quoteType ∷ Type → ReduceM Term
+      quoteType (El s t) = el !@ quoteSort s @@ quoteTerm t
+
+      quoteQName ∷ QName → ReduceM Term
       quoteQName x = pure $ Lit $ LitQName noRange x
+
+      quotePats ∷ [I.NamedArg Pattern] → ReduceM Term
       quotePats ps = list $ map (quoteArg quotePat . fmap namedThing) ps
+
+      quotePat ∷ Pattern → ReduceM Term
       quotePat (VarP "()")   = pure absurdP
       quotePat (VarP _)      = pure varP
       quotePat (DotP _)      = pure dotP
       quotePat (ConP c _ ps) = conP !@ quoteQName (conName c) @@ quotePats ps
       quotePat (LitP l)      = litP !@! Lit l
       quotePat (ProjP x)     = projP !@ quoteQName x
-      quoteBody (Body a) = Just (quote a)
+
+      quoteBody ∷ I.ClauseBody → Maybe (ReduceM Term)
+      quoteBody (Body a) = Just (quoteTerm a)
       quoteBody (Bind b) = quoteBody (absBody b)
       quoteBody NoBody   = Nothing
+
+      quoteClause ∷ Clause → ReduceM Term
       quoteClause Clause{namedClausePats = ps, clauseBody = body} =
         case quoteBody body of
           Nothing -> absurdClause !@ quotePats ps
           Just b  -> normalClause !@ quotePats ps @@ b
 
-      list [] = pure nil
+      list ∷ [ReduceM Term] → ReduceM Term
+      list []       = pure nil
       list (a : as) = cons !@ a @@ list as
+
+      quoteDom ∷ (Type → ReduceM Term) → I.Dom Type → ReduceM Term
       quoteDom q (Dom info t) = arg !@ quoteArgInfo info @@ q t
+
+      quoteArg ∷ (a → ReduceM Term) → I.Arg a → ReduceM Term
       quoteArg q (Arg info t) = arg !@ quoteArgInfo info @@ q t
-      quoteArgs ts = list (map (quoteArg quote) ts)
-      quote v =
+
+      quoteArgs ∷ I.Args → ReduceM Term
+      quoteArgs ts = list (map (quoteArg quoteTerm) ts)
+
+      quoteTerm ∷ Term → ReduceM Term
+      quoteTerm v =
         case unSpine v of
           Var n es   ->
              let ts = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
              in  var !@! Lit (LitInt noRange $ fromIntegral n) @@ quoteArgs ts
-          Lam info t -> lam !@ quoteHiding (getHiding info) @@ quote (absBody t)
+          Lam info t -> lam !@ quoteHiding (getHiding info) @@ quoteTerm (absBody t)
           Def x es   -> do
             d <- theDef <$> getConstInfo x
             qx d @@ quoteArgs ts
@@ -163,14 +194,15 @@ quotingKit = do
           Con x ts   -> con !@! quoteConName x @@ quoteArgs ts
           Pi t u     -> pi !@ quoteDom quoteType t
                              @@ quoteType (absBody u)
-          Level _    -> pure unsupported
+          Level l    -> quoteTerm (unlevelWithKit lkit l)
           Lit lit    -> quoteLit lit
           Sort s     -> sort !@ quoteSort s
-          Shared p   -> quote $ derefPtr p
+          Shared p   -> quoteTerm $ derefPtr p
           MetaV{}    -> pure unsupported
           DontCare{} -> pure unsupported -- could be exposed at some point but we have to take care
           ExtLam{}   -> __IMPOSSIBLE__
-  return (quote, quoteType, quoteClause)
+
+  return (quoteTerm, quoteType, quoteClause)
 
 quoteName :: QName -> Term
 quoteName x = Lit (LitQName noRange x)
@@ -399,7 +431,7 @@ instance Unquote Literal where
           [ (c `isCon` primAgdaLitNat,    LitInt    noRange <$> unquoteN x)
           , (c `isCon` primAgdaLitFloat,  LitFloat  noRange <$> unquoteN x)
           , (c `isCon` primAgdaLitChar,   LitChar   noRange <$> unquoteN x)
-          , (c `isCon` primAgdaLitString, LitString noRange . getStr <$> unquoteN x)
+          , (c `isCon` primAgdaLitString, LitString noRange . unStr <$> unquoteN x)
           , (c `isCon` primAgdaLitQName,  LitQName  noRange <$> unquoteN x) ]
           (unquoteFailed "Literal" "not a literal constructor" t)
       _ -> unquoteFailed "Literal" "not a literal constructor" t
