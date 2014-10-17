@@ -1,3 +1,5 @@
+{-# OPTIONS_GHC -fwarn-missing-signatures #-}
+
 {-# LANGUAGE CPP                  #-}
 {-# LANGUAGE DeriveDataTypeable   #-}
 {-# LANGUAGE FlexibleInstances    #-}
@@ -61,12 +63,12 @@ import Agda.Syntax.Concrete.Pretty ()
 
 import Agda.Utils.Except ( Error(noMsg, strMsg), MonadError(throwError) )
 import Agda.Utils.Lens
-import Agda.Utils.List (mhead, isSublistOf)
+import Agda.Utils.List (headMay, isSublistOf)
 import Agda.Utils.Monad
 import Agda.Utils.Pretty
 import Agda.Utils.Update
 
-#include "../../undefined.h"
+#include "undefined.h"
 import Agda.Utils.Impossible
 
 {--------------------------------------------------------------------------
@@ -100,6 +102,7 @@ data NiceDeclaration
         | RecDef Range Fixity' IsAbstract Name (Maybe (Ranged Induction)) (Maybe (ThingWithFixity Name)) [LamBinding] [NiceDeclaration]
         | NicePatternSyn Range Fixity' Name [Arg Name] Pattern
         | NiceUnquoteDecl Range Fixity' Access IsAbstract TerminationCheck Name Expr
+        | NiceUnquoteDef Range Fixity' Access IsAbstract TerminationCheck Name Expr
     deriving (Typeable, Show)
 
 type TerminationCheck = Common.TerminationCheck Measure
@@ -185,6 +188,7 @@ instance HasRange NiceDeclaration where
   getRange (NicePatternSyn r _ _ _ _)      = r
   getRange (NiceFunClause r _ _ _ _)       = r
   getRange (NiceUnquoteDecl r _ _ _ _ _ _) = r
+  getRange (NiceUnquoteDef r _ _ _ _ _ _)  = r
 
 instance Error DeclarationException where
   noMsg  = strMsg ""
@@ -234,17 +238,25 @@ instance Show DeclarationException where
   show (NotAllowedInMutual nd) = show $ fsep $
     [text $ decl nd] ++ pwords "are not allowed in mutual blocks"
     where
-      decl (Axiom{})             = "Postulates"
-      decl (NiceField{})         = "Fields"
-      decl (NiceMutual{})        = "Mutual blocks"
-      decl (NiceModule{})        = "Modules"
-      decl (NiceModuleMacro{})   = "Modules"
-      decl (NiceOpen{})          = "Open declarations"
-      decl (NiceImport{})        = "Import statements"
-      decl (NicePragma{})        = "Pragmas"
-      decl (PrimitiveFunction{}) = "Primitive declarations"
-      decl (NicePatternSyn{})    = "Pattern synonyms"
-      decl _ = __IMPOSSIBLE__
+      decl Axiom{}             = "Postulates"
+      decl NiceField{}         = "Fields"
+      decl NiceMutual{}        = "Mutual blocks"
+      decl NiceModule{}        = "Modules"
+      decl NiceModuleMacro{}   = "Modules"
+      decl NiceOpen{}          = "Open declarations"
+      decl NiceImport{}        = "Import statements"
+      decl NicePragma{}        = "Pragmas"
+      decl PrimitiveFunction{} = "Primitive declarations"
+      decl NicePatternSyn{}    = "Pattern synonyms"
+      decl NiceUnquoteDecl{}   = "Unquoted declarations"
+      decl NiceUnquoteDef{}    = __IMPOSSIBLE__
+      decl NiceRecSig{}        = __IMPOSSIBLE__
+      decl NiceDataSig{}       = __IMPOSSIBLE__
+      decl NiceFunClause{}     = __IMPOSSIBLE__
+      decl FunSig{}            = __IMPOSSIBLE__
+      decl FunDef{}            = __IMPOSSIBLE__
+      decl RecDef{}            = __IMPOSSIBLE__
+      decl DataDef{}           = __IMPOSSIBLE__
   show (Codata _) =
     "The codata construction has been removed. " ++
     "Use the INFINITY builtin instead."
@@ -388,13 +400,26 @@ data DeclKind
     | OtherDecl
   deriving (Eq, Show)
 
-declKind (FunSig _ _ _ _ _ tc x _)    = LoneSig (FunName tc) x
-declKind (NiceRecSig _ _ _ x pars _)  = LoneSig (RecName $ parameters pars) x
-declKind (NiceDataSig _ _ _ x pars _) = LoneSig (DataName $ parameters pars) x
-declKind (FunDef _ _ _ _ tc x _)      = LoneDef (FunName tc) x
-declKind (DataDef _ _ _ x pars _)     = LoneDef (DataName $ parameters pars) x
-declKind (RecDef _ _ _ x _ _ pars _)  = LoneDef (RecName $ parameters pars) x
-declKind _                            = OtherDecl
+declKind :: NiceDeclaration -> DeclKind
+declKind (FunSig _ _ _ _ _ tc x _)       = LoneSig (FunName tc) x
+declKind (NiceRecSig _ _ _ x pars _)     = LoneSig (RecName $ parameters pars) x
+declKind (NiceDataSig _ _ _ x pars _)    = LoneSig (DataName $ parameters pars) x
+declKind (FunDef _ _ _ _ tc x _)         = LoneDef (FunName tc) x
+declKind (DataDef _ _ _ x pars _)        = LoneDef (DataName $ parameters pars) x
+declKind (RecDef _ _ _ x _ _ pars _)     = LoneDef (RecName $ parameters pars) x
+declKind (NiceUnquoteDef _ _ _ _ tc x _) = LoneDef (FunName tc) x
+declKind Axiom{}                         = OtherDecl
+declKind NiceField{}                     = OtherDecl
+declKind PrimitiveFunction{}             = OtherDecl
+declKind NiceMutual{}                    = OtherDecl
+declKind NiceModule{}                    = OtherDecl
+declKind NiceModuleMacro{}               = OtherDecl
+declKind NiceOpen{}                      = OtherDecl
+declKind NiceImport{}                    = OtherDecl
+declKind NicePragma{}                    = OtherDecl
+declKind NiceFunClause{}                 = OtherDecl
+declKind NicePatternSyn{}                = OtherDecl
+declKind NiceUnquoteDecl{}               = OtherDecl
 
 -- | Compute visible parameters of a data or record signature or definition.
 parameters :: [LamBinding] -> Params
@@ -450,6 +475,7 @@ niceDeclarations ds = do
       ModuleMacro{}        -> []
       Module{}             -> []
       UnquoteDecl _ x _    -> [x]
+      UnquoteDef{}         -> []
       Pragma{}             -> []
 
     inferMutualBlocks :: [NiceDeclaration] -> Nice [NiceDeclaration]
@@ -572,6 +598,11 @@ niceDeclarations ds = do
         UnquoteDecl r x e -> do
           fx <- getFixity x
           (NiceUnquoteDecl r fx PublicAccess ConcreteDef TerminationCheck x e :) <$> nice ds
+
+        UnquoteDef r x e -> do
+          fx <- getFixity x
+          removeLoneSig x
+          (NiceUnquoteDef r fx PublicAccess ConcreteDef TerminationCheck x e :) <$> nice ds
 
         Pragma (TerminationCheckPragma r NoTerminationCheck) ->
           throwError $ PragmaNoTerminationCheck r
@@ -742,7 +773,7 @@ niceDeclarations ds = do
 --          trace ("xStrings = " ++ show xStrings) $
 --          trace ("patStrings = " ++ show patStrings) $
 --          trace ("mFixity = " ++ show mFixity) $
-      case (mhead pns, mFixity) of
+      case (headMay pns, mFixity) of
         -- first identifier in the patterns is the fun.symbol?
         (Just y, _) | x == y -> True -- trace ("couldBe since y = " ++ show y) $ True
         -- are the parts of x contained in p
@@ -806,11 +837,25 @@ niceDeclarations ds = do
         -- Andreas, 2013-02-28 (issue 804):
         -- do not termination check a mutual block if any of its
         -- inner declarations comes with a {-# NO_TERMINATION_CHECK #-}
-        termCheck (FunSig _ _ _ _ _ tc _ _) = tc
-        termCheck (FunDef _ _ _ _ tc _ _)   = tc
-        termCheck (NiceMutual _ tc _)       = tc
+        termCheck (FunSig _ _ _ _ _ tc _ _)        = tc
+        termCheck (FunDef _ _ _ _ tc _ _)          = tc
+        termCheck (NiceMutual _ tc _)              = tc
         termCheck (NiceUnquoteDecl _ _ _ _ tc _ _) = tc
-        termCheck _                       = TerminationCheck
+        termCheck (NiceUnquoteDef _ _ _ _ tc _ _)  = tc
+        termCheck Axiom{}                          = TerminationCheck
+        termCheck NiceField{}                      = TerminationCheck
+        termCheck PrimitiveFunction{}              = TerminationCheck
+        termCheck NiceModule{}                     = TerminationCheck
+        termCheck NiceModuleMacro{}                = TerminationCheck
+        termCheck NiceOpen{}                       = TerminationCheck
+        termCheck NiceImport{}                     = TerminationCheck
+        termCheck NicePragma{}                     = TerminationCheck
+        termCheck NiceRecSig{}                     = TerminationCheck
+        termCheck NiceDataSig{}                    = TerminationCheck
+        termCheck NiceFunClause{}                  = TerminationCheck
+        termCheck DataDef{}                        = TerminationCheck
+        termCheck RecDef{}                         = TerminationCheck
+        termCheck NicePatternSyn{}                 = TerminationCheck
 
         -- A mutual block cannot have a measure,
         -- but it can skip termination check.
@@ -836,16 +881,17 @@ niceDeclarations ds = do
         NiceField r f p _ x e            -> return $ NiceField r f p AbstractDef x e
         PrimitiveFunction r f p _ x e    -> return $ PrimitiveFunction r f p AbstractDef x e
         NiceUnquoteDecl r f p _ t x e    -> return $ NiceUnquoteDecl r f p AbstractDef t x e
-        NiceModule{}                     -> return $ d
-        NiceModuleMacro{}                -> return $ d
-        Axiom{}                          -> return $ d
-        NicePragma{}                     -> return $ d
-        NiceOpen{}                       -> return $ d
-        NiceImport{}                     -> return $ d
-        FunSig{}                         -> return $ d
-        NiceRecSig{}                     -> return $ d
-        NiceDataSig{}                    -> return $ d
-        NicePatternSyn{}                 -> return $ d
+        NiceUnquoteDef r f p _ t x e     -> return $ NiceUnquoteDef r f p AbstractDef t x e
+        NiceModule{}                     -> return d
+        NiceModuleMacro{}                -> return d
+        Axiom{}                          -> return d
+        NicePragma{}                     -> return d
+        NiceOpen{}                       -> return d
+        NiceImport{}                     -> return d
+        FunSig{}                         -> return d
+        NiceRecSig{}                     -> return d
+        NiceDataSig{}                    -> return d
+        NicePatternSyn{}                 -> return d
 
     setAbstract :: Updater IsAbstract
     setAbstract a = case a of
@@ -887,6 +933,7 @@ niceDeclarations ds = do
         NiceDataSig r f p x ls t         -> (\ p -> NiceDataSig r f p x ls t) <$> setPrivate p
         NiceFunClause r p a termCheck d  -> (\ p -> NiceFunClause r p a termCheck d) <$> setPrivate p
         NiceUnquoteDecl r f p a t x e    -> (\ p -> NiceUnquoteDecl r f p a t x e) <$> setPrivate p
+        NiceUnquoteDef r f p a t x e     -> (\ p -> NiceUnquoteDef r f p a t x e) <$> setPrivate p
         NicePragma _ _                   -> return $ d
         NiceOpen _ _ _                   -> return $ d
         NiceImport _ _ _ _ _             -> return $ d
@@ -924,22 +971,23 @@ niceDeclarations ds = do
       case d of
         Axiom r f p i rel x e            -> (\ i -> Axiom r f p i rel x e) <$> setInstance i
         FunSig r f p i rel tc x e        -> (\ i -> FunSig r f p i rel tc x e) <$> setInstance i
-        NiceMutual{}                     -> return $ d
-        NiceFunClause{}                  -> return $ d
-        FunDef{}                         -> return $ d
-        NiceField{}                      -> return $ d
-        PrimitiveFunction{}              -> return $ d
-        NiceUnquoteDecl{}                -> return $ d
-        NiceRecSig{}                     -> return $ d
-        NiceDataSig{}                    -> return $ d
-        NiceModuleMacro{}                -> return $ d
-        NiceModule{}                     -> return $ d
-        NicePragma _ _                   -> return $ d
-        NiceOpen _ _ _                   -> return $ d
-        NiceImport _ _ _ _ _             -> return $ d
-        DataDef{}                        -> return $ d
-        RecDef{}                         -> return $ d
-        NicePatternSyn _ _ _ _ _         -> return $ d
+        NiceMutual{}                     -> return d
+        NiceFunClause{}                  -> return d
+        FunDef{}                         -> return d
+        NiceField{}                      -> return d
+        PrimitiveFunction{}              -> return d
+        NiceUnquoteDecl{}                -> return d
+        NiceUnquoteDef{}                 -> return d
+        NiceRecSig{}                     -> return d
+        NiceDataSig{}                    -> return d
+        NiceModuleMacro{}                -> return d
+        NiceModule{}                     -> return d
+        NicePragma{}                     -> return d
+        NiceOpen{}                       -> return d
+        NiceImport{}                     -> return d
+        DataDef{}                        -> return d
+        RecDef{}                         -> return d
+        NicePatternSyn{}                 -> return d
 
     setInstance :: Updater IsInstance
     setInstance i = case i of
@@ -1016,6 +1064,7 @@ fixities = foldMap $ \ d -> case d of
   ModuleMacro {}  -> mempty
   Module      {}  -> mempty
   UnquoteDecl {}  -> mempty
+  UnquoteDef  {}  -> mempty
   Pragma      {}  -> mempty
 
 
@@ -1047,4 +1096,4 @@ notSoNiceDeclaration d =
         where unThing (ThingWithFixity c _) = c
       NicePatternSyn r _ n as p        -> PatternSyn r n as p
       NiceUnquoteDecl r _ _ _ _ x e    -> UnquoteDecl r x e
-
+      NiceUnquoteDef r _ _ _ _ x e     -> UnquoteDef r x e

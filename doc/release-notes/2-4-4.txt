@@ -14,6 +14,57 @@ Pragmas and options
 Language
 ========
 
+* Unquoting function definitions.
+
+  There is a new declaration
+
+    unquoteDef x = e
+
+  Here e should have type LIST AGDACLAUSE and evaluate to a closed value. Since
+  unquoteDef only contains the function clauses you need a separate type
+  signature. For instance, given that you have a 'derivingEq' function that
+  builds decidable equality functions, you would say
+
+    eqNat : (x y : Nat) → Dec (x ≡ y)
+    unquoteDef eqNat = derivingEq (quote Nat) (quote eqNat)
+
+  Note that, in contrast to unquoteDecl, you have to quote the name of the
+  defined function to get a QNAME.
+
+  The main advantage of unquoteDef over unquoteDecl is that unquoteDef is
+  allowed in mutual blocks, allowing you to create mutually recursive
+  definitions by unquoting.
+
+* The reflection interface now exposes the name hint (as a string)
+  for variables. As before, the actual binding structure is with
+  de Bruijn indices. The String value is just a hint used as a prefix
+  to help display the variable. The type Abs is a new bultin type used
+  for the constructors `Term.lam`, `Term.pi`, `Pattern.var`
+  (bultins `AGDATERMLAM`, `AGDATERMPI` and `AGDAPATVAR`).
+
+    data Abs (A : Set) : Set where
+      abs : (s : String) (x : A) → Abs A
+    {-# BUILTIN ABS    Abs #-}
+    {-# BUILTIN ABSABS abs #-}
+
+  Updated constructor types:
+
+    Term.lam    : Hiding   → Abs Term → Term
+    Term.pi     : Arg Type → Abs Type → Term
+    Pattern.var : String   → Pattern
+
+* Large indices.
+
+  Force constructor arguments no longer count towards the size of a datatype.
+  For instance, the definition of equality below is accepted.
+
+    data _≡_ {a} {A : Set a} : A → A → Set where
+      refl : ∀ x → x ≡ x
+
+  This gets rid of the asymmetry that the version of equality which indexes
+  only on the second argument could be small, but not the version above which
+  indexes on both arguments.
+
 Goal and error display
 ======================
 

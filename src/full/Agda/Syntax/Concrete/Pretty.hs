@@ -1,8 +1,9 @@
+{-# OPTIONS_GHC -fwarn-missing-signatures #-}
+{-# OPTIONS_GHC -fno-warn-orphans         #-}
+
 {-# LANGUAGE CPP                  #-}
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE TypeSynonymInstances #-}
-
-{-# OPTIONS -fno-warn-orphans #-}
 
 {-| Pretty printer for the concrete syntax.
 -}
@@ -23,7 +24,7 @@ import Agda.Syntax.Position
 import Agda.Utils.Pretty
 import Agda.Utils.String
 
-#include "../../undefined.h"
+#include "undefined.h"
 import Agda.Utils.Impossible
 
 instance Show Expr            where show = show . pretty
@@ -36,6 +37,7 @@ instance Show ImportDirective where show = show . pretty
 instance Show Pragma          where show = show . pretty
 instance Show RHS             where show = show . pretty
 
+braces' :: Doc -> Doc
 braces' d = case render d of
   -- Add space to avoid starting a comment
   '-':_ -> braces (text " " <> d)
@@ -59,6 +61,7 @@ bracesAndSemicolons []       = text "{}"
 bracesAndSemicolons (d : ds) =
   sep ([text "{" <+> d] ++ map (text ";" <+>) ds ++ [text "}"])
 
+arrow, lambda :: Doc
 arrow  = text "\x2192"
 lambda = text "\x03bb"
 
@@ -408,6 +411,8 @@ instance Pretty Declaration where
                     as (Just x) = text "as" <+> pretty (asName x)
             UnquoteDecl _ x t ->
               sep [ text "unquoteDecl" <+> pretty x <+> text "=", nest 2 $ pretty t ]
+            UnquoteDef _ x t ->
+              sep [ text "unquoteDef" <+> pretty x <+> text "=", nest 2 $ pretty t ]
             Pragma pr   -> sep [ text "{-#" <+> pretty pr, text "#-}" ]
         where
             namedBlock s ds =

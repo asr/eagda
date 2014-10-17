@@ -28,7 +28,7 @@ import Control.Monad.Trans
 import Data.Int
 import System.IO
 
-#include "../undefined.h"
+#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- | Responses for any interactive interface
@@ -60,6 +60,7 @@ data DisplayInfo
     = Info_CompilationOk
     | Info_Constraints String
     | Info_AllGoals String
+    | Info_Time Doc
     | Info_Error String
         -- ^ When an error message is displayed this constructor should be
         -- used, if appropriate.

@@ -40,7 +40,7 @@ import Agda.Utils.Lens
 import Agda.Utils.List
 import qualified Agda.Utils.Map as Map
 
-#include "../../undefined.h"
+#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- * Scope representation
@@ -694,7 +694,7 @@ inverseScopeLookup' ambCon name scope = case name of
     len (C.Qual _ x) = 1 + len x
 
     best :: [C.QName] -> Maybe C.QName
-    best xs = mhead $ sortBy (compare `on` len) xs
+    best xs = headMay $ sortBy (compare `on` len) xs
 
     unique :: forall a . [a] -> Bool
     unique []      = __IMPOSSIBLE__

@@ -76,7 +76,7 @@ import Agda.Utils.Monad
 import Agda.Utils.Null
 import Agda.Utils.Pretty
 
-#include "../../undefined.h"
+#include "undefined.h"
 import Agda.Utils.Impossible
 import Agda.ImpossibleTest (impossibleTest)
 
@@ -1250,6 +1250,11 @@ instance ToAbstract NiceDeclaration A.Declaration where
       rebindName p DefName x y
       let mi = MutualInfo tc r
       return [A.UnquoteDecl mi (mkDefInfo x fx p a r) y e]
+
+    NiceUnquoteDef r fx p a tc x e -> do
+      y <- toAbstract (OldName x)
+      e <- toAbstract e
+      return [ A.UnquoteDef (mkDefInfo x fx PublicAccess a r) y e ]
 
     NicePatternSyn r fx n as p -> do
       reportSLn "scope.pat" 10 $ "found nice pattern syn: " ++ show r

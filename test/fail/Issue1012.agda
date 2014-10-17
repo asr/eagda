@@ -6,10 +6,10 @@ id : {A : Set} → A → A
 id x = x
 
 idTerm : Term
-idTerm = lam visible (def (quote id) (arg₁ ∷ arg₂ ∷ []))
+idTerm = lam visible (abs "x" (def (quote id) (arg₁ ∷ arg₂ ∷ [])))
   where
-    arg₁ = arg (arginfo hidden relevant) (def (quote Nat) [])
-    arg₂ = arg (arginfo visible relevant) (var 0 [])
+    arg₁ = arg (argInfo hidden relevant) (def (quote Nat) [])
+    arg₂ = arg (argInfo visible relevant) (var 0 [])
 
 -- Should fail since idTerm "λ z → id {Nat} z"
 id₂ : {A : Set} → A → A

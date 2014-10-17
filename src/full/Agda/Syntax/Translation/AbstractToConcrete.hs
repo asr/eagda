@@ -62,7 +62,7 @@ import Agda.Utils.Monad
 import Agda.Utils.Null
 import Agda.Utils.Tuple
 
-#include "../../undefined.h"
+#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- Environment ------------------------------------------------------------
@@ -791,6 +791,10 @@ instance ToConcrete A.Declaration [C.Declaration] where
   toConcrete (A.UnquoteDecl _ i x e) = do
     C.QName x <- toConcrete x
     (:[]) . C.UnquoteDecl (getRange i) x <$> toConcrete e
+
+  toConcrete (A.UnquoteDef i x e) = do
+    C.QName x <- toConcrete x
+    (:[]) . C.UnquoteDef (getRange i) x <$> toConcrete e
 
 
 data RangeAndPragma = RangeAndPragma Range A.Pragma

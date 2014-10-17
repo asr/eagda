@@ -4,7 +4,6 @@
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE PatternGuards        #-}
 {-# LANGUAGE TypeSynonymInstances #-}
-{-# LANGUAGE UnicodeSyntax        #-}
 
 module Agda.TypeChecking.Quote where
 
@@ -40,7 +39,7 @@ import Agda.Utils.Monad ( ifM )
 import Agda.Utils.Permutation ( Permutation(Perm) )
 import Agda.Utils.String ( Str(Str), unStr )
 
-#include "../undefined.h"
+#include "undefined.h"
 
 quotingKit :: TCM (Term -> ReduceM Term, Type -> ReduceM Term, Clause -> ReduceM Term)
 quotingKit = do
@@ -51,6 +50,7 @@ quotingKit = do
   irrelevant      <- primIrrelevant
   nil             <- primNil
   cons            <- primCons
+  abs             <- primAbsAbs
   arg             <- primArgArg
   arginfo         <- primArgArgInfo
   var             <- primAgdaTermVar
@@ -94,12 +94,12 @@ quotingKit = do
       (!@!) :: Apply a => a -> Term -> ReduceM a
       t !@! u = pure t @@ pure u
 
-      quoteHiding ∷ Hiding → ReduceM Term
+      quoteHiding :: Hiding -> ReduceM Term
       quoteHiding Hidden    = pure hidden
       quoteHiding Instance  = pure instanceH
       quoteHiding NotHidden = pure visible
 
-      quoteRelevance ∷ Relevance → ReduceM Term
+      quoteRelevance :: Relevance -> ReduceM Term
       quoteRelevance Relevant   = pure relevant
       quoteRelevance Irrelevant = pure irrelevant
       quoteRelevance NonStrict  = pure relevant
@@ -108,12 +108,12 @@ quotingKit = do
 
 --      quoteColors _ = nil -- TODO guilhem
 
-      quoteArgInfo ∷ I.ArgInfo → ReduceM Term
+      quoteArgInfo :: I.ArgInfo -> ReduceM Term
       quoteArgInfo (ArgInfo h r cs) = arginfo !@ quoteHiding h
                                               @@ quoteRelevance r
                                 --              @@ quoteColors cs
 
-      quoteLit ∷ Literal → ReduceM Term
+      quoteLit :: Literal -> ReduceM Term
       quoteLit l@LitInt{}    = lit !@ (litNat    !@! Lit l)
       quoteLit l@LitFloat{}  = lit !@ (litFloat  !@! Lit l)
       quoteLit l@LitChar{}   = lit !@ (litChar   !@! Lit l)
@@ -122,65 +122,69 @@ quotingKit = do
 
       -- We keep no ranges in the quoted term, so the equality on terms
       -- is only on the structure.
-      quoteSortLevelTerm ∷ Level → ReduceM Term
+      quoteSortLevelTerm :: Level -> ReduceM Term
       quoteSortLevelTerm (Max [])              = setLit !@! Lit (LitInt noRange 0)
       quoteSortLevelTerm (Max [ClosedLevel n]) = setLit !@! Lit (LitInt noRange n)
       quoteSortLevelTerm l                     = set !@ quoteTerm (unlevelWithKit lkit l)
 
-      quoteSort ∷ Sort → ReduceM Term
+      quoteSort :: Sort -> ReduceM Term
       quoteSort (Type t) = quoteSortLevelTerm t
       quoteSort Prop     = pure unsupportedSort
       quoteSort Inf      = pure unsupportedSort
       quoteSort DLub{}   = pure unsupportedSort
 
-      quoteType ∷ Type → ReduceM Term
+      quoteType :: Type -> ReduceM Term
       quoteType (El s t) = el !@ quoteSort s @@ quoteTerm t
 
-      quoteQName ∷ QName → ReduceM Term
+      quoteQName :: QName -> ReduceM Term
       quoteQName x = pure $ Lit $ LitQName noRange x
 
-      quotePats ∷ [I.NamedArg Pattern] → ReduceM Term
+      quotePats :: [I.NamedArg Pattern] -> ReduceM Term
       quotePats ps = list $ map (quoteArg quotePat . fmap namedThing) ps
 
-      quotePat ∷ Pattern → ReduceM Term
+      quotePat :: Pattern -> ReduceM Term
       quotePat (VarP "()")   = pure absurdP
-      quotePat (VarP _)      = pure varP
+      quotePat (VarP x)      = varP !@! quoteString x
       quotePat (DotP _)      = pure dotP
       quotePat (ConP c _ ps) = conP !@ quoteQName (conName c) @@ quotePats ps
       quotePat (LitP l)      = litP !@! Lit l
       quotePat (ProjP x)     = projP !@ quoteQName x
 
-      quoteBody ∷ I.ClauseBody → Maybe (ReduceM Term)
+      quoteBody :: I.ClauseBody -> Maybe (ReduceM Term)
       quoteBody (Body a) = Just (quoteTerm a)
       quoteBody (Bind b) = quoteBody (absBody b)
       quoteBody NoBody   = Nothing
 
-      quoteClause ∷ Clause → ReduceM Term
+      quoteClause :: Clause -> ReduceM Term
       quoteClause Clause{namedClausePats = ps, clauseBody = body} =
         case quoteBody body of
           Nothing -> absurdClause !@ quotePats ps
           Just b  -> normalClause !@ quotePats ps @@ b
 
-      list ∷ [ReduceM Term] → ReduceM Term
+      list :: [ReduceM Term] -> ReduceM Term
       list []       = pure nil
       list (a : as) = cons !@ a @@ list as
 
-      quoteDom ∷ (Type → ReduceM Term) → I.Dom Type → ReduceM Term
+      quoteDom :: (Type -> ReduceM Term) -> I.Dom Type -> ReduceM Term
       quoteDom q (Dom info t) = arg !@ quoteArgInfo info @@ q t
 
-      quoteArg ∷ (a → ReduceM Term) → I.Arg a → ReduceM Term
+      quoteAbs :: Subst a => (a -> ReduceM Term) -> Abs a -> ReduceM Term
+      quoteAbs q (Abs s t)   = abs !@! quoteString s @@ q t
+      quoteAbs q (NoAbs s t) = abs !@! quoteString s @@ q (raise 1 t)
+
+      quoteArg :: (a -> ReduceM Term) -> I.Arg a -> ReduceM Term
       quoteArg q (Arg info t) = arg !@ quoteArgInfo info @@ q t
 
-      quoteArgs ∷ I.Args → ReduceM Term
+      quoteArgs :: I.Args -> ReduceM Term
       quoteArgs ts = list (map (quoteArg quoteTerm) ts)
 
-      quoteTerm ∷ Term → ReduceM Term
+      quoteTerm :: Term -> ReduceM Term
       quoteTerm v =
         case unSpine v of
           Var n es   ->
              let ts = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
              in  var !@! Lit (LitInt noRange $ fromIntegral n) @@ quoteArgs ts
-          Lam info t -> lam !@ quoteHiding (getHiding info) @@ quoteTerm (absBody t)
+          Lam info t -> lam !@ quoteHiding (getHiding info) @@ quoteAbs quoteTerm t
           Def x es   -> do
             d <- theDef <$> getConstInfo x
             qx d @@ quoteArgs ts
@@ -192,8 +196,8 @@ quotingKit = do
                     extlam !@ list [quoteClause $ dropArgs (length (clausePats cl) - 1) cl]
               qx _ = def !@! quoteName x
           Con x ts   -> con !@! quoteConName x @@ quoteArgs ts
-          Pi t u     -> pi !@ quoteDom quoteType t
-                             @@ quoteType (absBody u)
+          Pi t u     -> pi !@  quoteDom quoteType t
+                            @@ quoteAbs quoteType u
           Level l    -> quoteTerm (unlevelWithKit lkit l)
           Lit lit    -> quoteLit lit
           Sort s     -> sort !@ quoteSort s
@@ -203,6 +207,9 @@ quotingKit = do
           ExtLam{}   -> __IMPOSSIBLE__
 
   return (quoteTerm, quoteType, quoteClause)
+
+quoteString :: String -> Term
+quoteString = Lit . LitString noRange
 
 quoteName :: QName -> Term
 quoteName x = Lit (LitQName noRange x)
@@ -340,6 +347,12 @@ instance Unquote Str where
       Lit (LitString _ x) -> return (Str x)
       _ -> unquoteFailed "String" "not a literal string" t
 
+unquoteString :: Term -> TCM String
+unquoteString x = unStr <$> unquote x
+
+unquoteNString :: I.Arg Term -> TCM String
+unquoteNString x = unStr <$> unquoteN x
+
 instance Unquote a => Unquote [a] where
   unquote t = do
     t <- reduce t
@@ -392,7 +405,17 @@ instance Unquote ConHead where
   unquote t = getConHead =<< ensureCon =<< unquote t
 
 instance Unquote a => Unquote (Abs a) where
-  unquote t = Abs "_" <$> unquote t
+  unquote t = do
+    t <- reduce t
+    case ignoreSharing t of
+      Con c [x,y] -> do
+        choice
+          [(c `isCon` primAbsAbs, Abs <$> (hint <$> unquoteNString x) <*> unquoteN y)]
+          (unquoteFailed "Abs" "arity 2 and not the `abs' constructor (ABSABS builtin)" t)
+      _ -> unquoteFailed "Abs" "not an arity 2 constructor" t
+
+    where hint x | not (null x) = x
+                 | otherwise    = "_"
 
 instance Unquote Sort where
   unquote t = do
@@ -431,7 +454,7 @@ instance Unquote Literal where
           [ (c `isCon` primAgdaLitNat,    LitInt    noRange <$> unquoteN x)
           , (c `isCon` primAgdaLitFloat,  LitFloat  noRange <$> unquoteN x)
           , (c `isCon` primAgdaLitChar,   LitChar   noRange <$> unquoteN x)
-          , (c `isCon` primAgdaLitString, LitString noRange . unStr <$> unquoteN x)
+          , (c `isCon` primAgdaLitString, LitString noRange <$> unquoteNString x)
           , (c `isCon` primAgdaLitQName,  LitQName  noRange <$> unquoteN x) ]
           (unquoteFailed "Literal" "not a literal constructor" t)
       _ -> unquoteFailed "Literal" "not a literal constructor" t
@@ -453,18 +476,18 @@ instance Unquote Term where
 
       Con c [x, y] ->
         choice
-          [ (c `isCon` primAgdaTermVar, Var <$> (fromInteger <$> unquoteN x) <*> unquoteN y)
-          , (c `isCon` primAgdaTermCon, Con <$> unquoteN x <*> unquoteN y)
-          , (c `isCon` primAgdaTermDef, Def <$> (ensureDef =<< unquoteN x) <*> unquoteN y)
-          , (c `isCon` primAgdaTermLam, Lam <$> (flip setHiding defaultArgInfo <$> unquoteN x) <*> unquoteN y)
-          , (c `isCon` primAgdaTermPi,  mkPi <$> (domFromArg <$> unquoteN x) <*> unquoteN y)
-          , (c `isCon` primAgdaTermExtLam, mkExtLam <$> unquoteN x <*> unquoteN y) ]
+          [ (c `isCon` primAgdaTermVar,    Var    <$> (fromInteger <$> unquoteN x) <*> unquoteN y)
+          , (c `isCon` primAgdaTermCon,    Con    <$> unquoteN x <*> unquoteN y)
+          , (c `isCon` primAgdaTermDef,    Def    <$> (ensureDef =<< unquoteN x) <*> unquoteN y)
+          , (c `isCon` primAgdaTermLam,    Lam    <$> (flip setHiding defaultArgInfo <$> unquoteN x) <*> unquoteN y)
+          , (c `isCon` primAgdaTermPi,     mkPi   <$> (domFromArg                    <$> unquoteN x) <*> unquoteN y)
+          , (c `isCon` primAgdaTermExtLam, ExtLam <$> unquoteN x <*> unquoteN y) ]
           (unquoteFailed "Term" "bad term constructor" t)
         where
-          mkExtLam = ExtLam
-          mkPi a (Abs _ b) = Pi a (Abs x b)
+          mkPi a (Abs "_" b) = Pi a (Abs x b)
             where x | 0 `freeIn` b = pickName (unDom a)
                     | otherwise    = "_"
+          mkPi a b@Abs{} = Pi a b
           mkPi _ NoAbs{} = __IMPOSSIBLE__
 
       Con{} -> unquoteFailed "Term" "neither arity 0 nor 1 nor 2" t
@@ -477,13 +500,13 @@ instance Unquote Pattern where
     case ignoreSharing t of
       Con c [] -> do
         choice
-          [ (c `isCon` primAgdaPatVar,    pure (VarP "x"))
-          , (c `isCon` primAgdaPatAbsurd, pure (VarP "()"))
+          [ (c `isCon` primAgdaPatAbsurd, pure (VarP "()"))
           , (c `isCon` primAgdaPatDot,    pure (DotP hackReifyToMeta))
           ] __IMPOSSIBLE__
       Con c [x] -> do
         choice
-          [ (c `isCon` primAgdaPatProj, ProjP <$> unquoteN x)
+          [ (c `isCon` primAgdaPatVar,  VarP  <$> unquoteNString x)
+          , (c `isCon` primAgdaPatProj, ProjP <$> unquoteN x)
           , (c `isCon` primAgdaPatLit,  LitP  <$> unquoteN x) ]
           __IMPOSSIBLE__
       Con c [x, y] -> do

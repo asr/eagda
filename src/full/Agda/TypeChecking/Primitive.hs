@@ -6,7 +6,6 @@
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE TypeSynonymInstances       #-}
 {-# LANGUAGE UndecidableInstances       #-}
-{-# LANGUAGE UnicodeSyntax              #-}
 
 {-| Primitive functions, such as addition on builtin integers.
 -}
@@ -43,7 +42,7 @@ import Agda.Utils.Monad
 import Agda.Utils.Pretty (pretty)
 import Agda.Utils.String ( Str(Str), unStr )
 
-#include "../undefined.h"
+#include "undefined.h"
 import Agda.Utils.Impossible
 import Debug.Trace
 
@@ -529,17 +528,17 @@ tset :: TCM Type
 tset = return $ sort (mkType 0)
 
 -- | Abbreviation: @argN = 'Arg' 'defaultArgInfo'@.
-argN ∷ e → I.Arg e
+argN :: e -> I.Arg e
 argN = Arg defaultArgInfo
 
-domN ∷ e → I.Dom e
+domN :: e -> I.Dom e
 domN = Dom defaultArgInfo
 
 -- | Abbreviation: @argH = 'hide' 'Arg' 'defaultArgInfo'@.
-argH ∷ e → I.Arg e
+argH :: e -> I.Arg e
 argH = Arg $ setHiding Hidden defaultArgInfo
 
-domH ∷ e → I.Dom e
+domH :: e -> I.Dom e
 domH = Dom $ setHiding Hidden defaultArgInfo
 
 ---------------------------------------------------------------------------

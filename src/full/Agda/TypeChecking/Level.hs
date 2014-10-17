@@ -1,7 +1,6 @@
 {-# OPTIONS_GHC -fwarn-missing-signatures #-}
 
-{-# LANGUAGE CPP           #-}
-{-# LANGUAGE UnicodeSyntax #-}
+{-# LANGUAGE CPP #-}
 
 module Agda.TypeChecking.Level where
 
@@ -18,7 +17,7 @@ import Agda.TypeChecking.Monad.Builtin
 
 import Agda.Utils.Except ( MonadError(catchError) )
 
-#include "../undefined.h"
+#include "undefined.h"
 import Agda.Utils.Impossible
 
 data LevelKit = LevelKit
@@ -97,7 +96,7 @@ unlevelWithKit LevelKit{ lvlZero = zer, lvlSuc = suc, lvlMax = max } (Max as) =
     []  -> zer
     as  -> foldr1 max as
 
-unPlusV ∷ Term → (Term → Term) → PlusLevel → Term
+unPlusV :: Term -> (Term -> Term) -> PlusLevel -> Term
 unPlusV zer suc (ClosedLevel n) = foldr (.) id (genericReplicate n suc) zer
 unPlusV _   suc (Plus n a)      = foldr (.) id (genericReplicate n suc) (unLevelAtom a)
 

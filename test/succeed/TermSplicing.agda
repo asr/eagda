@@ -65,16 +65,16 @@ open Library
 
 module ReflectLibrary where
   lamᵛ : Term → Term
-  lamᵛ = lam visible
+  lamᵛ t = lam visible (abs "_" t)
 
   lamʰ : Term → Term
-  lamʰ = lam hidden
+  lamʰ t = lam hidden (abs "_" t)
 
   argᵛʳ : ∀{A} → A → Arg A
-  argᵛʳ = arg (arginfo visible relevant)
+  argᵛʳ = arg (argInfo visible relevant)
 
   argʰʳ : ∀{A} → A → Arg A
-  argʰʳ = arg (arginfo hidden relevant)
+  argʰʳ = arg (argInfo hidden relevant)
 
   app` : (Args → Term) → (hrs : List ArgInfo) → Term →⟨ length hrs ⟩ Term
   app` f = go [] where
@@ -96,13 +96,13 @@ module ReflectLibrary where
   coe (suc n) f = λ t → coe n (f t)
 
   con`ⁿʳ : QName → (n : ℕ) → Term →⟨ n ⟩ Term
-  con`ⁿʳ x n = coe n (app` (con x) (replicate n (arginfo visible relevant)))
+  con`ⁿʳ x n = coe n (app` (con x) (replicate n (argInfo visible relevant)))
 
   def`ⁿʳ : QName → (n : ℕ) → Term →⟨ n ⟩ Term
-  def`ⁿʳ x n = coe n (app` (def x) (replicate n (arginfo visible relevant)))
+  def`ⁿʳ x n = coe n (app` (def x) (replicate n (argInfo visible relevant)))
 
   var`ⁿʳ : ℕ → (n : ℕ) → Term →⟨ n ⟩ Term
-  var`ⁿʳ x n = coe n (app` (var x) (replicate n (arginfo visible relevant)))
+  var`ⁿʳ x n = coe n (app` (var x) (replicate n (argInfo visible relevant)))
 
   sort₀ : Sort
   sort₀ = lit 0
@@ -161,7 +161,7 @@ module ReflectLibrary where
 
   decodeSort : Sort → Maybe Level
   decodeSort (set (con c [])) = when (quote lzero == c) (just lzero)
-  decodeSort (set (con c (arg (arginfo visible relevant) s ∷ [])))
+  decodeSort (set (con c (arg (argInfo visible relevant) s ∷ [])))
     = when (quote lsuc == c) (mapMaybe lsuc (decodeSort (set s)))
   decodeSort (set (sort s)) = decodeSort s
   decodeSort (set _) = nothing
@@ -174,13 +174,13 @@ module ReflectLibrary where
   ...          | _             | _              = set (def (quote _⊔_) (argᵛʳ (sort s₁) ∷ argᵛʳ (sort s₂) ∷ []))
 
   Π : Arg Type → Type → Type
-  Π t u = el (getSort (unArg t) `⊔` getSort u) (pi t u)
+  Π t u = el (getSort (unArg t) `⊔` getSort u) (pi t (abs "_" u))
 
   Πᵛʳ : Type → Type → Type
-  Πᵛʳ t u = el (getSort t `⊔` getSort u) (pi (arg (arginfo visible relevant) t) u)
+  Πᵛʳ t u = el (getSort t `⊔` getSort u) (pi (arg (argInfo visible relevant) t) (abs "_" u))
 
   Πʰʳ : Type → Type → Type
-  Πʰʳ t u = el (getSort t `⊔` getSort u) (pi (arg (arginfo hidden relevant) t) u)
+  Πʰʳ t u = el (getSort t `⊔` getSort u) (pi (arg (argInfo hidden relevant) t) (abs "_" u))
 
 open ReflectLibrary
 
@@ -224,11 +224,20 @@ tuple = foldr _`,_ `tt
 _`∷_ : (`x `xs : Term) → Term
 _`∷_ = con`ⁿʳ (quote _∷_) 2
 
+`abs : (`s `body : Term) → Term
+`abs = con`ⁿʳ (quote abs) 2
+
 `var : (`n `args : Term) → Term
 `var = con`ⁿʳ (quote Term.var) 2
 
-`lam : (`hiding `args : Term) → Term
+`lam : (`hiding `body : Term) → Term
 `lam = con`ⁿʳ (quote lam) 2
+
+`lit : Term → Term
+`lit = con`ⁿʳ (quote Term.lit) 1
+
+`string : Term → Term
+`string = con`ⁿʳ (quote string) 1
 
 `visible : Term
 `visible = con (quote visible) []
@@ -240,7 +249,7 @@ _`∷_ = con`ⁿʳ (quote _∷_) 2
 `[ x `] = x `∷ `[]
 
 quotedTwice : Term
-quotedTwice = `lam `visible (`var `zero `[])
+quotedTwice = `lam `visible (`abs (lit (string "_")) (`var `zero `[]))
 
 unquoteTwice₂ : ℕ → ℕ
 unquoteTwice₂ = unquote (unquote quotedTwice)
@@ -269,7 +278,7 @@ test : id ≡ (λ A (x : A) → x)
      × id                                 ≡ (λ A (x : A) → x)
      × unquote `tt                        ≡ tt
      × (λ {A} → Id.x′ {A})                ≡ (λ {A : Set} (x : A) → x)
-     × unquote (pi (argᵛʳ ``Set₀) ``Set₀)  ≡ (Set → Set)
+     × unquote (pi (argᵛʳ ``Set₀) (abs "_" ``Set₀))  ≡ (Set → Set)
      × unquoteTwice                        ≡ (λ (x : ℕ) → x)
      × unquote (k`ℕ 42)                    ≡ ℕ
      × unquote (lit (nat 15))              ≡ 15
@@ -286,7 +295,7 @@ test = unquote (tuple (replicate n `refl)) where n = 15
 
 ƛⁿ : Hiding → ℕ → Term → Term
 ƛⁿ h zero    t = t
-ƛⁿ h (suc n) t = lam h (ƛⁿ h n t)
+ƛⁿ h (suc n) t = lam h (abs "_" (ƛⁿ h n t))
 
 -- projᵢ : Proj i n
 -- projᵢ = proj i n
@@ -350,7 +359,7 @@ test-proj = unquote (tuple (replicate n `refl)) where n = 9
 
 module Test where
   data Squash (A : Set) : Set where
-    squash : unquote (unEl (Π (arg (arginfo visible irrelevant) (``var₀ 0 [])) (el₀ (def (quote Squash) (argᵛʳ (var 1 []) ∷ [])))))
+    squash : unquote (unEl (Π (arg (argInfo visible irrelevant) (``var₀ 0 [])) (el₀ (def (quote Squash) (argᵛʳ (var 1 []) ∷ [])))))
 
 data Squash (A : Set) : Set where
   squash : .A → Squash A
@@ -359,7 +368,7 @@ data Squash (A : Set) : Set where
 `Squash = def`ⁿʳ (quote Squash) 1
 
 squash-type : Type
-squash-type = Π (arg (arginfo visible irrelevant) (``var₀ 0 [])) (el₀ (`Squash (var 1 [])))
+squash-type = Π (arg (argInfo visible irrelevant) (``var₀ 0 [])) (el₀ (`Squash (var 1 [])))
 
 test-squash : ∀ {A} → (.A → Squash A) ≡ unquote (unEl squash-type)
 test-squash = refl

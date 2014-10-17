@@ -45,7 +45,7 @@ import Agda.Utils.Pointer
 import Agda.Utils.Size
 import Agda.Utils.Pretty
 
-#include "../undefined.h"
+#include "undefined.h"
 import Agda.Utils.Impossible
 
 type Color      = Term
@@ -732,7 +732,7 @@ instance KillRange Term where
     Sort s      -> killRange1 Sort s
     DontCare mv -> killRange1 DontCare mv
     Shared p    -> Shared $ updatePtr killRange p
-    ExtLam{}    -> __IMPOSSIBLE__
+    ExtLam c vs -> killRange2 ExtLam c vs
 
 instance KillRange Level where
   killRange (Max as) = killRange1 Max as

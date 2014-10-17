@@ -23,7 +23,7 @@ import qualified Data.Traversable as Trav
 import Agda.Utils.Functor
 import Agda.Utils.QuickCheck
 
-#include "../undefined.h"
+#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- | A set with duplicates.
@@ -106,7 +106,7 @@ toList = concat . groups
 keys :: Bag a -> [a]
 keys = Map.keys . bag
 -- Works because of the invariant!
--- keys = catMaybes . map mhead . Map.elems . bag
+-- keys = catMaybes . map headMay . Map.elems . bag
 --   -- Map.keys does not work, as zero copies @(a,[])@
 --   -- should count as not present in the bag.
 

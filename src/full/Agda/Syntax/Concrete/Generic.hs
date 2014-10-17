@@ -20,7 +20,7 @@ import Data.Foldable
 import Agda.Syntax.Common hiding (Arg)
 import Agda.Syntax.Concrete
 
-#include "../../undefined.h"
+#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- | Generic traversals for concrete expressions.
@@ -184,6 +184,7 @@ instance ExprLike Declaration where
      ModuleMacro r n es op dir -> ModuleMacro r n (mapE es) op dir
      Module r n tel ds         -> Module r n (mapE tel)                $ mapE ds
      UnquoteDecl r x e         -> UnquoteDecl r x (mapE e)
+     UnquoteDef r x e          -> UnquoteDef r x (mapE e)
      Pragma{}                  -> e0
    where mapE e = mapExpr f e
 

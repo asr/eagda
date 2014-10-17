@@ -1,7 +1,6 @@
 {-# OPTIONS_GHC -fwarn-missing-signatures #-}
 
-{-# LANGUAGE CPP           #-}
-{-# LANGUAGE UnicodeSyntax #-}
+{-# LANGUAGE CPP #-}
 
 -- | Smash functions which return something that can be inferred
 --   (something of a type with only one element)
@@ -32,7 +31,7 @@ import Agda.Utils.Monad
 import Agda.Utils.Size
 import qualified Agda.Utils.HashMap as HM
 
-#include "../../undefined.h"
+#include "undefined.h"
 import Agda.Utils.Impossible
 
 defnPars :: Integral n => Defn -> n
@@ -106,7 +105,7 @@ inferable visited dat args = do
         (AA.Con tag c <$>) <$> sequence <$> forM (notForced forc $ flattenTel tel) (inferableTerm visited' . unEl . unDom)
     visited' = Set.insert dat visited
 
-inferableTerm ∷ Set QName → Term → Compile TCM (Maybe Expr)
+inferableTerm :: Set QName -> Term -> Compile TCM (Maybe Expr)
 inferableTerm visited t = do
   case t of
     Def q es    ->

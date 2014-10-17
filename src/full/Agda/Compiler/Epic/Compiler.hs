@@ -1,7 +1,6 @@
 {-# OPTIONS_GHC -fwarn-missing-signatures #-}
 
-{-# LANGUAGE CPP           #-}
-{-# LANGUAGE UnicodeSyntax #-}
+{-# LANGUAGE CPP #-}
 
 -- | Epic compiler backend.
 module Agda.Compiler.Epic.Compiler(compilerMain) where
@@ -59,7 +58,7 @@ import qualified Agda.Utils.HashMap as HMap
 import Agda.Utils.List
 import Agda.Utils.Pretty ( prettyShow )
 
-#include "../../undefined.h"
+#include "undefined.h"
 import Agda.Utils.Impossible
 
 compilePrelude :: Compile TCM ()
@@ -186,7 +185,7 @@ initialAnalysis inter = do
           _       -> return ()
       _ -> return ()
 
-idPrint ∷ String → (a → Compile TCM b) → a → Compile TCM b
+idPrint :: String -> (a -> Compile TCM b) -> a -> Compile TCM b
 idPrint s m x = do
   lift $ reportSLn "epic.phases" 10 s
   m x
@@ -246,8 +245,8 @@ runEpicMain mainName imports m = do
                        ] ++ "main() -> Unit = init() ; " ++ mainName ++ "(unit)"
     liftIO $ writeFile ("main" <.> "e") code
 
-    let outputName ∷ CN.Name
-        outputName = maybe __IMPOSSIBLE__ nameConcrete $ mlast $ mnameToList m
+    let outputName :: CN.Name
+        outputName = maybe __IMPOSSIBLE__ nameConcrete $ lastMay $ mnameToList m
 
     callEpic'  $ \epic ->
         [ "main" <.> "e"

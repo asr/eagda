@@ -64,7 +64,7 @@ import Agda.Utils.Monad
 import Agda.Utils.Pretty (prettyShow)
 import Agda.Utils.Size
 
-#include "../../undefined.h"
+#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- | Type check a sequence of declarations.
@@ -90,7 +90,7 @@ checkDecl d = traceCall (SetRange (getRange d)) $ do
         -- if we're not inside a mutual block?
         none        m = m >> return Nothing
         meta        m = m >> return (Just (return ()))
-        mutual i ds m = m >>= return . Just . mutualChecks i ds
+        mutual i ds m = m >>= return . Just . mutualChecks i d ds
         impossible  m = m >> return __IMPOSSIBLE__
                        -- We're definitely inside a mutual block.
 
@@ -126,6 +126,7 @@ checkDecl d = traceCall (SetRange (getRange d)) $ do
                                   -- from the concrete syntax, retained for
                                   -- highlighting purposes.
       A.UnquoteDecl mi i x e   -> checkUnquoteDecl mi i x e
+      A.UnquoteDef i x e       -> impossible $ checkUnquoteDef i x e
 
     unlessM (isJust <$> asks envMutualBlock) $ do
 
@@ -160,46 +161,63 @@ checkDecl d = traceCall (SetRange (getRange d)) $ do
     abstract ConcreteDef = inConcreteMode
     abstract AbstractDef = inAbstractMode
 
-    -- Some checks that should be run at the end of a mutual
-    -- block (or non-mutual record declaration). The set names
-    -- contains the names defined in the mutual block.
-    mutualChecks i ds names = do
-      -- Andreas, 2014-04-11: instantiate metas in definition types
-      mapM_ instantiateDefinitionType $ Set.toList names
-      -- Andreas, 2013-02-27: check termination before injectivity,
-      -- to avoid making the injectivity checker loop.
-      case d of
-        A.UnquoteDecl{} -> checkTermination_ $ A.Mutual i ds
-        _               -> checkTermination_ d
-      checkPositivity_         names
-      checkCoinductiveRecords  ds
-      -- Andreas, 2012-09-11:  Injectivity check stores clauses
-      -- whose 'Relevance' is affected by polarity computation,
-      -- so do it here.
-      checkInjectivity_        names
-      checkProjectionLikeness_ names
+-- Some checks that should be run at the end of a mutual
+-- block (or non-mutual record declaration). The set names
+-- contains the names defined in the mutual block.
+mutualChecks :: Info.MutualInfo -> A.Declaration -> [A.Declaration] -> Set QName -> TCM ()
+mutualChecks i d ds names = do
+  -- Andreas, 2014-04-11: instantiate metas in definition types
+  mapM_ instantiateDefinitionType $ Set.toList names
+  -- Andreas, 2013-02-27: check termination before injectivity,
+  -- to avoid making the injectivity checker loop.
+  checkTermination_        d
+  checkPositivity_         names
+  checkCoinductiveRecords  ds
+  -- Andreas, 2012-09-11:  Injectivity check stores clauses
+  -- whose 'Relevance' is affected by polarity computation,
+  -- so do it here.
+  checkInjectivity_        names
+  checkProjectionLikeness_ names
 
-    checkUnquoteDecl mi i x e = do
-      reportSDoc "tc.unquote.decl" 20 $ text "Checking unquoteDecl" <+> prettyTCM x
-      fundef <- primAgdaFunDef
-      v      <- checkExpr e $ El (mkType 0) fundef
-      reportSDoc "tc.unquote.decl" 20 $ text "unquoteDecl: Checked term"
-      UnQFun a cs <- unquote v
-      reportSDoc "tc.unquote.decl" 20 $
-        vcat $ text "unquoteDecl: Unquoted term"
-             : [ nest 2 $ text (show c) | c <- cs ]
-      -- Add x to signature, otherwise reification gets unhappy.
-      addConstant x $ defaultDefn defaultArgInfo x a emptyFunction
-      a <- reifyUnquoted a
-      reportSDoc "tc.unquote.decl" 10 $
-        vcat [ text "unquoteDecl" <+> prettyTCM x <+> text "-->"
-             , prettyTCM x <+> text ":" <+> prettyA a ]
-      cs <- mapM (reifyUnquoted . QNamed x) cs
-      reportSDoc "tc.unquote.decl" 10 $ vcat $ map prettyA cs
-      let ds = [ A.Axiom A.FunSig i defaultArgInfo x a   -- TODO other than defaultArg
-               , A.FunDef i x NotDelayed cs ]
-      xs <- checkMutual mi ds
-      return $ Just $ mutualChecks mi ds xs
+type FinalChecks = Maybe (TCM ())
+
+checkUnquoteDecl :: Info.MutualInfo -> Info.DefInfo -> QName -> A.Expr -> TCM FinalChecks
+checkUnquoteDecl mi i x e = do
+  reportSDoc "tc.unquote.decl" 20 $ text "Checking unquoteDecl" <+> prettyTCM x
+  fundef <- primAgdaFunDef
+  v      <- checkExpr e $ El (mkType 0) fundef
+  reportSDoc "tc.unquote.decl" 20 $ text "unquoteDecl: Checked term"
+  UnQFun a cs <- unquote v
+  reportSDoc "tc.unquote.decl" 20 $
+    vcat $ text "unquoteDecl: Unquoted term"
+         : [ nest 2 $ text (show c) | c <- cs ]
+  -- Add x to signature, otherwise reification gets unhappy.
+  addConstant x $ defaultDefn defaultArgInfo x a emptyFunction
+  a <- reifyUnquoted $ killRange a
+  reportSDoc "tc.unquote.decl" 10 $
+    vcat [ text "unquoteDecl" <+> prettyTCM x <+> text "-->"
+         , prettyTCM x <+> text ":" <+> prettyA a ]
+  cs <- mapM (reifyUnquoted . QNamed x) $ killRange cs
+  reportSDoc "tc.unquote.decl" 10 $ vcat $ map prettyA cs
+  let ds = [ A.Axiom A.FunSig i defaultArgInfo x a   -- TODO other than defaultArg
+           , A.FunDef i x NotDelayed cs ]
+  xs <- checkMutual mi ds
+  return $ Just $ mutualChecks mi (A.Mutual mi ds) ds xs
+
+checkUnquoteDef :: Info.DefInfo -> QName -> A.Expr -> TCM ()
+checkUnquoteDef i x e = do
+  reportSDoc "tc.unquote.def" 20 $ text "Checking unquoteDef" <+> prettyTCM x
+  list   <- primList
+  clause <- primAgdaClause
+  v      <- checkExpr e $ El (mkType 0) $ list `apply` [defaultArg clause]
+  reportSDoc "tc.unquote.def" 20 $ text "unquoteDef: Checked term"
+  cs <- unquote v :: TCM [Clause]
+  reportSDoc "tc.unquote.def" 20 $
+    vcat $ text "unquoteDef: Unquoted term"
+         : [ nest 2 $ text (show c) | c <- cs ]
+  cs <- mapM (reifyUnquoted . QNamed x) $ killRange cs
+  reportSDoc "tc.unquote.def" 10 $ vcat $ map prettyA cs
+  checkFunDef NotDelayed i x cs
 
 -- | Instantiate all metas in 'Definition' associated to 'QName'. --   Makes sense after freezing metas.
 --   Some checks, like free variable analysis, are not in 'TCM', --   so they will be more precise (see issue 1099) after meta instantiation.
@@ -247,6 +265,7 @@ highlight_ d = do
     A.Open{}                 -> highlight d
     A.PatternSynDef{}        -> highlight d
     A.UnquoteDecl{}          -> highlight d
+    A.UnquoteDef{}           -> highlight d
     A.Section i x tel _      -> highlight (A.Section i x tel [])
       -- Each block in the section has already been highlighted,
       -- all that remains is the module declaration.

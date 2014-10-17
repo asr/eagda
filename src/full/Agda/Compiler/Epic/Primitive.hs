@@ -1,7 +1,6 @@
 {-# OPTIONS_GHC -fwarn-missing-signatures #-}
 
-{-# LANGUAGE CPP           #-}
-{-# LANGUAGE UnicodeSyntax #-}
+{-# LANGUAGE CPP #-}
 
 -- | Change constructors and cases on builtins and natish datatypes to use
 --   primitive data
@@ -25,8 +24,10 @@ import Agda.Compiler.Epic.CompileState
 import Agda.Compiler.Epic.Interface
 import Agda.Compiler.Epic.NatDetection
 
-#include "../../undefined.h"
+import Agda.Utils.List
 import Agda.Utils.Impossible
+
+#include "undefined.h"
 
 {- Stacken, Heapen -- Optimizern -}
 
@@ -100,14 +101,10 @@ getBuiltins =
                 if b then return $ Just (transf names) else return Nothing
            else return Nothing
 
-defName ∷ T.Term → QName
+defName :: T.Term -> QName
 defName (T.Def q []) = q
 defName (T.Con q []) = T.conName q
 defName _            = __IMPOSSIBLE__
-
-head'' ∷ [a] → a → a
-head'' (x:xs) e = x
-head'' _      e = e
 
 -- | Translation to primitive integer functions
 natPrimTF :: ForcedArgs -> [QName] -> PrimTransform
@@ -117,16 +114,16 @@ natPrimTF filt [zero, suc] = PrimTF
         -- Assuming only the first two branches are relevant when casing on Nats
         (Branch _ n vs e:Branch _ _n' vs'' e'':_) ->
             if n == zero
-               then primNatCaseZS ce e  (head'' vs'' __IMPOSSIBLE__) e''
-               else primNatCaseZS ce e'' (head'' vs __IMPOSSIBLE__) e
+               then primNatCaseZS ce e  (headDef __IMPOSSIBLE__ vs'') e''
+               else primNatCaseZS ce e'' (headDef __IMPOSSIBLE__ vs) e
         (Branch _ n vs e:Default e'':_) ->
             if n == zero
                then primNatCaseZD ce e e'' -- zero
-               else primNatCaseZS ce e'' (head'' vs __IMPOSSIBLE__) e -- suc
+               else primNatCaseZS ce e'' (headDef __IMPOSSIBLE__ vs) e -- suc
         [ Branch _ n vs e ] ->
             if n == zero
               then e
-              else lett (head'' vs __IMPOSSIBLE__) (App prPred [ce]) e
+              else lett (headDef __IMPOSSIBLE__ vs) (App prPred [ce]) e
         _ -> __IMPOSSIBLE__
   }
 natPrimTF _ _ = __IMPOSSIBLE__

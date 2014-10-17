@@ -22,7 +22,7 @@ import Agda.TypeChecking.Level
 import Agda.Utils.List
 import Agda.Utils.Maybe
 
-#include "../undefined.h"
+#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- | Find a matching display form for @q vs@.
@@ -56,7 +56,7 @@ displayForm q vs = do
       , "result      : " ++ show (foldr (const . Just) Nothing ms)
       ]
     -- Return the first display form that matches.
-    return $ mhead ms
+    return $ headMay ms
 
 --  Andreas, 2014-06-11: The following error swallowing
 --  is potentially harmful, making debugging harder.

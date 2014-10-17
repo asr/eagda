@@ -127,6 +127,7 @@ import Agda.Utils.Tuple
     'tactic'        { TokKeyword KwTactic $$ }
     'unquote'       { TokKeyword KwUnquote $$ }
     'unquoteDecl'   { TokKeyword KwUnquoteDecl $$ }
+    'unquoteDef'    { TokKeyword KwUnquoteDef $$ }
 
     setN        { TokSetN $$ }
     tex         { TokTeX $$ }
@@ -241,6 +242,7 @@ Token
     | 'tactic'        { TokKeyword KwTactic $1 }
     | 'unquote'       { TokKeyword KwUnquote $1 }
     | 'unquoteDecl'   { TokKeyword KwUnquoteDecl $1 }
+    | 'unquoteDef'    { TokKeyword KwUnquoteDef $1 }
 
     | setN          { TokSetN $1 }
     | tex           { TokTeX $1 }
@@ -1067,7 +1069,9 @@ Primitive : 'primitive' TypeSignatures  { Primitive (fuseRange $1 $2) $2 }
 
 -- Unquoting declarations.
 UnquoteDecl :: { Declaration }
-UnquoteDecl : 'unquoteDecl' Id '=' Expr { UnquoteDecl (fuseRange $1 $4) $2 $4 }
+UnquoteDecl
+  : 'unquoteDecl' Id '=' Expr { UnquoteDecl (fuseRange $1 $4) $2 $4 }
+  | 'unquoteDef'  Id '=' Expr { UnquoteDef (fuseRange $1 $4) $2 $4 }
 
 -- Syntax declaration (To declare eg. mixfix binders)
 Syntax :: { Declaration }
