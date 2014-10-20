@@ -126,6 +126,7 @@ data TCState =
            -- pragmas only affect this field.
          , stStatistics        :: Statistics
            -- ^ Counters to collect various statistics about meta variables etc.
+           --   Only for current file.
          , stMutualBlocks      :: Map MutualId (Set QName)
          , stLocalBuiltins     :: BuiltinThings PrimFun
          , stImportedBuiltins  :: BuiltinThings PrimFun
@@ -149,6 +150,7 @@ data PersistentTCState = PersistentTCSt
   , stBenchmark         :: !Benchmark
     -- ^ Structure to track how much CPU time was spent on which Agda phase.
     --   Needs to be a strict field to avoid space leaks!
+  , stAccumStatistics   :: !Statistics
   }
 
 -- | Empty persistent state.
@@ -159,6 +161,7 @@ initPersistentState = PersistentTCSt
   , stDecodedModules            = Map.empty
   , stInteractionOutputCallback = defaultInteractionOutputCallback
   , stBenchmark                 = Benchmark.empty
+  , stAccumStatistics           = Map.empty
   }
 
 data FreshThings =
@@ -376,7 +379,11 @@ data Constraint
   | Guarded Constraint ProblemId
   | IsEmpty Range Type
     -- ^ the range is the one of the absurd pattern
-  | FindInScope MetaId (Maybe [(Term, Type)])
+  | FindInScope MetaId (Maybe MetaId) (Maybe [(Term, Type)])
+    -- ^ the first argument is the instance argument, the second one is the meta
+    --   on which the constraint may be blocked on and the third one is the list
+    --   of candidates (or Nothing if we haven’t determined the list of
+    --   candidates yet)
   deriving (Typeable, Show)
 
 instance HasRange Constraint where

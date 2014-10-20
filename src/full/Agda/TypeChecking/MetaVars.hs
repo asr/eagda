@@ -204,7 +204,7 @@ newIFSMetaCtx s t vs cands = do
   reportSDoc "tc.meta.new" 50 $ fsep
     [ nest 2 $ text (show x) <+> text ":" <+> prettyTCM t
     ]
-  addConstraint $ FindInScope x cands
+  addConstraint $ FindInScope x Nothing cands
   return $ MetaV x $ map Apply vs
 
 
@@ -898,7 +898,7 @@ subtypingForSizeLt dir   x mvar t args v cont = do
       -- so we cannot fall back to the original handler.
       let xArgs = MetaV x $ map Apply args
           v'    = Def qSizeLt [Apply $ Arg ai yArgs]
-          c     = dirToCmp (`ValueCmp` set0) dir xArgs v'
+          c     = dirToCmp (`ValueCmp` sizeUniv) dir xArgs v'
       catchConstraint c $ cont v'
     _ -> fallback
 

@@ -31,6 +31,7 @@ import {-# SOURCE #-} Agda.TypeChecking.Monad.Options
 
 import Agda.Utils.Hash
 import qualified Agda.Utils.HashMap as HMap
+import Agda.Utils.Lens
 import Agda.Utils.Monad (bracket_)
 import Agda.Utils.Pretty
 import Agda.Utils.Tuple
@@ -65,15 +66,41 @@ localTCState = bracket_ get $ \ s -> do
    put s
    modifyBenchmark $ const b
 
+-- | Same as 'localTCState' but also returns the state in which we were just
+--   before reverting it.
+localTCStateSaving :: TCM a -> TCM (a, TCState)
+localTCStateSaving compute = do
+  state <- get
+  result <- compute
+  newState <- get
+  do
+    b <- getBenchmark
+    put state
+    modifyBenchmark $ const b
+  return (result, newState)
+
+
 ---------------------------------------------------------------------------
--- * Lens for persistent state
+-- * Lens for persistent state and its fields
 ---------------------------------------------------------------------------
+
+lensPersistentState :: Lens' PersistentTCState TCState
+lensPersistentState f s = f (stPersistent s) <&> \ p -> s { stPersistent = p }
 
 updatePersistentState :: (PersistentTCState -> PersistentTCState) -> (TCState -> TCState)
 updatePersistentState f s = s { stPersistent = f (stPersistent s) }
 
 modifyPersistentState :: (PersistentTCState -> PersistentTCState) -> TCM ()
 modifyPersistentState = modify . updatePersistentState
+
+-- | Lens for 'stAccumStatistics'.
+
+lensAccumStatisticsP :: Lens' Statistics PersistentTCState
+lensAccumStatisticsP f s = f (stAccumStatistics s) <&> \ a ->
+  s { stAccumStatistics = a }
+
+lensAccumStatistics :: Lens' Statistics TCState
+lensAccumStatistics =  lensPersistentState . lensAccumStatisticsP
 
 ---------------------------------------------------------------------------
 -- * Scope
@@ -296,7 +323,10 @@ freshTCM :: TCM a -> TCM (Either TCErr a)
 freshTCM m = do
   -- Prepare an initial state with current benchmark info.
   b <- getBenchmark
-  let s = updateBenchmark (const b) initState
+  a <- use lensAccumStatistics
+  let s = updateBenchmark (const b)
+        . set lensAccumStatistics a
+        $ initState
   -- Run subcomputation in initial state.
   -- If we encounter an exception, we lose the state and the
   -- benchmark info.
@@ -308,6 +338,7 @@ freshTCM m = do
     Right (a, s) -> do
       -- Keep only the benchmark info from the final state of the subcomp.
       modifyBenchmark $ const $ theBenchmark s
+      lensAccumStatistics .= (lensAccumStatistics ^. s)
       return $ Right a
 
 ---------------------------------------------------------------------------
