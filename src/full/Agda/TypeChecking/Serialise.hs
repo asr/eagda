@@ -95,6 +95,19 @@ import Agda.Utils.Except ( ExceptT, MonadError(throwError), runExceptT )
 #include "undefined.h"
 import Agda.Utils.Impossible
 
+-- | Compatibility with @bytestring < 0.10@ which does not implement
+--   @instance NFData@, to support @ghc <= 7.4@.
+--
+--   Note that we only @deepSeq@ for the purpose of correct benchmarking.
+--   Thus, a simply non-forcing @return@ would be a possible implementation.
+
+returnForcedByteString :: Monad m => L.ByteString -> m L.ByteString
+#if MIN_VERSION_bytestring(0,10,0)
+returnForcedByteString bs = return $!! bs
+#else
+returnForcedByteString bs = return $! bs
+#endif
+
 -- Note that the Binary instance for Int writes 64 bits, but throws
 -- away the 32 high bits when reading (at the time of writing, on
 -- 32-bit machines). Word64 does not have these problems.
@@ -260,13 +273,13 @@ encode a = do
       modifyStatistics $ Map.union stats
     -- Encode hashmaps and root, and compress.
     bits1 <- billSub [ Bench.Serialization, Bench.BinaryEncode ] $
-      return $!! B.encode (root, nL, sL, iL, dL)
+      returnForcedByteString $ B.encode (root, nL, sL, iL, dL)
     let compressParams = G.defaultCompressParams
           { G.compressLevel    = G.bestSpeed
           , G.compressStrategy = G.huffmanOnlyStrategy
           }
     cbits <- billSub [ Bench.Serialization, Bench.Compress ] $
-      return $!! G.compressWith compressParams bits1
+      returnForcedByteString $ G.compressWith compressParams bits1
     let x = B.encode currentInterfaceVersion `L.append` cbits
     return x
   where
@@ -315,7 +328,7 @@ runGetState g s n = feed (B.runGetIncremental g) (L.toChunks s)
 
 decode :: EmbPrj a => L.ByteString -> TCM (Maybe a)
 decode s = do
-  mf   <- stModuleToSource <$> get
+  mf   <- use stModuleToSource
   incs <- getIncludeDirs
 
   -- Note that B.runGetState and G.decompress can raise errors if the
@@ -345,7 +358,7 @@ decode s = do
 
   case mf of
     Nothing -> return ()
-    Just mf -> modify $ \s -> s { stModuleToSource = mf }
+    Just mf -> stModuleToSource .= mf
 
   case r of
     Right x   -> return (Just x)
@@ -1422,7 +1435,7 @@ icodeX dict counter key = do
       modifyIORef' c $ over lensReuse (+1)
       return i
     Nothing -> do
-      fresh <- (lensFresh ^.) <$> do readModifyIORef' c $ over lensFresh (+1)
+      fresh <- (^.lensFresh) <$> do readModifyIORef' c $ over lensFresh (+1)
       H.insert d key fresh
       return fresh
 
@@ -1441,7 +1454,7 @@ icodeInteger key = do
       modifyIORef' c $ over lensReuse (+1)
       return i
     Nothing -> do
-      fresh <- (lensFresh ^.) <$> do readModifyIORef' c $ over lensFresh (+1)
+      fresh <- (^.lensFresh) <$> do readModifyIORef' c $ over lensFresh (+1)
       H.insert d key fresh
       return fresh
 
@@ -1456,7 +1469,7 @@ icodeDouble key = do
       modifyIORef' c $ over lensReuse (+1)
       return i
     Nothing -> do
-      fresh <- (lensFresh ^.) <$> do readModifyIORef' c $ over lensFresh (+1)
+      fresh <- (^.lensFresh) <$> do readModifyIORef' c $ over lensFresh (+1)
       H.insert d key fresh
       return fresh
 
@@ -1471,7 +1484,7 @@ icodeString key = do
       modifyIORef' c $ over lensReuse (+1)
       return i
     Nothing -> do
-      fresh <- (lensFresh ^.) <$> do readModifyIORef' c $ over lensFresh (+1)
+      fresh <- (^.lensFresh) <$> do readModifyIORef' c $ over lensFresh (+1)
       H.insert d key fresh
       return fresh
 
@@ -1486,7 +1499,7 @@ icodeN key = do
       modifyIORef' c $ over lensReuse (+1)
       return i
     Nothing -> do
-      fresh <- (lensFresh ^.) <$> do readModifyIORef' c $ over lensFresh (+1)
+      fresh <- (^.lensFresh) <$> do readModifyIORef' c $ over lensFresh (+1)
       H.insert d key fresh
       return fresh
 
