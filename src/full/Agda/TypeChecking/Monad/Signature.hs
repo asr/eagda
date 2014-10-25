@@ -392,6 +392,7 @@ applySection new ptel old ts rd rm = do
                         , namedClausePats = []
                         , clauseBody      = Body $ head `apply` ts'
                         , clauseType      = Just $ defaultArg t
+                        , clauseCatchall  = False
                         }
 
     copySec :: Args -> (ModuleName, ModuleName) -> TCM ()

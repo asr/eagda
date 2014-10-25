@@ -28,6 +28,8 @@ Usage: agda [OPTIONS...] [FILE]
           --no-forcing                                disable the forcing optimisation
           --safe                                      disable postulates, unsafe OPTION pragmas and primTrustMe
           --show-implicit                             show implicit arguments when printing
+          --schematic-propositional-functions         the Apia program translates universal quantified FOL propositional functions
+          --schematic-propositional-symbols           the Apia program translates universal quantified FOL propositional symbols
           --show-irrelevant                           show irrelevant arguments when printing
   -v N    --verbose=N                                 set verbosity level to N
           --allow-unsolved-metas                      allow unsolved meta variables (only needed in batch mode)
@@ -48,7 +50,6 @@ Usage: agda [OPTIONS...] [FILE]
           --without-K                                 disable the K rule in pattern matching
           --copatterns                                enable definitions by copattern matching
           --no-pattern-matching                       disable pattern matching completely
-          --schematic-propositional-functions         the Apia program translates universal quantified FOL propositional functions
-          --schematic-propositional-symbols           the Apia program translates universal quantified FOL propositional symbols
+          --exact-split                               require all clauses in a definition by pattern matching to hold as definitional equalities (except those marked as CATCHALL)
 
 Plugins:

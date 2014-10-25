@@ -36,6 +36,7 @@ import qualified Agda.Syntax.Common as Common
 import Agda.Syntax.Literal
 import Agda.Syntax.Abstract.Name
 
+import Agda.Utils.Empty
 import Agda.Utils.Functor
 import Agda.Utils.Geniplate
 import Agda.Utils.List
@@ -269,6 +270,7 @@ data Clause = Clause
       --   Used, e.g., by @TermCheck@.
       --   Can be 'Irrelevant' if we encountered an irrelevant projection
       --   pattern on the lhs.
+    , clauseCatchall  :: Bool
     }
   deriving (Typeable, Show)
 
@@ -282,7 +284,7 @@ clausePats = map (fmap namedThing) . namedClausePats
 -- clauseArgs cl = evalState (argsToTerms $ namedClausePats cl) xs
 --   where
 --     perm = clausePerm cl
---     xs   = permute (invertP perm) $ downFrom (size perm)
+--     xs   = permute (invertP __IMPOSSIBLE__ perm) $ downFrom (size perm)
 --
 --     next = do x : xs <- get; put xs; return x
 --
@@ -360,6 +362,40 @@ properlyMatching LitP{} = True
 properlyMatching (ConP _ mt ps) = isNothing mt || -- not a record cons
   List.any (properlyMatching . namedArg) ps  -- or one of subpatterns is a proper m
 properlyMatching ProjP{} = True
+
+-----------------------------------------------------------------------------
+-- * Explicit substitutions
+-----------------------------------------------------------------------------
+
+-- | Substitutions.
+
+infixr 4 :#
+data Substitution
+
+  = IdS                     -- Γ ⊢ IdS : Γ
+
+  | EmptyS                  -- Γ ⊢ EmptyS : ()
+
+                            --      Γ ⊢ ρ : Δ
+  | Wk !Int Substitution    -- -------------------
+                            -- Γ, Ψ ⊢ Wk |Ψ| ρ : Δ
+
+                            -- Γ ⊢ u : Aρ  Γ ⊢ ρ : Δ
+  | Term :# Substitution    -- ---------------------
+                            --   Γ ⊢ u :# ρ : Δ, A
+
+    -- First argument is __IMPOSSIBLE__ -- we insert it when
+    -- constructing a Substitution so that applying Strengthen fails we
+    -- get the site which constructed the substitution, not the thing
+    -- that tried to apply it.
+  | Strengthen Empty Substitution        --         Γ ⊢ ρ : Δ
+                                         -- ---------------------------
+                                         --   Γ ⊢ Strengthen ρ : Δ, A
+
+                            --        Γ ⊢ ρ : Δ
+  | Lift !Int Substitution  -- -------------------------
+                            -- Γ, Ψρ ⊢ Lift |Ψ| ρ : Δ, Ψ
+  deriving (Show)
 
 ---------------------------------------------------------------------------
 -- * Absurd Lambda
@@ -768,7 +804,7 @@ instance KillRange Permutation where
   killRange = id
 
 instance KillRange Clause where
-  killRange (Clause r tel perm ps body t) = killRange6 Clause r tel perm ps body t
+  killRange (Clause r tel perm ps body t catchall) = killRange7 Clause r tel perm ps body t catchall
 
 instance KillRange a => KillRange (ClauseBodyF a) where
   killRange = fmap killRange

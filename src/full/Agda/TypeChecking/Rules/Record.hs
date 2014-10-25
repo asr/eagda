@@ -383,6 +383,7 @@ checkRecordProjections m r con tel ftel fs = do
                           , namedClausePats = [Named Nothing <$> conp]
                           , clauseBody      = body
                           , clauseType      = Just $ Arg ai t
+                          , clauseCatchall  = False
                           }
 
       -- Andreas, 2013-10-20

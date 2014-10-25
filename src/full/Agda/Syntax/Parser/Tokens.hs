@@ -12,6 +12,9 @@ import Agda.Syntax.Position
 
 data Keyword
         = KwLet | KwIn | KwWhere | KwData | KwCoData
+        -- ASR TODO (24 October 2014). In the meantime, we added
+        -- @KwATP@ here for avoiding merge conflicts.
+        | KwATP
         | KwPostulate | KwMutual | KwAbstract | KwPrivate | KwInstance
         | KwOpen | KwImport | KwModule | KwPrimitive
         | KwInfix | KwInfixL | KwInfixR | KwWith | KwRewrite
@@ -28,8 +31,7 @@ data Keyword
         | KwQuoteGoal | KwQuoteContext | KwQuote | KwQuoteTerm
         | KwUnquote | KwUnquoteDecl | KwUnquoteDef
         | KwSyntax
-        | KwPatternSyn | KwTactic
-        | KwATP
+        | KwPatternSyn | KwTactic | KwCATCHALL
     deriving (Eq, Show)
 
 layoutKeywords :: [Keyword]

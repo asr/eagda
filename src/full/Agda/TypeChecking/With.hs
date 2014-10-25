@@ -86,12 +86,12 @@ buildWithFunction :: QName -> Telescope -> [I.NamedArg Pattern] -> Permutation -
                      Nat -> Nat -> [A.SpineClause] -> TCM [A.SpineClause]
 buildWithFunction aux gamma qs perm n1 n cs = mapM buildWithClause cs
   where
-    buildWithClause (A.Clause (A.SpineLHS i _ ps wps) rhs wh) = do
+    buildWithClause (A.Clause (A.SpineLHS i _ ps wps) rhs wh catchall) = do
       let (wps0, wps1) = genericSplitAt n wps
           ps0          = map defaultNamedArg wps0
       rhs <- buildRHS rhs
       (ps1, ps2)  <- genericSplitAt n1 <$> stripWithClausePatterns gamma qs perm ps
-      let result = A.Clause (A.SpineLHS i aux (ps1 ++ ps0 ++ ps2) wps1) rhs wh
+      let result = A.Clause (A.SpineLHS i aux (ps1 ++ ps0 ++ ps2) wps1) rhs wh catchall
       reportSDoc "tc.with" 20 $ vcat
         [ text "buildWithClause returns" <+> prettyA result
         ]
@@ -379,7 +379,7 @@ withDisplayForm f aux delta1 delta2 n qs perm@(Perm m _) lhsPerm = do
 patsToTerms :: Permutation -> [I.NamedArg Pattern] -> [I.Arg DisplayTerm]
 patsToTerms perm ps = evalState (toTerms ps) xs
   where
-    xs   = permute (invertP perm) $ downFrom (size perm)
+    xs   = permute (invertP __IMPOSSIBLE__ perm) $ downFrom (size perm)
     tick = do x : xs <- get; put xs; return x
 
     toTerms :: [I.NamedArg Pattern] -> State [Nat] [I.Arg DisplayTerm]

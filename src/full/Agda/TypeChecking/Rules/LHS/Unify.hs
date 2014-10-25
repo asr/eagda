@@ -29,7 +29,7 @@ import Data.Traversable (Traversable,traverse)
 import Agda.Interaction.Options (optInjectiveTypeConstructors)
 
 import Agda.Syntax.Common
-import Agda.Syntax.Internal as I
+import Agda.Syntax.Internal as I hiding (Substitution)
 import Agda.Syntax.Literal
 import Agda.Syntax.Position
 
@@ -738,6 +738,13 @@ unifyIndices flex a us vs = liftTCM $ do
                    -- Try again if occurs check fails non-rigidly. It might be
                    -- that normalising gets rid of the occurrence.
           (|->?) = maybeAssign fallback
+
+      -- If one side is a literal and the other not, we convert the literal to
+      -- constructor form.
+      let isLit u = case ignoreSharing u of Lit{} -> True; _ -> False
+      (u, v) <- liftTCM $ if isLit u /= isLit v
+                then (,) <$> constructorForm u <*> constructorForm v
+                else return (u, v)
 
       liftTCM $ reportSDoc "tc.lhs.unify" 15 $
         sep [ text "unifyAtom"

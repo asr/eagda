@@ -57,9 +57,13 @@ instance Sized Permutation where
 --   Agda typing:
 --   @permute (Perm {m} n is) : Vec A m -> Vec A n@
 permute :: Permutation -> [a] -> [a]
-permute (Perm _ is) xs = map (xs !!!!) is
+permute p xs = map (fromMaybe __IMPOSSIBLE__) (safePermute p xs)
+
+safePermute :: Permutation -> [a] -> [Maybe a]
+safePermute (Perm _ is) xs = map (xs !!!!) is
   where
-    xs !!!! n = fromMaybe __IMPOSSIBLE__ (xs !!! n)
+    xs !!!! n | n < 0     = Nothing
+              | otherwise = xs !!! n
 
 -- | Identity permutation.
 idP :: Int -> Permutation
@@ -95,12 +99,13 @@ composeP p1 (Perm n xs) = Perm n $ permute p1 xs
       == permute (Perm xs) (permute (Perm ys) zs)
   -}
 
-invertP :: Permutation -> Permutation
-invertP p@(Perm n xs) = Perm (size xs) $ map inv [0..n - 1]
+-- | @invertP err p@ is the inverse of @p@ where defined,
+--   otherwise defaults to @err@.
+--   @composeP p (invertP err p) == p@
+invertP :: Int -> Permutation -> Permutation
+invertP err p@(Perm n xs) = Perm (size xs) $ map inv [0..n - 1]
   where
-    inv x = case findIndex (x ==) xs of
-              Just y  -> fromIntegral y
-              Nothing -> error $ "invertP: non-surjective permutation " ++ show p
+    inv x = fromMaybe err (findIndex (x ==) xs)
 
 -- | Turn a possible non-surjective permutation into a surjective permutation.
 compactP :: Permutation -> Permutation

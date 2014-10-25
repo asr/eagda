@@ -104,6 +104,11 @@ data CommandLineOptions =
 
 data PragmaOptions = PragmaOptions
   { optShowImplicit              :: Bool
+  -- ASR TODO (24 October 2014). In the meantime, we added
+  -- @optFOLPropositionalFunctions@ and @optFOLPropositionalSymbols@
+  -- here for avoiding merge conflicts.
+  , optFOLPropositionalFunctions :: Bool
+  , optFOLPropositionalSymbols   :: Bool
   , optShowIrrelevant            :: Bool
   , optVerbose                   :: Verbosity
   , optProofIrrelevance          :: Bool
@@ -123,8 +128,7 @@ data PragmaOptions = PragmaOptions
   , optWithoutK                  :: Bool
   , optCopatterns                :: Bool  -- ^ Allow definitions by copattern matching?
   , optPatternMatching           :: Bool  -- ^ Is pattern matching allowed in the current file?
-  , optFOLPropositionalFunctions :: Bool
-  , optFOLPropositionalSymbols   :: Bool
+  , optExactSplit                :: Bool
   }
   deriving Show
 
@@ -179,6 +183,11 @@ defaultOptions =
 defaultPragmaOptions :: PragmaOptions
 defaultPragmaOptions = PragmaOptions
   { optShowImplicit              = False
+  -- ASR TODO (24 October 2014). In the meantime, we added
+  -- @optFOLPropositionalFunctions@ and @optFOLPropositionalSymbols@
+  -- here for avoiding merge conflicts.
+  , optFOLPropositionalFunctions = False
+  , optFOLPropositionalSymbols   = False
   , optShowIrrelevant            = False
   , optVerbose                   = defaultVerbosity
   , optProofIrrelevance          = False
@@ -197,8 +206,7 @@ defaultPragmaOptions = PragmaOptions
   , optWithoutK                  = False
   , optCopatterns                = False
   , optPatternMatching           = True
-  , optFOLPropositionalFunctions = False
-  , optFOLPropositionalSymbols   = False
+  , optExactSplit                = False
   }
 
 -- | The default termination depth.
@@ -318,6 +326,7 @@ withKFlag                    o = return $ o { optWithoutK                  = Fal
 withoutKFlag                 o = return $ o { optWithoutK                  = True  }
 copatternsFlag               o = return $ o { optCopatterns                = True  }
 noPatternMatchingFlag        o = return $ o { optPatternMatching           = False }
+exactSplitFlag               o = return $ o { optExactSplit                = True  }
 
 interactiveFlag  o = return $ o { optInteractive    = True
                                 , optPragmaOptions  = (optPragmaOptions o)
@@ -421,6 +430,12 @@ pragmaOptions :: [OptDescr (Flag PragmaOptions)]
 pragmaOptions =
     [ Option []     ["show-implicit"] (NoArg showImplicitFlag)
                     "show implicit arguments when printing"
+    -- ASR TODO (24 October 2014). In the meantime, we added the next
+    -- two options here for avoiding merge conflicts.
+    , Option []     ["schematic-propositional-functions"] (NoArg folPropositionalFunctionsFlag)
+                    "the Apia program translates universal quantified FOL propositional functions"
+    , Option []     ["schematic-propositional-symbols"] (NoArg folPropositionalSymbolsFlag)
+                    "the Apia program translates universal quantified FOL propositional symbols"
     , Option []     ["show-irrelevant"] (NoArg showIrrelevantFlag)
                     "show irrelevant arguments when printing"
     , Option ['v']  ["verbose"] (ReqArg verboseFlag "N")
@@ -463,10 +478,8 @@ pragmaOptions =
                     "enable definitions by copattern matching"
     , Option []     ["no-pattern-matching"] (NoArg noPatternMatchingFlag)
                     "disable pattern matching completely"
-    , Option []     ["schematic-propositional-functions"] (NoArg folPropositionalFunctionsFlag)
-                    "the Apia program translates universal quantified FOL propositional functions"
-    , Option []     ["schematic-propositional-symbols"] (NoArg folPropositionalSymbolsFlag)
-                    "the Apia program translates universal quantified FOL propositional symbols"
+    , Option []     ["exact-split"] (NoArg exactSplitFlag)
+                    "require all clauses in a definition by pattern matching to hold as definitional equalities (except those marked as CATCHALL)"
     ]
 
 -- | Used for printing usage info.
