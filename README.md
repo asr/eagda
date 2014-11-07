@@ -26,8 +26,6 @@ $ git clone https://github.com/asr/eagda.git
 
 ````bash
 $ cd eagda
-$ autoconf
-$ ./configure
 $ make install-bin
 $ agda-mode setup
 ````
