@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP #-}
 
 module Agda.TypeChecking.Rules.Data where
@@ -234,8 +232,9 @@ checkConstructor d tel nofIxs s con@(A.Axiom _ i _ c e) =
             defaultDefn defaultArgInfo c (telePi tel t') $
               Constructor (size tel) con d (Info.defAbstract i) Inductive Nothing
 
-        -- declare the constructor as eligible for instance search
-        addNamedInstance c d
+        -- Add the constructor to the instance table, if needed
+        when (Info.defInstance i == InstanceDef) $ do
+          addNamedInstance c d
 
         return nonLinPars
   where
@@ -433,4 +432,3 @@ isCoinductive t = do
     MetaV {} -> return Nothing
     Shared{} -> __IMPOSSIBLE__
     DontCare{} -> __IMPOSSIBLE__
-    ExtLam{}   -> __IMPOSSIBLE__

@@ -7,7 +7,7 @@ PROFVERB=7
 # Various paths and commands
 
 CABAL_CMD=cabal
-CABAL_OPTS=
+override CABAL_OPTS+=$(CABAL_OPTIONS)
 TOP=.
 
 # mk/path.mk uses TOP, so include after definition of TOP!
@@ -19,14 +19,6 @@ include ./mk/paths.mk
 default: install-bin
 
 ## Cabal-based installation ###############################################
-
-# If you want to make use of parallel compilation with ghc>=7.8,
-# enable the flag below, or set the "jobs" field in your
-# ".cabal/config".
-#
-# ifeq ($(HAVE_GHC_7_7),Yes)
-# override CABAL_OPTS+=--ghc-option=-j3
-# endif
 
 .PHONY : install
 install: install-bin compile-emacs-mode setup-emacs-mode
@@ -225,3 +217,20 @@ check-whitespace :
 install-fix-agda-whitespace :
 	cd src/fix-agda-whitespace && \
 	$(CABAL_CMD) install $(CABAL_OPTS)
+
+########################################################################
+# HPC
+
+.PHONY: hpc-build
+hpc-build:
+	cabal clean
+	cabal configure --enable-library-coverage
+	cabal build
+
+agda.tix: ./examples/agda.tix ./test/succeed/agda.tix ./test/compiler/agda.tix ./test/api/agda.tix ./test/interaction/agda.tix ./test/fail/agda.tix ./test/fail/Epic/agda.tix ./test/lib-succeed/agda.tix ./std-lib/agda.tix
+	hpc sum --output=$@ $^
+
+.PHONY: hpc
+hpc: hpc-build test agda.tix
+	hpc report --hpcdir=dist/hpc/mix/Agda-$(VERSION) agda.tix
+	hpc markup --hpcdir=dist/hpc/mix/Agda-$(VERSION) agda --destdir=hpc-report

@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP                        #-}
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -214,10 +212,11 @@ instance FromTerm Bool where
         true  <- primTrue
         false <- primFalse
         fromReducedTerm $ \t -> case t of
-            _   | t === true  -> Just True
-                | t === false -> Just False
+            _   | t =?= true  -> Just True
+                | t =?= false -> Just False
                 | otherwise   -> Nothing
         where
+            a =?= b = ignoreSharing a === ignoreSharing b
             Def x [] === Def y []   = x == y
             Con x [] === Con y []   = x == y
             Var n [] === Var m []   = n == m
@@ -235,17 +234,14 @@ instance (ToTerm a, FromTerm a) => FromTerm [a] where
     where
       isCon (Lam _ b)  = isCon $ absBody b
       isCon (Con c _)  = return c
-      isCon (Shared p) = __IMPOSSIBLE__ -- isCon (derefPtr p)
+      isCon (Shared p) = isCon (derefPtr p)
       isCon v          = __IMPOSSIBLE__
 
       mkList nil cons toA fromA t = do
         b <- reduceB' t
         let t = ignoreBlocking b
-        let arg = Arg (ArgInfo { argInfoHiding = getHiding t
-                               , argInfoRelevance = getRelevance t
-                               , argInfoColors = argColors t
-                               })
-        case unArg t of
+        let arg = (<$ t)
+        case ignoreSharing $ unArg t of
           Con c []
             | c == nil  -> return $ YesReduction NoSimplification []
           Con c [x,xs]
@@ -364,6 +360,11 @@ primQNameDefinition = do
             (\v' -> [v']) $ \x ->
         redReturn =<< con x
       _ -> __IMPOSSIBLE__
+
+primDataNumberOfParameters :: TCM PrimitiveImpl
+primDataNumberOfParameters =
+  mkPrimFun1TCM (el primAgdaDataDef --> el primNat)
+                (fmap (toInteger . dataPars . theDef) . getConstInfo)
 
 primDataConstructors :: TCM PrimitiveImpl
 primDataConstructors =
@@ -623,9 +624,10 @@ primitiveFunctions = Map.fromList
     , "primShowString"      |-> mkPrimFun1 (Str . show . pretty . LitString noRange . unStr)
 
     -- Reflection
-    , "primQNameType"       |-> primQNameType
-    , "primQNameDefinition" |-> primQNameDefinition
-    , "primDataConstructors"|-> primDataConstructors
+    , "primQNameType"              |-> primQNameType
+    , "primQNameDefinition"        |-> primQNameDefinition
+    , "primDataNumberOfParameters" |-> primDataNumberOfParameters
+    , "primDataConstructors"       |-> primDataConstructors
 
     -- Other stuff
     , "primTrustMe"         |-> primTrustMe

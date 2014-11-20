@@ -39,6 +39,7 @@ import Agda.Syntax.Fixity
 import Agda.Syntax.Notation
 import Agda.Syntax.Literal
 
+import Agda.Utils.Either hiding (tests)
 import Agda.Utils.Hash
 import Agda.Utils.List (spanJust)
 import Agda.Utils.Monad
@@ -618,26 +619,45 @@ Expr3NoCurly
     | '{{' DoubleCloseBrace             { let r = fuseRange $1 $2 in InstanceArg r $ unnamed $ Absurd r }
     | Id '@' Expr3                      { As (getRange ($1,$2,$3)) $1 $3 }
     | '.' Expr3                         { Dot (fuseRange $1 $2) $2 }
-    | 'record' '{' FieldAssignments '}' { Rec (getRange ($1,$2,$3,$4)) $3 }
+    | 'record' '{' RecordAssignments '}' { Rec (getRange ($1,$2,$3,$4)) $3 }
     | 'record' Expr3NoCurly '{' FieldAssignments '}' { RecUpdate (getRange ($1,$2,$3,$4,$5)) $2 $4 }
 
 Expr3
     : Expr3Curly                        { $1 }
     | Expr3NoCurly                      { $1 }
 
-FieldAssignments :: { [(Name, Expr)] }
+RecordAssignments :: { RecordAssignments }
+RecordAssignments
+  : {- empty -}        { [] }
+  | RecordAssignments1 { $1 }
+
+RecordAssignments1 :: { RecordAssignments }
+RecordAssignments1
+  : RecordAssignment                        { [$1] }
+  | RecordAssignment ';' RecordAssignments1 { $1 : $3 }
+
+RecordAssignment :: { RecordAssignment }
+RecordAssignment
+  : FieldAssignment  { Left  $1 }
+  | ModuleAssignment { Right $1 }
+
+ModuleAssignment :: { ModuleAssignment }
+ModuleAssignment
+  : ModuleName OpenArgs ImportDirective  { ModuleAssignment $1 $2 $3 }
+
+FieldAssignments :: { [FieldAssignment] }
 FieldAssignments
   : {- empty -}       { [] }
   | FieldAssignments1 { $1 }
 
-FieldAssignments1 :: { [(Name, Expr)] }
+FieldAssignments1 :: { [FieldAssignment] }
 FieldAssignments1
   : FieldAssignment                       { [$1] }
   | FieldAssignment ';' FieldAssignments1 { $1 : $3 }
 
-FieldAssignment :: { (Name, Expr) }
+FieldAssignment :: { FieldAssignment }
 FieldAssignment
-  : Id '=' Expr   { ($1, $3) }
+  : Id '=' Expr   { FieldAssignment $1 $3 }
 
 {--------------------------------------------------------------------------
     Bindings
@@ -816,7 +836,7 @@ DomainFreeBindingAbsurd
     | '.' BId           { Left [DomainFree (setRelevance Irrelevant $ defaultArgInfo) $ mkBoundName_ $2]  }
     | '..' BId          { Left [DomainFree (setRelevance NonStrict $ defaultArgInfo) $ mkBoundName_ $2]  }
     | '{' CommaBIdAndAbsurds '}'
-         { either (Left . map (DomainFree (setHiding Hidden $ defaultArgInfo) . mkBoundName_)) Right $2 }
+         { mapLeft (map (DomainFree (setHiding Hidden $ defaultArgInfo) . mkBoundName_)) $2 }
     | '{{' CommaBIds DoubleCloseBrace { Left $ map (DomainFree (setHiding Instance $ defaultArgInfo) . mkBoundName_) $2 }
     | '.' '{' CommaBIds '}' { Left $ map (DomainFree (setHiding Hidden $ setRelevance Irrelevant $ defaultArgInfo) . mkBoundName_) $3 }
     | '.' '{{' CommaBIds DoubleCloseBrace { Left $ map (DomainFree (setHiding Instance $ setRelevance Irrelevant $ defaultArgInfo) . mkBoundName_) $3 }
@@ -992,15 +1012,15 @@ RHS : '=' Expr      { JustRHS (RHS $2) }
 -- Data declaration. Can be local.
 Data :: { Declaration }
 Data : 'data' Id TypedUntypedBindings ':' Expr 'where'
-            Constructors        { Data (getRange ($1,$2,$3,$4,$5,$6,$7)) Inductive $2 $3 (Just $5) $7 }
+            Declarations0       { Data (getRange ($1,$2,$3,$4,$5,$6,$7)) Inductive $2 $3 (Just $5) $7 }
      | 'codata' Id TypedUntypedBindings ':' Expr 'where'
-            Constructors        { Data (getRange ($1,$2,$3,$4,$5,$6,$7)) CoInductive $2 $3 (Just $5) $7 }
+            Declarations0       { Data (getRange ($1,$2,$3,$4,$5,$6,$7)) CoInductive $2 $3 (Just $5) $7 }
 
   -- New cases when we already had a DataSig.  Then one can omit the sort.
      | 'data' Id TypedUntypedBindings 'where'
-            Constructors        { Data (getRange ($1,$2,$3,$4,$5)) Inductive $2 $3 Nothing $5 }
+            Declarations0       { Data (getRange ($1,$2,$3,$4,$5)) Inductive $2 $3 Nothing $5 }
      | 'codata' Id TypedUntypedBindings 'where'
-            Constructors        { Data (getRange ($1,$2,$3,$4,$5)) CoInductive $2 $3 Nothing $5 }
+            Declarations0       { Data (getRange ($1,$2,$3,$4,$5)) CoInductive $2 $3 Nothing $5 }
 
 -- Data type signature. Found in mutual blocks.
 DataSig :: { Declaration }
@@ -1026,8 +1046,9 @@ RecordSig : 'record' Expr3NoCurly TypedUntypedBindings ':' Expr
   {% exprToName $2 >>= \ n -> return $ RecordSig (getRange ($1,$2,$3,$4,$5)) n $3 $5 }
 
 -- Declaration of record constructor name.
-RecordConstructorName :: { Name }
-RecordConstructorName : 'constructor' Id { $2 }
+RecordConstructorName :: { (Name, IsInstance) }
+RecordConstructorName :                  'constructor' Id        { ($2, NotInstanceDef) }
+                      | 'instance' vopen 'constructor' Id vclose { ($4, InstanceDef) }
 
 -- Fixity declarations.
 Infix :: { Declaration }
@@ -1406,14 +1427,8 @@ ArgTypeSignatures1
     : ArgTypeSignatures1 semi ArgTypeSigs { reverse $3 ++ $1 }
     | ArgTypeSigs                         { reverse $1 }
 
--- Constructors are type signatures. But constructor lists can be empty.
-Constructors :: { [Constructor] }
-Constructors
-    : vopen close    { [] }
-    | TypeSignatures { $1 }
-
 -- Record declarations, including an optional record constructor name.
-RecordDeclarations :: { (Maybe (Ranged Induction), Maybe Name, [Declaration]) }
+RecordDeclarations :: { (Maybe (Ranged Induction), Maybe (Name, IsInstance), [Declaration]) }
 RecordDeclarations
     : vopen                                          close { (Nothing, Nothing, []) }
     | vopen RecordConstructorName                    close { (Nothing, Just $2, []) }
@@ -1435,7 +1450,7 @@ Declarations :: { [Declaration] }
 Declarations
     : vopen Declarations1 close { $2 }
 
--- Arbitrary declarations
+-- Arbitrary declarations (possibly empty)
 Declarations0 :: { [Declaration] }
 Declarations0
     : vopen close  { [] }

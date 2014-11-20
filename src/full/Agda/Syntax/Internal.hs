@@ -17,7 +17,6 @@ module Agda.Syntax.Internal
 
 import Prelude hiding (foldr, mapM, null)
 
-import Control.Arrow ((***))
 import Control.Applicative
 import Control.Monad.Identity hiding (mapM)
 import Control.Monad.State hiding (mapM)
@@ -45,6 +44,7 @@ import Agda.Utils.Permutation
 import Agda.Utils.Pointer
 import Agda.Utils.Size
 import Agda.Utils.Pretty
+import Agda.Utils.Tuple
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -108,7 +108,6 @@ instance LensConName ConHead where
 --
 data Term = Var {-# UNPACK #-} !Int Elims -- ^ @x es@ neutral
           | Lam ArgInfo (Abs Term)        -- ^ Terms are beta normal. Relevance is ignored
-          | ExtLam [Clause] Args          -- ^ Only used by unquote --> reify. Should never appear elsewhere.
           | Lit Literal
           | Def QName Elims               -- ^ @f es@, possibly a delta/iota-redex
           | Con ConHead Args              -- ^ @c vs@
@@ -174,6 +173,11 @@ data Tele a = EmptyTel
   deriving (Typeable, Show, Functor, Foldable, Traversable)
 
 type Telescope = Tele (Dom Type)
+
+instance Null (Tele a) where
+  null EmptyTel    = True
+  null ExtendTel{} = False
+  empty = EmptyTel
 
 mapAbsNamesM :: Applicative m => (ArgName -> m ArgName) -> Tele a -> m (Tele a)
 mapAbsNamesM f EmptyTel                  = pure EmptyTel
@@ -420,24 +424,25 @@ isAbsurdPatternName x = x == absurdPatternName
 -- * Pointers and Sharing
 ---------------------------------------------------------------------------
 
+-- | Remove top-level @Shared@ data constructors.
 ignoreSharing :: Term -> Term
--- ignoreSharing (Shared p) = ignoreSharing $ derefPtr p
+ignoreSharing (Shared p) = ignoreSharing $ derefPtr p
 ignoreSharing v          = v
 
 ignoreSharingType :: Type -> Type
--- ignoreSharingType (El s v) = El s (ignoreSharing v)
-ignoreSharingType v = v
+ignoreSharingType (El s v) = El s (ignoreSharing v)
+-- ignoreSharingType v = v
 
 -- | Introduce sharing.
 shared :: Term -> Term
--- shared v@Shared{}   = v
--- shared v@(Var _ []) = v
--- shared v            = Shared (newPtr v)
-shared v = v
+shared v@Shared{}   = v
+shared v@(Var _ []) = v
+shared v            = Shared (newPtr v)
+-- shared v = v
 
 sharedType :: Type -> Type
--- sharedType (El s v) = El s (shared v)
-sharedType v = v
+sharedType (El s v) = El s (shared v)
+-- sharedType v = v
 
 -- | Typically m would be TCM and f would be Blocked.
 updateSharedFM :: (Monad m, Applicative m, Traversable f) => (Term -> m (f Term)) -> Term -> m (f Term)
@@ -446,7 +451,7 @@ updateSharedFM f v0@(Shared p) = do
   flip traverse fv $ \v ->
     case derefPtr (setPtr v p) of
       Var _ [] -> return v
-      _        -> compressPointerChain v0 `pseq` return v0
+      _        -> return $! compressPointerChain v0
 updateSharedFM f v = f v
 
 updateSharedM :: Monad m => (Term -> m Term) -> Term -> m Term
@@ -454,14 +459,14 @@ updateSharedM f v0@(Shared p) = do
   v <- f (derefPtr p)
   case derefPtr (setPtr v p) of
     Var _ [] -> return v
-    _        -> compressPointerChain v0 `pseq` return v0
+    _        -> return $! compressPointerChain v0
 updateSharedM f v = f v
 
 updateShared :: (Term -> Term) -> Term -> Term
 updateShared f v0@(Shared p) =
   case derefPtr (setPtr (f $ derefPtr p) p) of
     v@(Var _ []) -> v
-    _            -> compressPointerChain v0 `pseq` v0
+    _            -> compressPointerChain v0
 updateShared f v = f v
 
 pointerChain :: Term -> [Ptr Term]
@@ -469,14 +474,16 @@ pointerChain (Shared p) = p : pointerChain (derefPtr p)
 pointerChain _          = []
 
 -- Redirect all top-level pointers to point to the last pointer. So, after
--- compression there are at most two top-level indirections.
+-- compression there are at most two top-level indirections. Then return the
+-- inner-most pointer so we have only one pointer for the result.
 compressPointerChain :: Term -> Term
 compressPointerChain v =
   case reverse $ pointerChain v of
     p:_:ps@(_:_) -> setPointers (Shared p) ps
+    p:_:_        -> (Shared p)
     _            -> v
   where
-    setPointers _ [] = v
+    setPointers u [] = u
     setPointers u (p : ps) =
       setPtr u p `seq` setPointers u ps
 
@@ -504,8 +511,13 @@ typeDontCare = El Prop (Sort Prop)
 topSort :: Type
 topSort = El Inf (Sort Inf)
 
-prop      = sort Prop
-sort s    = El (sSuc s) $ Sort s
+prop :: Type
+prop = sort Prop
+
+sort :: Sort -> Type
+sort s = El (sSuc s) $ Sort s
+
+varSort :: Int -> Sort
 varSort n = Type $ Max [Plus 0 $ NeutralLevel $ Var n []]
 
 -- | Get the next higher sort.
@@ -515,11 +527,13 @@ sSuc Inf             = Inf
 sSuc (DLub a b)      = DLub (sSuc a) (fmap sSuc b)
 sSuc (Type l)        = Type $ levelSuc l
 
+levelSuc :: Level -> Level
 levelSuc (Max []) = Max [ClosedLevel 1]
 levelSuc (Max as) = Max $ map inc as
   where inc (ClosedLevel n) = ClosedLevel (n + 1)
         inc (Plus n l)      = Plus (n + 1) l
 
+mkType :: Integer -> Sort
 mkType n = Type $ Max [ClosedLevel n | n > 0]
 
 impossibleTerm :: String -> Int -> Term
@@ -528,15 +542,14 @@ impossibleTerm file line = Lit $ LitString noRange $ unlines
   , "Location of the error: " ++ file ++ ":" ++ show line
   ]
 
-sgTel :: Dom (ArgName, Type) -> Telescope
-sgTel (Common.Dom ai (x, t)) = ExtendTel (Common.Dom ai t) $ Abs x EmptyTel
+class SgTel a where
+  sgTel :: a -> Telescope
 
-hackReifyToMeta :: Term
-hackReifyToMeta = DontCare $ Lit $ LitInt noRange (-42)
+instance SgTel (ArgName, Dom Type) where
+  sgTel (x, dom) = ExtendTel dom $ Abs x EmptyTel
 
-isHackReifyToMeta :: Term -> Bool
-isHackReifyToMeta (DontCare (Lit (LitInt r (-42)))) = r == noRange
-isHackReifyToMeta _ = False
+instance SgTel (Dom (ArgName, Type)) where
+  sgTel (Common.Dom ai (x, t)) = ExtendTel (Common.Dom ai t) $ Abs x EmptyTel
 
 ---------------------------------------------------------------------------
 -- * Handling blocked terms.
@@ -624,7 +637,6 @@ hasElims v =
     Sort{}     -> Nothing
     Level{}    -> Nothing
     DontCare{} -> Nothing
-    ExtLam{}   -> Nothing
     Shared{}   -> __IMPOSSIBLE__
 
 {- PROBABLY USELESS
@@ -650,7 +662,7 @@ allApplyElims = mapM isApplyElim
 
 -- | Split at first non-'Apply'
 splitApplyElims :: Elims -> (Args, Elims)
-splitApplyElims (Apply u : es) = (u :) *** id $ splitApplyElims es
+splitApplyElims (Apply u : es) = mapFst (u :) $ splitApplyElims es
 splitApplyElims es             = ([], es)
 
 class IsProjElim e where
@@ -717,7 +729,6 @@ instance Sized Term where
     Sort s      -> 1
     DontCare mv -> size mv
     Shared p    -> size (derefPtr p)
-    ExtLam{}    -> __IMPOSSIBLE__
 
 instance Sized Type where
   size = size . unEl
@@ -766,7 +777,6 @@ instance KillRange Term where
     Sort s      -> killRange1 Sort s
     DontCare mv -> killRange1 DontCare mv
     Shared p    -> Shared $ updatePtr killRange p
-    ExtLam c vs -> killRange2 ExtLam c vs
 
 instance KillRange Level where
   killRange (Max as) = killRange1 Max as
@@ -862,7 +872,6 @@ instance Pretty Term where
       MetaV x els -> text (show x) `pApp` els
       DontCare v  -> pretty v
       Shared{}    -> __IMPOSSIBLE__
-      ExtLam{}    -> __IMPOSSIBLE__
     where
       pApp d els = mparens (not (null els) && p > 9) $
                    d <+> fsep (map (prettyPrec 10) els)

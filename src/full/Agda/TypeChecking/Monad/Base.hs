@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP                        #-}
 {-# LANGUAGE DeriveDataTypeable         #-}
 {-# LANGUAGE DeriveFoldable             #-}
@@ -30,6 +28,8 @@ import Control.Applicative
 
 import Data.Function
 import Data.Int
+import Data.IntMap (IntMap)
+import qualified Data.IntMap as IntMap
 import qualified Data.List as List
 import Data.Maybe
 import Data.Map as Map
@@ -50,6 +50,7 @@ import Agda.Syntax.Internal.Pattern ()
 import Agda.Syntax.Fixity
 import Agda.Syntax.Position
 import Agda.Syntax.Scope.Base
+import qualified Agda.Syntax.Info as Info
 
 import Agda.TypeChecking.CompiledClause
 
@@ -100,7 +101,6 @@ data PreScopeState = PreScopeState
   { stPreTokens             :: CompressedFile -- from lexer
     -- ^ Highlighting info for tokens (but not those tokens for
     -- which highlighting exists in 'stSyntaxInfo').
-  , stPreInteractionPoints  :: InteractionPoints -- scope checker first
   , stPreImports            :: Signature  -- XX populated by scopec hecker
     -- ^ Imported declared identifiers.
     --   Those most not be serialized!
@@ -124,9 +124,15 @@ data PreScopeState = PreScopeState
   , stPreFreshNameId        :: NameId
   }
 
+type DisambiguatedNames = IntMap A.QName
+
 data PostScopeState = PostScopeState
   { stPostSyntaxInfo          :: CompressedFile
     -- ^ Highlighting info.
+  , stPostDisambiguatedNames  :: !DisambiguatedNames
+    -- ^ Disambiguation carried out by the type checker.
+    --   Maps position of first name character to disambiguated @'A.QName'@
+    --   for each @'A.AmbiguousQName'@ already passed by the type checker.
   , stPostMetaStore           :: MetaStore
   , stPostInteractionPoints   :: InteractionPoints -- scope checker first
   , stPostAwakeConstraints    :: Constraints
@@ -171,7 +177,42 @@ data PersistentTCState = PersistentTCSt
     -- ^ Structure to track how much CPU time was spent on which Agda phase.
     --   Needs to be a strict field to avoid space leaks!
   , stAccumStatistics   :: !Statistics
+    -- ^ Should be strict field.
+  , stLoadedFileCache   :: !(Maybe LoadedFileCache)
+    -- ^ Cached typechecking state from the last loaded file.
+    --   Should be Nothing when checking imports.
   }
+
+data LoadedFileCache = LoadedFileCache
+  { lfcCached  :: !CachedTypeCheckLog
+  , lfcCurrent :: !CurrentTypeCheckLog
+  }
+
+-- | A log of what the type checker does and states after the action is
+-- completed.  The cached version is stored first executed action first.
+type CachedTypeCheckLog = [(TypeCheckAction, PostScopeState)]
+
+-- | Like 'CachedTypeCheckLog', but storing the log for an ongoing type
+-- checking of a module.  Stored in reverse order (last performed action
+-- first).
+type CurrentTypeCheckLog = [(TypeCheckAction, PostScopeState)]
+
+-- | A complete log for a module will look like this:
+--
+--   * 'Pragmas'
+--
+--   * 'EnterSection', entering the main module.
+--
+--   * 'Decl'/'EnterSection'/'LeaveSection', for declarations and nested
+--     modules
+--
+--   * 'LeaveSection', leaving the main module.
+data TypeCheckAction
+  = EnterSection Info.ModuleInfo ModuleName [A.TypedBindings]
+  | LeaveSection ModuleName
+  | Decl A.Declaration
+    -- ^ Never a Section or ScopeDecl
+  | Pragmas PragmaOptions
 
 -- | Empty persistent state.
 
@@ -182,6 +223,7 @@ initPersistentState = PersistentTCSt
   , stInteractionOutputCallback = defaultInteractionOutputCallback
   , stBenchmark                 = Benchmark.empty
   , stAccumStatistics           = Map.empty
+  , stLoadedFileCache           = Nothing
   }
 
 -- | Empty state of type checker.
@@ -189,7 +231,6 @@ initPersistentState = PersistentTCSt
 initPreScopeState :: PreScopeState
 initPreScopeState = PreScopeState
   { stPreTokens               = mempty
-  , stPreInteractionPoints    = Map.empty
   , stPreImports              = emptySignature
   , stPreImportedModules      = Set.empty
   , stPreModuleToSource       = Map.empty
@@ -206,9 +247,10 @@ initPreScopeState = PreScopeState
 
 initPostScopeState :: PostScopeState
 initPostScopeState = PostScopeState
-  { stPostMetaStore            = Map.empty
+  { stPostSyntaxInfo           = mempty
+  , stPostDisambiguatedNames   = IntMap.empty
+  , stPostMetaStore            = Map.empty
   , stPostInteractionPoints    = Map.empty
-  , stPostSyntaxInfo           = mempty
   , stPostAwakeConstraints     = []
   , stPostSleepingConstraints  = []
   , stPostDirty                = False
@@ -305,6 +347,11 @@ stSyntaxInfo :: Lens' CompressedFile TCState
 stSyntaxInfo f s =
   f (stPostSyntaxInfo (stPostScopeState s)) <&>
   \x -> s {stPostScopeState = (stPostScopeState s) {stPostSyntaxInfo = x}}
+
+stDisambiguatedNames :: Lens' DisambiguatedNames TCState
+stDisambiguatedNames f s =
+  f (stPostDisambiguatedNames (stPostScopeState s)) <&>
+  \x -> s {stPostScopeState = (stPostScopeState s) {stPostDisambiguatedNames = x}}
 
 stMetaStore :: Lens' MetaStore TCState
 stMetaStore f s =
@@ -717,7 +764,7 @@ data Frozen
     deriving (Eq, Show)
 
 data MetaInstantiation
-        = InstV Term         -- ^ solved by term
+        = InstV [Arg String] Term -- ^ solved by term (abstracted over some free variables)
         | InstS Term         -- ^ solved by @Lam .. Sort s@
         | Open               -- ^ unsolved
         | OpenIFS            -- ^ open, to be instantiated as "implicit from scope"
@@ -731,7 +778,7 @@ data TypeCheckingProblem
   deriving (Typeable)
 
 instance Show MetaInstantiation where
-  show (InstV t) = "InstV (" ++ show t ++ ")"
+  show (InstV tel t) = "InstV " ++ show tel ++ " (" ++ show t ++ ")"
   show (InstS s) = "InstS (" ++ show s ++ ")"
   show Open      = "Open"
   show OpenIFS   = "OpenIFS"
@@ -1453,6 +1500,7 @@ data TCEnv =
           , envAnonymousModules    :: [(ModuleName, Nat)] -- ^ anonymous modules and their number of free variables
           , envImportPath          :: [C.TopLevelModuleName] -- ^ to detect import cycles
           , envMutualBlock         :: Maybe MutualId -- ^ the current (if any) mutual block
+          , envTerminationCheck    :: TerminationCheck ()  -- ^ are we inside the scope of a termination pragma
           , envSolvingConstraints  :: Bool
                 -- ^ Are we currently in the process of solving active constraints?
           , envAssignMetas         :: Bool
@@ -1523,10 +1571,6 @@ data TCEnv =
                 -- ^ Used by the scope checker to make sure that certain forms
                 --   of expressions are not used inside dot patterns: extended
                 --   lambdas and let-expressions.
-          , envReifyUnquoted :: Bool
-                -- ^ The rules for translating internal to abstract syntax are
-                --   slightly different when the internal term comes from an
-                --   unquote.
           }
     deriving (Typeable)
 
@@ -1538,6 +1582,7 @@ initEnv = TCEnv { envContext             = []
                 , envAnonymousModules    = []
                 , envImportPath          = []
                 , envMutualBlock         = Nothing
+                , envTerminationCheck    = TerminationCheck
                 , envSolvingConstraints  = False
                 , envActiveProblems      = [0]
                 , envAssignMetas         = True
@@ -1569,8 +1614,10 @@ initEnv = TCEnv { envContext             = []
                 , envCompareBlocked         = False
                 , envPrintDomainFreePi      = False
                 , envInsideDotPattern       = False
-                , envReifyUnquoted          = False
                 }
+
+disableDestructiveUpdate :: TCM a -> TCM a
+disableDestructiveUpdate = local $ \e -> e { envAllowDestructiveUpdate = False }
 
 ---------------------------------------------------------------------------
 -- ** Context
@@ -1676,6 +1723,19 @@ data SplitError = NotADatatype (Closure Type) -- ^ neither data type nor record
 instance Error SplitError where
   noMsg  = strMsg ""
   strMsg = GenericSplitError
+
+data UnquoteError
+  = BadVisibility String (I.Arg I.Term)
+  | ConInsteadOfDef QName String String
+  | DefInsteadOfCon QName String String
+  | NotAConstructor String I.Term       -- ^ @NotAConstructor kind term@
+  | NotALiteral String I.Term
+  | BlockedOnMeta MetaId
+  | UnquotePanic String
+  deriving (Show)
+
+instance Error UnquoteError where
+  strMsg msg = UnquotePanic msg
 
 data TypeError
         = InternalError String
@@ -1787,6 +1847,7 @@ data TypeError
         | TooManyFields QName [C.Name]
         | DuplicateFields [C.Name]
         | DuplicateConstructors [C.Name]
+        | WithOnFreeVariable A.Expr
         | UnexpectedWithPatterns [A.Pattern]
         | WithClausePatternMismatch A.Pattern Pattern
         | FieldOutsideRecord
@@ -1863,6 +1924,8 @@ data TypeError
     -- Usage errors
     -- Implicit From Scope errors
         | IFSNoCandidateInScope Type
+    -- Reflection errors
+        | UnquoteFailed UnquoteError
     -- Safe flag errors
         | SafeFlagPostulate C.Name
         | SafeFlagPragma [String]
@@ -1933,24 +1996,35 @@ mapRedEnvSt :: (TCEnv -> TCEnv) -> (TCState -> TCState) -> ReduceEnv
             -> ReduceEnv
 mapRedEnvSt f g (ReduceEnv e s) = ReduceEnv (f e) (g s)
 
-newtype ReduceM a = ReduceM { unReduceM :: Reader ReduceEnv a }
-  deriving (Functor, Applicative, Monad)
+newtype ReduceM a = ReduceM { unReduceM :: ReduceEnv -> a }
+--  deriving (Functor, Applicative, Monad)
+
+instance Functor ReduceM where
+  fmap f (ReduceM m) = ReduceM $ \ e -> f $! m e
+
+instance Applicative ReduceM where
+  pure x = ReduceM (const x)
+  ReduceM f <*> ReduceM x = ReduceM $ \ e -> f e $! x e
+
+instance Monad ReduceM where
+  return x = ReduceM (const x)
+  ReduceM m >>= f = ReduceM $ \ e -> unReduceM (f $! m e) e
 
 runReduceM :: ReduceM a -> TCM a
 runReduceM m = do
   e <- ask
   s <- get
-  return $ runReader (unReduceM m) (ReduceEnv e s)
+  return $! unReduceM m (ReduceEnv e s)
 
 runReduceF :: (a -> ReduceM b) -> TCM (a -> b)
 runReduceF f = do
   e <- ask
   s <- get
-  return $ \x -> runReader (unReduceM (f x)) (ReduceEnv e s)
+  return $ \x -> unReduceM (f x) (ReduceEnv e s)
 
 instance MonadReader TCEnv ReduceM where
-  ask = redEnv <$> ReduceM ask
-  local f = ReduceM . local (mapRedEnv f) . unReduceM
+  ask = ReduceM redEnv
+  local f (ReduceM m) = ReduceM (m . mapRedEnv f)
 
 ---------------------------------------------------------------------------
 -- * Type checking monad transformer
@@ -1996,6 +2070,13 @@ catchError_ :: TCM a -> (TCErr -> TCM a) -> TCM a
 catchError_ m h = TCM $ \r e ->
   unTCM m r e
   `E.catch` \err -> unTCM (h err) r e
+
+finally_ :: TCM a -> TCM a -> TCM a
+finally_ m f = do
+  m `catchError_` \err -> do
+    f
+    throwError err
+  f
 
 {-# SPECIALIZE INLINE mapTCMT :: (forall a. IO a -> IO a) -> TCM a -> TCM a #-}
 mapTCMT :: (forall a. m a -> n a) -> TCMT m a -> TCMT n a

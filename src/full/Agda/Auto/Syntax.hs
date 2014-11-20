@@ -152,9 +152,8 @@ data Exp o
   | AbsurdLambda FMode
     -- ^ Absurd lambda with hiding information.
 
-
+dontCare :: Exp o
 dontCare = Sort UnknownSort
-
 
 -- | "Maybe expression":  Expression or reference to meta variable.
 type MExp o = MM (Exp o) (RefInfo o)

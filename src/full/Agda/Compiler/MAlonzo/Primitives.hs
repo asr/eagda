@@ -131,6 +131,10 @@ declsForPrim = xForPrim $
       do cs' <- mapM pconName cs
          return $ zipWith (\ n -> fakeDS n . repl cs') [n1, n2] [b1, b2]
 
+mazNatToInteger, mazIntegerToNat, mazNatToInt, mazIntToNat, mazCharToInteger,
+  mazListToHList, mazHListToList, mazListToString, mazStringToList,
+  mazBoolToHBool, mazHBoolToBool :: String
+
 mazNatToInteger  = "mazNatToInteger"
 mazIntegerToNat  = "mazIntegerToNat"
 mazNatToInt      = "mazNatToInt"
@@ -271,9 +275,9 @@ primBody s = maybe unimplemented (either (hsVarUQ . HS.Ident) id <$>) $
 
   lam x t = Lam (setHiding Hidden defaultArgInfo) (Abs x t)
 
-
 ----------------------
 
+repl :: [String] -> String -> String
 repl subs = go where
   go ('<':'<':c:'>':'>':s) | 0 <= i && i < length subs = subs !! i ++ go s
      where i = ord c - ord '0'
@@ -281,7 +285,7 @@ repl subs = go where
   go []    = []
 
 pconName :: String -> TCM String
-pconName s = toS =<< getBuiltin s where
+pconName s = toS . ignoreSharing =<< getBuiltin s where
   toS (Con q _) = prettyPrint <$> conhqn (conName q)
   toS (Lam _ t) = toS (unAbs t)
   toS _ = mazerror $ "pconName" ++ s
@@ -297,5 +301,5 @@ hasCompiledData (s:_) = toB =<< getBuiltin s where
   toB _         = return False
 hasCompiledData _    = return False
 
-
+bltQual' :: String -> String -> TCM String
 bltQual' b s = prettyPrint <$> bltQual b s

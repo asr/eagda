@@ -1,11 +1,11 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP           #-}
 {-# LANGUAGE PatternGuards #-}
 
 module Agda.Utils.Suffix where
 
 import Data.Char
+
+import Agda.Utils.Function
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -75,3 +75,14 @@ addSuffix s NoSuffix      = s
 addSuffix s (Prime n)     = s ++ replicate n '\''
 addSuffix s (Index i)     = s ++ show i
 addSuffix s (Subscript i) = s ++ map toSubscriptDigit (show i)
+
+-- | Add first available @Suffix@ to a name.
+
+nameVariant
+  :: (String -> Bool) -- ^ Is the given name already taken?
+  -> String           -- ^ Name of which we want an available variant.
+  -> String           -- ^ Name extended by suffix that is not taken already.
+nameVariant taken x = addSuffix x $ trampoline step $ Prime 0
+  where
+    -- if the current suffix is taken, repeat with next suffix, else done
+    step s = if taken (addSuffix x s) then Right (nextSuffix s) else Left s

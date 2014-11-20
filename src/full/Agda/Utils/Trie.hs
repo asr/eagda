@@ -1,10 +1,10 @@
--- | Strict tries (based on 'Data.Map.Strict' and 'Agda.Utils.Maybe.Strict').
-
 {-# LANGUAGE CPP                        #-}
 {-# LANGUAGE BangPatterns               #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE PatternGuards              #-}
 {-# LANGUAGE TupleSections              #-}
+
+-- | Strict tries (based on 'Data.Map.Strict' and 'Agda.Utils.Maybe.Strict').
 
 module Agda.Utils.Trie
   ( Trie
@@ -36,7 +36,7 @@ import Agda.Utils.Maybe.Strict
 --
 --   With the strict 'Maybe' type, 'Trie' is also strict in 'v'.
 data Trie k v = Trie !(Maybe v) !(Map k (Trie k v))
-  deriving Show
+  deriving (Show, Eq)
 
 -- | Empty trie.
 empty :: Trie k v
@@ -140,6 +140,7 @@ modelPath ks (Model xs) =
   $ nubBy ((==) `on` fst)
   $ filter (flip isPrefixOf ks . fst) xs
 
+prop_path :: [Key] -> Model -> Property
 prop_path ks m =
   collect (length $ modelPath ks m) $
   lookupPath ks (modelToTrie m) == modelPath ks m

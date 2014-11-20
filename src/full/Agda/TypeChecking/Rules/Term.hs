@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP                   #-}
 {-# LANGUAGE FlexibleInstances     #-}
 {-# LANGUAGE NamedFieldPuns        #-}
@@ -15,11 +13,13 @@ import Control.Monad.Trans
 import Control.Monad.Reader
 
 import Data.Maybe
+import Data.Either (partitionEithers , lefts)
 import Data.List hiding (sort)
 import qualified Data.Map as Map
 import Data.Traversable (sequenceA)
 
 import Agda.Interaction.Options
+import Agda.Interaction.Highlighting.Generate (storeDisambiguatedName)
 
 import qualified Agda.Syntax.Abstract as A
 import Agda.Syntax.Abstract.Views as A
@@ -31,8 +31,13 @@ import Agda.Syntax.Fixity
 import Agda.Syntax.Internal as I
 import Agda.Syntax.Position
 import Agda.Syntax.Literal
-import Agda.Syntax.Scope.Base (emptyScopeInfo)
+import qualified Agda.Syntax.Reflected as R
+import Agda.Syntax.Scope.Base ( ThingsInScope, AbstractName
+                              , emptyScopeInfo
+                              , exportedNamesInScope)
+import Agda.Syntax.Scope.Monad (getNamedScope)
 import Agda.Syntax.Translation.InternalToAbstract (reify)
+import Agda.Syntax.Translation.ReflectedToAbstract (toAbstract_)
 
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Monad.Builtin
@@ -51,16 +56,18 @@ import Agda.TypeChecking.Patterns.Abstract
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Primitive
 import Agda.TypeChecking.Quote
+import Agda.TypeChecking.Unquote
 import Agda.TypeChecking.RecordPatterns
 import Agda.TypeChecking.Records
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.Rules.LHS (checkLeftHandSide, LHSResult(..))
+import Agda.TypeChecking.Unquote
 
 import {-# SOURCE #-} Agda.TypeChecking.Empty (isEmptyType)
 import {-# SOURCE #-} Agda.TypeChecking.Rules.Decl (checkSectionApplication)
-import {-# SOURCE #-} Agda.TypeChecking.Rules.Def (checkFunDef,checkFunDef')
+import {-# SOURCE #-} Agda.TypeChecking.Rules.Def (checkFunDef, checkFunDef', useTerPragma)
 
 import Agda.Utils.Except
   ( Error(noMsg, strMsg)
@@ -70,6 +77,7 @@ import Agda.Utils.Except
   )
 
 import Agda.Utils.Functor (($>))
+import Agda.Utils.Lens
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.Permutation
@@ -342,8 +350,9 @@ checkExtendedLambda i di qname cs e t = do
      let info = setRelevance rel defaultArgInfo
      -- Andreas, 2013-12-28: add extendedlambda as @Function@, not as @Axiom@;
      -- otherwise, @addClause@ in @checkFunDef'@ fails (see issue 1009).
-     addConstant qname $
-       (defaultDefn info qname t emptyFunction) { defMutual = j }
+     addConstant qname =<< do
+       useTerPragma $
+         (defaultDefn info qname t emptyFunction) { defMutual = j }
      reportSDoc "tc.term.exlam" 50 $
        text "extended lambda's implementation \"" <> prettyTCM qname <>
        text "\" has type: " $$ prettyTCM t -- <+> text " where clauses: " <+> text (show cs)
@@ -355,7 +364,7 @@ checkExtendedLambda i di qname cs e t = do
      let (hid, notHid) = partition isHidden argsNoParam
      abstract (A.defAbstract di) $ checkFunDef' t info NotDelayed
                                                 (Just (length hid, length notHid)) Nothing di qname cs
-     reduce $ (Def qname [] `apply` args)
+     return $ Def qname $ map Apply args
   where
     -- Concrete definitions cannot use information about abstract things.
     abstract ConcreteDef = inConcreteMode
@@ -365,10 +374,30 @@ checkExtendedLambda i di qname cs e t = do
 -- * Records
 ---------------------------------------------------------------------------
 
+expandModuleAssigns :: [Either A.Assign A.ModuleName] -> [C.Name] -> TCM A.Assigns
+expandModuleAssigns mfs exs = do
+  let (fs , ms) = partitionEithers mfs
+      exs' = exs \\ map (view A.fieldAssign) fs
+  fs' <- forM exs' $ \ f -> do
+    pms <- forM ms $ \ m -> do
+       modScope <- getNamedScope m
+       let names :: ThingsInScope AbstractName
+           names = exportedNamesInScope modScope
+       return $
+        case Map.lookup f names of
+          Just [n] -> Just (m, A.Assign f (A.nameExpr n))
+          _        -> Nothing
+
+    case catMaybes pms of
+      []        -> return Nothing
+      [(_, fa)] -> return (Just fa)
+      mfas      -> typeError $ GenericError $ "Ambiguity: the field " ++ show f ++ " appears in the following modules " ++ show (map fst mfas)
+  return (fs ++ catMaybes fs')
+
 -- | @checkRecordExpression fs e t@ checks record construction against type @t@.
 -- Precondition @e = Rec _ fs@.
-checkRecordExpression :: A.Assigns -> A.Expr -> Type -> TCM Term
-checkRecordExpression fs e t = do
+checkRecordExpression :: A.RecordAssigns  -> A.Expr -> Type -> TCM Term
+checkRecordExpression mfs e t = do
   reportSDoc "tc.term.rec" 10 $ sep
     [ text "checking record expression"
     , prettyA e
@@ -388,6 +417,7 @@ checkRecordExpression fs e t = do
 
       def <- getRecordDef r
       let axs  = recordFieldNames def
+          exs  = filter notHidden axs
           xs   = map unArg axs
           ftel = recTel def
           con  = killRange $ recConHead def
@@ -397,18 +427,19 @@ checkRecordExpression fs e t = do
         , text $ "  con = " ++ show con
         ]
       scope  <- getScope
+      fs <- expandModuleAssigns mfs (map unArg exs)
       let arg x e =
             case [ a | a <- axs, unArg a == x ] of
               [a] -> unnamed e <$ a
               _   -> defaultNamedArg e -- we only end up here if the field names are bad
       let meta x = A.Underscore $ A.MetaInfo (getRange e) scope Nothing (show x)
           missingExplicits = [ (unArg a, [unnamed . meta <$> a])
-                             | a <- axs, notHidden a
-                             , notElem (unArg a) (map fst fs) ]
+                             | a <- exs
+                             , unArg a `notElem` map (view A.fieldAssign) fs ]
       -- In es omitted explicit fields are replaced by underscores
       -- (from missingExplicits). Omitted implicit or instance fields
       -- are still left out and inserted later by checkArguments_.
-      es   <- concat <$> orderFields r [] xs ([ (x, [arg x e]) | (x, e) <- fs ] ++
+      es   <- concat <$> orderFields r [] xs ([ (x, [arg x e]) | A.Assign x e <- fs ] ++
                                               missingExplicits)
       let tel = ftel `apply` vs
       args <- checkArguments_ ExpandLast (getRange e)
@@ -418,14 +449,14 @@ checkRecordExpression fs e t = do
       reportSDoc "tc.term.rec" 20 $ text $ "finished record expression"
       return $ Con con args
     MetaV _ _ -> do
-      let fields = map fst fs
+      let fields = [ x | Left (A.Assign x _) <- mfs ]
       rs <- findPossibleRecords fields
       case rs of
           -- If there are no records with the right fields we might as well fail right away.
-        [] -> case fs of
-          []       -> typeError $ GenericError "There are no records in scope"
-          [(f, _)] -> typeError $ GenericError $ "There is no known record with the field " ++ show f
-          _        -> typeError $ GenericError $ "There is no known record with the fields " ++ unwords (map show fields)
+        [] -> case fields of
+          []  -> typeError $ GenericError "There are no records in scope"
+          [f] -> typeError $ GenericError $ "There is no known record with the field " ++ show f
+          _   -> typeError $ GenericError $ "There is no known record with the fields " ++ unwords (map show fields)
           -- If there's only one record with the appropriate fields, go with that.
         [r] -> do
           def <- getConstInfo r
@@ -473,9 +504,9 @@ checkRecordUpdate ei recexpr fs e t = do
         axs <- getRecordFieldNames r
         scope <- getScope
         let xs = map unArg axs
-        es <- orderFields r Nothing xs $ map (\(x, e) -> (x, Just e)) fs
+        es <- orderFields r Nothing xs $ map (\(A.Assign x e) -> (x, Just e)) fs
         let es' = zipWith (replaceFields name ei) projs es
-        checkExpr (A.Rec ei [ (x, e) | (x, Just e) <- zip xs es' ]) t
+        checkExpr (A.Rec ei [ Left (A.Assign x e) | (x, Just e) <- zip xs es' ]) t
     MetaV _ _ -> do
       inferred <- inferExpr recexpr >>= reduce . snd
       case ignoreSharing $ unEl inferred of
@@ -586,7 +617,18 @@ checkExpr e t0 =
                 hiddenLHS _ = False
 
         -- a meta variable without arguments: type check directly for efficiency
-        A.QuestionMark i ii -> checkMeta (newQuestionMark ii) t0 i -- Andreas, 2013-05-22 use unreduced type t0!
+        A.QuestionMark i ii -> do
+          reportSDoc "tc.interaction" 20 $ sep
+            [ text "Found interaction point"
+            , text (show ii)
+            , text ":"
+            , prettyTCM t0
+            ]
+          reportSDoc "tc.interaction" 40 $ sep
+            [ text "Raw:"
+            , text (show t0)
+            ]
+          checkMeta (newQuestionMark ii) t0 i -- Andreas, 2013-05-22 use unreduced type t0!
         A.Underscore i   -> checkMeta (newValueMeta RunMetaOccursCheck) t0 i
 
         A.WithApp _ e es -> typeError $ NotImplemented "type checking of with application"
@@ -609,7 +651,7 @@ checkExpr e t0 =
               text "against" <+> prettyTCM t
             coerce (Sort $ Type n) (sort $ sSuc $ Type n) t
 
-        A.App i q (Arg ai e)
+        e0@(A.App i q (Arg ai e))
           | A.Quote _ <- unScope q, visible ai -> do
           let quoted (A.Def x) = return x
               quoted (A.Proj x) = return x
@@ -623,9 +665,14 @@ checkExpr e t0 =
 
           | A.QuoteTerm _ <- unScope q ->
              do (et, _)   <- inferExpr (namedThing e)
-                q         <- quoteTerm =<< etaContract =<< normalise et
-                ty        <- el primAgdaTerm
-                coerce q ty t
+                et'       <- etaContract =<< normalise et
+                let metas = allMetas et'
+                case metas of
+                  _:_ -> postponeTypeCheckingProblem (CheckExpr e0 t) $ andM $ map isInstantiatedMeta metas
+                  []  -> do
+                    q  <- quoteTerm et'
+                    ty <- el primAgdaTerm
+                    coerce q ty t
 
         A.Quote _ -> typeError $ GenericError "quote must be applied to a defined name"
         A.QuoteTerm _ -> typeError $ GenericError "quoteTerm must be applied to a term"
@@ -676,25 +723,60 @@ checkExpr e t0 =
             (internalError "DontCare may only appear in irrelevant contexts")
 
         e0@(A.QuoteGoal _ x e) -> do
-          t' <- etaContract =<< normalise t
-          let metas = allMetas t'
-          case metas of
-            _:_ -> postponeTypeCheckingProblem (CheckExpr e0 t') $ andM $ map isInstantiatedMeta metas
-            []  -> do
-              quoted <- quoteTerm (unEl t')
+          qg <- quoteGoal t
+          case qg of
+            Left metas -> postponeTypeCheckingProblem (CheckExpr e0 t) $ andM $ map isInstantiatedMeta metas
+            Right quoted -> do
               tmType <- agdaTermType
               (v, ty) <- addLetBinding defaultArgInfo x quoted tmType (inferExpr e)
-              blockTerm t' $ coerce v ty t'
+              coerce v ty t
         e0@(A.QuoteContext _) -> do
-          contextTypes <- map (fmap snd) <$> getContext
-          contextTypes <- etaContract =<< normalise contextTypes
-          quotedContext <- buildList <*> mapM quoteDom contextTypes
-          ctxType <- el $ list $ primArg <@> (unEl <$> agdaTypeType)
-          coerce quotedContext ctxType t
+          qc <- quoteContext
+          case qc of
+            Left metas -> postponeTypeCheckingProblem (CheckExpr e0 t) $ andM $ map isInstantiatedMeta metas
+            Right quotedContext -> do
+              ctxType <- el $ list $ primArg <@> (unEl <$> agdaTypeType)
+              coerce quotedContext ctxType t
+        e0@(A.Tactic i e xs ys) -> do
+          qc <- quoteContext
+          qg <- quoteGoal t
+          let postpone metas = postponeTypeCheckingProblem (CheckExpr e0 t) $ andM $ map isInstantiatedMeta metas
+          case (qc, qg) of
+            (Left metas1, Left metas2) -> postpone $ metas1 ++ metas2
+            (Left metas , Right _    ) -> postpone $ metas
+            (Right _    , Left metas ) -> postpone $ metas
+            (Right quotedCtx, Right quotedGoal) -> do
+              quotedCtx  <- defaultNamedArg <$> reify quotedCtx
+              quotedGoal <- defaultNamedArg <$> reify quotedGoal
+              let tac    = foldl (A.App i) (A.App i (A.App i e quotedCtx) quotedGoal) xs
+                  result = foldl (A.App i) (A.Unquote i) (defaultNamedArg tac : ys)
+              checkExpr result t
+
         A.ETel _   -> __IMPOSSIBLE__
 
         -- Application
         _   | Application hd args <- appView e -> checkApplication hd args e t
+
+quoteGoal :: Type -> TCM (Either [MetaId] Term)
+quoteGoal t = do
+  t' <- etaContract =<< normalise t
+  let metas = allMetas t'
+  case metas of
+    _:_ -> return $ Left metas
+    []  -> do
+      quotedGoal <- quoteTerm (unEl t')
+      return $ Right quotedGoal
+
+quoteContext :: TCM (Either [MetaId] Term)
+quoteContext = do
+  contextTypes  <- map (fmap snd) <$> getContext
+  contextTypes  <- etaContract =<< normalise contextTypes
+  let metas = allMetas contextTypes
+  case metas of
+    _:_ -> return $ Left metas
+    []  -> do
+      quotedContext <- buildList <*> mapM quoteDom contextTypes
+      return $ Right quotedContext
 
 -- | @checkApplication hd args e t@ checks an application.
 --   Precondition: @Application hs args = appView e@
@@ -725,16 +807,18 @@ checkApplication hd args e t = do
       -- Type error
       let badCon t = typeError $ DoesNotConstructAnElementOf (head cs) t
       -- Lets look at the target type at this point
-      let getCon = do
+      let getCon :: TCM (Maybe ConHead)
+          getCon = do
           TelV tel t1 <- telView t
           addCtxTel tel $ do
            reportSDoc "tc.check.term.con" 40 $ nest 2 $
              text "target type: " <+> prettyTCM t1
            ifBlockedType t1 (\ m t -> return Nothing) $ \ t' ->
-             (isDataOrRecord (unEl t') >>=) $ maybe (badCon t') $ \ d ->
+             caseMaybeM (isDataOrRecord $ unEl t') (badCon t') $ \ d ->
                case [ c | (d', c) <- dcs, d == d' ] of
                  [c] -> do
                    reportSLn "tc.check.term" 40 $ "  decided on: " ++ show c
+                   storeDisambiguatedName $ conName c
                    return $ Just c
                  []  -> badCon $ t' $> Def d []
                  cs  -> typeError $ CantResolveOverloadedConstructorsTargetingSameDatatype d $ map conName cs
@@ -768,19 +852,28 @@ checkApplication hd args e t = do
     -- Subcase: unquote
     A.Unquote _
       | [arg] <- args -> do
-          e <- unquoteTerm (namedArg arg)
-          checkExpr e t
+          unquoteTerm (namedArg arg) $ \e ->
+            checkExpr e t
       | arg : args <- args -> do
-          e <- unquoteTerm (namedArg arg)
-          checkHeadApplication e t e $ map convColor args
+          unquoteTerm (namedArg arg) $ \e ->
+            checkHeadApplication e t e $ map convColor args
       where
-        unquoteTerm qv = do
-          v <- unquote =<< checkExpr qv =<< el primAgdaTerm
-          e <- reifyUnquoted (v :: Term)
-          reportSDoc "tc.unquote.term" 10 $
-            vcat [ text "unquote" <+> prettyTCM qv
-                 , nest 2 $ text "-->" <+> prettyA e ]
-          return (killRange e)
+        unquoteTerm :: A.Expr -> (A.Expr -> TCM Term) -> TCM Term
+        unquoteTerm qv cont = do
+          qv <- checkExpr qv =<< el primAgdaTerm
+          mv <- runUnquoteM $ unquote qv
+          case mv of
+            Left (BlockedOnMeta m) -> do
+              r <- getRange <$> lookupMeta m
+              setCurrentRange r $
+                postponeTypeCheckingProblem (CheckExpr e t) (isInstantiatedMeta m)
+            Left err -> typeError $ UnquoteFailed err
+            Right v  -> do
+              e <- toAbstract_ (v :: R.Term)
+              reportSDoc "tc.unquote.term" 10 $
+                vcat [ text "unquote" <+> prettyTCM qv
+                     , nest 2 $ text "-->" <+> prettyA e ]
+              cont e
 
     -- Subcase: defined symbol or variable.
     _ -> checkHeadApplication e t hd $ map convColor args
@@ -1006,9 +1099,9 @@ checkConstructorApplication org t c args = do
           (map (const dummyUnderscore) ps, args)
     splitArgs (p:ps) (arg : args)
       | elem mname [Nothing, Just p] =
-          (arg :) *** id $ splitArgs ps args
+          mapFst (arg :) $ splitArgs ps args
       | otherwise =
-          (dummyUnderscore :) *** id $ splitArgs ps (arg:args)
+          mapFst (dummyUnderscore :) $ splitArgs ps (arg:args)
       where
         mname = nameOf (unArg arg)
 
@@ -1088,9 +1181,11 @@ checkHeadApplication e t hd args = do
       -- If we are in irrelevant position, add definition irrelevantly.
       -- TODO: is this sufficient?
       rel <- asks envRelevance
-      addConstant c' (Defn (setRelevance rel defaultArgInfo)
-                           c' t [] [] (defaultDisplayForm c')
-                  i noCompiledRep [] Nothing $ emptyFunction)
+      addConstant c' =<< do
+        let ai = setRelevance rel defaultArgInfo
+        useTerPragma $
+          Defn ai c' t [] [] (defaultDisplayForm c') i noCompiledRep [] Nothing $
+          emptyFunction
 
       -- Define and type check the fresh function.
       ctx <- getContext >>= mapM (\d -> flip Dom (unDom d) <$> reify (domInfo d))
@@ -1312,12 +1407,31 @@ inferOrCheck e mt = case e of
       return (v,t)
 -}
 
+-- | Check whether a de Bruijn index is bound by a module telescope.
+isModuleFreeVar :: Int -> TCM Bool
+isModuleFreeVar i = do
+  nfv <- getModuleFreeVars =<< currentModule
+  n   <- getContextSize
+  -- The first de Bruijn index that points to a module
+  -- free variable.
+  let firstModuleVar = n - nfv
+  when (firstModuleVar < 0) __IMPOSSIBLE__
+  return $ i >= firstModuleVar
+
 -- | Infer the type of an expression, and if it is of the form
 --   @{tel} -> D vs@ for some datatype @D@ then insert the hidden
 --   arguments.  Otherwise, leave the type polymorphic.
 inferExprForWith :: A.Expr -> TCM (Term, Type)
-inferExprForWith e = do
-  (v, t) <- inferExpr e
+inferExprForWith e = traceCall (InferExpr e) $ do
+  -- With wants type and term fully instantiated!
+  (v, t) <- instantiateFull =<< inferExpr e
+  v0 <- reduce v
+  -- Andreas 2014-11-06, issue 1342.
+  -- Check that we do not `with` on a module parameter!
+  case ignoreSharing v0 of
+    Var i [] -> whenM (isModuleFreeVar i) $ typeError $ WithOnFreeVariable e
+    _        -> return ()
+  -- Possibly insert hidden arguments.
   TelV tel t0 <- telViewUpTo' (-1) ((NotHidden /=) . getHiding) t
   case ignoreSharing $ unEl t0 of
     Def d vs -> do

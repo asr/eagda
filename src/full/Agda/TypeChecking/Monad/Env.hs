@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE FlexibleContexts #-}
 
 module Agda.TypeChecking.Monad.Env where
@@ -102,10 +100,3 @@ insideDotPattern = local $ \e -> e { envInsideDotPattern = True }
 
 isInsideDotPattern :: TCM Bool
 isInsideDotPattern = asks envInsideDotPattern
-
-isReifyingUnquoted :: TCM Bool
-isReifyingUnquoted = asks envReifyUnquoted
-
-nowReifyingUnquoted :: TCM a -> TCM a
-nowReifyingUnquoted = local $ \e -> e { envReifyUnquoted = True }
-

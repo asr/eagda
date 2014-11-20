@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE DeriveFunctor              #-}
 {-# LANGUAGE DoAndIfThenElse            #-}
 {-# LANGUAGE FlexibleInstances          #-}
@@ -72,7 +70,7 @@ import Data.Set (Set)
 
 import Agda.Utils.Function (iterateUntil)
 import Agda.Utils.Functor (for)
-import Agda.Utils.List (headMay)
+import Agda.Utils.List (headMaybe)
 import Agda.Utils.QuickCheck as QuickCheck
 import Agda.Utils.SemiRing
 import Agda.Utils.TestHelpers
@@ -229,7 +227,7 @@ fromListWith f = List.foldl' (flip (insertEdgeWith f)) empty
 
 -- | Convert a graph into a list of edges. O(e)
 
-toList ::  (Ord s, Ord t) => Graph s t e -> [Edge s t e]
+toList :: (Ord s, Ord t) => Graph s t e -> [Edge s t e]
 toList (Graph g) = [ Edge s t a | (s,m) <- Map.assocs g, (t,a) <- Map.assocs m ]
 
 -- | Empty graph (no nodes, no edges).
@@ -253,12 +251,14 @@ insertEdge (Edge s t e) = insert s t e
 -- | Insert an edge, possibly combining @old@ edge weight with @new@ weight by
 --   given function @f@ into @f new old@.
 
-insertWith :: (Ord s, Ord t) => (e -> e -> e) -> s -> t -> e -> Graph s t e -> Graph s t e
+insertWith :: (Ord s, Ord t) =>
+              (e -> e -> e) -> s -> t -> e -> Graph s t e -> Graph s t e
 insertWith f s t e (Graph g) = Graph (Map.alter (Just . ins) s g)
   where ins Nothing  = Map.singleton t e
         ins (Just m) = Map.insertWith f t e m
 
-insertEdgeWith :: (Ord s, Ord t) => (e -> e -> e) -> Edge s t e -> Graph s t e -> Graph s t e
+insertEdgeWith :: (Ord s, Ord t) =>
+                  (e -> e -> e) -> Edge s t e -> Graph s t e -> Graph s t e
 insertEdgeWith f (Edge s t e) = insertWith f s t e
 
 -- | Left-biased union.
@@ -266,7 +266,8 @@ insertEdgeWith f (Edge s t e) = insertWith f s t e
 union :: (Ord s, Ord t) => Graph s t e -> Graph s t e -> Graph s t e
 union = unionWith $ \ left right -> left
 
-unionWith :: (Ord s, Ord t) => (e -> e -> e) -> Graph s t e -> Graph s t e -> Graph s t e
+unionWith :: (Ord s, Ord t) =>
+             (e -> e -> e) -> Graph s t e -> Graph s t e -> Graph s t e
 unionWith f (Graph g) (Graph g') = Graph $ Map.unionWith (Map.unionWith f) g g'
 
 unions ::(Ord s, Ord t) => [Graph s t e] -> Graph s t e
@@ -275,7 +276,8 @@ unions = unionsWith $ \ left right -> left
 unionsWith :: (Ord s, Ord t) => (e -> e -> e) -> [Graph s t e] -> Graph s t e
 unionsWith f = List.foldl' (unionWith f) empty
 
-prop_insertWith :: (Eq e, Ord s, Ord t) => (e -> e -> e) -> s -> t -> e -> Graph s t e -> Bool
+prop_insertWith :: (Eq e, Ord s, Ord t) =>
+                   (e -> e -> e) -> s -> t -> e -> Graph s t e -> Bool
 prop_insertWith f s t e g =
   insertWith f s t e g == unionWith (flip f) g (singleton s t e)
 
@@ -469,7 +471,7 @@ prop_transitiveClosure g = QuickCheck.label sccInfo $
 --
 --   The path must satisfy the given predicate @good :: e -> Bool@.
 findPath :: (SemiRing e, Ord n) => (e -> Bool) -> n -> n -> Graph n n e -> Maybe e
-findPath good a b g = headMay $ filter good $ allPaths good a b g
+findPath good a b g = headMaybe $ filter good $ allPaths good a b g
 
 -- | @allPaths classify a b g@ returns a list of pathes (accumulated edge weights)
 --   from node @a@ to node @b@ in @g@.

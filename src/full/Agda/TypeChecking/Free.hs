@@ -208,6 +208,7 @@ data FreeConf = FreeConf
     -- ^ Under how many binders have we stepped?
   }
 
+initFreeConf :: FreeConf
 initFreeConf = FreeConf
   { fcIgnoreSorts = IgnoreNot
   , fcContext     = 0
@@ -264,7 +265,6 @@ instance Free Term where
     MetaV _ ts -> flexible <$> freeVars' ts
     DontCare mt -> irrelevantly <$> freeVars' mt
     Shared p    -> freeVars' (derefPtr p)
-    ExtLam cs ts -> freeVars' (cs, ts)
 
 instance Free Type where
   freeVars' (El s t) =

@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE DeriveFoldable     #-}
 {-# LANGUAGE DeriveFunctor      #-}
@@ -140,7 +138,7 @@ data Precedence = TopCtx | FunctionSpaceDomainCtx
                 | LeftOperandCtx Fixity | RightOperandCtx Fixity
                 | FunctionCtx | ArgumentCtx | InsideOperandCtx
                 | WithFunCtx | WithArgCtx | DotPatternCtx
-    deriving (Show,Typeable)
+    deriving (Show,Typeable, Eq)
 
 
 -- | The precedence corresponding to a possibly hidden argument.

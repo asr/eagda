@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP                  #-}
 {-# LANGUAGE DeriveDataTypeable   #-}
 {-# LANGUAGE DeriveFunctor        #-}
@@ -36,6 +34,7 @@ import Agda.TypeChecking.Free as Free
 import Agda.TypeChecking.CompiledClause
 
 import Agda.Utils.Empty
+import Agda.Utils.Functor
 import Agda.Utils.List
 import Agda.Utils.Monad
 import Agda.Utils.Permutation
@@ -78,7 +77,6 @@ instance Apply Term where
       Sort _      -> __IMPOSSIBLE__
       DontCare mv -> dontCare $ mv `applyE` es  -- Andreas, 2011-10-02
         -- need to go under DontCare, since "with" might resurrect irrelevant term
-      ExtLam _ _  -> __IMPOSSIBLE__
 
 -- | If $v$ is a record value, @canProject f v@
 --   returns its field @f@.
@@ -87,7 +85,7 @@ canProject f v =
   case ignoreSharing v of
     (Con (ConHead _ _ fs) vs) -> do
       i <- elemIndex f fs
-      headMay (drop i vs)
+      headMaybe (drop i vs)
     _ -> Nothing
 
 -- | Eliminate a constructed term.
@@ -100,14 +98,14 @@ conApp ch@(ConHead c _ fs) args (Proj f  : es) =
         " with fields " ++ show fs ++
         " projected by " ++ show f
       i = maybe failure id            $ elemIndex f fs
-      v = maybe failure argToDontCare $ headMay $ drop i args
+      v = maybe failure argToDontCare $ headMaybe $ drop i args
   in  applyE v es
 {-
       i = maybe failure id    $ elemIndex f $ map unArg fs
-      v = maybe failure unArg $ headMay $ drop i args
+      v = maybe failure unArg $ headMaybe $ drop i args
       -- Andreas, 2013-10-20 see Issue543a:
       -- protect result of irrelevant projection.
-      r = maybe __IMPOSSIBLE__ getRelevance $ headMay $ drop i fs
+      r = maybe __IMPOSSIBLE__ getRelevance $ headMaybe $ drop i fs
       u | Irrelevant <- r = DontCare v
         | otherwise       = v
   in  applyE v es
@@ -349,21 +347,21 @@ piApply t args                    =
 
 -- | @(abstract args v) `apply` args --> v[args]@.
 class Abstract t where
-    abstract :: Telescope -> t -> t
+  abstract :: Telescope -> t -> t
 
 instance Abstract Term where
-    abstract = teleLam
+  abstract = teleLam
 
 instance Abstract Type where
-    abstract = telePi_
+  abstract = telePi_
 
 instance Abstract Sort where
-    abstract EmptyTel s = s
-    abstract _        s = __IMPOSSIBLE__
+  abstract EmptyTel s = s
+  abstract _        s = __IMPOSSIBLE__
 
 instance Abstract Telescope where
-  abstract  EmptyTel            tel = tel
-  abstract (ExtendTel arg tel') tel = ExtendTel arg $ fmap (`abstract` tel) tel'
+  EmptyTel           `abstract` tel = tel
+  ExtendTel arg xtel `abstract` tel = ExtendTel arg $ xtel <&> (`abstract` tel)
 
 instance Abstract Definition where
   abstract tel (Defn info x t pol occ df m c rews inst d) =
@@ -480,7 +478,7 @@ abstractArgs args x = abstract tel x
 -- * Explicit substitutions
 ---------------------------------------------------------------------------
 
--- See TypeChecking.Monad.Base for the definition.
+-- See Syntax.Internal for the definition.
 
 idS :: Substitution
 idS = IdS
@@ -625,7 +623,6 @@ instance Subst Term where
     Sort s      -> sortTm $ applySubst rho s
     Shared p    -> Shared $ applySubst rho p
     DontCare mv -> dontCare $ applySubst rho mv
-    ExtLam cs es-> ExtLam (applySubst rho cs) (applySubst rho es)
 
 instance Subst a => Subst (Ptr a) where
   applySubst rho = fmap (applySubst rho)
@@ -743,11 +740,6 @@ instance Subst ClauseBody where
   applySubst rho (Bind b) = Bind $ applySubst rho b
   applySubst _   NoBody   = NoBody
 
-instance Subst Clause where
-  -- NOTE: This only happens when reifying extended lambdas, in which case there are
-  -- no interesting dot patterns and we don't care about the type.
-  applySubst rho c = c { clauseBody = applySubst rho $ clauseBody c }
-
 ---------------------------------------------------------------------------
 -- * Telescopes
 ---------------------------------------------------------------------------
@@ -773,6 +765,9 @@ telToList (ExtendTel arg tel) = fmap (absName tel,) arg : telToList (absBody tel
   -- Andreas, 2013-12-14: This would work also for 'NoAbs',
   -- since 'absBody' raises.
 
+telToArgs :: Telescope -> [Arg ArgName]
+telToArgs tel = [ Common.Arg (domInfo d) (fst $ unDom d) | d <- telToList tel ]
+
 -- | Turn a typed binding @(x1 .. xn : A)@ into a telescope.
 bindsToTel' :: (Name -> a) -> [Name] -> Dom Type -> ListTel' a
 bindsToTel' f []     t = []
@@ -793,6 +788,9 @@ mkPi :: Dom (ArgName, Type) -> Type -> Type
 mkPi (Common.Dom info (x, a)) b = el $ Pi (Common.Dom info a) (mkAbs x b)
   where
     el = El $ dLub (getSort a) (Abs x (getSort b)) -- dLub checks x freeIn
+
+mkLam :: Arg ArgName -> Term -> Term
+mkLam a v = Lam (argInfo a) (Abs (unArg a) v)
 
 telePi' :: (Abs Type -> Abs Type) -> Telescope -> Type -> Type
 telePi' reAbs = telePi where
@@ -995,8 +993,6 @@ instance Eq Term where
   _          == _            = False
 
 instance Ord Term where
-  ExtLam{}   `compare` _          = __IMPOSSIBLE__
-  _          `compare` ExtLam{}   = __IMPOSSIBLE__
   Shared a   `compare` Shared x | a == x = EQ
   Shared a   `compare` x          = compare (derefPtr a) x
   a          `compare` Shared x   = compare a (derefPtr x)

@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE NoMonomorphismRestriction #-}
 {-# LANGUAGE PatternGuards             #-}
 {-# LANGUAGE TupleSections             #-}
@@ -19,6 +17,8 @@ import qualified Agda.Syntax.Common as Common
 import Agda.Syntax.Common hiding (Arg, Dom, NamedArg)
 import Agda.Syntax.Abstract as A
 import Agda.Syntax.Info
+
+import Agda.Utils.Either
 
 data AppView = Application Expr [NamedArg Expr]
 
@@ -66,7 +66,7 @@ class ExprLike a where
   foldExpr :: Monoid m => (Expr -> m) -> a -> m
   traverseExpr :: (Monad m, Applicative m) => (Expr -> m Expr) -> a -> m a
   mapExpr :: (Expr -> Expr) -> (a -> a)
-  mapExpr f e = runIdentity $ traverseExpr (Identity . f) e
+  mapExpr f = runIdentity . traverseExpr (Identity . f)
 
 instance ExprLike Expr where
   foldExpr f e =
@@ -98,6 +98,7 @@ instance ExprLike Expr where
       Quote{}              -> m
       QuoteTerm{}          -> m
       Unquote{}            -> m
+      Tactic _ e xs ys     -> m `mappend` fold e `mappend` fold xs `mappend` fold ys
       DontCare e           -> m `mappend` fold e
    where
      m    = f e
@@ -132,6 +133,7 @@ instance ExprLike Expr where
       Quote{}                 -> f e
       QuoteTerm{}             -> f e
       Unquote{}               -> f e
+      Tactic ei e xs ys       -> f =<< Tactic ei <$> trav e <*> trav xs <*> trav ys
       DontCare e              -> f =<< DontCare <$> trav e
       PatternSyn{}            -> f e
 
@@ -148,9 +150,18 @@ instance ExprLike a => ExprLike [a] where
   foldExpr     = foldMap . foldExpr
   traverseExpr = traverse . traverseExpr
 
-instance ExprLike a => ExprLike (x, a) where
-  foldExpr     f (x, e) = foldExpr f e
-  traverseExpr f (x, e) = (x,) <$> traverseExpr f e
+instance ExprLike Assign where
+  foldExpr f (Assign _ e) = foldExpr f e
+  traverseExpr = exprAssign . traverseExpr
+
+instance (ExprLike a, ExprLike b) => ExprLike (Either a b) where
+  foldExpr f = either (foldExpr f) (foldExpr f)
+  traverseExpr f = traverseEither (traverseExpr f)
+                                  (traverseExpr f)
+
+instance ExprLike ModuleName where
+  foldExpr f _ = mempty
+  traverseExpr f = pure
 
 instance ExprLike LamBinding where
   foldExpr f e =

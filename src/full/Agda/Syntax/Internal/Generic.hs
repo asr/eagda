@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP                  #-}
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE TypeSynonymInstances #-}
@@ -114,7 +112,6 @@ instance TermLike Term where
     Sort _      -> f t
     DontCare mv -> f $ DontCare $ traverseTerm f mv
     Shared p    -> f $ Shared $ traverseTerm f p
-    ExtLam{}    -> __IMPOSSIBLE__
 
   traverseTermM f t = case t of
     Var i xs    -> f =<< Var i <$> traverseTermM f xs
@@ -128,7 +125,6 @@ instance TermLike Term where
     Sort _      -> f t
     DontCare mv -> f =<< DontCare <$> traverseTermM f mv
     Shared p    -> f =<< Shared <$> traverseTermM f p
-    ExtLam{}    -> __IMPOSSIBLE__
 
   foldTerm f t = f t `mappend` case t of
     Var i xs    -> foldTerm f xs
@@ -142,7 +138,6 @@ instance TermLike Term where
     Sort _      -> mempty
     DontCare mv -> foldTerm f mv
     Shared p    -> foldTerm f p
-    ExtLam{}    -> __IMPOSSIBLE__
 
 instance TermLike Level where
   traverseTerm f  (Max as) = Max $ traverseTerm f as

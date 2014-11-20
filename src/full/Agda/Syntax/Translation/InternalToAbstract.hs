@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP                    #-}
 {-# LANGUAGE FlexibleContexts       #-}
 {-# LANGUAGE FlexibleInstances      #-}
@@ -186,8 +184,7 @@ reifyDisplayFormP lhs@(A.SpineLHS i f ps wps) =
     -- But apparently, it has no influence...
     -- Ulf, can you add an explanation?
     md <- liftTCM $ -- addContext (replicate (length ps) "x") $
-      displayForm f vs `catchError` \_ -> return Nothing
-        -- unquoted extended lambdas use fake names, so catch errors here
+      displayForm f vs
     reportSLn "reify.display" 20 $
       "display form of " ++ show f ++ " " ++ show ps ++ " " ++ show wps ++ ":\n  " ++ show md
     case md of
@@ -310,7 +307,6 @@ reifyTerm expandAnonDefs0 v = do
     let expandAnonDefs = expandAnonDefs0 && hasDisplayForms
     v <- unSpine <$> instantiate v
     case v of
-      _ | isHackReifyToMeta v -> return $ A.Underscore emptyMetaInfo
       I.Var n es   -> do
           let vs = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
           x  <- liftTCM $ nameOfBV n `catchError` \_ -> freshName_ ("@" ++ show n)
@@ -328,7 +324,7 @@ reifyTerm expandAnonDefs0 v = do
             r  <- getConstructorData x
             xs <- getRecordFieldNames r
             vs <- map unArg <$> reifyIArgs vs
-            return $ A.Rec exprInfo $ map (unArg *** id) $ filter keep $ zip xs vs
+            return $ A.Rec exprInfo $ map (Left . uncurry A.Assign . mapFst unArg) $ filter keep $ zip xs vs
           False -> reifyDisplayForm x vs $ do
             ci <- getConstInfo x
             let Constructor{conPars = np} = theDef ci
@@ -351,10 +347,7 @@ reifyTerm expandAnonDefs0 v = do
             -- (see for example the parameter {i} to Data.Star.Star, which is also
             -- the first argument to the cons).
             -- @data Star {i}{I : Set i} ... where cons : {i :  I} ...@
-            -- Ulf, 2014-07-19: Don't do any of this if we're reifying an
-            -- unquoted term (issue 1237).
-            unquote <- isReifyingUnquoted
-            if np == 0 || unquote then apps h es else do
+            if np == 0 then apps h es else do
               -- Get name of first argument from type of constructor.
               -- Here, we need the reducing version of @telView@
               -- because target of constructor could be a definition
@@ -418,9 +411,6 @@ reifyTerm expandAnonDefs0 v = do
         apps x' =<< reifyIArgs vs
       I.DontCare v -> A.DontCare <$> reifyTerm expandAnonDefs v
       I.Shared p   -> reifyTerm expandAnonDefs $ derefPtr p
-      I.ExtLam cls args -> do
-        x <- freshName_ "extlam"
-        reifyExtLam (qnameFromList [x]) 0 cls (map (fmap unnamed) args)
     where
       -- Andreas, 2012-10-20  expand a copy in an anonymous module
       -- to improve error messages.
@@ -764,6 +754,9 @@ instance DotVars a => DotVars [a] where
 instance (DotVars a, DotVars b) => DotVars (a, b) where
   dotVars (x, y) = Set.union (dotVars x) (dotVars y)
 
+instance (DotVars a, DotVars b) => DotVars (Either a b) where
+  dotVars = either dotVars dotVars
+
 instance DotVars A.Clause where
   dotVars (A.Clause _ rhs [] _) = dotVars rhs
   dotVars (A.Clause _ rhs (_:_) _) = __IMPOSSIBLE__ -- cannot contain where clauses?
@@ -807,16 +800,23 @@ instance DotVars A.Expr where
     A.Set _ _              -> Set.empty
     A.Prop _               -> Set.empty
     A.Let _ _ _            -> __IMPOSSIBLE__
-    A.Rec _ es             -> dotVars $ map snd es
-    A.RecUpdate _ e es     -> dotVars (e, map snd es)
+    A.Rec _ es             -> dotVars es
+    A.RecUpdate _ e es     -> dotVars (e, es)
     A.ETel _               -> __IMPOSSIBLE__
     A.QuoteGoal {}         -> __IMPOSSIBLE__
     A.QuoteContext {}      -> __IMPOSSIBLE__
     A.Quote {}             -> __IMPOSSIBLE__
     A.QuoteTerm {}         -> __IMPOSSIBLE__
     A.Unquote {}           -> __IMPOSSIBLE__
+    A.Tactic {}            -> __IMPOSSIBLE__
     A.DontCare v           -> dotVars v
     A.PatternSyn n         -> Set.empty
+
+instance DotVars A.Assign where
+  dotVars (A.Assign _ e) = dotVars e
+
+instance DotVars A.ModuleName where
+  dotVars _ = Set.empty
 
 instance DotVars RHS where
   dotVars (RHS e) = dotVars e

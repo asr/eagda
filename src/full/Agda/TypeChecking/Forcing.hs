@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP #-}
 
 module Agda.TypeChecking.Forcing where
@@ -37,7 +35,7 @@ addForcingAnnotations t =
   return t'
 
 forcedVariables :: Term -> TCM [Nat]
-forcedVariables t = case t of
+forcedVariables t = case ignoreSharing t of
   Var i [] -> return [i]
   Con _ vs -> forcedArgs vs
   Def d vs ->

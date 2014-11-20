@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP              #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TupleSections    #-}
@@ -163,7 +161,7 @@ traceSLn :: HasOptions m => VerboseKey -> Int -> String -> m a -> m a
 traceSLn k n s = applyWhenVerboseS k n (trace s)
 
 instance HasConstInfo ReduceM where
-  getConstInfo q = ReduceM $ ReaderT $ \(ReduceEnv env st) -> Identity $
+  getConstInfo q = ReduceM $ \(ReduceEnv env st) ->
     let defs  = sigDefinitions $ st^.stSignature
         idefs = sigDefinitions $ st^.stImports
     in case catMaybes [HMap.lookup q defs, HMap.lookup q idefs] of

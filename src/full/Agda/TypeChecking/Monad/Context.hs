@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE TupleSections        #-}
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE TypeSynonymInstances #-}
@@ -206,6 +204,7 @@ getContextArgs :: MonadTCM tcm => tcm Args
 getContextArgs = reverse . zipWith mkArg [0..] <$> getContext
   where mkArg i (Common.Dom info _) = Common.Arg info $ var i
 
+-- | Generate @[var (n - 1), ..., var 0]@ for all declarations in the context.
 {-# SPECIALIZE getContextTerms :: TCM [Term] #-}
 getContextTerms :: MonadTCM tcm => tcm [Term]
 getContextTerms = map var . downFrom <$> getContextSize
@@ -219,6 +218,11 @@ getContextTelescope = telFromList' nameToArgName . reverse <$> getContext
 {-# SPECIALIZE getContextId :: TCM [CtxId] #-}
 getContextId :: MonadTCM tcm => tcm [CtxId]
 getContextId = asks $ map ctxId . envContext
+
+-- | Get the names of all declarations in the context.
+{-# SPECIALIZE getContextNames :: TCM [Name] #-}
+getContextNames :: MonadTCM tcm => tcm [Name]
+getContextNames = map (fst . unDom) <$> getContext
 
 -- | get type of bound variable (i.e. deBruijn index)
 --

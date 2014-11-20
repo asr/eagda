@@ -1,4 +1,3 @@
-
 module Agda.TypeChecking.LevelConstraints ( simplifyLevelConstraint ) where
 
 import Agda.Syntax.Common (Nat)
@@ -33,6 +32,7 @@ simplifyLevelConstraint n new old =
 data Leq = PlusLevel :=< PlusLevel
   deriving (Show, Eq)
 
+inequalities :: Constraint -> [Leq]
 inequalities (LevelCmp CmpEq (Max [a, b]) (Max [c]))
   | a == c = [b :=< a]
   | b == c = [a :=< b]

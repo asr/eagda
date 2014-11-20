@@ -3,11 +3,16 @@ language: haskell
 # We build with all the latest GHC versions for each 7.X, so we reduce
 # build times, possibly avoid compiler bugs and still test all the major
 # interface changes.
+
+# Travis have no GHC 7.2.* installed because it is considered a technology
+# preview (as per https://www.haskell.org/ghc/download_ghc_7_2_2). If
+# necessary, we could use use the approach described in
+# https://github.com/hvr/multi-ghc-travis.
+
 ghc:
   - 7.8.3
   - 7.6.3
   - 7.4.2
-  - 7.2.2
   - 7.0.4
 
 install:
@@ -15,12 +20,13 @@ install:
   - sudo apt-get install time
   # With old GHCs, we get an old cabal-install
   - cabal install cabal-install
+  - export PATH=$HOME/.cabal/bin:$PATH
+  # Showing Cabal configuration
+  - cat $HOME/.cabal/config
   # New happy needed for haskell-src-exts
   - cabal install happy
   # New new alex for us
   - cabal install alex
-  # And cpphs
-  - cabal install cpphs
   # And epic
   - sudo apt-get install libgc-dev
   - cabal install epic
@@ -31,7 +37,7 @@ install:
   - make install-fix-agda-whitespace
 
 script:
-  - cabal configure --disable-library-profiling -v2
+  - cabal configure -v2
   - cabal build -v2
   - cabal install -v2
   # Right now haddock doesn't work, presumably because it consumes too
@@ -44,11 +50,8 @@ script:
 # Builds are loooong, we want to send an email as fast as possible.
 matrix:
   fast_finish: true
-  # For some misterious reason GHC 7.0.4 fails on travis:
-  # <https://travis-ci.org/agda/agda/jobs/38699335>, TODO remove when I
-  # figure out what's wrong
-  allow_failures:
-    - ghc: 7.0.4
+  # allow_failures:
+    # - ghc: A.B.C
 
 # Every master and maintenance branches >= 2.4.3 must be here.  You can
 # also add your private branches if you want travis to test them.

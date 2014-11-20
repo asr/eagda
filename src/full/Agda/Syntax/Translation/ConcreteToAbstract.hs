@@ -68,6 +68,7 @@ import Agda.Interaction.FindFile (checkModuleName)
 import {-# SOURCE #-} Agda.Interaction.Imports (scopeCheckImport)
 import Agda.Interaction.Options
 
+import Agda.Utils.Either
 import Agda.Utils.Except ( MonadError(catchError, throwError) )
 import Agda.Utils.FileName
 import Agda.Utils.Functor
@@ -75,6 +76,7 @@ import Agda.Utils.List
 import Agda.Utils.Monad
 import Agda.Utils.Null
 import Agda.Utils.Pretty
+import Agda.Utils.Maybe
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -84,11 +86,19 @@ import Agda.ImpossibleTest (impossibleTest)
     Exceptions
  --------------------------------------------------------------------------}
 
-notAModuleExpr e            = typeError $ NotAModuleExpr e
-notAnExpression e           = typeError $ NotAnExpression e
-notAValidLetBinding d       = typeError $ NotAValidLetBinding d
+-- notAModuleExpr e = typeError $ NotAModuleExpr e
+
+notAnExpression :: C.Expr -> ScopeM A.Expr
+notAnExpression e = typeError $ NotAnExpression e
+
+nothingAppliedToHiddenArg :: C.Expr -> ScopeM A.Expr
 nothingAppliedToHiddenArg e = typeError $ NothingAppliedToHiddenArg e
+
+nothingAppliedToInstanceArg :: C.Expr -> ScopeM A.Expr
 nothingAppliedToInstanceArg e = typeError $ NothingAppliedToInstanceArg e
+
+notAValidLetBinding :: NiceDeclaration -> ScopeM a
+notAValidLetBinding d = typeError $ NotAValidLetBinding d
 
 -- Debugging
 
@@ -286,7 +296,7 @@ concreteToAbstract scope x = withScope_ scope (toAbstract x)
 -- | Things that can be translated to abstract syntax are instances of this
 --   class.
 class ToAbstract concrete abstract | concrete -> abstract where
-    toAbstract    :: concrete -> ScopeM abstract
+    toAbstract :: concrete -> ScopeM abstract
 
 -- | This function should be used instead of 'toAbstract' for things that need
 --   to keep track of precedences to make sure that we don't forget about it.
@@ -329,6 +339,10 @@ instance (ToAbstract c1 a1, ToAbstract c2 a2, ToAbstract c3 a3) =>
 instance ToAbstract c a => ToAbstract [c] [a] where
     toAbstract = mapM toAbstract
 
+instance (ToAbstract c1 a1, ToAbstract c2 a2) =>
+         ToAbstract (Either c1 c2) (Either a1 a2) where
+    toAbstract = traverseEither toAbstract toAbstract
+
 instance ToAbstract c a => ToAbstract (Maybe c) (Maybe a) where
     toAbstract Nothing  = return Nothing
     toAbstract (Just x) = Just <$> toAbstract x
@@ -351,16 +365,6 @@ instance ToAbstract (NewName C.BoundName) A.Name where
     y <- freshAbstractName fx x
     bindVariable x y
     return y
-
-nameExpr :: AbstractName -> A.Expr
-nameExpr d = mk (anameKind d) $ anameName d
-  where
-    mk DefName        x = A.Def x
-    mk FldName        x = A.Proj x
-    mk ConName        x = A.Con $ AmbQ [x]
-    mk PatternSynName x = A.PatternSyn x
-    mk QuotableName   x = A.App i (A.Quote i) (defaultNamedArg $ A.Def x)
-      where i = ExprRange (getRange x)
 
 instance ToAbstract OldQName A.Expr where
   toAbstract (OldQName x) = do
@@ -470,8 +474,7 @@ mkArg' info e                   = Common.Arg (setHiding NotHidden info) e
 
 -- | By default, arguments are @Relevant@.
 mkArg :: C.Expr -> C.Arg C.Expr
--- mkArg (C.Dot _ e) = mkArg' Irrelevant e
-mkArg e           = mkArg' defaultArgInfo e
+mkArg e = mkArg' defaultArgInfo e
 
 
 -- | Parse a possibly dotted C.Expr as A.Expr.  Bool = True if dotted.
@@ -515,6 +518,49 @@ toAbstractLam r bs e ctx = do
   where
     mkLam b e = A.Lam (ExprRange $ fuseRange b e) b e
 
+-- | Scope check extended lambda expression.
+scopeCheckExtendedLam :: Range -> [(C.LHS, C.RHS, WhereClause)] -> ScopeM A.Expr
+scopeCheckExtendedLam r cs = do
+  whenM isInsideDotPattern $
+    typeError $ GenericError "Extended lambdas are not allowed in dot patterns"
+
+  -- Find an unused name for the extended lambda definition.
+  cname <- nextlamname r 0 extendedLambdaName
+  name  <- freshAbstractName_ cname
+  reportSLn "scope.extendedLambda" 10 $ "new extended lambda name: " ++ show name
+  qname <- qualifyName_ name
+  bindName PrivateAccess DefName cname qname
+
+  -- Compose a function definition an scope check it.
+  let
+    insertApp (C.RawAppP r es) = C.RawAppP r $ IdentP (C.QName cname) : es
+    insertApp (C.IdentP q    ) = C.RawAppP r $ IdentP (C.QName cname) : [C.IdentP q]
+      where r = getRange q
+    insertApp _ = __IMPOSSIBLE__
+    d = C.FunDef r [] defaultFixity' ConcreteDef TerminationCheck cname $
+          for cs $ \ (lhs, rhs, wh) -> -- wh == NoWhere, see parser for more info
+            C.Clause cname False (mapLhsOriginalPattern insertApp lhs) rhs wh []
+  scdef <- toAbstract d
+
+  -- Create the abstract syntax for the extended lambda.
+  case scdef of
+    A.ScopedDecl si [A.FunDef di qname' NotDelayed cs] -> do
+      setScope si  -- This turns into an A.ScopedExpr si $ A.ExtendedLam...
+      return $ A.ExtendedLam (ExprRange r) di qname' cs
+    _ -> __IMPOSSIBLE__
+
+  where
+    -- Get a concrete name that is not yet in scope.
+    nextlamname :: Range -> Int -> String -> ScopeM C.Name
+    nextlamname r i s = do
+      let cname = C.Name r [Id $ stringToRawName $ s ++ show i]
+      rn <- resolveName $ C.QName cname
+      case rn of
+        UnknownName -> return cname
+        _           -> nextlamname r (i+1) s
+
+
+
 instance ToAbstract C.Expr A.Expr where
   toAbstract e =
     traceCall (ScopeCheckExpr e) $ annotateExpr $ case e of
@@ -552,15 +598,6 @@ instance ToAbstract C.Expr A.Expr where
           parseApplication es
         toAbstract e
 
-{- Andreas, 2010-09-06 STALE COMMENT
-  -- Dots are used in dot patterns and in irrelevant function space .A n -> B
-  -- we propagate dots out from the head of applications
-
-      C.Dot r e1 -> do
-        t1 <- toAbstract e1
-        return $ A.Dot t1
--}
-
   -- Application
       C.App r e1 e2 -> do
         e1 <- toAbstractCtx FunctionCtx e1
@@ -576,7 +613,7 @@ instance ToAbstract C.Expr A.Expr where
         es <- mapM (toAbstractCtx WithArgCtx) es
         return $ A.WithApp (ExprRange r) e es
 
-  -- Malplaced hidden argument
+  -- Misplaced hidden argument
       C.HiddenArg _ _ -> nothingAppliedToHiddenArg e
       C.InstanceArg _ _ -> nothingAppliedToInstanceArg e
 
@@ -586,37 +623,9 @@ instance ToAbstract C.Expr A.Expr where
       C.Lam r bs e -> toAbstractLam r bs e TopCtx
 
   -- Extended Lambda
-      C.ExtendedLam r cs ->
-        ifM isInsideDotPattern (typeError $ GenericError "Extended lambdas are not allowed in dot patterns") $ do
-        cname <- nextlamname r 0 extendedLambdaName
-        name  <- freshAbstractName_ cname
-        reportSLn "scope.extendedLambda" 10 $ "new extended lambda name: " ++ show name
-        qname <- qualifyName_ name
-        bindName PrivateAccess DefName cname qname
-        let insertApp (C.RawAppP r es) = C.RawAppP r ((IdentP (C.QName cname)) : es)
-            insertApp (C.IdentP q) = C.RawAppP (getRange q) ((IdentP (C.QName cname)) : [C.IdentP q])
-            insertApp _ = __IMPOSSIBLE__
-            insertHead (C.LHS p wps eqs with) = C.LHS (insertApp p) wps eqs with
-            insertHead (C.Ellipsis r wps eqs with) = C.Ellipsis r wps eqs with
-        scdef <- toAbstract (C.FunDef r [] defaultFixity' ConcreteDef TerminationCheck cname
-                               (map (\(lhs,rhs,wh) -> -- wh = NoWhere, see parser for more info
-                                      C.Clause cname False (insertHead lhs) rhs wh []) cs))
-        case scdef of
-          (A.ScopedDecl si [A.FunDef di qname' NotDelayed cs]) -> do
-            setScope si
-            return $ A.ExtendedLam (ExprRange r) di qname' cs
-          _ -> __IMPOSSIBLE__
-          where
-            nextlamname :: Range -> Int -> String -> ScopeM C.Name
-            nextlamname r i s = do
-              let cname_pre = C.Name r [Id $ stringToRawName $ s ++ show i]
-              rn <- resolveName (C.QName cname_pre)
-              case rn of
-                UnknownName -> return $ cname_pre
-                _           -> nextlamname r (i+1) s
+      C.ExtendedLam r cs -> scopeCheckExtendedLam r cs
 
--- Irrelevant non-dependent function type
-
+  -- Relevant and irrelevant non-dependent function type
       C.Fun r e1 e2 -> do
         Common.Arg info (e0, dotted) <- traverse (toAbstractDot FunctionSpaceDomainCtx) $ mkArg e1
         info <- toAbstract info
@@ -624,16 +633,7 @@ instance ToAbstract C.Expr A.Expr where
         e2 <- toAbstractCtx TopCtx e2
         return $ A.Fun (ExprRange r) e1 e2
 
-{-
--- Other function types
-
-      C.Fun r e1 e2 -> do
-        e1 <- toAbstractCtx FunctionSpaceDomainCtx $ mkArg e1
-        e2 <- toAbstractCtx TopCtx e2
-        let info = ExprRange r
-        return $ A.Fun info e1 e2
--}
-
+  -- Dependent function type
       e0@(C.Pi tel e) ->
         localToAbstract tel $ \tel -> do
         e    <- toAbstractCtx TopCtx e
@@ -649,22 +649,21 @@ instance ToAbstract C.Expr A.Expr where
       e0@(C.Let _ ds e) ->
         ifM isInsideDotPattern (typeError $ GenericError $ "Let-expressions are not allowed in dot patterns") $
         localToAbstract (LetDefs ds) $ \ds' -> do
-        e        <- toAbstractCtx TopCtx e
-        let info = ExprRange (getRange e0)
-        return $ A.Let info ds' e
+          e <- toAbstractCtx TopCtx e
+          let info = ExprRange (getRange e0)
+          return $ A.Let info ds' e
 
   -- Record construction
       C.Rec r fs  -> do
-        let (xs, es) = unzip fs
-        es <- toAbstractCtx TopCtx es
-        return $ A.Rec (ExprRange r) $ zip xs es
+        fs' <- toAbstractCtx TopCtx fs
+        let ds'  = [ d | Right (_, ds) <- fs', d <- ds ]
+            fs'' = map (mapRight fst) fs'
+            i    = ExprRange r
+        return $ A.mkLet i ds' (A.Rec i fs'')
 
   -- Record update
       C.RecUpdate r e fs -> do
-        let (xs, es) = unzip fs
-        e <- toAbstract e
-        es <- toAbstractCtx TopCtx es
-        return $ A.RecUpdate (ExprRange r) e $ zip xs es
+        A.RecUpdate (ExprRange r) <$> toAbstract e <*> toAbstractCtx TopCtx fs
 
   -- Parenthesis
       C.Paren _ e -> toAbstractCtx TopCtx e
@@ -689,14 +688,28 @@ instance ToAbstract C.Expr A.Expr where
       C.Unquote r -> return $ A.Unquote (ExprRange r)
 
       C.Tactic r e es -> do
-        g  <- freshName r "g"
-        let re = ExprRange (getRange e)
-        e : es <- toAbstract (e : es)
-        let tac = A.App re (A.App re e (defaultNamedArg $ A.QuoteContext re)) (defaultNamedArg $ A.Var g)
-        return $ A.QuoteGoal (ExprRange r) g $ foldl (A.App re) (A.Unquote re) (map defaultNamedArg $ tac : es)
+        let AppView e' args = appView e
+        e' : es <- toAbstract (e' : es)
+        args    <- toAbstract args
+        return $ A.Tactic (ExprRange r) e' args (map defaultNamedArg es)
 
   -- DontCare
       C.DontCare e -> A.DontCare <$> toAbstract e
+
+instance ToAbstract C.ModuleAssignment (A.ModuleName, [A.LetBinding]) where
+  toAbstract (C.ModuleAssignment m es i)
+    | null es && isDefaultImportDir i = (\x-> (x, [])) <$> toAbstract (OldModuleName m)
+    | otherwise = do
+        x <- C.NoName (getRange m) <$> fresh
+        r <- checkModuleMacro LetApply (getRange (m, es, i)) PublicAccess x
+                          (C.SectionApp (getRange (m , es)) [] (RawApp (fuseRange m es) (Ident m : es)))
+                          DontOpen i
+        case r of
+          (LetApply _ m' _ _ _ : _) -> return (m', r)
+          _                         -> __IMPOSSIBLE__
+
+instance ToAbstract C.FieldAssignment A.Assign where
+  toAbstract (C.FieldAssignment x e) = A.Assign x <$> toAbstract e
 
 instance ToAbstract C.LamBinding A.LamBinding where
   toAbstract (C.DomainFree info x) = A.DomainFree <$> toAbstract info <*> toAbstract (NewName x)
@@ -1169,9 +1182,10 @@ instance ToAbstract NiceDeclaration A.Declaration where
           printScope "rec" 15 "checked fields"
           return afields
         bindModule p x m
-        cm' <- mapM (\(ThingWithFixity c f) -> bindConstructorName m c f a p YesRec) cm
+        cm' <- mapM (\(ThingWithFixity c f, _) -> bindConstructorName m c f a p YesRec) cm
+        let inst = caseMaybe cm NotInstanceDef snd
         printScope "rec" 15 "record complete"
-        return [ A.RecDef (mkDefInfo x f PublicAccess a r) x' ind cm' pars contel afields ]
+        return [ A.RecDef (mkDefInfoInstance x f PublicAccess a inst r) x' ind cm' pars contel afields ]
 
     NiceModule r p a x@(C.QName name) tel ds ->
       traceCall (ScopeCheckDeclaration $ NiceModule r p a x tel []) $ do
@@ -1289,6 +1303,8 @@ instance ToAbstract NiceDeclaration A.Declaration where
 data IsRecordCon = YesRec | NoRec
 data ConstrDecl = ConstrDecl IsRecordCon A.ModuleName IsAbstract Access C.NiceDeclaration
 
+bindConstructorName :: ModuleName -> C.Name -> Fixity'-> IsAbstract ->
+                       Access -> IsRecordCon -> ScopeM A.QName
 bindConstructorName m x f a p record = do
   -- The abstract name is the qualified one
   y <- withCurrentModule m $ freshAbstractQName f x
@@ -1692,7 +1708,7 @@ instance ToAbstract C.Pattern (A.Pattern' C.Expr) where
             _                  -> typeError $ InvalidPattern p0
         where
             r = getRange p0
-            info = PatSource r $ \pr -> if appBrackets pr then ParenP r p0 else p0
+            info = PatRange r
 
     toAbstract p0@(OpAppP r op ps) = do
         p <- toAbstract (IdentP op)
@@ -1707,14 +1723,14 @@ instance ToAbstract C.Pattern (A.Pattern' C.Expr) where
           _                  -> __IMPOSSIBLE__
         where
             r    = getRange p0
-            info = PatSource r $ \pr -> if appBrackets pr then ParenP r p0 else p0
+            info = PatRange r
 
     -- Removed when parsing
     toAbstract (HiddenP _ _)   = __IMPOSSIBLE__
     toAbstract (InstanceP _ _) = __IMPOSSIBLE__
     toAbstract (RawAppP _ _)   = __IMPOSSIBLE__
 
-    toAbstract p@(C.WildP r)    = return $ A.WildP (PatSource r $ const p)
+    toAbstract p@(C.WildP r)    = return $ A.WildP (PatRange r)
     toAbstract (C.ParenP _ p)   = toAbstract p
     toAbstract (C.LitP l)       = return $ A.LitP l
     toAbstract p0@(C.AsP r x p) = typeError $ NotSupported "@-patterns"
@@ -1727,9 +1743,9 @@ instance ToAbstract C.Pattern (A.Pattern' C.Expr) where
       -}
     -- we have to do dot patterns at the end
     toAbstract p0@(C.DotP r e) = return $ A.DotP info e
-        where info = PatSource r $ \_ -> p0
+        where info = PatRange r
     toAbstract p0@(C.AbsurdP r) = return $ A.AbsurdP info
-        where info = PatSource r $ \_ -> p0
+        where info = PatRange r
 
 -- | Turn an operator application into abstract syntax. Make sure to record the
 -- right precedences for the various arguments.

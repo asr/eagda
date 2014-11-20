@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP #-}
 
 -- | Remove forced arguments from constructors.
@@ -20,7 +18,7 @@ import Agda.Utils.Impossible
 
 -- | Check which arguments are forced
 makeForcedArgs :: T.Type -> ForcedArgs
-makeForcedArgs (T.El _ term) = case term of
+makeForcedArgs (T.El _ term) = case T.ignoreSharing term of
     T.Pi  arg ab  -> isRel arg : makeForcedArgs (T.unAbs ab)
     _ -> []
   where

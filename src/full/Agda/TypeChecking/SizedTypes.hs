@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP           #-}
 {-# LANGUAGE PatternGuards #-}
 
@@ -125,7 +123,7 @@ sizeMaxView v = do
   max <- getBuiltinDefName builtinSizeMax
   let loop v = do
       v <- reduce v
-      case v of
+      case ignoreSharing v of
         Def x []                   | Just x == inf -> return $ [DSizeInf]
         Def x [Apply u]            | Just x == suc -> maxViewSuc_ (fromJust suc) <$> loop (unArg u)
         Def x [Apply u1, Apply u2] | Just x == max -> maxViewMax <$> loop (unArg u1) <*> loop (unArg u2)
@@ -508,10 +506,9 @@ oldSolver metas cs = do
                 term (W.SizeVar j n) | j < ar = plus (var $ ar - j - 1) n
                 term _                        = __IMPOSSIBLE__
 
-                lam _ v = Lam defaultArgInfo $ Abs "s" v -- hiding does not matter
-
-                -- convert size expression to term and abstract
-                v = flip (foldr lam) [0..ar-1] $ term e
+                tel = replicate ar $ defaultArg "s"
+                -- convert size expression to term
+                v = term e
 
             reportSDoc "tc.size.solve" 20 $ sep
               [ text (show m) <+> text ":="
@@ -522,7 +519,7 @@ oldSolver metas cs = do
             let isInf (W.SizeConst W.Infinite) = True
                 isInf _                        = False
             unlessM ((isJust <$> isInteractionMeta m) `and2M` return (isInf e)) $
-              assignTerm m v
+              assignTerm m tel v
 
       mapM_ inst $ Map.toList sol
       return True

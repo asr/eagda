@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP                  #-}
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE PatternGuards        #-}
@@ -77,7 +75,19 @@ instance Instantiate Term where
   instantiate' t@(MetaV x es) = do
     mi <- mvInstantiation <$> lookupMeta x
     case mi of
-      InstV a                          -> instantiate' $ a `applyE` es
+      InstV tel v -> instantiate' inst
+        where
+          -- A slight complication here is that the meta might be underapplied,
+          -- in which case we have to build the lambda abstraction before
+          -- applying the substitution, or overapplied in which case we need to
+          -- fall back to applyE.
+          (es1, es2) = splitAt (length tel) es
+          vs1 = reverse $ map unArg $ fromMaybe __IMPOSSIBLE__ $ allApplyElims es1
+          rho = vs1 ++# wkS (length vs1) idS
+                -- really should be .. ++# emptyS but using wkS makes it reduce to idS
+                -- when applicable
+          -- specification: inst == foldr mkLam v tel `applyE` es
+          inst = applySubst rho (foldr mkLam v $ drop (length es1) tel) `applyE` es2
       Open                             -> return t
       OpenIFS                          -> return t
       BlockedConst _                   -> return t
@@ -86,7 +96,7 @@ instance Instantiate Term where
   instantiate' (Level l) = levelTm <$> instantiate' l
   instantiate' (Sort s) = sortTm <$> instantiate' s
   instantiate' v@Shared{} =
-    __IMPOSSIBLE__ -- updateSharedTerm instantiate' v
+    updateSharedTerm instantiate' v
   instantiate' t = return t
 
 instance Instantiate Level where
@@ -111,12 +121,12 @@ instance Instantiate a => Instantiate (Blocked a) where
   instantiate' v@(Blocked x u) = do
     mi <- mvInstantiation <$> lookupMeta x
     case mi of
-      InstV _                          -> notBlocked <$> instantiate' u
-      Open                             -> return v
-      OpenIFS                          -> return v
-      BlockedConst _                   -> return v
-      PostponedTypeCheckingProblem _ _ -> return v
-      InstS _                          -> __IMPOSSIBLE__
+      InstV{}                        -> notBlocked <$> instantiate' u
+      Open                           -> return v
+      OpenIFS                        -> return v
+      BlockedConst{}                 -> return v
+      PostponedTypeCheckingProblem{} -> return v
+      InstS{}                        -> __IMPOSSIBLE__
 
 instance Instantiate Type where
     instantiate' (El s t) = El <$> instantiate' s <*> instantiate' t
@@ -298,11 +308,10 @@ instance Reduce Term where
       Var _ _  -> done
       Lam _ _  -> done
       DontCare _ -> done
-      ExtLam{}   -> __IMPOSSIBLE__
-      Shared{}   -> __IMPOSSIBLE__ -- updateSharedTermF reduceB' v
+      Shared{}   -> updateSharedTermF reduceB' v
     where
       -- NOTE: reduceNat can traverse the entire term.
-      reduceNat v@Shared{} = __IMPOSSIBLE__ -- updateSharedTerm reduceNat v
+      reduceNat v@Shared{} = updateSharedTerm reduceNat v
       reduceNat v@(Con c []) = do
         mz  <- getBuiltin' builtinZero
         case v of
@@ -613,8 +622,7 @@ instance Simplify Term where
       Var i vs   -> Var i    <$> simplify' vs
       Lam h v    -> Lam h    <$> simplify' v
       DontCare v -> dontCare <$> simplify' v
-      ExtLam{}   -> __IMPOSSIBLE__
-      Shared{}   -> __IMPOSSIBLE__ -- updateSharedTerm simplify' v
+      Shared{}   -> updateSharedTerm simplify' v
 
 simplifyBlocked' :: Simplify t => Blocked t -> ReduceM t
 simplifyBlocked' (Blocked _ t)  = return t
@@ -760,8 +768,7 @@ instance Normalise Term where
                 Lam h b     -> Lam h <$> normalise' b
                 Sort s      -> sortTm <$> normalise' s
                 Pi a b      -> uncurry Pi <$> normalise' (a,b)
-                Shared{}    -> __IMPOSSIBLE__ -- updateSharedTerm normalise' v
-                ExtLam{}    -> __IMPOSSIBLE__
+                Shared{}    -> updateSharedTerm normalise' v
                 DontCare _  -> return v
 
 instance Normalise Elim where
@@ -903,8 +910,7 @@ instance InstantiateFull Term where
           Lam h b     -> Lam h <$> instantiateFull' b
           Sort s      -> sortTm <$> instantiateFull' s
           Pi a b      -> uncurry Pi <$> instantiateFull' (a,b)
-          Shared{}    -> __IMPOSSIBLE__ -- updateSharedTerm instantiateFull' v
-          ExtLam{}    -> __IMPOSSIBLE__
+          Shared{}    -> updateSharedTerm instantiateFull' v
           DontCare v  -> dontCare <$> instantiateFull' v
 
 instance InstantiateFull Level where

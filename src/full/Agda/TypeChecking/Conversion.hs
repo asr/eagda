@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP                  #-}
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE PatternGuards        #-}
@@ -52,6 +50,7 @@ import Agda.Utils.Monad
 import Agda.Utils.Maybe
 import Agda.Utils.Size
 import Agda.Utils.Tuple
+import Agda.Utils.Lens
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -117,20 +116,21 @@ compareTerm cmp a u v = do
     , nest 2 $ prettyTCM u <+> prettyTCM cmp <+> prettyTCM v
     , nest 2 $ text ":" <+> prettyTCM a
     ]
-  -- Check syntactic equality first. This actually saves us quite a bit of work.
+  -- Check pointer equality first.
+  let checkPointerEquality def | not $ null $ List.intersect (pointerChain u) (pointerChain v) = do
+        verboseS "profile.sharing" 10 $ tick "pointer equality"
+        return ()
+      checkPointerEquality def = def
+  checkPointerEquality $ do
+  -- Check syntactic equality. This actually saves us quite a bit of work.
   ((u, v), equal) <- checkSyntacticEquality u v
 {- OLD CODE, traverses the *full* terms u v at each step, even if they
    are different somewhere.  Leads to infeasibility in issue 854.
   (u, v) <- instantiateFull (u, v)
   let equal = u == v
 -}
-  if equal then unifyPointers cmp u v $ verboseS "profile.sharing" 20 $ tick "equal terms" else do
+  unifyPointers cmp u v $ if equal then verboseS "profile.sharing" 20 $ tick "equal terms" else do
   verboseS "profile.sharing" 20 $ tick "unequal terms"
-  let checkPointerEquality def | not $ null $ List.intersect (pointerChain u) (pointerChain v) = do
-        verboseS "profile.sharing" 10 $ tick "pointer equality"
-        return ()
-      checkPointerEquality def = def
-  checkPointerEquality $ do
   reportSDoc "tc.conv.term" 15 $ sep
     [ text "compareTerm (not syntactically equal)"
     , nest 2 $ prettyTCM u <+> prettyTCM cmp <+> prettyTCM v
@@ -182,13 +182,21 @@ unifyPointers :: Comparison -> Term -> Term -> TCM () -> TCM ()
 unifyPointers _ _ _ action = action
 -- unifyPointers cmp _ _ action | cmp /= CmpEq = action
 -- unifyPointers _ u v action = do
---   old <- gets stDirty
---   modify $ \s -> s { stDirty = False }
+--   reportSLn "tc.ptr.unify" 50 $ "Maybe unifying pointers\n  u = " ++ show u ++ "\n  v = " ++ show v
+--   old <- use stDirty
+--   stDirty .= False
 --   action
+--   reportSLn "tc.ptr.unify" 50 $ "Finished comparison\n  u = " ++ show u ++ "\n  v = " ++ show v
 --   (u, v) <- instantiate (u, v)
---   dirty <- gets stDirty
---   modify $ \s -> s { stDirty = old }
---   when (not dirty) $ forceEqualTerms u v
+--   reportSLn "tc.ptr.unify" 50 $ "After instantiation\n  u = " ++ show u ++ "\n  v = " ++ show v
+--   dirty <- use stDirty
+--   stDirty .= old
+--   if dirty then verboseS "profile.sharing" 20 (tick "unifyPtr: dirty")
+--            else do
+--             verboseS "profile.sharing" 20 (tick "unifyPtr: clean")
+--             reportSLn "tc.ptr.unify" 80 $ "Unifying\n  u = " ++ show u ++ "\n  v = " ++ show v
+--             forceEqualTerms u v
+--             reportSLn "tc.ptr.unify" 80 $ "After unification\n  u = " ++ show u ++ "\n  v = " ++ show v
 
 -- | Try to assign meta.  If meta is projected, try to eta-expand
 --   and run conversion check again.

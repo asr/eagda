@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP #-}
 
 module Agda.TypeChecking.Constraints where
@@ -182,12 +180,12 @@ solveConstraint_ (UnBlock m)                =
       BlockedConst t -> do
         reportSDoc "tc.constr.blocked" 15 $
           text ("blocked const " ++ show m ++ " :=") <+> prettyTCM t
-        assignTerm m t
+        assignTerm m [] t
       PostponedTypeCheckingProblem cl unblock -> enterClosure cl $ \prob -> do
         ifNotM unblock (addConstraint $ UnBlock m) $ do
           tel <- getContextTelescope
           v   <- liftTCM $ checkTypeCheckingProblem prob
-          assignTerm m $ teleLam tel v
+          assignTerm m (telToArgs tel) v
       -- Andreas, 2009-02-09, the following were IMPOSSIBLE cases
       -- somehow they pop up in the context of sized types
       --
@@ -198,8 +196,7 @@ solveConstraint_ (UnBlock m)                =
       -- Open (whatever that means)
       Open -> __IMPOSSIBLE__
       OpenIFS -> __IMPOSSIBLE__
-solveConstraint_ (FindInScope m b cands)      =
-  ifM (isFrozen m) (addConstraint $ FindInScope m b cands) (findInScope m cands)
+solveConstraint_ (FindInScope m b cands)      = findInScope m cands
 
 checkTypeCheckingProblem :: TypeCheckingProblem -> TCM Term
 checkTypeCheckingProblem p = case p of

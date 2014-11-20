@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP                   #-}
 {-# LANGUAGE DeriveDataTypeable    #-}
 {-# LANGUAGE DeriveFoldable        #-}
@@ -43,7 +41,9 @@ import Agda.Syntax.Abstract.Name as A (QNamed)
 import Agda.Syntax.Literal
 import Agda.Syntax.Scope.Base
 
+import Agda.Utils.Either
 import Agda.Utils.Geniplate
+import Agda.Utils.Lens
 import Agda.Utils.Tuple
 
 #include "undefined.h"
@@ -55,12 +55,6 @@ type Dom a      = Common.Dom Color a
 type NamedArg a = Common.NamedArg Color a
 type ArgInfo    = Common.ArgInfo Color
 type Args       = [NamedArg Expr]
-
-instance Eq Color where
-  Var x == Var y = x == y
-  Def x == Def y = x == y
-  -- TODO guilhem:
-  _ == _         = __IMPOSSIBLE__
 
 instance Ord Color where
   Var x <= Var y = x <= y
@@ -96,7 +90,7 @@ data Expr
   | Prop ExprInfo                      -- ^ @Prop@ (no longer supported, used as dummy type).
   | Let  ExprInfo [LetBinding] Expr    -- ^ @let bs in e@.
   | ETel Telescope                     -- ^ Only used when printing telescopes.
-  | Rec  ExprInfo Assigns              -- ^ Record construction.
+  | Rec  ExprInfo RecordAssigns        -- ^ Record construction.
   | RecUpdate ExprInfo Expr Assigns    -- ^ Record update.
   | ScopedExpr ScopeInfo Expr          -- ^ Scope annotation.
   | QuoteGoal ExprInfo Name Expr       -- ^ Binds @Name@ to current type in @Expr@.
@@ -104,12 +98,23 @@ data Expr
   | Quote ExprInfo                     -- ^ Quote an identifier 'QName'.
   | QuoteTerm ExprInfo                 -- ^ Quote a term.
   | Unquote ExprInfo                   -- ^ The splicing construct: unquote ...
+  | Tactic ExprInfo Expr [NamedArg Expr] [NamedArg Expr]
+                                       -- ^ @tactic e x1 .. xn | y1 | .. | yn@
   | DontCare Expr                      -- ^ For printing @DontCare@ from @Syntax.Internal@.
-  deriving (Typeable, Show)
+  deriving (Typeable, Show, Eq)
 
 -- | Record field assignment @f = e@.
-type Assign  = (C.Name, Expr)
+data Assign  = Assign { _fieldAssign :: C.Name, _exprAssign :: Expr }
+  deriving (Typeable, Show, Eq)
 type Assigns = [Assign]
+type RecordAssign  = Either Assign ModuleName
+type RecordAssigns = [RecordAssign]
+
+fieldAssign :: Lens' C.Name Assign
+fieldAssign f r = f (_fieldAssign r) <&> \x -> r {_fieldAssign = x}
+
+exprAssign :: Lens' Expr Assign
+exprAssign f r = f (_exprAssign r) <&> \x -> r {_exprAssign = x}
 
 -- | Is a type signature a `postulate' or a function signature?
 data Axiom
@@ -146,7 +151,7 @@ data Declaration
   | UnquoteDecl MutualInfo DefInfo QName Expr
   | UnquoteDef  DefInfo QName Expr
   | ScopedDecl ScopeInfo [Declaration]  -- ^ scope annotation
-  deriving (Typeable, Show)
+  deriving (Typeable, Show, Eq)
 
 class GetDefInfo a where
   getDefInfo :: a -> Maybe DefInfo
@@ -168,10 +173,13 @@ data ModuleApplication
       -- ^ @tel. M args@:  applies @M@ to @args@ and abstracts @tel@.
     | RecordModuleIFS ModuleName
       -- ^ @M {{...}}@
-  deriving (Typeable, Show)
+  deriving (Typeable, Show, Eq)
 
 data Pragma
   = OptionsPragma [String]
+  -- ASR TODO (20 November 2014). In the meantime, we added
+  -- @ATPPragma@ here for avoiding merge conflicts.
+  | ATPPragma ATPRole [QName]
   | BuiltinPragma String Expr
   | RewritePragma QName
   | CompiledPragma QName String
@@ -182,8 +190,7 @@ data Pragma
   | CompiledJSPragma QName String
   | StaticPragma QName
   | EtaPragma QName
-  | ATPPragma ATPRole [QName]
-  deriving (Typeable, Show)
+  deriving (Typeable, Show, Eq)
 
 -- | Bindings that are valid in a @let@.
 data LetBinding
@@ -195,7 +202,7 @@ data LetBinding
     -- ^ @LetApply mi newM (oldM args) renaming moduleRenaming@.
   | LetOpen ModuleInfo ModuleName
     -- ^ only for highlighting and abstractToConcrete
-  deriving (Typeable, Show)
+  deriving (Typeable, Show, Eq)
 
 -- | Only 'Axiom's.
 type TypeSignature  = Declaration
@@ -206,12 +213,12 @@ type Field          = TypeSignature
 data LamBinding
   = DomainFree ArgInfo Name   -- ^ . @x@ or @{x}@ or @.x@ or @.{x}@
   | DomainFull TypedBindings  -- ^ . @(xs:e)@ or @{xs:e}@ or @(let Ds)@
-  deriving (Typeable, Show)
+  deriving (Typeable, Show, Eq)
 
 -- | Typed bindings with hiding information.
 data TypedBindings = TypedBindings Range (Arg TypedBinding)
             -- ^ . @(xs : e)@ or @{xs : e}@
-  deriving (Typeable, Show)
+  deriving (Typeable, Show, Eq)
 
 -- | A typed binding. Appears in dependent function spaces, typed lambdas, and
 --   telescopes. I might be tempting to simplify this to only bind a single
@@ -227,7 +234,7 @@ data TypedBinding
     -- ^ As in telescope @(x y z : A)@ or type @(x y z : A) -> B@.
   | TLet Range [LetBinding]
     -- ^
-  deriving (Typeable, Show)
+  deriving (Typeable, Show, Eq)
 
 type Telescope  = [TypedBindings]
 
@@ -239,7 +246,7 @@ data Clause' lhs = Clause
   , clauseRHS        :: RHS
   , clauseWhereDecls :: [Declaration]
   , clauseCatchall   :: Bool
-  } deriving (Typeable, Show, Functor, Foldable, Traversable)
+  } deriving (Typeable, Show, Functor, Foldable, Traversable, Eq)
 
 type Clause = Clause' LHS
 type SpineClause = Clause' SpineLHS
@@ -253,7 +260,7 @@ data RHS
       -- ^ The 'QName's are the names of the generated with functions.
       --   One for each 'Expr'.
       --   The RHS shouldn't be another @RewriteRHS@.
-  deriving (Typeable, Show)
+  deriving (Typeable, Show, Eq)
 
 -- | The lhs of a clause in spine view (inside-out).
 --   Projection patterns are contained in @spLhsPats@,
@@ -264,7 +271,11 @@ data SpineLHS = SpineLHS
   , spLhsPats     :: [NamedArg Pattern]  -- ^ Function parameters (patterns).
   , spLhsWithPats :: [Pattern]           -- ^ @with@ patterns (after @|@).
   }
-  deriving (Typeable, Show)
+  deriving (Typeable, Show, Eq)
+
+
+instance Eq LHS where
+  (LHS _ core wps) == (LHS _ core' wps') = core == core' && wps == wps'
 
 -- | The lhs of a clause in focused (projection-application) view (outside-in).
 --   Projection patters are represented as 'LHSProj's.
@@ -293,7 +304,7 @@ data LHSCore' e
              , lhsPatsRight  :: [NamedArg (Pattern' e)]
                -- ^ Further applied to patterns.
              }
-  deriving (Typeable, Show, Functor, Foldable, Traversable)
+  deriving (Typeable, Show, Functor, Foldable, Traversable, Eq)
 
 type LHSCore = LHSCore' Expr
 
@@ -381,7 +392,7 @@ data Pattern' e
   | ImplicitP PatInfo
     -- ^ Generated at type checking for implicit arguments.
   | PatternSynP PatInfo QName [NamedArg (Pattern' e)]
-  deriving (Typeable, Show, Functor, Foldable, Traversable)
+  deriving (Typeable, Show, Functor, Foldable, Traversable, Eq)
 
 type Pattern  = Pattern' Expr
 type Patterns = [NamedArg Pattern]
@@ -442,6 +453,7 @@ instance HasRange Expr where
     getRange (Quote i)             = getRange i
     getRange (QuoteTerm i)         = getRange i
     getRange (Unquote i)           = getRange i
+    getRange (Tactic i _ _ _)      = getRange i
     getRange (DontCare{})          = noRange
     getRange (PatternSyn x)        = getRange x
 
@@ -490,6 +502,9 @@ instance HasRange (LHSCore' e) where
 instance HasRange a => HasRange (Clause' a) where
     getRange (Clause lhs rhs ds catchall) = getRange (lhs,rhs,ds)
 
+instance HasRange Assign where
+    getRange (Assign a b) = fuseRange a b
+
 instance HasRange RHS where
     getRange AbsurdRHS                = noRange
     getRange (RHS e)                  = getRange e
@@ -522,6 +537,9 @@ instance KillRange LamBinding where
 instance KillRange TypedBindings where
   killRange (TypedBindings r b) = TypedBindings (killRange r) (killRange b)
 
+instance KillRange Assign where
+  killRange (Assign a b) = killRange2 Assign a b
+
 instance KillRange TypedBinding where
   killRange (TBind r xs e) = killRange3 TBind r xs e
   killRange (TLet r lbs)   = killRange2 TLet r lbs
@@ -544,10 +562,8 @@ instance KillRange Expr where
   killRange (Set i n)              = Set (killRange i) n
   killRange (Prop i)               = killRange1 Prop i
   killRange (Let i ds e)           = killRange3 Let i ds e
-  killRange (Rec i fs)             = Rec (killRange i) (map (id -*- killRange) fs)
-  killRange (RecUpdate i e fs)     = RecUpdate (killRange i)
-                                               (killRange e)
-                                               (map (id -*- killRange) fs)
+  killRange (Rec i fs)             = killRange2 Rec i fs
+  killRange (RecUpdate i e fs)     = killRange3 RecUpdate i e fs
   killRange (ETel tel)             = killRange1 ETel tel
   killRange (ScopedExpr s e)       = killRange1 (ScopedExpr s) e
   killRange (QuoteGoal i x e)      = killRange3 QuoteGoal i x e
@@ -555,6 +571,7 @@ instance KillRange Expr where
   killRange (Quote i)              = killRange1 Quote i
   killRange (QuoteTerm i)          = killRange1 QuoteTerm i
   killRange (Unquote i)            = killRange1 Unquote i
+  killRange (Tactic i e xs ys)     = killRange4 Tactic i e xs ys
   killRange (DontCare e)           = DontCare e
   killRange (PatternSyn x)         = killRange1 PatternSyn x
 
@@ -714,14 +731,15 @@ instance AllNames Expr where
   allNames Prop{}                  = Seq.empty
   allNames (Let _ lbs e)           = allNames lbs >< allNames e
   allNames ETel{}                  = __IMPOSSIBLE__
-  allNames (Rec _ fields)          = allNames $ map snd fields
-  allNames (RecUpdate _ e fs)      = allNames e >< allNames (map snd fs)
+  allNames (Rec _ fields)          = allNames [ e | Left (Assign _ e) <- fields ]
+  allNames (RecUpdate _ e fs)      = allNames e >< allNames (map (view exprAssign) fs)
   allNames (ScopedExpr _ e)        = allNames e
   allNames (QuoteGoal _ _ e)       = allNames e
   allNames (QuoteContext _)        = Seq.empty
   allNames Quote{}                 = Seq.empty
   allNames QuoteTerm{}             = Seq.empty
   allNames Unquote{}               = Seq.empty
+  allNames (Tactic _ e xs ys)      = allNames e >< allNames xs >< allNames ys
   allNames DontCare{}              = Seq.empty
   allNames (PatternSyn x)          = Seq.empty
 
@@ -777,8 +795,23 @@ instance AnyAbstract Declaration where
   anyAbstract (RecSig i _ _ _)       = defAbstract i == AbstractDef
   anyAbstract _                      = __IMPOSSIBLE__
 
+-- | Turn an 'AbstractName' to an expression.
+nameExpr :: AbstractName -> Expr
+nameExpr d = mk (anameKind d) $ anameName d
+  where
+    mk DefName        x = Def x
+    mk FldName        x = Proj x
+    mk ConName        x = Con $ AmbQ [x]
+    mk PatternSynName x = PatternSyn x
+    mk QuotableName   x = App i (Quote i) (defaultNamedArg $ Def x)
+      where i = ExprRange (getRange x)
+
 app :: Expr -> [NamedArg Expr] -> Expr
 app = foldl (App (ExprRange noRange))
+
+mkLet :: ExprInfo -> [LetBinding] -> Expr -> Expr
+mkLet i [] e = e
+mkLet i ds e = Let i ds e
 
 patternToExpr :: Pattern -> Expr
 patternToExpr (VarP x)            = Var x
@@ -814,61 +847,80 @@ substPattern s p = case p of
                                 -- pattern synonyms (already gone), and
                                 -- @-patterns (not supported anyways).
 
-substExpr :: [(Name, Expr)] -> Expr -> Expr
-substExpr s e = case e of
-  Var n                 -> fromMaybe e (lookup n s)
-  Def _                 -> e
-  Proj{}                -> e
-  Con _                 -> e
-  Lit _                 -> e
-  QuestionMark{}        -> e
-  Underscore   _        -> e
-  App  i e e'           -> App i (substExpr s e)
-                                 (fmap (fmap (substExpr s)) e')
-  WithApp i e es        -> WithApp i (substExpr s e)
-                                     (fmap (substExpr s) es)
-  Lam  i lb e           -> Lam i lb (substExpr s e)
-  AbsurdLam i h         -> e
-  ExtendedLam i di n cs -> __IMPOSSIBLE__   -- Maybe later...
-  Pi   i t e            -> Pi i (fmap (substTypedBindings s) t)
-                                (substExpr s e)
-  Fun  i ae e           -> Fun i (fmap (substExpr s) ae)
-                                 (substExpr s e)
-  Set  i n              -> e
-  Prop i                -> e
-  Let  i ls e           -> Let i (substLetBindings s ls)
-                                 (substExpr s e)
-  ETel t                -> e
-  Rec  i nes            -> Rec i (fmap (fmap (substExpr s)) nes)
-  RecUpdate i e nes     -> RecUpdate i (substExpr s e)
-                                       (fmap (fmap (substExpr s)) nes)
-  -- XXX: Do we need to do more with ScopedExprs?
-  ScopedExpr si e       -> ScopedExpr si (substExpr s e)
-  QuoteGoal i n e       -> QuoteGoal i n (substExpr s e)
-  QuoteContext i        -> e
-  Quote i               -> e
-  QuoteTerm i           -> e
-  Unquote i             -> e
-  DontCare e            -> DontCare (substExpr s e)
-  PatternSyn x          -> e
+class SubstExpr a where
+  substExpr :: [(Name, Expr)] -> a -> a
 
-substLetBindings :: [(Name, Expr)] -> [LetBinding] -> [LetBinding]
-substLetBindings s = fmap (substLetBinding s)
+instance SubstExpr a => SubstExpr [a] where
+  substExpr = fmap . substExpr
 
-substLetBinding :: [(Name, Expr)] -> LetBinding -> LetBinding
-substLetBinding s lb = case lb of
-  LetBind i r n e e' -> LetBind i r n (substExpr s e) (substExpr s e')
-  LetPatBind i p e   -> LetPatBind i p (substExpr s e) -- Andreas, 2012-06-04: what about the pattern p
-  _                  -> lb -- Nicolas, 2013-11-11: what about "LetApply" there is experessions in there
+instance SubstExpr a => SubstExpr (Arg a) where
+  substExpr = fmap . substExpr
 
-substTypedBindings :: [(Name, Expr)] -> TypedBindings -> TypedBindings
-substTypedBindings s (TypedBindings r atb) = TypedBindings r
-    (fmap (substTypedBinding s) atb)
+instance SubstExpr a => SubstExpr (Common.Named name a) where
+  substExpr = fmap . substExpr
 
-substTypedBinding :: [(Name, Expr)] -> TypedBinding -> TypedBinding
-substTypedBinding s tb = case tb of
-  TBind r ns e -> TBind r ns $ substExpr s e
-  TLet r lbs   -> TLet r $ substLetBindings s lbs
+instance (SubstExpr a, SubstExpr b) => SubstExpr (a, b) where
+  substExpr s (x, y) = (substExpr s x, substExpr s y)
+
+instance (SubstExpr a, SubstExpr b) => SubstExpr (Either a b) where
+  substExpr s (Left x)  = Left (substExpr s x)
+  substExpr s (Right y) = Right (substExpr s y)
+
+instance SubstExpr C.Name where
+  substExpr _ = id
+
+instance SubstExpr ModuleName where
+  substExpr _ = id
+
+instance SubstExpr Assign where
+  substExpr s (Assign n x) = Assign n (substExpr s x)
+
+instance SubstExpr Expr where
+  substExpr s e = case e of
+    Var n                 -> fromMaybe e (lookup n s)
+    Def _                 -> e
+    Proj{}                -> e
+    Con _                 -> e
+    Lit _                 -> e
+    QuestionMark{}        -> e
+    Underscore   _        -> e
+    App  i e e'           -> App i (substExpr s e) (substExpr s e')
+    WithApp i e es        -> WithApp i (substExpr s e) (substExpr s es)
+    Lam  i lb e           -> Lam i lb (substExpr s e)
+    AbsurdLam i h         -> e
+    ExtendedLam i di n cs -> __IMPOSSIBLE__   -- Maybe later...
+    Pi   i t e            -> Pi i (substExpr s t) (substExpr s e)
+    Fun  i ae e           -> Fun i (substExpr s ae) (substExpr s e)
+    Set  i n              -> e
+    Prop i                -> e
+    Let  i ls e           -> Let i (substExpr s ls) (substExpr s e)
+    ETel t                -> e
+    Rec  i nes            -> Rec i (substExpr s nes)
+    RecUpdate i e nes     -> RecUpdate i (substExpr s e) (substExpr s nes)
+    -- XXX: Do we need to do more with ScopedExprs?
+    ScopedExpr si e       -> ScopedExpr si (substExpr s e)
+    QuoteGoal i n e       -> QuoteGoal i n (substExpr s e)
+    QuoteContext i        -> e
+    Quote i               -> e
+    QuoteTerm i           -> e
+    Unquote i             -> e
+    Tactic i e xs ys      -> Tactic i (substExpr s e) (substExpr s xs) (substExpr s ys)
+    DontCare e            -> DontCare (substExpr s e)
+    PatternSyn x          -> e
+
+instance SubstExpr LetBinding where
+  substExpr s lb = case lb of
+    LetBind i r n e e' -> LetBind i r n (substExpr s e) (substExpr s e')
+    LetPatBind i p e   -> LetPatBind i p (substExpr s e) -- Andreas, 2012-06-04: what about the pattern p
+    _                  -> lb -- Nicolas, 2013-11-11: what about "LetApply" there is experessions in there
+
+instance SubstExpr TypedBindings where
+  substExpr s (TypedBindings r atb) = TypedBindings r (substExpr s atb)
+
+instance SubstExpr TypedBinding where
+  substExpr s tb = case tb of
+    TBind r ns e -> TBind r ns $ substExpr s e
+    TLet r lbs   -> TLet r $ substExpr s lbs
 
 -- TODO: more informative failure
 insertImplicitPatSynArgs :: HasRange a => (Range -> a) -> Range -> [Arg Name] -> [NamedArg a] ->

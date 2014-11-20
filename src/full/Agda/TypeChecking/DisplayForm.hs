@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP                  #-}
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE TypeSynonymInstances #-}
@@ -56,7 +54,7 @@ displayForm q vs = do
       , "result      : " ++ show (foldr (const . Just) Nothing ms)
       ]
     -- Return the first display form that matches.
-    return $ headMay ms
+    return $ headMaybe ms
 
 --  Andreas, 2014-06-11: The following error swallowing
 --  is potentially harmful, making debugging harder.
@@ -82,10 +80,9 @@ matchDisplayForm :: DisplayForm -> Args -> MaybeT TCM DisplayTerm
 matchDisplayForm (Display _ ps v) vs
   | length ps > length vs = mzero
   | otherwise             = do
+      let (vs0, vs1) = splitAt (length ps) vs
       us <- match ps $ raise 1 $ map unArg vs0
       return $ applySubst (parallelS $ reverse us) v `apply` vs1
-  where
-    (vs0, vs1) = splitAt (length ps) vs
 
 -- | Class @Match@ for matching a term @p@ in the role of a pattern
 --   against a term @v@.

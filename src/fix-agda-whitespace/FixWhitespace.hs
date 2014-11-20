@@ -1,8 +1,11 @@
 import Control.Monad
+
 import Data.Char as Char
+import Data.Functor
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as Text  -- Strict IO.
+
 import System.Directory ( getCurrentDirectory )
 import System.Environment
 import System.Exit
@@ -33,7 +36,7 @@ extensions =
 -- Agda source code shouldn't be excluded.
 excludedDirs :: [String]
 excludedDirs =
- ["_darcs", ".git", "dist", "LineEndings", "MAlonzo", "std-lib"]
+ ["_darcs", ".git", "dist", "LineEndings", "MAlonzo", "std-lib", "bugs"]
 
 -- Andreas (24 Sep 2014).
 -- | The following files are exempt from the whitespace check,
@@ -41,8 +44,10 @@ excludedDirs =
 excludedFiles :: [FilePath]
 excludedFiles =
   [ "Whitespace.agda"    -- in test/succeed
+  , "Issue1337.agda"     -- in test/succeed
   , "Tabs.agda"          -- in test/fail
   , "TabsInPragmas.agda" -- in test/fail
+  , "Lexer.hs"           -- could be in src/full/Agda/Syntax/Parser
   ]
 
 -- Auxiliary functions.
@@ -50,6 +55,7 @@ excludedFiles =
 filesFilter :: FindClause Bool
 filesFilter = foldr1 (||?) (map (extension ==?) extensions)
           &&? foldr1 (&&?) (map (fileName /=?) excludedFiles)
+          &&? ((head <$> fileName) /=? '.')  -- exclude hidden files
 
 -- ASR (12 June 2014). Adapted from the examples of fileManip 0.3.6.2.
 --
@@ -144,7 +150,7 @@ transform =
     reverse . dropWhile1 Text.null . reverse
 
   removeTrailingWhitespace =
-    Text.dropWhileEnd Char.isSpace
+    Text.dropWhileEnd ((`elem` [Space,Format]) . generalCategory)
 
   convertTabs =
     Text.pack . reverse . fst . foldl convertOne ([], 0) . Text.unpack

@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP           #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE PatternGuards #-}
@@ -91,6 +89,7 @@ buildMPatterns perm ps = evalState (mapM (traverse build) ps) xs
 
     buildT (Con c args)   = ConMP c <$> mapM (traverse buildT) args
     buildT (Var i [])     = return (VarMP i)
+    buildT (Shared p)     = buildT (derefPtr p)
     buildT _              = return WildMP
 
 isTrivialMPattern :: MPat -> Bool
@@ -243,7 +242,11 @@ instance Monoid a => Monoid (Match a) where
 --   a cover if @q@ was split on variable @x@.
 matchPat :: MatchLit -> Pattern -> MPat -> Match [MPat]
 matchPat _    (VarP _) q = Yes [q]
-matchPat _    (DotP _) q = Yes [q]
+matchPat _    (DotP _) q = Yes []
+-- Jesper, 2014-11-04: putting 'Yes [q]' here triggers issue 1333.
+-- Not checking for trivial MPats should be safe here, as dot patterns are
+-- guaranteed to match if the rest of the pattern does, so some extra splitting
+-- on them doesn't change the reduction behaviour.
 matchPat mlit (LitP l) q = mlit l q
 matchPat _    (ProjP d) (ProjMP d') = if d == d' then Yes [] else No
 matchPat _    (ProjP d) _ = __IMPOSSIBLE__

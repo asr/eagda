@@ -1,8 +1,5 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 -- {-# LANGUAGE CPP #-}
-{-# LANGUAGE FlexibleInstances   #-}
-{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 module Agda.Interaction.EmacsTop
     ( mimicGHCi

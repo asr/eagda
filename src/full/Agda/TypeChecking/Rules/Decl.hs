@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP           #-}
 {-# LANGUAGE TupleSections #-}
 
@@ -7,7 +5,7 @@ module Agda.TypeChecking.Rules.Decl where
 
 import Control.Monad
 import Control.Monad.Reader
-import Control.Monad.State (modify)
+import Control.Monad.State (modify, gets)
 
 import qualified Data.Foldable as Fold
 import Data.Maybe
@@ -23,10 +21,12 @@ import Agda.Interaction.Highlighting.Generate
 
 import qualified Agda.Syntax.Abstract as A
 import Agda.Syntax.Internal as I
+import qualified Agda.Syntax.Reflected as R
 import qualified Agda.Syntax.Info as Info
 import Agda.Syntax.Position
 import Agda.Syntax.Common
 import Agda.Syntax.Translation.InternalToAbstract
+import Agda.Syntax.Translation.ReflectedToAbstract
 
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Monad.Builtin
@@ -43,17 +43,19 @@ import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Primitive hiding (Nat)
 import Agda.TypeChecking.ProjectionLike
 import Agda.TypeChecking.Quote
+import Agda.TypeChecking.Unquote
 import Agda.TypeChecking.Records
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Rewriting
 import Agda.TypeChecking.SizedTypes.Solve
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
+import Agda.TypeChecking.Unquote
 
 import Agda.TypeChecking.Rules.Term
 import Agda.TypeChecking.Rules.Data    ( checkDataDef )
 import Agda.TypeChecking.Rules.Record  ( checkRecDef )
-import Agda.TypeChecking.Rules.Def     ( checkFunDef )
+import Agda.TypeChecking.Rules.Def     ( checkFunDef, useTerPragma )
 import Agda.TypeChecking.Rules.Builtin ( bindBuiltin )
 
 import Agda.Termination.TermCheck
@@ -66,6 +68,54 @@ import Agda.Utils.Size
 
 #include "undefined.h"
 import Agda.Utils.Impossible
+
+-- | Cached checkDecl
+checkDeclCached :: A.Declaration -> TCM ()
+checkDeclCached d@A.ScopedDecl{} = checkDecl d
+checkDeclCached d@(A.Section minfo mname tbinds _) = do
+  e <- readFromCachedLog
+  reportSLn "cache.decl" 10 $ "checkDeclCached: " ++ show (isJust e)
+  case e of
+    Just (EnterSection minfo' mname' tbinds', _)
+      | killRange minfo == killRange minfo' && mname == mname' && tbinds == tbinds' -> do
+        return ()
+    _ -> do
+      cleanCachedLog
+  writeToCurrentLog $ EnterSection minfo mname tbinds
+  checkDecl d
+  e' <- readFromCachedLog
+  case e' of
+    Just (LeaveSection mname', _) | mname == mname' -> do
+      return ()
+    _ -> do
+      cleanCachedLog
+  writeToCurrentLog $ LeaveSection mname
+
+checkDeclCached d = do
+    e <- readFromCachedLog
+
+    let b = isJust e in b `seq` reportSLn "cache.decl" 10 $ "checkDeclCached: " ++ show b
+    case e of
+      (Just (Decl d',s)) | compareDecl d d' -> do
+        restorePostScopeState s
+      _ -> do
+        cleanCachedLog
+        checkDeclWrap d
+    writeToCurrentLog $ Decl d
+ where
+   compareDecl A.Section{} A.Section{} = __IMPOSSIBLE__
+   compareDecl A.ScopedDecl{} A.ScopedDecl{} = __IMPOSSIBLE__
+   compareDecl x y = x == y
+   -- changes to CS inside a RecDef or Mutual ought not happen,
+   -- but they do happen, so we discard them.
+   ignoreChanges m = do
+     cs <- gets $ stLoadedFileCache . stPersistentState
+     cleanCachedLog
+     m
+     modifyPersistentState $ \st -> st{stLoadedFileCache = cs}
+   checkDeclWrap d@A.RecDef{} = ignoreChanges $ checkDecl d
+   checkDeclWrap d@A.Mutual{} = ignoreChanges $ checkDecl d
+   checkDeclWrap d            = checkDecl d
 
 -- | Type check a sequence of declarations.
 checkDecls :: [A.Declaration] -> TCM ()
@@ -105,7 +155,7 @@ checkDecl d = traceCall (SetRange (getRange d)) $ do
       A.Apply i x modapp rd rm -> meta $ checkSectionApplication i x modapp rd rm
       A.Import i x             -> none $ checkImport i x
       A.Pragma i p             -> none $ checkPragma i p
-      A.ScopedDecl scope ds    -> none $ setScope scope >> checkDecls ds
+      A.ScopedDecl scope ds    -> none $ setScope scope >> mapM_ checkDeclCached ds
       A.FunDef i x delayed cs  -> impossible $ check x i $ checkFunDef delayed i x cs
       A.DataDef i x ps cs      -> impossible $ check x i $ checkDataDef i x ps cs
       A.RecDef i x ind c ps tel cs -> mutual mi [d] $ check x i $ do
@@ -187,22 +237,28 @@ checkUnquoteDecl mi i x e = do
   fundef <- primAgdaFunDef
   v      <- checkExpr e $ El (mkType 0) fundef
   reportSDoc "tc.unquote.decl" 20 $ text "unquoteDecl: Checked term"
-  UnQFun a cs <- unquote v
-  reportSDoc "tc.unquote.decl" 20 $
-    vcat $ text "unquoteDecl: Unquoted term"
-         : [ nest 2 $ text (show c) | c <- cs ]
-  -- Add x to signature, otherwise reification gets unhappy.
-  addConstant x $ defaultDefn defaultArgInfo x a emptyFunction
-  a <- reifyUnquoted $ killRange a
-  reportSDoc "tc.unquote.decl" 10 $
-    vcat [ text "unquoteDecl" <+> prettyTCM x <+> text "-->"
-         , prettyTCM x <+> text ":" <+> prettyA a ]
-  cs <- mapM (reifyUnquoted . QNamed x) $ killRange cs
-  reportSDoc "tc.unquote.decl" 10 $ vcat $ map prettyA cs
-  let ds = [ A.Axiom A.FunSig i defaultArgInfo x a   -- TODO other than defaultArg
-           , A.FunDef i x NotDelayed cs ]
-  xs <- checkMutual mi ds
-  return $ Just $ mutualChecks mi (A.Mutual mi ds) ds xs
+  uv <- runUnquoteM $ unquote v
+  case uv of
+    Left err -> typeError $ UnquoteFailed err
+    Right (R.FunDef a cs) -> do
+      reportSDoc "tc.unquote.decl" 20 $
+        vcat $ text "unquoteDecl: Unquoted term"
+             : [ nest 2 $ text (show c) | c <- cs ]
+      a <- toAbstract_ a
+      reportSDoc "tc.unquote.decl" 10 $
+        vcat [ text "unquoteDecl" <+> prettyTCM x <+> text "-->"
+             , prettyTCM x <+> text ":" <+> prettyA a ]
+      cs <- mapM (toAbstract_ . (QNamed x)) cs
+      reportSDoc "tc.unquote.decl" 10 $ vcat $ map prettyA cs
+      let ds = [ A.Axiom A.FunSig i defaultArgInfo x a   -- TODO other than defaultArg
+               , A.FunDef i x NotDelayed cs ]
+      xs <- checkMutual mi ds
+      return $ Just $ mutualChecks mi (A.Mutual mi ds) ds xs
+    Right R.DataDef         -> __IMPOSSIBLE__
+    Right R.RecordDef       -> __IMPOSSIBLE__
+    Right R.DataConstructor -> __IMPOSSIBLE__
+    Right R.Axiom           -> __IMPOSSIBLE__
+    Right R.Primitive       -> __IMPOSSIBLE__
 
 checkUnquoteDef :: Info.DefInfo -> QName -> A.Expr -> TCM ()
 checkUnquoteDef i x e = do
@@ -211,13 +267,16 @@ checkUnquoteDef i x e = do
   clause <- primAgdaClause
   v      <- checkExpr e $ El (mkType 0) $ list `apply` [defaultArg clause]
   reportSDoc "tc.unquote.def" 20 $ text "unquoteDef: Checked term"
-  cs <- unquote v :: TCM [Clause]
-  reportSDoc "tc.unquote.def" 20 $
-    vcat $ text "unquoteDef: Unquoted term"
-         : [ nest 2 $ text (show c) | c <- cs ]
-  cs <- mapM (reifyUnquoted . QNamed x) $ killRange cs
-  reportSDoc "tc.unquote.def" 10 $ vcat $ map prettyA cs
-  checkFunDef NotDelayed i x cs
+  uv <- runUnquoteM $ unquote v :: TCM (Either UnquoteError [R.Clause])
+  case uv of
+    Left err -> typeError $ UnquoteFailed err
+    Right cs -> do
+      reportSDoc "tc.unquote.def" 20 $
+        vcat $ text "unquoteDef: Unquoted term"
+             : [ nest 2 $ text (show c) | c <- cs ]
+      cs <- mapM (toAbstract_ . (QNamed x)) cs
+      reportSDoc "tc.unquote.def" 10 $ vcat $ map prettyA cs
+      checkFunDef NotDelayed i x cs
 
 -- | Instantiate all metas in 'Definition' associated to 'QName'. --   Makes sense after freezing metas.
 --   Some checks, like free variable analysis, are not in 'TCM', --   so they will be more precise (see issue 1099) after meta instantiation.
@@ -378,8 +437,8 @@ checkAxiom funSig i info0 x e = do
     ]
   -- Not safe. See Issue 330
   -- t <- addForcingAnnotations t
-  addConstant x $
-    defaultDefn info x t $
+  addConstant x =<< do
+    useTerPragma $ defaultDefn info x t $
       case funSig of
         A.FunSig   -> emptyFunction
         A.NoFunSig -> Axiom Nothing []  -- NB: used also for data and record type sigs
@@ -589,7 +648,8 @@ checkMutual i ds = inMutualBlock $ do
       (text "Checking mutual block" <+> text (show blockId) <> text ":") :
       map (nest 2 . prettyA) ds
 
-  mapM_ checkDecl ds
+  local (\e -> e { envTerminationCheck = () <$ Info.mutualTermCheck i }) $
+    mapM_ checkDecl ds
 
   lookupMutualBlock =<< currentOrFreshMutualBlock
 
@@ -616,7 +676,7 @@ checkSection i x tel ds =
       dtel' <- prettyTCM =<< lookupSection x
       reportSLn "tc.mod.check" 10 $ "checking section " ++ show dx ++ " " ++ show dtel
       reportSLn "tc.mod.check" 10 $ "    actual tele: " ++ show dtel'
-    withCurrentModule x $ checkDecls ds
+    withCurrentModule x $ mapM_ checkDeclCached ds
 
 -- | Helper for 'checkSectionApplication'.
 --

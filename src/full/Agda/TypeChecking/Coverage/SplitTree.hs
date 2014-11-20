@@ -93,4 +93,5 @@ instance Arbitrary CName where
   arbitrary = CName <$> elements
     [ "zero", "suc", "nil", "cons", "left", "right", "just", "nothing" ]
 
+testSplitTreePrinting :: IO ()
 testSplitTreePrinting = sample (arbitrary :: Gen (SplitTree' CName))

@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP           #-}
 {-# LANGUAGE TupleSections #-}
 
@@ -69,6 +67,7 @@ import Agda.Utils.IO.Binary
 import Agda.Utils.Pretty
 import Agda.Utils.Time
 import Agda.Utils.Hash
+import qualified Agda.Utils.HashMap as HMap
 import qualified Agda.Utils.Trie as Trie
 
 #include "undefined.h"
@@ -365,6 +364,7 @@ getInterface' x isMain = do
                 return (False, (i, NoWarnings))
 
       typeCheckThe file = do
+          unless includeStateChanges cleanCachedLog
           let withMsgs = bracket_
                 (chaseMsg "Checking" $ Just $ filePath file)
                 (const $ chaseMsg "Finished" Nothing)
@@ -543,6 +543,7 @@ createInterface file mname =
         options = catMaybes $ map getOptions pragmas
     mapM_ setOptionsFromPragma options
 
+
     -- Scope checking.
     topLevel <- billTop Bench.Scoping $
       concreteToAbstract_ (TopLevel file top)
@@ -556,8 +557,21 @@ createInterface file mname =
       printHighlightingInfo fileTokenInfo
       mapM_ (\ d -> generateAndPrintSyntaxInfo d Partial) ds
 
+
     -- Type checking.
-    billTop Bench.Typing $ checkDecls ds
+
+    -- invalidate cache if pragmas change, TODO move
+    opts <- use stPragmaOptions
+    me <- readFromCachedLog
+    case me of
+      Just (Pragmas opts', _) | opts == opts'
+        -> return ()
+      _ -> do
+        reportSLn "cache" 10 $ "pragma changed: " ++ show (isJust me)
+        cleanCachedLog
+    writeToCurrentLog $ Pragmas opts
+
+    billTop Bench.Typing $ mapM_ checkDeclCached ds `finally_` cacheCurrentLog
 
     -- Ulf, 2013-11-09: Since we're rethrowing the error, leave it up to the
     -- code that handles that error to reset the state.
@@ -595,6 +609,14 @@ createInterface file mname =
     syntaxInfo <- use stSyntaxInfo
     i <- billTop Bench.Serialization $ do
       buildInterface file topLevel syntaxInfo previousHsImports options
+
+    reportSLn "tc.top" 101 $ concat $
+      "Signature:\n" :
+      [ show x ++ "\n  type: " ++ show (defType def)
+               ++ "\n  def:  " ++ show cc ++ "\n"
+      | (x, def) <- HMap.toList $ sigDefinitions $ iSignature i,
+        Function{ funCompiled = cc } <- [theDef def]
+      ]
 
     -- TODO: It would be nice if unsolved things were highlighted
     -- after every mutual block.

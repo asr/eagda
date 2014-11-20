@@ -11,8 +11,88 @@ Installation and infrastructure
 Pragmas and options
 ===================
 
+* New option --exact-split.
+
+  The --exact-split flag causes Agda to raise an error whenever a clause in a
+  definition by pattern matching cannot be made to hold definitionally (i.e. as
+  a reduction rule). Specific clauses can be excluded from this check by means
+  of the {-# CATCHALL #-} pragma.
+
+  For instance, the following definition will be rejected as the second clause
+  cannot be made to hold definitionally:
+
+    min : Nat → Nat → Nat
+    min zero    y       = zero
+    min x       zero    = zero
+    min (suc x) (suc y) = suc (min x y)
+
+  Catchall clauses have to be marked as such, for instance:
+
+    eq : Nat → Nat → Bool
+    eq zero    zero    = true
+    eq (suc m) (suc n) = eq m n
+    {-# CATCHALL #-}
+    eq _       _       = false
+
+* New option: --no-exact-split.
+
+  This option can be used to override a global --exact-split in a
+  file, by adding a pragma {-# OPTIONS --no-exact-split #-}.
+
 Language
 ========
+
+* Building records from modules.
+
+  The "record { <fields> }" syntax is now extended to accept module names as
+  well. Fields are thus defined using the corresponding definitions from the
+  given module.
+
+  For instance assuming this record type R and module M:
+
+  record R : Set where
+    field
+      x : X
+      y : Y
+      z : Z
+
+  module M where
+    x = {! ... !}
+    y = {! ... !}
+
+  r : R
+  r = record { M; z = {! ... !} }
+
+  Previously one had to write `record { x = M.x; y = M.y; z = {! ... !} }`.
+
+  More precisely this construction now supports any combination of explicit
+  field definitions and applied modules.
+
+  If a field is both given explicitly and available in one of the modules,
+  then the explicit one takes precedence.
+
+  If a field is available in more than one module then this is ambiguous
+  and therefore rejected. As a consequence the order of assignments does
+  not matter.
+
+  The modules can be both applied to arguments and have import directives
+  such as `hiding`, `using`, and `renaming`. In particular this construct
+  subsumes the record update construction.
+
+  Here is an example of record update:
+
+  -- Record update. Same as: record r { y = {! ... !} }
+  r2 : R
+  r2 = record { R r; y = {! ... !} }
+
+  A contrived example showing the use of hiding/renaming:
+
+  module M2 (a : A) where
+    w = {! ... !}
+    z = {! ... !}
+
+  r3 : A → R
+  r3 a = record { M hiding (y); M2 a renaming (w to y) }
 
 * Unquoting function definitions.
 
@@ -79,34 +159,16 @@ Language
   only on the second argument could be small, but not the version above which
   indexes on both arguments.
 
-* New option --exact-split.
-
-  The --exact-split flag causes Agda to raise an error whenever a clause in a
-  definition by pattern matching cannot be made to hold definitionally (i.e. as 
-  a reduction rule). Specific clauses can be excluded from this check by means
-  of the {-# CATCHALL #-} pragma.
-
-  For instance, the following definition will be rejected as the second clause
-  cannot be made to hold definitionally:
-
-    min : Nat → Nat → Nat
-    min zero    y       = zero
-    min x       zero    = zero
-    min (suc x) (suc y) = suc (min x y)
-
-  Catchall clauses have to be marked as such, for instance:
-
-    eq : Nat → Nat → Bool
-    eq zero    zero    = true
-    eq (suc m) (suc n) = eq m n
-    {-# CATCHALL #-}
-    eq _       _       = false
-
 Goal and error display
 ======================
 
 Type checking
 =============
+
+* Call-by-need evaluation.
+
+  Compile-time evaluation (during type checking and from the Emacs mode) is now
+  using call-by-need rather than call-by-name.
 
 Compiler backends
 =================
@@ -114,3 +176,11 @@ Compiler backends
 Tools
 =====
 
+LaTeX-backend
+-------------
+
+* The default font has been changed to XITS (which is part of TeX Live):
+
+    http://www.ctan.org/tex-archive/fonts/xits/
+
+  This font is more complete with respect to Unicode.

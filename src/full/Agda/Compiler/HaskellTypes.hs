@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP #-}
 
 -- | Translating Agda types to Haskell types. Used to ensure that imported
@@ -138,4 +136,3 @@ haskellType t = fromType t
         Shared p   -> fromTerm $ derefPtr p
         MetaV{}    -> err
         DontCare{} -> err
-        ExtLam{}   -> __IMPOSSIBLE__

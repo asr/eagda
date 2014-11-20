@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 -- | Overloaded @null@ and @empty@ for collections and sequences.
 
 module Agda.Utils.Null where
@@ -29,6 +27,14 @@ class Null a where
   empty :: a
   null  :: a -> Bool
   -- ^ Satisfying @null empty == True@.
+
+instance Null () where
+  empty  = ()
+  null _ = True
+
+instance (Null a, Null b) => Null (a,b) where
+  empty      = (empty, empty)
+  null (a,b) = null a && null b
 
 instance Null ByteString where
   empty = ByteString.empty

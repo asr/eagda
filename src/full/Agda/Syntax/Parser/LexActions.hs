@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 -- {-# LANGUAGE CPP #-}
 
 {-| This module contains the building blocks used to construct the lexer.
@@ -22,7 +20,6 @@ module Agda.Syntax.Parser.LexActions
     ) where
 
 import Data.Char
-import Control.Arrow
 
 import Agda.Syntax.Parser.Lexer
 import Agda.Syntax.Parser.Alex
@@ -31,9 +28,9 @@ import Agda.Syntax.Parser.Tokens
 import Agda.Syntax.Position
 import Agda.Syntax.Literal
 
+import Agda.Utils.Lens
 import Agda.Utils.List
 import Agda.Utils.Tuple
-import Agda.Utils.Unicode
 
 {--------------------------------------------------------------------------
     Scan functions
@@ -98,15 +95,19 @@ newInput inp inp' len =
 -- | Alex 2 can't handle unicode characters. To solve this we
 --   translate all Unicode (non-ASCII) identifiers to @z@, all Unicode
 --   operator characters to @+@, and all whitespace characters (except
---   for @\t@ and @\n@) to ' '. It is important that there aren't any
---   keywords containing @z@, @+@ or @ @.
+--   for @\t@ and @\n@) to ' '.
+--   Further, non-printable Unicode characters are translated to an
+--   arbitrary, harmless ASCII non-printable character, @'\1'@.
+--
+--   It is important that there aren't any keywords containing @z@, @+@ or @ @.
+
 foolAlex :: AlexInput -> AlexInput
-foolAlex inp = inp { lexInput = map fool $ lexInput inp }
-    where
-        fool c
-            | isSpace c && not (c `elem` "\t\n") = ' '
-            | isUnicodeId c = if isAlpha c then 'z' else '+'
-            | otherwise     = c
+foolAlex = over lensLexInput $ map $ \ c ->
+  case c of
+    _ | isSpace c && not (c `elem` "\t\n") -> ' '
+    _ | isAscii c                          -> c
+    _ | isPrint c                          -> if isAlpha c then 'z' else '+'
+    _ | otherwise                          -> '\1'
 
 {--------------------------------------------------------------------------
     Lex actions
@@ -195,7 +196,7 @@ symbol s = withInterval_ (TokSymbol s)
 -- | Parse a literal.
 literal :: Read a => (Range -> a -> Literal) -> LexAction Token
 literal lit =
-  withInterval' read (TokLiteral . uncurry lit . (getRange *** id))
+  withInterval' read (TokLiteral . uncurry lit . mapFst getRange)
 
 -- | Parse an identifier. Identifiers can be qualified (see 'Name').
 --   Example: @Foo.Bar.f@

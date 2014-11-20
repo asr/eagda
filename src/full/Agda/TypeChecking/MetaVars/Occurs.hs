@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP                  #-}
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE TypeSynonymInstances #-}
@@ -169,7 +167,7 @@ class Occurs t where
 -- | When assigning @m xs := v@, check that @m@ does not occur in @v@
 --   and that the free variables of @v@ are contained in @xs@.
 occursCheck :: MetaId -> Vars -> Term -> TCM Term
-occursCheck m xs v = liftTCM $ do
+occursCheck m xs v = disableDestructiveUpdate $ liftTCM $ do
   mv <- lookupMeta m
   initOccursCheck mv
       -- TODO: Can we do this in a better way?
@@ -242,7 +240,6 @@ instance Occurs Term where
         Pi a b      -> uncurry Pi <$> occ (leaveTop ctx) (a,b)
         Sort s      -> Sort <$> occ (leaveTop ctx) s
         v@Shared{}  -> updateSharedTerm (occ ctx) v
-        ExtLam{}    -> __IMPOSSIBLE__
         MetaV m' es -> do
             -- Check for loop
             --   don't fail hard on this, since we might still be on the top-level
@@ -308,7 +305,6 @@ instance Occurs Term where
       Pi a b     -> metaOccurs m (a,b)
       Sort s     -> metaOccurs m s
       Shared p   -> metaOccurs m $ derefPtr p
-      ExtLam{}   -> __IMPOSSIBLE__
       MetaV m' vs | m == m' -> patternViolation' 50 $ "Found occurrence of " ++ show m
                   | otherwise -> metaOccurs m vs
 
@@ -511,7 +507,6 @@ hasBadRigid xs t = do
     Lit{}        -> failure -- matchable
     MetaV{}      -> failure -- potentially matchable
     Shared p     -> __IMPOSSIBLE__
-    ExtLam{}     -> __IMPOSSIBLE__
 
 -- | Check whether a term @Def f es@ is finally stuck.
 --   Currently, we give only a crude approximation.
@@ -615,14 +610,15 @@ performKill kills m a = do
   etaExpandMetaSafe m'
   let vars = reverse [ Arg info (var i) | (i, Arg info False) <- zip [0..] kills ]
       lam b a = Lam (argInfo a) (Abs "v" b)
-      u       = foldl' lam (MetaV m' $ map Apply vars) kills
+      tel     = map ("v" <$) (reverse kills)
+      u       = MetaV m' $ map Apply vars
 {- OLD CODE
       hs   = reverse [ argHiding a | a <- kills ]
       lam h b = Lam h (Abs "v" b)
       u       = foldr lam (MetaV m' vars) hs
 -}
   dbg m' u
-  assignTerm m u
+  assignTerm m tel u
   where
     dbg m' u = reportSDoc "tc.meta.kill" 10 $ vcat
       [ text "actual killing"

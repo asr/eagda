@@ -20,7 +20,7 @@ import Data.Traversable hiding (mapM, forM)
 
 import qualified Agda.Syntax.Concrete as C -- ToDo: Remove with instance of ToConcrete
 import Agda.Syntax.Position
-import Agda.Syntax.Abstract as A hiding (Open, Apply)
+import Agda.Syntax.Abstract as A hiding (Open, Apply, Assign)
 import Agda.Syntax.Abstract.Views as A
 import Agda.Syntax.Common
 import Agda.Syntax.Info (ExprInfo(..),MetaInfo(..),emptyMetaInfo)
@@ -94,13 +94,30 @@ giveExpr mi e = do
       -- Thus, we can safely apply its type to the context variables.
       ctx <- getContextArgs
       let t' = t `piApply` permute (takeP (length ctx) $ mvPermutation mv) ctx
+      traceCall (CheckExprCall e t') $ do
       reportSDoc "interaction.give" 20 $
         TP.text "give: instantiated meta type =" TP.<+> prettyTCM t'
       v <- checkExpr e t'
       case mvInstantiation mv of
-          InstV v' -> unlessM ((Irrelevant ==) <$> asks envRelevance) $
-                        equalTerm t' v (v' `apply` ctx)
-          _        -> updateMeta mi v
+        InstV xs v' -> unlessM ((Irrelevant ==) <$> asks envRelevance) $ do
+          reportSDoc "interaction.give" 20 $ TP.sep
+            [ TP.text "meta was already set to value v' = " TP.<+> prettyTCM v'
+              TP.<+> TP.text " with free variables " TP.<+> return (fsep $ map pretty xs)
+            , TP.text "now comparing it to given value v = " TP.<+> prettyTCM v
+            , TP.text "in context " TP.<+> inTopContext (prettyTCM ctx)
+            ]
+          -- The number of free variables should be at least the size of the context
+          -- (Ideally, if we implemented contextual type theory, it should be the same.)
+          when (length xs < size ctx) __IMPOSSIBLE__
+          -- if there are more free variables than the context has
+          -- we need to abstract over the additional ones (xs2)
+          let (_xs1, xs2) = splitAt (size ctx) xs
+          v' <- return $ foldr (\ (Arg ai x) -> I.Lam ai . I.Abs x) v' xs2
+          reportSDoc "interaction.give" 20 $ TP.sep
+            [ TP.text "in meta context, v' = " TP.<+> prettyTCM v'
+            ]
+          equalTerm t' v v'  -- Note: v' now lives in context of meta
+        _ -> updateMeta mi v
       reify v
 
 -- | Try to fill hole by expression.
@@ -154,7 +171,7 @@ refine ii mr e = do
     tryRefine nrOfMetas r scope e = try nrOfMetas e
       where
         try :: Int -> Expr -> TCM Expr
-        try 0 e = throwError (strMsg "Can not refine")
+        try 0 e = throwError $ strMsg "Cannot refine"
         try n e = give ii (Just r) e `catchError` (\_ -> try (n-1) =<< appMeta e)
 
         -- Apply A.Expr to a new meta
@@ -193,8 +210,8 @@ evalInMeta ii e =
 data Rewrite =  AsIs | Instantiated | HeadNormal | Simplified | Normalised
     deriving (Read)
 
---normalForm :: Rewrite -> Term -> TCM Term
-normalForm AsIs      t = return t
+normalForm :: Rewrite -> Type -> TCM Type
+normalForm AsIs         t = return t
 normalForm Instantiated t = return t   -- reify does instantiation
 normalForm HeadNormal   t = {- etaContract =<< -} reduce t
 normalForm Simplified   t = {- etaContract =<< -} simplify t
@@ -428,6 +445,8 @@ typeOfMetaMI norm mi =
         withMetaInfo (getMetaInfo mv) $
           rewriteJudg mv (mvJudgement mv)
    where
+    rewriteJudg :: MetaVariable -> Judgement Type MetaId ->
+                   TCM (OutputConstraint Expr NamedMeta)
     rewriteJudg mv (HasType i t) = do
       ms <- getMetaNameSuggestion i
       t <- normalForm norm t
@@ -548,7 +567,6 @@ metaHelperType norm ii rng s = case words s of
       I.Level{}    -> pure v
       I.MetaV{}    -> pure v
       I.Shared{}   -> pure v
-      I.ExtLam{}   -> __IMPOSSIBLE__
     onNamesElims f = traverse $ traverse $ onNamesTm f
     onNamesArgs f  = traverse $ traverse $ onNamesTm f
     onNamesAbs f   = onNamesAbs' f (stringToArgName <.> f . argNameToString)

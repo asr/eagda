@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP #-}
 
 -- | Lenses for 'TCState' and more.
@@ -13,6 +11,7 @@ import Control.Monad.State
 import Data.Set (Set)
 import Data.Map as Map
 import qualified Data.Set as Set
+import Data.Maybe (fromMaybe)
 
 -- import {-# SOURCE #-} Agda.Interaction.Response
 import Agda.Interaction.Response
@@ -61,21 +60,21 @@ resetAllState = do
 --   In contrast to 'Agda.Utils.Monad.localState', the 'Benchmark'
 --   info from the subcomputation is saved.
 localTCState :: TCM a -> TCM a
-localTCState = bracket_ get $ \ s -> do
+localTCState = disableDestructiveUpdate . bracket_ get (\ s -> do
    b <- getBenchmark
    put s
-   modifyBenchmark $ const b
+   modifyBenchmark $ const b)
 
 -- | Same as 'localTCState' but also returns the state in which we were just
 --   before reverting it.
 localTCStateSaving :: TCM a -> TCM (a, TCState)
 localTCStateSaving compute = do
-  state <- get
+  oldState <- get
   result <- compute
   newState <- get
   do
     b <- getBenchmark
-    put state
+    put oldState
     modifyBenchmark $ const b
   return (result, newState)
 
@@ -382,3 +381,4 @@ addNamedInstance x n = do
   modifySignature $ updateDefinition x $ \ d -> d { defInstance = Just n }
   -- Add x to n's instances.
   modifyInstanceDefs $ mapFst $ Map.insertWith (++) n [x]
+

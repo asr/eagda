@@ -1,5 +1,3 @@
--- {-# OPTIONS -fwarn-unused-binds #-}
-
 {-# LANGUAGE CPP                    #-}
 {-# LANGUAGE FlexibleInstances      #-}
 {-# LANGUAGE FunctionalDependencies #-}
@@ -8,6 +6,8 @@
 {-# LANGUAGE TupleSections          #-}
 {-# LANGUAGE TypeSynonymInstances   #-}
 {-# LANGUAGE UndecidableInstances   #-}
+
+-- {-# OPTIONS -fwarn-unused-binds #-}
 
 {-| The translation of abstract syntax to concrete syntax has two purposes.
     First it allows us to pretty print abstract syntax values without having to
@@ -58,6 +58,7 @@ import Agda.TypeChecking.Monad.Base  (TCM, NamedMeta(..))
 import Agda.TypeChecking.Monad.Options
 
 import qualified Agda.Utils.AssocList as AssocList
+import Agda.Utils.Either
 import Agda.Utils.Monad
 import Agda.Utils.Null
 import Agda.Utils.Tuple
@@ -293,6 +294,15 @@ instance ToConcrete a c => ToConcrete [a] [c] where
     toConcrete     = mapM toConcrete
     bindToConcrete = thread bindToConcrete
 
+instance (ToConcrete a1 c1, ToConcrete a2 c2) => ToConcrete (Either a1 a2) (Either c1 c2) where
+    toConcrete = traverseEither toConcrete toConcrete
+    bindToConcrete (Left x) ret =
+        bindToConcrete x $ \x ->
+        ret (Left x)
+    bindToConcrete (Right y) ret =
+        bindToConcrete y $ \y ->
+        ret (Right y)
+
 instance (ToConcrete a1 c1, ToConcrete a2 c2) => ToConcrete (a1,a2) (c1,c2) where
     toConcrete (x,y) = liftM2 (,) (toConcrete x) (toConcrete y)
     bindToConcrete (x,y) ret =
@@ -473,16 +483,11 @@ instance ToConcrete A.Expr C.Expr where
 
     toConcrete (A.Rec i fs) =
       bracket appBrackets $ do
-        let (xs, es) = unzip fs
-        es <- toConcreteCtx TopCtx es
-        return $ C.Rec (getRange i) $ zip xs es
+        C.Rec (getRange i) . map (fmap (\x -> ModuleAssignment x [] defaultImportDir)) <$> toConcreteCtx TopCtx fs
 
     toConcrete (A.RecUpdate i e fs) =
       bracket appBrackets $ do
-        let (xs, es) = unzip fs
-        e <- toConcrete e
-        es <- toConcreteCtx TopCtx es
-        return $ C.RecUpdate (getRange i) e $ zip xs es
+        C.RecUpdate (getRange i) <$> toConcrete e <*> toConcreteCtx TopCtx fs
 
     toConcrete (A.ETel tel) = do
       tel <- concat <$> toConcrete tel
@@ -499,6 +504,13 @@ instance ToConcrete A.Expr C.Expr where
     toConcrete (A.Quote i) = return $ C.Quote (getRange i)
     toConcrete (A.QuoteTerm i) = return $ C.QuoteTerm (getRange i)
     toConcrete (A.Unquote i) = return $ C.Unquote (getRange i)
+    toConcrete (A.Tactic i e xs ys) = do
+      e' <- toConcrete e
+      xs' <- toConcrete xs
+      ys' <- toConcrete ys
+      let r      = getRange i
+          rawtac = foldl (C.App r) e' xs'
+      return $ C.Tactic (getRange i) rawtac (map namedArg ys')
 
     -- Andreas, 2012-04-02: TODO!  print DontCare as irrAxiom
     -- Andreas, 2010-10-05 print irrelevant things as ordinary things
@@ -517,6 +529,9 @@ makeDomainFree b@(A.DomainFull (A.TypedBindings r (Common.Arg info (A.TBind _ [x
     A.Underscore MetaInfo{metaNumber = Nothing} -> A.DomainFree info x
     _ -> b
 makeDomainFree b = b
+
+instance ToConcrete A.Assign C.FieldAssignment where
+    toConcrete (Assign x e) = FieldAssignment x <$> toConcrete e
 
 -- Binder instances -------------------------------------------------------
 
@@ -832,9 +847,13 @@ instance ToConcrete RangeAndPragma C.Pragma where
 
 -- Left hand sides --------------------------------------------------------
 
+noImplicitArgs :: A.Patterns -> A.Patterns
 noImplicitArgs = filter (noImplicit . namedArg)
+
+noImplicitPats :: [A.Pattern] -> [A.Pattern]
 noImplicitPats = filter noImplicit
 
+noImplicit :: A.Pattern -> Bool
 noImplicit (A.ImplicitP _) = False
 noImplicit _               = True
 

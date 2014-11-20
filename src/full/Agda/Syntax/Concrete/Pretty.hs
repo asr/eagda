@@ -1,9 +1,8 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-{-# OPTIONS_GHC -fno-warn-orphans         #-}
-
 {-# LANGUAGE CPP                  #-}
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE TypeSynonymInstances #-}
+
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 {-| Pretty printer for the concrete syntax.
 -}
@@ -165,9 +164,9 @@ instance Pretty Expr where
             As _ x e  -> pretty x <> text "@" <> pretty e
             Dot _ e   -> text "." <> pretty e
             Absurd _  -> text "()"
-            Rec _ xs  -> sep [text "record", bracesAndSemicolons (map recPr xs)]
+            Rec _ xs  -> sep [text "record", bracesAndSemicolons (map pretty xs)]
             RecUpdate _ e xs ->
-              sep [text "record" <+> pretty e, bracesAndSemicolons (map recPr xs)]
+              sep [text "record" <+> pretty e, bracesAndSemicolons (map pretty xs)]
             ETel []  -> text "()"
             ETel tel -> fsep $ map pretty tel
             QuoteGoal _ x e -> sep [text "quoteGoal" <+> pretty x <+> text "in",
@@ -183,8 +182,15 @@ instance Pretty Expr where
             -- Andreas, 2011-10-03 print irrelevant things as .(e)
             DontCare e -> text "." <> parens (pretty e)
             Equal _ a b -> pretty a <+> text "=" <+> pretty b
-        where
-          recPr (x, e) = sep [ pretty x <+> text "=" , nest 2 $ pretty e ]
+
+instance (Pretty a, Pretty b) => Pretty (Either a b) where
+  pretty = either pretty pretty
+
+instance Pretty FieldAssignment where
+  pretty (FieldAssignment x e) = sep [ pretty x <+> text "=" , nest 2 $ pretty e ]
+
+instance Pretty ModuleAssignment where
+  pretty (ModuleAssignment m es i) = (fsep $ pretty m : map pretty es) <+> pretty i
 
 instance Pretty BoundName where
   pretty BName{ boundName = x, boundLabel = l }
@@ -197,16 +203,17 @@ instance Pretty LamBinding where
     pretty (DomainFull b)   = pretty b
 
 instance Pretty TypedBindings where
-    pretty (TypedBindings _ a) =
-        pRelevance (argInfo a) $ bracks $ pretty $ WithColors (argColors a) $ unArg a
-        where
-            bracks = case getHiding a of
-                        Hidden                       -> braces'
-                        Instance                     -> dbraces
-                        NotHidden | isMeta (unArg a) -> id
-                                  | otherwise        -> parens
-            isMeta (TBind _ _ (Underscore _ Nothing)) = True
-            isMeta _ = False
+  pretty (TypedBindings _ a) =
+    pRelevance (argInfo a) $ bracks $ pretty $ WithColors (argColors a) $ unArg a
+      where
+        bracks = case getHiding a of
+                   Hidden                       -> braces'
+                   Instance                     -> dbraces
+                   NotHidden | isMeta (unArg a) -> id
+                             | otherwise        -> parens
+
+        isMeta (TBind _ _ (Underscore _ Nothing)) = True
+        isMeta _ = False
 
 newtype Tel = Tel Telescope
 
@@ -371,7 +378,7 @@ instance Pretty Declaration where
                     pType Nothing  =
                               text "where"
                     pInd = maybeToList $ text . show . rangedThing <$> ind
-                    pCon = maybeToList $ (text "constructor" <+>) . pretty <$> con
+                    pCon = maybeToList $ (text "constructor" <+>) . pretty <$> fst <$> con
             Infix f xs  ->
                 pretty f <+> (fsep $ punctuate comma $ map pretty xs)
             Syntax n xs -> text "syntax" <+> pretty n <+> text "..."

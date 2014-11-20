@@ -1,11 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
--- Andreas, Makoto, Francesco 2014-10-15 AIM XX:
--- -O2 does not have any noticable effect on runtime
--- but sabotages cabal repl with -Werror
--- (due to a conflict with --interactive wraning)
--- {-# OPTIONS_GHC -O2                       #-}
-
 {-# LANGUAGE CPP                       #-}
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE FlexibleInstances         #-}
@@ -13,6 +5,11 @@
 {-# LANGUAGE ScopedTypeVariables       #-}
 {-# LANGUAGE TypeSynonymInstances      #-}
 
+-- Andreas, Makoto, Francesco 2014-10-15 AIM XX:
+-- -O2 does not have any noticable effect on runtime
+-- but sabotages cabal repl with -Werror
+-- (due to a conflict with --interactive warning)
+-- {-# OPTIONS_GHC -O2                      #-}
 
 -- | Structure-sharing serialisation of Agda interface files.
 
@@ -113,7 +110,7 @@ returnForcedByteString bs = return $! bs
 -- 32-bit machines). Word64 does not have these problems.
 
 currentInterfaceVersion :: Word64
-currentInterfaceVersion = 20141018 * 10 + 0
+currentInterfaceVersion = 20141022 * 10 + 0
 
 -- | Constructor tag (maybe omitted) and argument indices.
 
@@ -453,6 +450,13 @@ instance (EmbPrj a, EmbPrj b, EmbPrj c) => EmbPrj (a, b, c) where
   value = vcase valu where valu [a, b, c] = valu3 (,,) a b c
                            valu _         = malformed
 
+instance (EmbPrj a, EmbPrj b) => EmbPrj (Either a b) where
+  icod_ (Left  x) = icode1 0 x
+  icod_ (Right x) = icode1 1 x
+  value = vcase valu where valu [0, x] = valu1 Left  x
+                           valu [1, x] = valu1 Right x
+                           valu _   = malformed
+
 instance EmbPrj a => EmbPrj (Maybe a) where
   icod_ Nothing  = icode0'
   icod_ (Just x) = icode1' x
@@ -656,6 +660,11 @@ instance EmbPrj A.Name where
   value = vcase valu where valu [a, b, c, d] = valu4 A.Name a b c d
                            valu _            = malformed
 
+instance EmbPrj A.Assign where
+  icod_ (A.Assign a b) = icode2' a b
+  value = vcase valu where valu [a, b] = valu2 A.Assign a b
+                           valu _      = malformed
+
 instance (EmbPrj s, EmbPrj t) => EmbPrj (Named s t) where
   icod_ (Named a b) = icode2' a b
   value = vcase valu where valu [a, b] = valu2 Named a b
@@ -700,6 +709,7 @@ instance EmbPrj A.Expr where
   icod_ (A.Quote _)             = icode0 22
   icod_ (A.QuoteTerm _)         = icode0 23
   icod_ (A.Unquote _)           = icode0 24
+  icod_ (A.Tactic _ _ _ _)      = __IMPOSSIBLE__
   icod_ (A.DontCare a)          = icode1 25 a
   icod_ (A.PatternSyn a)        = icode1 26 a
   icod_ (A.Proj a)              = icode1 27 a
@@ -914,7 +924,6 @@ instance EmbPrj I.Term where
   icod_ (Pi       a b) = icode2 5 a b
   icod_ (Sort     a  ) = icode1 7 a
   icod_ (MetaV    a b) = __IMPOSSIBLE__
-  icod_ ExtLam{}       = __IMPOSSIBLE__
   icod_ (DontCare a  ) = icode1 8 a
   icod_ (Level    a  ) = icode1 9 a
   icod_ (Shared p)     = do

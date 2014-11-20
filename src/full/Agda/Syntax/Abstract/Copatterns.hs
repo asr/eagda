@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP                  #-}
 {-# LANGUAGE DeriveFunctor        #-}
 {-# LANGUAGE FlexibleContexts     #-}
@@ -33,6 +31,7 @@ import Agda.Syntax.Position
 import Agda.Syntax.Scope.Monad
 
 import Agda.TypeChecking.Monad.Base (TypeError(..), typeError)
+import Agda.Utils.Either
 import Agda.Utils.Tuple
 
 #include "undefined.h"
@@ -222,8 +221,8 @@ pathToRecord pps =
       Rec ei <$> mapM abstractions pes
 
         where
-          abstractions :: (ProjEntry, Expr) -> ScopeM (C.Name, Expr)
-          abstractions (ProjEntry p xs, e) = (C.unqualify $ qnameToConcrete p,) <$>
+          abstractions :: (ProjEntry, Expr) -> ScopeM RecordAssign
+          abstractions (ProjEntry p xs, e) = Left . Assign (C.unqualify $ qnameToConcrete p) <$>
             foldr abstract (return e) xs
 
           abstract :: NamedArg Name -> ScopeM Expr -> ScopeM Expr
@@ -286,16 +285,23 @@ instance Rename Expr where
       Prop{}                -> e
       Let i bs e            -> Let i (rename rho bs) (rename rho e)
       ETel tel              -> ETel (rename rho tel)
-      Rec i fes             -> Rec i $ map (id -*- rename rho) fes
-      RecUpdate i e fes     -> RecUpdate i (rename rho e) $ map (id -*- rename rho) fes
+      Rec i fes             -> Rec i $ rename rho fes
+      RecUpdate i e fes     -> RecUpdate i (rename rho e) (rename rho fes)
       ScopedExpr i e        -> ScopedExpr i (rename rho e)
       QuoteGoal i n e       -> QuoteGoal i n (rename rho e)
       QuoteContext i        -> e
       Quote i               -> e
       QuoteTerm i           -> e
       Unquote i             -> e
+      Tactic i e xs ys      -> Tactic i (rename rho e) (rename rho xs) (rename rho ys)
       DontCare e            -> DontCare (rename rho e)
       PatternSyn n          -> e
+
+instance Rename ModuleName where
+  rename rho x = x
+
+instance Rename Assign where
+  rename rho (Assign x e) = Assign x (rename rho e)
 
 instance Rename LetBinding where
   rename rho e =
@@ -356,6 +362,9 @@ instance Rename a => Rename (Named n a) where
 instance Rename a => Rename [a] where
   rename rho = map (rename rho)
 
+instance (Rename a, Rename b) => Rename (Either a b) where
+  rename rho = mapEither (rename rho) (rename rho)
+
 
 
 
@@ -388,8 +397,6 @@ instance Alpha (Pattern' e) where
 tell1 :: (MonadWriter [a] m) => a -> m ()
 tell1 a = tell [a]
 
-deriving instance Eq AmbiguousQName
-
 instance Alpha (LHSCore' e) where
   alpha' (LHSHead f ps) (LHSHead f' ps') = guard (f == f') >> alpha' ps ps'
   alpha' (LHSProj d ps1 lhs ps2) (LHSProj d' ps1' lhs' ps2') =
@@ -408,26 +415,3 @@ instance (Eq n, Alpha a) => Alpha (Named n a) where
 instance Alpha a => Alpha [a] where
   alpha' l l' = guard (length l == length l') >> zipWithM_ alpha' l l'
 
--- | Literal equality of patterns, ignoring dot patterns
-instance Eq (Pattern' e) where
-  p == p' =
-    case (p,p') of
-      ((VarP x)             , (VarP x')             ) -> x === x'
-      ((ConP _ x ps)        , (ConP _ x' ps')       ) -> x == x' && ps == ps'
-      ((DefP _ x ps)        , (DefP _ x' ps')       ) -> x == x' && ps == ps'
-      ((WildP _)            , (WildP _)             ) -> True
-      ((AsP _ x p)          , (AsP _ x' p')         ) -> x === x' && p == p'
-      ((DotP _ _)           , (DotP _ _)            ) -> True
-      (AbsurdP{}            , AbsurdP{}             ) -> True
-      ((LitP l)             , (LitP l')             ) -> l == l'
-      (ImplicitP{}          , ImplicitP{}           ) -> True
-      ((PatternSynP _ x ps) , (PatternSynP _ x' ps')) -> x == x' && ps == ps'
-      (_                    , _                     ) -> False
-    where (A.Name _ (C.Name _ x) _ _) === (A.Name _ (C.Name _ x') _ _) = True
-          (A.Name _ C.NoName{}   _ _) === (A.Name _ C.NoName{}    _ _) = True
-          _                           === _                            = False
-
-deriving instance Eq (LHSCore' e)
-
-instance Eq LHS where
-  (LHS _ core wps) == (LHS _ core' wps') = core == core' && wps == wps'

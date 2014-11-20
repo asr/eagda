@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP                  #-}
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE TypeSynonymInstances #-}
@@ -142,7 +140,6 @@ checkInternal v t = do
       levelType >>= (`subtype` t)
     DontCare v -> checkInternal v t
     Shared{}   -> __IMPOSSIBLE__
-    ExtLam{}   -> __IMPOSSIBLE__
 
 {-  RETIRED, works also when elimView has not been called before.
 -- | Check function application.

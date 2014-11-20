@@ -33,7 +33,6 @@ description:
   policy, because it is not intended to be used by third-party
   packages.
 tested-with:        GHC == 7.0.4
-                    GHC == 7.2.2
                     GHC == 7.4.2
                     GHC == 7.6.3
                     GHC == 7.8.3
@@ -87,7 +86,7 @@ library
     , containers >= 0.1 && < 0.6
     , data-hash == 0.2.0.0
     , deepseq == 1.3.*
-    , equivalence >= 0.2.4  && < 0.3
+    , equivalence >= 0.2.5  && < 0.3
     , filepath >= 1.1 && < 1.4
     , geniplate >= 0.6.0.3 && < 0.7
     -- hashable 1.2.0.10 makes library-test 10x slower. The issue was
@@ -213,11 +212,13 @@ library
                     Agda.Syntax.Parser.Tokens
                     Agda.Syntax.Parser
                     Agda.Syntax.Position
+                    Agda.Syntax.Reflected
                     Agda.Syntax.Scope.Base
                     Agda.Syntax.Scope.Monad
                     Agda.Syntax.Translation.AbstractToConcrete
                     Agda.Syntax.Translation.ConcreteToAbstract
                     Agda.Syntax.Translation.InternalToAbstract
+                    Agda.Syntax.Translation.ReflectedToAbstract
                     Agda.Termination.CallGraph
                     Agda.Termination.CallMatrix
                     Agda.Termination.CutOff
@@ -266,6 +267,7 @@ library
                     Agda.TypeChecking.Monad.Base.KillRange
                     Agda.TypeChecking.Monad.Benchmark
                     Agda.TypeChecking.Monad.Builtin
+                    Agda.TypeChecking.Monad.Caching
                     Agda.TypeChecking.Monad.Closure
                     Agda.TypeChecking.Monad.Constraints
                     Agda.TypeChecking.Monad.Context
@@ -326,6 +328,7 @@ library
                     Agda.TypeChecking.Test.Generators
                     Agda.TypeChecking.Tests
 --                    Agda.TypeChecking.UniversePolymorphism -- RETIRED
+                    Agda.TypeChecking.Unquote
                     Agda.TypeChecking.With
                     Agda.Utils.AssocList
                     Agda.Utils.Bag
@@ -371,7 +374,6 @@ library
                     Agda.Utils.Time
                     Agda.Utils.Trie
                     Agda.Utils.Tuple
-                    Agda.Utils.Unicode
                     Agda.Utils.Update
                     Agda.Utils.VarSet
                     Agda.Utils.Warshall
@@ -395,6 +397,7 @@ library
                     -fwarn-incomplete-patterns
                     -fwarn-missing-fields
                     -fwarn-missing-methods
+                    -fwarn-missing-signatures
                     -fwarn-monomorphism-restriction
                     -fwarn-tabs
                     -fwarn-overlapping-patterns
@@ -414,7 +417,7 @@ library
   -- under GHC 7.0.4.  -Werror is for developers only, who are assumed
   -- to use a recent GHC.
   if impl(ghc > 7.2.2)
-    ghc-options:    -Werror
+     ghc-options:    -Werror
   if impl(ghc >= 6.12)
     ghc-options:    -fwarn-dodgy-exports
                     -fwarn-wrong-do-bind

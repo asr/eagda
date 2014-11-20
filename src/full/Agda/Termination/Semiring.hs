@@ -80,6 +80,7 @@ instance SemiRing Integer where
 integerSemiring :: Semiring Integer
 integerSemiring = Semiring { add = (+), mul = (*), zero = 0 } -- , one = 1 }
 
+prop_integerSemiring :: Integer -> Integer -> Integer -> Bool
 prop_integerSemiring = semiringInvariant integerSemiring
 
 -- | The standard semiring on 'Int's.
@@ -97,6 +98,7 @@ instance SemiRing Int where
 intSemiring :: Semiring Int
 intSemiring = Semiring { add = (+), mul = (*), zero = 0 } -- , one = 1 }
 
+prop_intSemiring :: Int -> Int -> Int -> Bool
 prop_intSemiring = semiringInvariant intSemiring
 
 -- | The standard semiring on 'Bool's.
@@ -105,6 +107,7 @@ boolSemiring :: Semiring Bool
 boolSemiring =
   Semiring { add = (||), mul = (&&), zero = False } --, one = True }
 
+prop_boolSemiring :: Bool -> Bool -> Bool -> Bool
 prop_boolSemiring = semiringInvariant boolSemiring
 
 ------------------------------------------------------------------------

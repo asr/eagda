@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP                  #-}
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE TupleSections        #-}
@@ -18,7 +16,7 @@ import Prelude hiding (null)
 import Control.Monad.State
 
 import Data.Function
-import Data.List (nub, sortBy)
+import Data.List (nub, sortBy, intercalate)
 import Data.Maybe
 import qualified Data.Map as Map (empty)
 
@@ -241,6 +239,7 @@ errorString err = case err of
 --    UnequalTelescopes{}                      -> "UnequalTelescopes" -- UNUSED
     UnequalColors{}                          -> "UnequalTelescopes"
     HeterogeneousEquality{}                  -> "HeterogeneousEquality"
+    WithOnFreeVariable{}                     -> "WithOnFreeVariable"
     UnexpectedWithPatterns{}                 -> "UnexpectedWithPatterns"
     UninstantiatedDotPattern{}               -> "UninstantiatedDotPattern"
     UninstantiatedModule{}                   -> "UninstantiatedModule"
@@ -249,6 +248,7 @@ errorString err = case err of
     UnsolvedMetas{}                          -> "UnsolvedMetas"
     SolvedButOpenHoles{}                     -> "SolvedButOpenHoles"
     UnusedVariableInPatternSynonym           -> "UnusedVariableInPatternSynonym"
+    UnquoteFailed{}                          -> "UnquoteFailed"
     WithClausePatternMismatch{}              -> "WithClausePatternMismatch"
     WithoutKError{}                          -> "WithoutKError"
     WrongHidingInApplication{}               -> "WrongHidingInApplication"
@@ -492,6 +492,9 @@ instance PrettyTCM TypeError where
             DuplicateFields xs -> fsep $
                 pwords "Duplicate fields" ++ punctuate comma (map pretty xs) ++
                 pwords "in record"
+            WithOnFreeVariable e -> fsep $
+              pwords "Cannot `with` on variable " ++ [prettyA e] ++
+              pwords " bound in a module telescope (or patterns of a parent clause)"
             UnexpectedWithPatterns ps -> fsep $
               pwords "Unexpected with patterns" ++ (punctuate (text " |") $ map prettyA ps)
             WithClausePatternMismatch p q -> fsep $
@@ -756,7 +759,6 @@ instance PrettyTCM TypeError where
                            pwords "unification problems (inferred index ≟ expected index):"
                   ] ++
                   zipWith (\c g -> nest 2 $ prettyTCM c <+> text "≟" <+> prettyTCM g) cIxs gIxs)
-
             CoverageCantSplitIrrelevantType a -> fsep $
               pwords "Cannot split on argument of irrelevant datatype" ++ [prettyTCM a]
 
@@ -799,6 +801,23 @@ instance PrettyTCM TypeError where
                     com (_:_) = comma
             IFSNoCandidateInScope t -> fsep $
                 pwords "No variable of type" ++ [prettyTCM t] ++ pwords "was found in scope."
+            UnquoteFailed e -> case e of
+                (BadVisibility msg arg) -> fsep $
+                  pwords $ "Unable to unquote the argument. It should be `" ++ msg ++ "'."
+                (ConInsteadOfDef x def con) -> do
+                  fsep $ pwords ("Use " ++ con ++ " instead of " ++ def ++ " for constructor") ++ [prettyTCM x]
+                (DefInsteadOfCon x def con) -> do
+                  fsep $ pwords ("Use " ++ def ++ " instead of " ++ con ++ " for non-constructor") ++ [prettyTCM x]
+                (NotAConstructor kind t) ->
+                  fwords "Unable to unquote the term"
+                  $$ nest 2 (prettyTCM t)
+                  $$ fwords ("of type " ++ kind ++ ". Reason: not a constructor.")
+                (NotALiteral kind t) ->
+                  fwords "Unable to unquote the term"
+                  $$ nest 2 (prettyTCM t)
+                  $$ fwords ("of type " ++ kind ++ ". Reason: not a literal value.")
+                (BlockedOnMeta m) -> fsep $ pwords $ "Unquote failed because of unsolved meta variables."
+                (UnquotePanic err) -> __IMPOSSIBLE__
             SafeFlagPostulate e -> fsep $
                 pwords "Cannot postulate" ++ [pretty e] ++ pwords "with safe flag"
             SafeFlagPragma xs ->

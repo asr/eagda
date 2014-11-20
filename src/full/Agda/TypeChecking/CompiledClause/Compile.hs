@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP #-}
 
 module Agda.TypeChecking.CompiledClause.Compile where
@@ -75,7 +73,6 @@ compileWithSplitTree t cs = case t of
     -- after end of split tree, continue with left-to-right strategy
 
   where
-
     compiles :: SplitTrees -> Case Cls -> Case CompiledClauses
     compiles ts br@Branches{ conBranches = cons
                            , litBranches = lits
@@ -181,7 +178,7 @@ expandCatchAlls single n cs =
     -- True if nth pattern is variable or there are less than n patterns.
     isCatchAllNth ps = all (isVar . unArg) $ take 1 $ drop n ps
 
-    nth qs = headDef __IMPOSSIBLE__ $ drop n qs
+    nth qs = headWithDefault __IMPOSSIBLE__ $ drop n qs
 
     classify (LitP l)     = Left l
     classify (ConP c _ _) = Right c

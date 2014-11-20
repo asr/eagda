@@ -3,7 +3,18 @@
 {-# LANGUAGE PatternGuards    #-}
 {-# LANGUAGE TupleSections    #-}
 
-module Agda.TypeChecking.Coverage where
+{-| Coverage checking, case splitting, and splitting for refine tactics.
+
+ -}
+
+module Agda.TypeChecking.Coverage
+  ( SplitClause(..), clauseToSplitClause, fixTarget
+  , Covering(..), splitClauses
+  , coverageCheck
+  , splitClauseWithAbsurd
+  , splitLast
+  , splitResult
+  ) where
 
 import Control.Monad
 import Control.Monad.Trans ( lift )
@@ -48,7 +59,8 @@ import Agda.TypeChecking.Irrelevance
 
 import Agda.Interaction.Options
 
-import Agda.Utils.Functor (for, ($>))
+import Agda.Utils.Either
+import Agda.Utils.Functor
 import Agda.Utils.List
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
@@ -111,18 +123,6 @@ clauseToSplitClause cl = SClause
 
 type CoverM = ExceptionT SplitError TCM
 
--- | Old top-level function for checking pattern coverage.
---   DEPRECATED
-checkCoverage :: QName -> TCM ()
-checkCoverage f = do
-  d <- getConstInfo f
-  case theDef d of
-    Function{ funProjection = Nothing, funClauses = cs@(_:_) } -> do
-      coverageCheck f (defType d) cs
-      return ()
-    Function{ funProjection = Just _ } -> __IMPOSSIBLE__
-    _ -> __IMPOSSIBLE__
-
 -- | Top-level function for checking pattern coverage.
 coverageCheck :: QName -> Type -> [Clause] -> TCM SplitTree
 coverageCheck f t cs = do
@@ -164,7 +164,8 @@ coverageCheck f t cs = do
 -- | @cover f cs (SClause _ _ ps _) = return (splitTree, used, pss)@.
 --   checks that the list of clauses @cs@ covers the given split clause.
 --   Returns the @splitTree@, the @used@ clauses, and missing cases @pss@.
-cover :: QName -> [Clause] -> SplitClause -> TCM (SplitTree, Set Nat, [[I.NamedArg Pattern]])
+cover :: QName -> [Clause] -> SplitClause ->
+         TCM (SplitTree, Set Nat, [[I.NamedArg Pattern]])
 cover f cs sc@(SClause tel perm ps _ target) = do
   reportSDoc "tc.cover.cover" 10 $ vcat
     [ text "checking coverage of pattern:"
@@ -183,8 +184,10 @@ cover f cs sc@(SClause tel perm ps _ target) = do
       let is = [ j | (j, c) <- zip [0..i-1] cs, matchLits c ups perm ]
       reportSLn "tc.cover.cover"  10 $ "literal matches: " ++ show is
       return (SplittingDone (size tel), Set.fromList (i : is), [])
-    Yes (i,_) -> setCurrentRange (getRange (cs !! i)) $
-                   typeError $ CoverageNoExactSplit f (cs !! i)
+
+     | otherwise -> setCurrentRange (getRange (cs !! i)) $
+                      typeError $ CoverageNoExactSplit f (cs !! i)
+
     No        ->  do
       reportSLn "tc.cover" 20 $ "pattern is not covered"
       return (SplittingDone (size tel), Set.empty, [ps])
@@ -196,8 +199,11 @@ cover f cs sc@(SClause tel perm ps _ target) = do
       let done = return (SplittingDone (size tel), Set.empty, [ps])
       caseMaybeM (splitResult f sc) done $ \ (Covering n scs) -> do
         (projs, (trees, useds, psss)) <- mapSnd unzip3 . unzip <$> do
-          forM scs $ \ (proj, sc') -> (proj,) <$> do cover f cs =<< fixTarget sc'
-          -- OR: mapM (traverseF $ cover f cs <=< fixTarget) scs
+          mapM (traverseF $ cover f cs <=< (snd <.> fixTarget)) scs
+          -- OR:
+          -- forM scs $ \ (proj, sc') -> (proj,) <$> do
+          --   cover f cs =<< do
+          --     snd <$> fixTarget sc'
         let tree = SplitAt n $ zip projs trees
         return (tree, Set.unions useds, concat psss)
 
@@ -269,16 +275,20 @@ isDatatype ind at = do
           | otherwise -> do
               let (ps, is) = genericSplitAt np args
               return (d, ps, is, cs)
-        Record{recPars = np, recConHead = con} ->
-          return (d, args, [], [conName con])
+        Record{recPars = np, recConHead = con, recInduction = i}
+          | i == Just CoInductive && ind /= CoInductive ->
+              throw CoinductiveDatatype
+          | otherwise ->
+              return (d, args, [], [conName con])
         _ -> throw NotADatatype
     _ -> throw NotADatatype
 
--- | update the target type, add more patterns to split clause
--- if target becomes a function type.
-fixTarget :: SplitClause -> TCM SplitClause
+-- | Update the target type, add more patterns to split clause
+--   if target becomes a function type.
+--   Returns @True@ if new patterns were added.
+fixTarget :: SplitClause -> TCM (Bool, SplitClause)
 fixTarget sc@SClause{ scTel = sctel, scPerm = perm, scPats = ps, scSubst = sigma, scTarget = target } =
-  caseMaybe target (return sc) $ \ a -> do
+  caseMaybe target (return (False, sc)) $ \ a -> do
     reportSDoc "tc.cover.target" 20 $ sep
       [ text "split clause telescope: " <+> prettyTCM sctel
       , text "old permutation       : " <+> prettyTCM perm
@@ -315,7 +325,7 @@ fixTarget sc@SClause{ scTel = sctel, scPerm = perm, scPats = ps, scSubst = sigma
       [ text "new split clause"
       , prettyTCM sc'
       ]
-    return $ if n == 0 then sc { scTarget = newTarget } else sc'
+    return $ if n == 0 then (False, sc { scTarget = newTarget }) else (True, sc')
 
 -- | @computeNeighbourhood delta1 delta2 perm d pars ixs hix hps con@
 --
@@ -513,6 +523,8 @@ splitClauseWithAbsurd :: Clause -> Nat -> TCM (Either SplitError (Either SplitCl
 splitClauseWithAbsurd c x = split' Inductive (clauseToSplitClause c) (BlockingVar x Nothing)
 
 -- | Entry point from @TypeChecking.Empty@ and @Interaction.BasicOps@.
+--   @splitLast CoInductive@ is used in the @refine@ tactics.
+
 splitLast :: Induction -> Telescope -> [I.NamedArg Pattern] -> TCM (Either SplitError Covering)
 splitLast ind tel ps = split ind sc (BlockingVar 0 Nothing)
   where sc = SClause tel (idP $ size tel) ps __IMPOSSIBLE__ Nothing
@@ -539,7 +551,7 @@ split ind sc x = fmap (blendInAbsurdClause (splitDbIndexToLevel sc x)) <$>
     split' ind sc x
   where
     blendInAbsurdClause :: Nat -> Either SplitClause Covering -> Covering
-    blendInAbsurdClause n = either (const $ Covering n []) id
+    blendInAbsurdClause n = fromRight (const $ Covering n [])
 
     splitDbIndexToLevel :: SplitClause -> BlockingVar -> Nat
     splitDbIndexToLevel sc@SClause{ scTel = tel, scPerm = perm } x =
@@ -548,6 +560,7 @@ split ind sc x = fmap (blendInAbsurdClause (splitDbIndexToLevel sc x)) <$>
 -- | Convert a de Bruijn index relative to a telescope to a de Buijn level.
 --   The result should be the argument (counted from left, starting with 0)
 --   to split at (dot patterns included!).
+dbIndexToLevel :: Telescope -> Permutation -> Int -> Nat
 dbIndexToLevel tel perm x = if n < 0 then __IMPOSSIBLE__ else n
   where n = if k < 0 then __IMPOSSIBLE__ else permute perm [0..] !! k
         k = size tel - x - 1
@@ -603,8 +616,9 @@ split' ind sc@(SClause tel perm ps _ target) (BlockingVar x mcons) = liftTCM $ r
   ns <- catMaybes <$> do
     forM cons $ \ con ->
       fmap (con,) <$> do
-        Trav.mapM (\sc -> lift $ fixTarget $ sc { scTarget = target }) =<< do
-          computeNeighbourhood delta1 n delta2 perm d pars ixs hix hps con
+        msc <- computeNeighbourhood delta1 n delta2 perm d pars ixs hix hps con
+        Trav.forM msc $ \ sc -> lift $ snd <$> fixTarget sc{ scTarget = target }
+
   case ns of
     []  -> do
       let absurd = VarP "()"
@@ -641,6 +655,7 @@ split' ind sc@(SClause tel perm ps _ target) (BlockingVar x mcons) = liftTCM $ r
     _  -> return $ Right $ Covering xDBLevel ns
 
   where
+    xDBLevel :: Nat
     xDBLevel = dbIndexToLevel tel perm x
 
     inContextOfT :: MonadTCM tcm => tcm a -> tcm a

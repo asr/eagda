@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP                  #-}
 {-# LANGUAGE FlexibleContexts     #-}
 {-# LANGUAGE FlexibleInstances    #-}
@@ -99,7 +97,7 @@ checkStrictlyPositive qs = disableDestructiveUpdate $ do
 
       -- if we find an unguarded record, mark it as such
       when (dr == IsRecord) $ do
-       case headMay [ how | Edge o how <- loops, o <= StrictPos ] of
+       case headMaybe [ how | Edge o how <- loops, o <= StrictPos ] of
         Just how -> do
           reportSDoc "tc.pos.record" 5 $ sep
             [ prettyTCM q <+> text "is not guarded, because it occurs"
@@ -430,7 +428,6 @@ instance ComputeOccurrences Term where
     Sort{}       -> return $ Map.empty
     DontCare _   -> return $ Map.empty -- Andreas, 2011-09-09: do we need to check for negative occurrences in irrelevant positions?
     Shared p     -> occurrences $ derefPtr p
-    ExtLam{}     -> __IMPOSSIBLE__
     where
       -- Apparently some development version of GHC chokes if the
       -- following line is replaced by vs ! i.

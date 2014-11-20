@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP #-}
 
 module Agda.TypeChecking.Rules.Record where
@@ -162,9 +160,9 @@ checkRecDef i name ind con ps contel fields =
                          , conInd    = conInduction
                          , conATPRole = Nothing
                          }
-
       -- Declare the constructor as eligible for instance search
-      addNamedInstance conName name
+      when (Info.defInstance i == InstanceDef) $ do
+        addNamedInstance conName name
 
       -- Check that the fields fit inside the sort
       let dummy = Sort Prop  -- We're only interested in the sort here

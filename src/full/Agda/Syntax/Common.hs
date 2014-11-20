@@ -31,7 +31,6 @@ import Agda.Utils.Size
 #include "undefined.h"
 import Agda.Utils.Impossible
 
-
 ---------------------------------------------------------------------------
 -- * Delayed
 ---------------------------------------------------------------------------
@@ -322,7 +321,8 @@ isHiddenArg arg = argHiding arg /= NotHidden
 mapArgInfo :: (ArgInfo c -> ArgInfo c') -> Arg c a -> Arg c' a
 mapArgInfo f arg = arg { argInfo = f $ argInfo arg }
 
-argColors    = argInfoColors    . argInfo
+argColors :: Arg c a -> [c]
+argColors = argInfoColors . argInfo
 
 mapArgColors :: ([c] -> [c']) -> Arg c a -> Arg c' a
 mapArgColors = mapArgInfo . mapArgInfoColors
@@ -416,7 +416,8 @@ instance LensRelevance (Dom c e) where
 mapDomInfo :: (ArgInfo c -> ArgInfo c') -> Dom c a -> Dom c' a
 mapDomInfo f arg = arg { domInfo = f $ domInfo arg }
 
-domColors    = argInfoColors    . domInfo
+domColors :: Dom c a -> [c]
+domColors = argInfoColors . domInfo
 
 argFromDom :: Dom c a -> Arg c a
 argFromDom (Dom i a) = Arg i a
@@ -553,6 +554,12 @@ instance KillRange IsAbstract where
 data IsInstance = InstanceDef | NotInstanceDef
     deriving (Typeable, Show, Eq, Ord)
 
+instance KillRange IsInstance where
+  killRange = id
+
+instance HasRange IsInstance where
+  getRange _ = noRange
+
 type Nat    = Int
 type Arity  = Nat
 
@@ -617,7 +624,7 @@ data TerminationCheck m
     -- ^ Treat as terminating (unsafe).  Same effect as 'NoTerminationCheck'.
   | TerminationMeasure !Range m
     -- ^ Skip termination checking but use measure instead.
-    deriving (Typeable, Show, Eq)
+    deriving (Typeable, Show, Eq, Functor)
 
 instance KillRange m => KillRange (TerminationCheck m) where
   killRange (TerminationMeasure _ m) = TerminationMeasure noRange (killRange m)

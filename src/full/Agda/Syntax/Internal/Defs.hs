@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP                  #-}
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE TypeSynonymInstances #-}
@@ -71,7 +69,6 @@ instance GetDefs Term where
     MetaV x vs -> getDefs x >> getDefs vs
     DontCare v -> getDefs v
     Shared p   -> getDefs $ derefPtr p  -- TODO: exploit sharing!
-    ExtLam _ _ -> __IMPOSSIBLE__
 
 instance GetDefs MetaId where
   getDefs x = doMeta x

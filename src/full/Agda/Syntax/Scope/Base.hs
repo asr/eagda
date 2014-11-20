@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP                 #-}
 {-# LANGUAGE DeriveDataTypeable  #-}
 {-# LANGUAGE GADTs               #-}
@@ -54,7 +52,7 @@ data Scope = Scope
       , scopeImports        :: Map C.QName A.ModuleName
       , scopeDatatypeModule :: Bool
       }
-  deriving (Typeable)
+  deriving (Typeable, Eq)
 
 -- | See 'Agda.Syntax.Common.Access'.
 data NameSpaceId
@@ -99,7 +97,7 @@ data ScopeInfo = ScopeInfo
       , scopeLocals     :: LocalVars
       , scopePrecedence :: Precedence
       }
-  deriving (Typeable)
+  deriving (Typeable, Eq)
 
 -- | Local variables.
 type LocalVars = AssocList C.Name LocalVar
@@ -165,7 +163,7 @@ data NameSpace = NameSpace
       , nsModules :: ModulesInScope
         -- ^ Maps concrete module names to a list of abstract module names.
       }
-  deriving (Typeable)
+  deriving (Typeable, Eq)
 
 type ThingsInScope a = Map C.Name [a]
 type NamesInScope    = ThingsInScope AbstractName
@@ -707,7 +705,7 @@ inverseScopeLookup' ambCon name scope = case name of
     len (C.Qual _ x) = 1 + len x
 
     best :: [C.QName] -> Maybe C.QName
-    best xs = headMay $ sortBy (compare `on` len) xs
+    best xs = headMaybe $ sortBy (compare `on` len) xs
 
     unique :: forall a . [a] -> Bool
     unique []      = __IMPOSSIBLE__

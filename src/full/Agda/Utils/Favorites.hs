@@ -151,12 +151,15 @@ instance PartialOrd a => Monoid (Favorites a) where
 instance (PartialOrd a, Arbitrary a) => Arbitrary (Favorites a) where
   arbitrary = fromList <$> arbitrary
 
+property_null_empty :: Bool
 property_null_empty = null empty
 
+property_not_null_singleton :: a -> Bool
 property_not_null_singleton = not . null . singleton
 
 -- Remember: less is better!
 
+prop_compareWithFavorites :: ISet -> Favorites ISet -> Bool
 prop_compareWithFavorites a@ISet{} as =
   case compareWithFavorites a as of
     Dominates dominated notDominated ->

@@ -55,8 +55,8 @@ dataParametersTCM name = do
     defnPars (Record   {recPars  = p}) = p
     defnPars d                         = 0 -- error (show d) -- __IMPOSSIBLE__ -- Not so sure about this.
 
-report n s = do
-  lift $ reportSDoc "epic.forcing" n s
+report :: Int -> TCM P.Doc -> Compile TCM ()
+report n s = lift $ reportSDoc "epic.forcing" n s
 
 piApplyM' :: Type -> Args -> TCM Type
 piApplyM' t as = do
@@ -100,7 +100,7 @@ insertTele x 0 ins term (ExtendTel t to) = do
       , text "term:" <+> prettyTCM term
       , text "to:"   <+> prettyTCM (unAbs to)
       ]
-    (st, arg) <- case I.unEl . unDom $ t' of
+    (st, arg) <- case I.ignoreSharing . I.unEl . unDom $ t' of
             I.Def st es -> return (st, fromMaybe __IMPOSSIBLE__ $ I.allApplyElims es)
             s          -> do
               report 10 $ vcat
@@ -139,11 +139,14 @@ insertTele er n ins term (ExtendTel x xs) = do
     return (ExtendTel x $ Abs (absName xs) xs' , typ)
 
 -- TODO: restore fields in ConHead
-mkCon c n = I.Con (I.ConHead c Inductive []) [ defaultArg $ I.Var (fromIntegral i) [] | i <- [n - 1, n - 2 .. 0] ]
+mkCon :: QName -> Int -> Term
+mkCon c n = I.Con (I.ConHead c Inductive [])
+                  [ defaultArg $ I.Var i [] | i <- [n - 1, n - 2 .. 0] ]
 
 unifyI :: Telescope -> FlexibleVars -> Type -> Args -> Args -> Compile TCM [Maybe Term]
 unifyI tele flex typ a1 a2 = lift $ addCtxTel tele $ unifyIndices_ flex typ a1 a2
 
+takeTele :: Int -> Telescope -> Telescope
 takeTele 0 _ = EmptyTel
 takeTele n (ExtendTel t ts) = ExtendTel t $ Abs (absName ts) $ takeTele (n-1) (unAbs ts)
 takeTele _ _ = __IMPOSSIBLE__
@@ -203,7 +206,7 @@ forcedExpr vars tele expr = case expr of
                   then Branch t constr as <$> forcedExpr (replaceAt n vars as) tele'' e
                   else do
                     -- unify the telescope type with the return type of the constructor
-                    unif <- case (unEl ntyp, unEl ctyp) of
+                    unif <- case (I.ignoreSharing $ unEl ntyp, I.ignoreSharing $ unEl ctyp) of
                         (I.Def st es1, I.Def st' es2) | st == st' -> do
                             let a1 = fromMaybe __IMPOSSIBLE__ $ I.allApplyElims es1
                             let a2 = fromMaybe __IMPOSSIBLE__ $ I.allApplyElims es2
@@ -280,6 +283,7 @@ replaceForced (vars,uvars) tele (fvar : fvars) unif e = do
 -- | Given a term containg the forced var, dig out the variable by inserting
 -- the proper case-expressions.
 buildTerm :: Var -> Nat -> Term -> Compile TCM (Expr -> Expr, Var)
+buildTerm var idx (I.Shared p) = buildTerm var idx $ I.derefPtr p
 buildTerm var idx (I.Var i _) | idx == i = return (id, var)
 buildTerm var idx (I.Con con args) = do
     let c = I.conName con
@@ -302,7 +306,7 @@ findPosition var ts = (listToMaybe . catMaybes <$>) . forM (zip [0..] ts) $ \ (n
         (return Nothing)
   where
     pred :: Term -> Compile TCM Bool
-    pred t = case t of
+    pred t = case I.ignoreSharing t of
       I.Var i _ | var == i -> return True
       I.Con c args         -> do
           forc <- getForcedArgs $ I.conName c

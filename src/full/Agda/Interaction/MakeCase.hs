@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -fwarn-missing-signatures #-}
-
 {-# LANGUAGE CPP             #-}
 {-# LANGUAGE DoAndIfThenElse #-}
 {-# LANGUAGE TupleSections   #-}
@@ -14,9 +12,12 @@ import Data.Traversable
 
 import Agda.Syntax.Common
 import Agda.Syntax.Position
+import qualified Agda.Syntax.Concrete as C
 import qualified Agda.Syntax.Abstract as A
 import qualified Agda.Syntax.Info as A
 import Agda.Syntax.Internal
+import Agda.Syntax.Scope.Monad (resolveName, ResolvedName(..))
+import Agda.Syntax.Translation.ConcreteToAbstract
 import Agda.Syntax.Translation.InternalToAbstract
 
 import Agda.TypeChecking.Monad
@@ -29,6 +30,7 @@ import Agda.TheTypeChecker
 
 import Agda.Interaction.BasicOps
 
+import Agda.Utils.Functor
 import Agda.Utils.List
 import Agda.Utils.Monad
 import qualified Agda.Utils.Pretty as P
@@ -38,8 +40,11 @@ import qualified Agda.Utils.HashMap as HMap
 #include "undefined.h"
 import Agda.Utils.Impossible
 
-data CaseContext = FunctionDef | ExtendedLambda Int Int
-                 deriving (Eq)
+data CaseContext
+  = FunctionDef
+  | ExtendedLambda Int Int
+  deriving (Eq)
+
 -- | Find the clause whose right hand side is the given meta
 -- BY SEARCHING THE WHOLE SIGNATURE. Returns
 -- the original clause, before record patterns have been translated
@@ -84,21 +89,62 @@ findClause m = do
       MetaV m' _  -> m == m'
       _           -> False
 
+
 -- | Parse variables (visible or hidden), returning their de Bruijn indices.
 --   Used in 'makeCase'.
+
 parseVariables :: InteractionId -> Range -> [String] -> TCM [Int]
 parseVariables ii rng ss = do
+
+  -- Get into the context of the meta.
   mId <- lookupInteractionId ii
   updateMetaVarRange mId rng
   mi  <- getMetaInfo <$> lookupMeta mId
-  enterClosure mi $ \ _r -> do
-    n  <- getContextSize
-    xs <- forM (downFrom n) $ \ i -> do
-      (,i) . P.render <$> prettyTCM (var i)
-    forM ss $ \ s -> do
-      case lookup s xs of
-        Nothing -> typeError $ GenericError $ "Unbound variable " ++ s
-        Just i  -> return i
+  enterClosure mi $ \ r -> do
+
+  -- Get printed representation of variables in context.
+  n  <- getContextSize
+  xs <- forM (downFrom n) $ \ i -> do
+    (,i) . P.render <$> prettyTCM (var i)
+
+  -- Get number of module parameters.  These cannot be split on.
+  fv <- getModuleFreeVars =<< currentModule
+  let numSplittableVars = n - fv
+
+  -- Resolve each string to a variable.
+  forM ss $ \ s -> do
+    let failNotVar = typeError $ GenericError $ "Not a (splittable) variable: " ++ s
+        done i
+          | i < numSplittableVars = return i
+          | otherwise             = failNotVar
+
+    -- Note: the range in the concrete name is only approximate.
+    resName <- resolveName $ C.QName $ C.Name r $ C.stringNameParts s
+    case resName of
+
+      -- Fail if s is a name, but not of a variable.
+      DefinedName{}       -> failNotVar
+      FieldName{}         -> failNotVar
+      ConstructorName{}   -> failNotVar
+      PatternSynResName{} -> failNotVar
+
+      -- If s is a variable name in scope, get its de Bruijn index
+      -- via the type checker.
+      VarName x -> do
+        (v, _) <- getVarInfo x
+        case ignoreSharing v of
+          Var i [] -> done i
+          _        -> failNotVar
+
+      -- If s is not a name, compare it to the printed variable representation.
+      -- This fallback is to enable splitting on hidden variables.
+      UnknownName -> do
+        case filter ((s ==) . fst) xs of
+          []      -> typeError $ GenericError $ "Unbound variable " ++ s
+          [(_,i)] -> done i
+          -- Issue 1325: Variable names in context can be ambiguous.
+          _       -> typeError $ GenericError $ "Ambiguous variable " ++ s
+
 
 -- | Entry point for case splitting tactic.
 makeCase :: InteractionId -> Range -> String -> TCM (CaseContext , [A.Clause])
@@ -118,10 +164,13 @@ makeCase hole rng s = withInteractionId hole $ do
   let vars = words s
   if null vars then do
     -- split result
-    res <- splitResult f =<< fixTarget (clauseToSplitClause clause)
-    case res of
-      Nothing  -> typeError $ GenericError $ "Cannot split on result here"
-      Just cov -> (casectxt,) <$> do mapM (makeAbstractClause f) $ splitClauses cov
+    (newPats, sc) <- fixTarget (clauseToSplitClause clause)
+    res <- splitResult f sc
+    scs <- case res of
+      Nothing  -> if newPats then return [sc] else
+        typeError $ GenericError $ "Cannot split on result here"
+      Just cov -> mapM (snd <.> fixTarget) $ splitClauses cov
+    (casectxt,) <$> mapM (makeAbstractClause f) scs
   else do
     -- split on variables
     vars <- parseVariables hole rng vars

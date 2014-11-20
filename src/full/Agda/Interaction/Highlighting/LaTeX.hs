@@ -95,6 +95,7 @@ emptyState = State
 ------------------------------------------------------------------------
 -- * Some helpers.
 
+(<+>) :: Text -> Text -> Text
 (<+>) = T.append
 
 isInfixOf' :: Text -> Text -> Maybe (Text, Text)
@@ -248,24 +249,40 @@ output text = do
 -- Polytable, http://www.ctan.org/pkg/polytable, is used for code
 -- alignment, similar to lhs2TeX's approach.
 
+nl, beginCode, endCode :: Text
 nl        = T.pack "%\n"
 beginCode = T.pack "\\begin{code}"
 endCode   = T.pack "\\end{code}"
 
-ptOpen     = T.pack "\\>"
-ptOpen'  i = ptOpen <+> T.pack ("[" ++ show i ++ "]")
-ptClose    = T.pack "\\<"
-ptClose' i = ptClose <+> T.pack ("[" ++ show i ++ "]")
-ptNL       = nl <+> T.pack "\\\\\n"
+ptOpen :: Text
+ptOpen = T.pack "\\>"
 
-cmdPrefix   = T.pack "\\Agda"
-cmdArg    x = T.singleton '{' <+> x <+> T.singleton '}'
+ptOpen' :: Show a => a -> Text
+ptOpen' i = ptOpen <+> T.pack ("[" ++ show i ++ "]")
+
+ptClose :: Text
+ptClose = T.pack "\\<"
+
+ptClose' :: Show a => a -> Text
+ptClose' i = ptClose <+> T.pack ("[" ++ show i ++ "]")
+
+ptNL :: Text
+ptNL = nl <+> T.pack "\\\\\n"
+
+cmdPrefix :: Text
+cmdPrefix = T.pack "\\Agda"
+
+cmdArg :: Text -> Text
+cmdArg x = T.singleton '{' <+> x <+> T.singleton '}'
+
+cmdIndent :: Show a => a -> Text
 cmdIndent i = cmdPrefix <+> T.pack "Indent" <+>
                   cmdArg (T.pack (show i)) <+> cmdArg T.empty
 
-infixl'     = T.pack "infixl"
-infix'      = T.pack "infix"
-infixr'     = T.pack "infixr"
+infixl', infix', infixr' :: Text
+infixl' = T.pack "infixl"
+infix'  = T.pack "infix"
+infixr' = T.pack "infixr"
 
 ------------------------------------------------------------------------
 -- * Automaton.
@@ -323,29 +340,34 @@ code = do
 
   case aspect (info tok') of
     Nothing -> output $ escape tok
---    Just a  -> output $ cmdPrefix <+> T.pack (cmd a) <+> cmdArg (escape tok)
---  Andreas, 2014-02-17 preliminary fix for issue 1062
-    Just a  -> case cmd a of
-      "" -> output $ escape tok
-      s  -> output $ cmdPrefix <+> T.pack s <+> cmdArg (escape tok)
+    Just a  -> output $ cmdPrefix <+> T.pack (cmd a) <+> cmdArg (escape tok)
 
   code
 
   where
   cmd :: Aspect -> String
---  cmd (Name mKind _) = maybe __IMPOSSIBLE__ showKind mKind
---  Andreas, 2014-02-17 preliminary fix for issue 1062
-  cmd (Name mKind _) = maybe "" showKind mKind
-    where
-    showKind :: NameKind -> String
-    showKind (Constructor Inductive)   = "InductiveConstructor"
-    showKind (Constructor CoInductive) = "CoinductiveConstructor"
-    -- Andreas, 2014-02-17
-    -- It might be boring boilerplate, but please spell out the
-    -- remaining cases instead of using the brittle @show@ function.
-    -- What if a constructor in @NameKind@ gets renamed?
-    showKind k                         = show k
-  cmd a              = show a
+  cmd a = let s = show a in case a of
+    Comment        -> s
+    Keyword        -> s
+    String         -> s
+    Number         -> s
+    Symbol         -> s
+    PrimitiveType  -> s
+    Name mKind _   -> maybe __IMPOSSIBLE__ showKind mKind
+      where
+      showKind :: NameKind -> String
+      showKind n = let s = show n in case n of
+        Bound                     -> s
+        Constructor Inductive     -> "InductiveConstructor"
+        Constructor CoInductive   -> "CoinductiveConstructor"
+        Datatype                  -> s
+        Field                     -> s
+        Function                  -> s
+        Module                    -> s
+        Postulate                 -> s
+        Primitive                 -> s
+        Record                    -> s
+        Argument                  -> s
 
 -- Escapes special characters.
 escape :: Text -> Text
@@ -361,9 +383,9 @@ escape (T.uncons -> Just (c, s)) = T.pack (replace c) <+> escape s
     '$'  -> "\\$"
     '&'  -> "\\&"
     '%'  -> "\\%"
-    '~'  -> "\\textasciitilde"
-    '^'  -> "\\textasciicircum"
-    '\\' -> "\\textbackslash"
+    '~'  -> "\\textasciitilde{}"
+    '^'  -> "\\textasciicircum{}"
+    '\\' -> "\\textbackslash{}"
     -- Escaping newlines seems to fix the problem caused by pattern
     -- synonyms.
     '\n' -> "\\<\\\\\n\\>"
@@ -476,6 +498,7 @@ spaces (_                              : ss) = __IMPOSSIBLE__
 ------------------------------------------------------------------------
 -- * Main.
 
+defaultStyFile :: String
 defaultStyFile = "agda.sty"
 
 -- | The only exported function. It's (only) called in @Main.hs@.
