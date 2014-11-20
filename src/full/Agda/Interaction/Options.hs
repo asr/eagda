@@ -461,7 +461,11 @@ terminationDepthFlag s o =
        return $ o { optTerminationDepth = CutOff $ k-1 }
     where usage = throwError "argument to termination-depth should be >= 1"
 
-folPropositionalFunctionsFlag o = return $ o { optFOLPropositionalFunctions = True }
+folPropositionalFunctionsFlag :: Flag PragmaOptions
+folPropositionalFunctionsFlag o =
+  return $ o { optFOLPropositionalFunctions = True }
+
+folPropositionalSymbolsFlag :: Flag PragmaOptions
 folPropositionalSymbolsFlag o = return $ o { optFOLPropositionalSymbols = True }
 
 integerArgument :: String -> String -> Either String Int
