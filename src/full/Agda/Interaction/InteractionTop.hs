@@ -16,6 +16,8 @@ module Agda.Interaction.InteractionTop
   )
   where
 
+import Prelude hiding (null)
+
 import Control.Applicative hiding (empty)
 import qualified Control.Exception as E
 import Control.Monad.Identity
@@ -25,7 +27,7 @@ import Control.Monad.State
 import qualified Data.Char as Char
 import Data.Foldable (Foldable)
 import Data.Function
-import Data.List as List
+import Data.List as List hiding (null)
 import Data.Maybe
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -85,6 +87,7 @@ import Agda.Utils.Hash
 import qualified Agda.Utils.HashMap as HMap
 import Agda.Utils.Lens
 import Agda.Utils.Monad
+import Agda.Utils.Null
 import Agda.Utils.Pretty
 import Agda.Utils.String
 import Agda.Utils.Time
@@ -525,7 +528,9 @@ interpret Cmd_metas = do -- CL.showMetas []
   hms <- lift $ B.typesOfHiddenMetas B.Simplified
   if not $ null ims && null hms
     then do
-      di <- lift $ forM ims $ \i -> B.withInteractionId (B.outputFormId $ B.OutputForm noRange 0 i) (showATop i)
+      di <- lift $ forM ims $ \ i ->
+        B.withInteractionId (B.outputFormId $ B.OutputForm noRange 0 i) $
+          showATop i
       dh <- lift $ mapM showA' hms
       display_info $ Info_AllGoals $ unlines $ di ++ dh
     else do
