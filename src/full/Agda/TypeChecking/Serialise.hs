@@ -1,9 +1,13 @@
 {-# LANGUAGE CPP                       #-}
 {-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE FlexibleContexts          #-}  -- This will be required by GHC 7.10.
 {-# LANGUAGE FlexibleInstances         #-}
-{-# LANGUAGE OverlappingInstances      #-}
 {-# LANGUAGE ScopedTypeVariables       #-}
 {-# LANGUAGE TypeSynonymInstances      #-}
+
+#if __GLASGOW_HASKELL__ <= 708
+{-# LANGUAGE OverlappingInstances #-}
+#endif
 
 -- Andreas, Makoto, Francesco 2014-10-15 AIM XX:
 -- -O2 does not have any noticable effect on runtime
@@ -48,7 +52,7 @@ import qualified Data.Binary.Get as B
 import qualified Data.Binary.Put as B
 import qualified Data.List as List
 import Data.Function
-import Data.Typeable
+import Data.Typeable ( cast, Typeable, typeOf, TypeRep )
 import qualified Codec.Compression.GZip as G
 
 import qualified Agda.Compiler.Epic.Interface as Epic
@@ -402,7 +406,11 @@ decodeHashes s
 decodeFile :: FilePath -> TCM (Maybe Interface)
 decodeFile f = decodeInterface =<< liftIO (L.readFile f)
 
+#if __GLASGOW_HASKELL__ >= 710
+instance {-# OVERLAPPING #-} EmbPrj String where
+#else
 instance EmbPrj String where
+#endif
   icod_   = icodeString
   value i = (! i) `fmap` gets stringE
 
@@ -500,9 +508,13 @@ instance EmbPrj TopLevelModuleName where
   value = vcase valu where valu [a] = valu1 TopLevelModuleName a
                            valu _   = malformed
 
+#if __GLASGOW_HASKELL__ >= 710
+instance {-# OVERLAPPABLE #-} EmbPrj a => EmbPrj [a] where
+#else
 instance EmbPrj a => EmbPrj [a] where
+#endif
   icod_ xs = icodeN =<< mapM icode xs
-  value = vcase (mapM value)
+  value    = vcase (mapM value)
 --   icode []       = icode0'
 --   icode (x : xs) = icode2' x xs
 --   value = vcase valu where valu []      = valu0 []
@@ -857,6 +869,11 @@ instance EmbPrj a => EmbPrj (Elim' a) where
   icod_ (Proj  a) = icode1 0 a
   value = vcase valu where valu [a]    = valu1 Apply a
                            valu [0, a] = valu1 Proj a
+                           valu _      = malformed
+
+instance EmbPrj a => EmbPrj (WithHiding a) where
+  icod_ (WithHiding a b) = icode2' a b
+  value = vcase valu where valu [a, b] = valu2 WithHiding a b
                            valu _      = malformed
 
 instance (EmbPrj a, EmbPrj c) => EmbPrj (Agda.Syntax.Common.Arg c a) where

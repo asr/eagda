@@ -486,8 +486,18 @@ instance HasFresh Int where
 newtype ProblemId = ProblemId Nat
   deriving (Typeable, Eq, Ord, Enum, Real, Integral, Num)
 
+-- TODO: 'Show' should output Haskell-parseable representations.
+-- The following instance is deprecated, and Pretty[TCM] should be used
+-- instead. Later, simply derive Show for this type.
+
+-- ASR (28 December 2014). This instance is not used anymore (module
+-- the test suite) when reporting errors. See Issue 1293.
+
 instance Show ProblemId where
   show (ProblemId n) = show n
+
+instance Pretty ProblemId where
+  pretty (ProblemId n) = pretty n
 
 instance HasFresh ProblemId where
   freshLens = stFreshProblemId
@@ -673,9 +683,19 @@ instance HasRange Constraint where
 data Comparison = CmpEq | CmpLeq
   deriving (Eq, Typeable)
 
+-- TODO: 'Show' should output Haskell-parseable representations.
+-- The following instance is deprecated, and Pretty[TCM] should be used
+-- instead. Later, simply derive Show for this type.
+
+-- ASR (27 December 2014). This instance is not used anymore (module
+-- the test suite) when reporting errors. See Issue 1293.
 instance Show Comparison where
   show CmpEq  = "="
   show CmpLeq = "=<"
+
+instance Pretty Comparison where
+  pretty CmpEq  = text "="
+  pretty CmpLeq = text "=<"
 
 -- | An extension of 'Comparison' to @>=@.
 data CompareDirection = DirEq | DirLeq | DirGeq
@@ -782,6 +802,14 @@ data MetaInstantiation
 data TypeCheckingProblem
   = CheckExpr A.Expr Type
   | CheckArgs ExpandHidden ExpandInstances Range [I.NamedArg A.Expr] Type Type (Args -> Type -> TCM Term)
+  | CheckLambda (Arg ([WithHiding Name], Maybe Type)) A.Expr Type
+    -- ^ @(λ (xs : t₀) → e) : t@
+    --   This is not an instance of 'CheckExpr' as the domain type
+    --   has already been checked.
+    --   For example, when checking
+    --     @(λ (x y : Fin _) → e) : (x : Fin n) → ?@
+    --   we want to postpone @(λ (y : Fin n) → e) : ?@ where @Fin n@
+    --   is a 'Type' rather than an 'A.Expr'.
   deriving (Typeable)
 
 instance Show MetaInstantiation where

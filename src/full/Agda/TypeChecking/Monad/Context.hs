@@ -1,7 +1,11 @@
-{-# LANGUAGE TupleSections        #-}
+{-# LANGUAGE CPP                  #-}
 {-# LANGUAGE FlexibleInstances    #-}
+{-# LANGUAGE TupleSections        #-}
 {-# LANGUAGE TypeSynonymInstances #-}
+
+#if __GLASGOW_HASKELL__ <= 708
 {-# LANGUAGE OverlappingInstances #-}
+#endif
 
 module Agda.TypeChecking.Monad.Context where
 
@@ -9,6 +13,7 @@ import Control.Monad.Reader
 
 import Data.List hiding (sort)
 import qualified Data.Map as Map
+import Data.Monoid
 
 import Agda.Syntax.Abstract.Name
 import Agda.Syntax.Common hiding (Arg, Dom, NamedArg, ArgInfo)
@@ -88,7 +93,11 @@ addCtx x a ret = do
 class AddContext b where
   addContext :: MonadTCM tcm => b -> tcm a -> tcm a
 
+#if __GLASGOW_HASKELL__ >= 710
+instance {-# OVERLAPPABLE #-} AddContext a => AddContext [a] where
+#else
 instance AddContext a => AddContext [a] where
+#endif
   addContext = flip (foldr addContext)
 
 instance AddContext (Name, Dom Type) where
@@ -100,6 +109,12 @@ instance AddContext (Dom (Name, Type)) where
 
 instance AddContext ([Name], Dom Type) where
   addContext (xs, dom) = addContext (bindsToTel' id xs dom)
+
+instance AddContext ([WithHiding Name], Dom Type) where
+  addContext ([]                 , dom) = id
+  addContext (WithHiding h x : xs, dom) =
+    addContext (x , mapHiding (mappend h) dom) .
+    addContext (xs, raise 1 dom)
 
 instance AddContext (String, Dom Type) where
   addContext (s, dom) ret = do
@@ -113,7 +128,11 @@ instance AddContext (Dom (String, Type)) where
 instance AddContext Name where
   addContext x = addContext (x, dummyDom)
 
+#if __GLASGOW_HASKELL__ >= 710
+instance {-# OVERLAPPING #-} AddContext String where
+#else
 instance AddContext String where
+#endif
   addContext s = addContext (s, dummyDom)
 
 instance AddContext Telescope where

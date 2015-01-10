@@ -9,6 +9,7 @@ module Agda.TypeChecking.Pretty where
 import Prelude hiding (null)
 
 import Control.Applicative hiding (empty)
+import Data.Maybe
 
 import Agda.Syntax.Position
 import Agda.Syntax.Common hiding (Arg, Dom, NamedArg, ArgInfo)
@@ -24,6 +25,7 @@ import qualified Agda.Syntax.Concrete.Pretty as CP
 
 import Agda.TypeChecking.Monad
 
+import Agda.Utils.Maybe
 import Agda.Utils.Null
 import Agda.Utils.Permutation (Permutation)
 import qualified Agda.Utils.Pretty as P
@@ -102,14 +104,16 @@ punctuate d ds = zipWith (<>) ds (replicate n d ++ [empty])
 class PrettyTCM a where
   prettyTCM :: a -> TCM Doc
 
-instance PrettyTCM Bool     where prettyTCM = pretty
-instance PrettyTCM C.Name   where prettyTCM = pretty
-instance PrettyTCM C.QName  where prettyTCM = pretty
+instance PrettyTCM Bool        where prettyTCM = pretty
+instance PrettyTCM C.Name      where prettyTCM = pretty
+instance PrettyTCM C.QName     where prettyTCM = pretty
+instance PrettyTCM Comparison  where prettyTCM = pretty
+instance PrettyTCM Literal     where prettyTCM = pretty
+instance PrettyTCM Nat         where prettyTCM = pretty
+instance PrettyTCM ProblemId   where prettyTCM = pretty
+instance PrettyTCM Range       where prettyTCM = pretty
 -- instance PrettyTCM Interval where prettyTCM = pretty
-instance PrettyTCM Literal  where prettyTCM = pretty
-instance PrettyTCM Nat      where prettyTCM = pretty
 -- instance PrettyTCM Position where prettyTCM = pretty
-instance PrettyTCM Range    where prettyTCM = pretty
 
 instance PrettyTCM a => PrettyTCM (Closure a) where
   prettyTCM cl = enterClosure cl prettyTCM
@@ -179,12 +183,8 @@ instance PrettyTCM Relevance where
   prettyTCM Forced     = empty
   prettyTCM UnusedArg  = empty
 
-instance PrettyTCM Comparison where
-  prettyTCM CmpEq  = text "=="
-  prettyTCM CmpLeq = text "=<"
-
 instance PrettyTCM ProblemConstraint where
-  prettyTCM (PConstr pid c) = brackets (text $ show pid) <+> prettyTCM c
+  prettyTCM (PConstr pid c) = brackets (prettyTCM pid) <+> prettyTCM c
 
 instance PrettyTCM Constraint where
     prettyTCM c = case c of
@@ -217,7 +217,7 @@ instance PrettyTCM Constraint where
                 ]
         Guarded c pid ->
             sep [ prettyTCM c
-                , nest 2 $ brackets $ text "blocked on problem" <+> text (show pid)
+                , nest 2 $ brackets $ text "blocked on problem" <+> prettyTCM pid
                 ]
         UnBlock m   -> do
             -- BlockedConst t <- mvInstantiation <$> lookupMeta m
@@ -255,6 +255,22 @@ instance PrettyTCM TypeCheckingProblem where
     sep [ parens $ text "_ :" <+> prettyTCM t0
         , nest 2 $ prettyList $ map prettyA es
         , nest 2 $ text ":?" <+> prettyTCM t1 ]
+  prettyTCM (CheckLambda (Common.Arg ai (xs, mt)) e t) =
+    sep [ return CP.lambda <+>
+          (CP.prettyRelevance ai .
+           CP.prettyHiding ai (if isNothing mt && length xs == 1 then id
+                               else P.parens) <$> do
+            fsep $
+              map prettyTCM xs ++
+              caseMaybe mt [] (\ a -> [text ":", prettyTCM a])) <+>
+          return CP.arrow <+>
+          prettyTCM e <+>
+          text ":?"
+        , prettyTCM t
+        ]
+
+instance PrettyTCM a => PrettyTCM (WithHiding a) where
+  prettyTCM (WithHiding h a) = CP.prettyHiding h id <$> prettyTCM a
 
 instance PrettyTCM Name where
   prettyTCM x = P.pretty <$> abstractToConcrete_ x
