@@ -1,0 +1,3 @@
+Issue1406.agda:33,24-28
+F x != G x of type Set
+when checking that the pattern refl has type HEq (sing F) (sing G)
