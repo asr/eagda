@@ -398,8 +398,8 @@ data OpenShortHand = DoOpen | DontOpen
 
 data Pragma
   = OptionsPragma          !Range [String]
-  -- ASR-TODO (07 July 2014): Move the ATP-pragma to the end. We wrote
-  -- it here for avoiding conflicts with Agda upstream.
+  -- ASR TODO (07 July 2014): Move to the end. We wrote it here for
+  -- avoiding conflicts when merging master.
   | ATPPragma !Range ATPRole [QName]
   | BuiltinPragma          !Range String Expr
   | RewritePragma          !Range QName
@@ -642,8 +642,8 @@ instance HasRange RHS where
   getRange (RHS e)   = getRange e
 
 instance HasRange Pragma where
-  -- ASR-TODO (07 July 2014): Move the ATP-pragma to the end. We wrote
-  -- it here for avoiding conflicts with Agda upstream.
+  -- ASR TODO (07 July 2014): Move to the end. We wrote it here for
+  -- avoiding conflicts when merging master.
   getRange (ATPPragma r _ _)            = r
   getRange (OptionsPragma r _)          = r
   getRange (BuiltinPragma r _ _)        = r
@@ -830,8 +830,8 @@ instance KillRange Pattern where
   killRange (QuoteP _)      = QuoteP noRange
 
 instance KillRange Pragma where
-  -- ASR-TODO (07 July 2014): Move the ATP-pragma to the end. We wrote
-  -- it here for avoiding conflicts with Agda upstream.
+  -- ASR TODO (07 July 2014): Move to the end. We wrote it here for
+  -- avoiding conflicts when merging master.
   killRange (ATPPragma _ role qs)         = ATPPragma noRange role (killRange qs)
   killRange (OptionsPragma _ s)           = OptionsPragma noRange s
   killRange (BuiltinPragma _ s e)         = killRange1 (BuiltinPragma noRange s) e

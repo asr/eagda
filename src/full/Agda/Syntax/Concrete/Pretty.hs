@@ -426,8 +426,8 @@ instance Pretty OpenShortHand where
     pretty DontOpen = empty
 
 instance Pretty Pragma where
-    -- ASR-TODO (07 July 2014): Move the ATP-pragma to the end. We
-    -- wrote it here for avoiding conflicts with Agda upstream.
+    -- ASR TODO (07 July 2014): Move to the end. We wrote it here for
+    -- avoiding conflicts when merging master.
     pretty (ATPPragma _ role qs) =
       hsep $ [ text "ATP", pretty role] ++ map pretty qs
     pretty (OptionsPragma _ opts) = fsep $ map text $ "OPTIONS" : opts

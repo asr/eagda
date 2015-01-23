@@ -10,8 +10,8 @@ import Agda.Syntax.Position
 
 data Keyword
         = KwLet | KwIn | KwWhere | KwData | KwCoData
-        -- ASR TODO (24 October 2014). In the meantime, we added
-        -- @KwATP@ here for avoiding merge conflicts.
+        -- ASR TODO (24 October 2014). Move to the end. We wrote it
+        -- here for avoiding conflicts when merging master.
         | KwATP
         | KwPostulate | KwMutual | KwAbstract | KwPrivate | KwInstance
         | KwOpen | KwImport | KwModule | KwPrimitive

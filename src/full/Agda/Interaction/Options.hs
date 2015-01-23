@@ -104,9 +104,8 @@ data CommandLineOptions = Options
 
 data PragmaOptions = PragmaOptions
   { optShowImplicit              :: Bool
-  -- ASR TODO (24 October 2014). In the meantime, we added
-  -- @optFOLPropositionalFunctions@ and @optFOLPropositionalSymbols@
-  -- here for avoiding merge conflicts.
+  -- ASR TODO (24 October 2014). Move to the end. We wrote they here
+  -- for avoiding conflicts when merging master.
   , optFOLPropositionalFunctions :: Bool
   , optFOLPropositionalSymbols   :: Bool
   , optShowIrrelevant            :: Bool
@@ -183,9 +182,8 @@ defaultOptions = Options
 defaultPragmaOptions :: PragmaOptions
 defaultPragmaOptions = PragmaOptions
   { optShowImplicit              = False
-  -- ASR TODO (24 October 2014). In the meantime, we added
-  -- @optFOLPropositionalFunctions@ and @optFOLPropositionalSymbols@
-  -- here for avoiding merge conflicts.
+  -- ASR TODO (24 October 2014). Move to the end. We wrote they here
+  -- for avoiding conflicts when merging master.
   , optFOLPropositionalFunctions = False
   , optFOLPropositionalSymbols   = False
   , optShowIrrelevant            = False
@@ -530,8 +528,8 @@ pragmaOptions :: [OptDescr (Flag PragmaOptions)]
 pragmaOptions =
     [ Option []     ["show-implicit"] (NoArg showImplicitFlag)
                     "show implicit arguments when printing"
-    -- ASR TODO (24 October 2014). In the meantime, we added the next
-    -- two options here for avoiding merge conflicts.
+    -- ASR TODO (24 October 2014). Move to the end. We wrote they here
+    -- for avoiding conflicts when merging master.
     , Option []     ["schematic-propositional-functions"] (NoArg folPropositionalFunctionsFlag)
                     "the Apia program translates universal quantified FOL propositional functions"
     , Option []     ["schematic-propositional-symbols"] (NoArg folPropositionalSymbolsFlag)

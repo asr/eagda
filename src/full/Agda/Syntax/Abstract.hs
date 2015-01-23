@@ -177,8 +177,8 @@ data ModuleApplication
 
 data Pragma
   = OptionsPragma [String]
-  -- ASR TODO (20 November 2014). In the meantime, we added
-  -- @ATPPragma@ here for avoiding merge conflicts.
+  -- ASR TODO (20 November 2014). Move to the end. We wrote it here
+  -- for avoiding conflicts when merging master.
   | ATPPragma ATPRole [QName]
   | BuiltinPragma String Expr
   | RewritePragma QName

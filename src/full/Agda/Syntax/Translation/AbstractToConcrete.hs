@@ -809,8 +809,8 @@ data RangeAndPragma = RangeAndPragma Range A.Pragma
 
 instance ToConcrete RangeAndPragma C.Pragma where
     toConcrete (RangeAndPragma r p) = case p of
-        -- ASR TODO (10 January 2015). In the meantime, we added here
-        -- for avoiding merge conflicts.
+        -- ASR TODO (10 January 2015). Move to the end. We wrote it
+        -- here for avoiding conflicts when merging master.
         A.ATPPragma role qs -> do
           qs' <- mapM toConcrete qs
           return $ C.ATPPragma r role qs'
