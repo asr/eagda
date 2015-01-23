@@ -811,9 +811,7 @@ instance ToConcrete RangeAndPragma C.Pragma where
     toConcrete (RangeAndPragma r p) = case p of
         -- ASR TODO (10 January 2015). Move to the end. We wrote it
         -- here for avoiding conflicts when merging master.
-        A.ATPPragma role qs -> do
-          qs' <- mapM toConcrete qs
-          return $ C.ATPPragma r role qs'
+        A.ATPPragma role qs -> C.ATPPragma r role <$> mapM toConcrete qs
         A.OptionsPragma xs  -> return $ C.OptionsPragma r xs
         A.BuiltinPragma b x -> C.BuiltinPragma r b <$> toConcrete x
         A.RewritePragma x   -> C.RewritePragma r <$> toConcrete x
