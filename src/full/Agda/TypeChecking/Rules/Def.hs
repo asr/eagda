@@ -396,7 +396,7 @@ checkClause t c@(A.Clause (A.SpineLHS i x aps withPats) rhs0 wh catchall) = do
                                return (El (getSort t') rewriteType, rewriteFrom, rewriteTo)
                          _ -> do
                           err <- text "Cannot rewrite by equation of type" <+> prettyTCM t'
-                          typeError $ GenericError $ show err
+                          typeError $ GenericDocError err
 
                      -- Andreas, 2014-05-17  Issue 1110:
                      -- Rewriting with a reflexive equation has no effect, but gives an
@@ -415,7 +415,9 @@ checkClause t c@(A.Clause (A.SpineLHS i x aps withPats) rhs0 wh catchall) = do
                      let cinfo      = ConPatInfo False patNoRange
                          underscore = A.Underscore Info.emptyMetaInfo
 
-                     (rewriteFromExpr,rewriteToExpr,rewriteTypeExpr, proofExpr) <-
+                     -- Andreas, 2015-02-09 Issue 1421: kill ranges
+                     -- as reify puts in ranges that may point to other files.
+                     (rewriteFromExpr,rewriteToExpr,rewriteTypeExpr, proofExpr) <- killRange <$> do
                       disableDisplayForms $ withShowAllArguments $ reify
                         (rewriteFrom,   rewriteTo,    rewriteType    , proof)
                      let (inner, outer) -- the where clauses should go on the inner-most with
@@ -432,13 +434,13 @@ checkClause t c@(A.Clause (A.SpineLHS i x aps withPats) rhs0 wh catchall) = do
                          pats = [ A.DotP patNoRange underscore
                                 , A.ConP cinfo (AmbQ [conName reflCon]) []]
                      reportSDoc "tc.rewrite.top" 25 $ vcat
-                                         [ text "rewrite"
-                                         , text "  from  = " <+> prettyTCM rewriteFromExpr
-                                         , text "  to    = " <+> prettyTCM rewriteToExpr
-                                         , text "  typ   = " <+> prettyTCM rewriteType
-                                         , text "  proof = " <+> prettyTCM proofExpr
-                                         , text "  equ   = " <+> prettyTCM t'
-                                         ]
+                       [ text "rewrite"
+                       , text "  from  = " <+> prettyTCM rewriteFromExpr
+                       , text "  to    = " <+> prettyTCM rewriteToExpr
+                       , text "  typ   = " <+> prettyTCM rewriteType
+                       , text "  proof = " <+> prettyTCM proofExpr
+                       , text "  equ   = " <+> prettyTCM t'
+                       ]
                      handleRHS newRhs
 
                 A.WithRHS aux es cs -> do
@@ -603,7 +605,7 @@ checkWithFunction (WithFunction f aux gamma delta1 delta2 vs as b qs perm' perm 
          , nest 2 $ text $ show absAuxType
          ]
   -- The ranges in the generated type are completely bogus, so we kill them.
-  auxType <- setCurrentRange (getRange cs)
+  auxType <- setCurrentRange cs
                (traceCall NoHighlighting $  -- To avoid flicker.
                   isType_ $ killRange absAuxType)
     `catchError` \err -> case err of
@@ -614,7 +616,7 @@ checkWithFunction (WithFunction f aux gamma delta1 delta2 vs as b qs perm' perm 
   -- Check generated type directly in internal syntax.
   absAuxType <- reify candidateType
   let auxType = candidateType
-  setCurrentRange (getRange cs)
+  setCurrentRange cs
     (traceCall NoHighlighting $   -- To avoid flicker.
       checkType auxType)
     `catchError` \err -> case err of

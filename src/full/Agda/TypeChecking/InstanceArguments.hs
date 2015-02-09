@@ -15,11 +15,12 @@ import Agda.Syntax.Scope.Base
 import Agda.Syntax.Internal as I
 
 import Agda.TypeChecking.Errors ()
+import Agda.TypeChecking.Implicit (implicitArgs)
 import Agda.TypeChecking.Irrelevance
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Pretty
-import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Reduce
+import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.Free
 
@@ -125,6 +126,10 @@ initializeIFSMeta s t = do
 --   its type again.
 findInScope :: MetaId -> Maybe Candidates -> TCM ()
 findInScope m Nothing = do
+  -- Andreas, 2015-02-07: New metas should be created with range of the
+  -- current instance meta, thus, we set the range.
+  mv <- lookupMeta m
+  setCurrentRange mv $ do
   reportSLn "tc.instance" 20 $ "The type of the FindInScope constraint isn't known, trying to find it again."
   t <- getMetaType m
   cands <- initialIFSCandidates t
@@ -141,12 +146,15 @@ findInScope' m cands = ifM (isFrozen m) (return (Just (cands, Nothing))) $ do
     -- Andreas, 2013-12-28 issue 1003:
     -- If instance meta is already solved, simply discard the constraint.
     ifM (isInstantiatedMeta m) (return Nothing) $ do
+    -- Andreas, 2015-02-07: New metas should be created with range of the
+    -- current instance meta, thus, we set the range.
+    mv <- lookupMeta m
+    setCurrentRange mv $ do
     reportSLn "tc.instance" 15 $
       "findInScope 2: constraint: " ++ show m ++ "; candidates left: " ++ show (length cands)
     t <- normalise =<< getMetaTypeInContext m
     reportSDoc "tc.instance" 15 $ text "findInScope 3: t =" <+> prettyTCM t
     reportSLn "tc.instance" 70 $ "findInScope 3: t: " ++ show t
-    mv <- lookupMeta m
 
     -- If one of the arguments of the typeclass is a meta which is not rigidly
     -- constrained, then don’t do anything because it may loop.
@@ -279,22 +287,24 @@ areThereNonRigidMetaArguments t = case ignoreSharing t of
 --   If the resulting list contains exactly one element, then the state is the
 --   same as the one obtained after running the corresponding computation. In
 --   all the other cases, the state is reseted.
-filterResetingState :: Candidates -> (Candidate -> TCM Bool) -> TCM Candidates
-filterResetingState cands f = disableDestructiveUpdate $ do
+filterResetingState :: MetaId -> Candidates -> (Candidate -> TCM Bool) -> TCM Candidates
+filterResetingState m cands f = disableDestructiveUpdate $ do
   result <- mapM (\c -> do bs <- localTCStateSaving (f c); return (c, bs)) cands
-  result <- dropSameCandidates result
+  result <- dropSameCandidates m result
   case List.filter (\ (c, (b, s)) -> b) result of
     [(c, (_, s))] -> do put s; return [c]
     l -> return (map (\ (c, (b, s)) -> c) l)
 
 -- Drop all candidates which are judgmentally equal to the first one.
 -- This is sufficient to reduce the list to a singleton should all be equal.
-dropSameCandidates :: [(Candidate, a)] -> TCM [(Candidate, a)]
-dropSameCandidates cands = do
+dropSameCandidates :: MetaId -> [(Candidate, a)] -> TCM [(Candidate, a)]
+dropSameCandidates m cands = do
+  rel <- getMetaRelevance <$> lookupMeta m
   case cands of
     []            -> return cands
     ((v,a), d) : vas -> (((v,a), d):) <$> dropWhileM equal vas
       where
+        equal _ | isIrrelevant rel = return True
         equal ((v',a'), _) = dontAssignMetas $ ifNoConstraints_ (equalType a a' >> equalTerm a v v')
                              {- then -} (return True)
                              {- else -} (\ _ -> return False)
@@ -304,10 +314,14 @@ dropSameCandidates cands = do
 -- @checkCandidates m t cands@ returns a refined list of valid candidates.
 checkCandidates :: MetaId -> Type -> Candidates -> TCM Candidates
 checkCandidates m t cands = disableDestructiveUpdate $ do
-  filterResetingState cands (uncurry $ checkCandidateForMeta m t)
+  filterResetingState m cands (uncurry $ checkCandidateForMeta m t)
   where
     checkCandidateForMeta :: MetaId -> Type -> Term -> Type -> TCM Bool
-    checkCandidateForMeta m t term t' =
+    checkCandidateForMeta m t term t' = do
+      -- Andreas, 2015-02-07: New metas should be created with range of the
+      -- current instance meta, thus, we set the range.
+      mv <- lookupMeta m
+      setCurrentRange mv $ do
       verboseBracket "tc.instance" 20 ("checkCandidateForMeta " ++ show m) $ do
       liftTCM $ flip catchError handle $ do
         reportSLn "tc.instance" 70 $ "  t: " ++ show t ++ "\n  t':" ++ show t' ++ "\n  term: " ++ show term ++ "."
@@ -317,32 +331,29 @@ checkCandidates m t cands = disableDestructiveUpdate $ do
           , text "t'   =" <+> prettyTCM t'
           , text "term =" <+> prettyTCM term
           ]
-        do
-           -- domi: we assume that nothing below performs direct IO (except
-           -- for logging and such, I guess)
-          ca <- runExceptT $ checkArguments ExpandLast ExpandInstanceArguments noRange [] t' t
-          case ca of
-            Left _ -> return False
-            Right (args, t'') -> do
-              reportSDoc "tc.instance" 20 $
-                text "instance search: checking" <+> prettyTCM t''
-                <+> text "<=" <+> prettyTCM t
-              ctxElims <- map Apply <$> getContextArgs
-              v <- (`applyDroppingParameters` args) =<< reduce term
-              reportSDoc "tc.instance" 15 $ vcat
-                [ text "instance search: attempting"
-                , nest 2 $ prettyTCM m <+> text ":=" <+> prettyTCM v
-                ]
-              -- if constraints remain, we abort, but keep the candidate
-              -- Jesper, 05-12-2014: When we abort, we should add a constraint to
-              -- instantiate the meta at a later time (see issue 1377).
-              guardConstraint (ValueCmp CmpEq t'' (MetaV m ctxElims) v) $ leqType t'' t
-              -- make a pass over constraints, to detect cases where some are made
-              -- unsolvable by the assignment, but don't do this for FindInScope's
-              -- to prevent loops. We currently also ignore UnBlock constraints
-              -- to be on the safe side.
-              solveAwakeConstraints' True
-              return True
+
+        -- Apply hidden and instance arguments (recursive inst. search!).
+        (args, t'') <- implicitArgs (-1) notVisible t'
+
+        reportSDoc "tc.instance" 20 $
+          text "instance search: checking" <+> prettyTCM t''
+          <+> text "<=" <+> prettyTCM t
+        ctxElims <- map Apply <$> getContextArgs
+        v <- (`applyDroppingParameters` args) =<< reduce term
+        reportSDoc "tc.instance" 15 $ vcat
+          [ text "instance search: attempting"
+          , nest 2 $ prettyTCM m <+> text ":=" <+> prettyTCM v
+          ]
+        -- if constraints remain, we abort, but keep the candidate
+        -- Jesper, 05-12-2014: When we abort, we should add a constraint to
+        -- instantiate the meta at a later time (see issue 1377).
+        guardConstraint (ValueCmp CmpEq t'' (MetaV m ctxElims) v) $ leqType t'' t
+        -- make a pass over constraints, to detect cases where some are made
+        -- unsolvable by the assignment, but don't do this for FindInScope's
+        -- to prevent loops. We currently also ignore UnBlock constraints
+        -- to be on the safe side.
+        solveAwakeConstraints' True
+        return True
       where
         handle :: TCErr -> TCM Bool
         handle err = do

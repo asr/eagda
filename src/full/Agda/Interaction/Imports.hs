@@ -53,6 +53,7 @@ import qualified Agda.TypeChecking.Monad.Benchmark as Bench
 import Agda.TheTypeChecker
 
 import Agda.Interaction.FindFile
+import {-# SOURCE #-} Agda.Interaction.InteractionTop (showOpenMetas)
 import Agda.Interaction.Options
 import qualified Agda.Interaction.Options.Lenses as Lens
 import Agda.Interaction.Highlighting.Precise (HighlightingInfo)
@@ -622,7 +623,10 @@ createInterface file mname =
     -- TODO: It would be nice if unsolved things were highlighted
     -- after every mutual block.
 
-    unsolvedMetas       <- List.nub <$> (mapM getMetaRange =<< getOpenMetas)
+    openMetas           <- getOpenMetas
+    unless (null openMetas) $ do
+      reportSLn "import.metas" 10 . unlines =<< showOpenMetas
+    unsolvedMetas       <- List.nub <$> mapM getMetaRange openMetas
     unsolvedConstraints <- getAllConstraints
     interactionPoints   <- getInteractionPoints
 
@@ -680,7 +684,10 @@ buildInterface file topLevel syntaxInfo previousHsImports pragmas = do
     ms      <- getImports
     mhs     <- mapM (\ m -> (m,) <$> moduleHash m) $ Set.toList ms
     hsImps  <- getHaskellImports
-    patsyns <- getPatternSyns
+    -- Andreas, 2015-02-09 kill ranges in pattern synonyms before
+    -- serialization to avoid error locations pointing to external files
+    -- when expanding a pattern synoym.
+    patsyns <- killRange <$> getPatternSyns
     h       <- liftIO $ hashFile file
     let builtin' = Map.mapWithKey (\ x b -> (x,) . primFunName <$> b) builtin
     reportSLn "import.iface" 7 "  instantiating all meta variables"
