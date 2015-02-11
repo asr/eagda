@@ -20,7 +20,11 @@
 -- the author of this module whether the change leads to more
 -- non-termination for grammars that are not cyclic.)
 
-{-# LANGUAGE FlexibleInstances, MultiParamTypeClasses, RankNTypes #-}
+{-# LANGUAGE CPP                   #-}
+{-# LANGUAGE FlexibleContexts      #-}  -- This will be required by GHC 7.10.
+{-# LANGUAGE FlexibleInstances     #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE RankNTypes            #-}
 
 module Agda.Utils.Parser.MemoisedCPS
   ( Parser
@@ -39,9 +43,21 @@ import Data.Array
 import Data.Hashable
 import qualified Data.HashMap.Strict as Map
 import Data.HashMap.Strict (HashMap)
+#if MIN_VERSION_containers(0,5,0)
 import qualified Data.IntMap.Strict as IntMap
 import Data.IntMap.Strict (IntMap)
+#else
+import qualified Data.IntMap as IntMap
+import Data.IntMap (IntMap)
+#endif
 import Data.List
+
+#if !MIN_VERSION_mtl(2,2,0)
+modify' :: MonadState s m => (s -> s) -> m ()
+modify' f = do
+  x <- get
+  put $! f x
+#endif
 
 -- | Positions.
 
