@@ -181,6 +181,9 @@ data Pragma
   -- for avoiding conflicts when merging master.
   | ATPPragma ATPRole [QName]
   | BuiltinPragma String Expr
+  | BuiltinNoDefPragma String QName
+    -- ^ Builtins that do not come with a definition,
+    --   but declare a name for an Agda concept.
   | RewritePragma QName
   | CompiledPragma QName String
   | CompiledExportPragma QName String
