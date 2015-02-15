@@ -492,7 +492,7 @@ bindBuiltinNoDef b q = do
                 { funClauses = [ (empty :: Clause) { clauseBody = Body $ Sort SizeUniv } ]
                 , funTerminates = Just True
                 }
-            | otherwise = Axiom
+            | otherwise = Axiom Nothing []
 
     Just{}  -> __IMPOSSIBLE__
     Nothing -> __IMPOSSIBLE__ -- typeError $ NoSuchBuiltinName b
