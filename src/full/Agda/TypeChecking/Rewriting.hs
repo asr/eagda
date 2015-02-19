@@ -56,6 +56,7 @@ import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
+import Agda.TypeChecking.Rewriting.NonLinMatch
 
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
@@ -121,13 +122,13 @@ relView t = do
 --   @rel us : (lhs rhs : A[us/Δ]) → Set i@.
 addRewriteRule :: QName -> TCM ()
 addRewriteRule q = do
-  let failureWrongTarget = typeError . GenericDocError =<< sep
+  let failureWrongTarget = typeError . GenericDocError =<< hsep
         [ prettyTCM q , text " does not target rewrite relation" ]
-  let failureMetas       = typeError . GenericDocError =<< sep
+  let failureMetas       = typeError . GenericDocError =<< hsep
         [ prettyTCM q , text " is not a legal rewrite rule, since it contains unsolved meta variables" ]
-  let failureFreeVars    = typeError . GenericDocError =<< sep
+  let failureFreeVars    = typeError . GenericDocError =<< hsep
         [ prettyTCM q , text " is not a legal rewrite rule, since not all variables are bound by the left hand side" ]
-  let failureIllegalRule = typeError . GenericDocError =<< sep
+  let failureIllegalRule = typeError . GenericDocError =<< hsep
         [ prettyTCM q , text " is not a legal rewrite rule" ]
   Def rel _ <- primRewrite
   -- We know that the type of rel is that of a relation.
@@ -155,13 +156,14 @@ addRewriteRule q = do
       -- Normalize rhs: might be more efficient.
       rhs <- etaContract =<< normalise rhs
       unless (null $ allMetas (telToList gamma, lhs, rhs, b)) failureMetas
-      let rew = RewriteRule q gamma lhs rhs b
+      pat <- patternFrom lhs
+      let rew = RewriteRule q gamma pat rhs b
       reportSDoc "rewriting" 10 $
         text "considering rewrite rule " <+> prettyTCM rew
       -- Check whether lhs can be rewritten with itself.
       -- Otherwise, there are unbound variables in either gamma or rhs.
       addContext gamma $
-        unlessM (isJust <$> rewriteWith (Just b) lhs rew) $
+        unlessM (isJust <$> runReduceM (rewriteWith (Just b) lhs rew)) $
           failureFreeVars
       -- Find head symbol f of the lhs.
       case ignoreSharing lhs of
@@ -182,12 +184,21 @@ updateRewriteRules f def = def { defRewriteRules = f (defRewriteRules def) }
 
 -- | @rewriteWith t v rew@
 --   tries to rewrite @v : t@ with @rew@, returning the reduct if successful.
-rewriteWith :: Maybe Type -> Term -> RewriteRule -> TCM (Maybe Term)
+rewriteWith :: Maybe Type -> Term -> RewriteRule -> ReduceM (Maybe Term)
 rewriteWith mt v (RewriteRule q gamma lhs rhs b) = do
-  xs <- newTelMeta gamma
-  let sigma        = parallelS $ map unArg xs
-      (lhs', rhs', b') = applySubst sigma (lhs, rhs, b)
-  ok <- tryConversion $ do
+  sub <- nonLinMatch lhs v
+  return $ flip applySubst rhs <$> sub
+  {- OLD CODE:
+  -- Freeze all metas, remember which one where not frozen before.
+  -- This ensures that we do not instantiate metas while matching
+  -- on the rewrite lhs.
+  ms <- freezeMetas
+  res <- tryConversion' $ do
+
+    -- Create new metas for the lhs variables of the rewriting rule.
+    xs <- newTelMeta gamma
+    let sigma        = parallelS $ map unArg xs
+        (lhs', rhs', b') = applySubst sigma (lhs, rhs, b)
     -- Unify type and term with type and lhs of rewrite rule.
     whenJust mt $ \ t -> leqType t b'
     local (\ e -> e {envCompareBlocked = True}) $ equalTerm b' lhs' v
@@ -197,19 +208,23 @@ rewriteWith mt v (RewriteRule q gamma lhs rhs b) = do
         sep $ map prettyTCM xs
       -- The following error is caught immediately by tryConversion.
       typeError $ GenericError $ "free variables not bound by left hand side"
-  if ok then return $ Just rhs' else return Nothing
+    return rhs'
+
+  -- Thaw metas that were frozen by a call to this function.
+  unfreezeMetas' (`elem` ms)
+  return res-}
 
 -- | @rewrite t@ tries to rewrite a reduced term.
-rewrite :: Term -> TCM (Maybe Term)
+rewrite :: Term -> ReduceM (Maybe Term)
 rewrite v = do
   case ignoreSharing v of
-    -- We only rewrite @Def@s.
-    Def f es -> do
-      -- Get the rewrite rules for f.
-      rews <- defRewriteRules <$> getConstInfo f
-      loop rews
-        where
-          loop [] = return Nothing
-          loop (rew:rews) = do
-            caseMaybeM (rewriteWith Nothing v rew) (loop rews) (return . Just)
+    -- We only rewrite @Def@s and @Con@s.
+    Def f _es -> rew f
+    Con c _vs -> rew $ conName c
     _ -> return Nothing
+  where
+    -- Try all rewrite rules for f.
+    rew f = loop =<< do defRewriteRules <$> getConstInfo f
+    loop []         = return Nothing
+    loop (rew:rews) = do
+      caseMaybeM (rewriteWith Nothing v rew) (loop rews) (return . Just)

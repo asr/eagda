@@ -511,7 +511,7 @@ freshName r s = do
 freshNoName :: (MonadState TCState m, HasFresh NameId) => Range -> m Name
 freshNoName r =
     do  i <- fresh
-        return $ Name i (C.NoName noRange i) r defaultFixity'
+        return $ Name i (C.NoName noRange i) r noFixity'
 
 freshNoName_ :: (MonadState TCState m, HasFresh NameId) => m Name
 freshNoName_ = freshNoName noRange
@@ -585,7 +585,7 @@ data Interface = Interface
   , iInsideScope     :: ScopeInfo
     -- ^ Scope after we loaded this interface.
     --   Used in 'Agda.Interaction.BasicOps.AtTopLevel'
-    --   and     'Agda.Interaction.CommandLine.CommandLine.interactionLoop'.
+    --   and     'Agda.Interaction.CommandLine.interactionLoop'.
     --
     --   Andreas, AIM XX: For performance reason, this field is
     --   not serialized, so if you deserialize an interface, @iInsideScope@
@@ -996,6 +996,19 @@ defRelevance = argInfoRelevance . defArgInfo
 defColors :: Definition -> [Color]
 defColors = argInfoColors . defArgInfo
 
+-- | Non-linear (non-constructor) first-order pattern.
+data NLPat
+  = PVar {-# UNPACK #-} !Int
+    -- ^ Matches anything (modulo non-linearity).
+  | PWild
+    -- ^ Matches anything (e.g. irrelevant terms).
+  | PDef QName PElims
+    -- ^ Matches @f es@
+  | PTerm Term
+    -- ^ Matches the term modulo β (ideally βη).
+  deriving (Typeable, Show)
+type PElims = [Elim' NLPat]
+
 type RewriteRules = [RewriteRule]
 
 -- | Rewrite rules can be added independently from function clauses.
@@ -1003,7 +1016,7 @@ data RewriteRule = RewriteRule
   { rewName    :: QName      -- ^ Name of rewrite rule @q : Γ → lhs ≡ rhs@
                              --   where @≡@ is the rewrite relation.
   , rewContext :: Telescope  -- ^ @Γ@.
-  , rewLHS     :: Term       -- ^ @Γ ⊢ lhs : t@.
+  , rewLHS     :: NLPat      -- ^ @Γ ⊢ lhs : t@.
   , rewRHS     :: Term       -- ^ @Γ ⊢ rhs : t@.
   , rewType    :: Type       -- ^ @Γ ⊢ t@.
   }
@@ -1985,6 +1998,7 @@ data TypeError
         | AmbiguousParseForApplication [C.Expr] [C.Expr]
         | NoParseForLHS LHSOrPatSyn C.Pattern
         | AmbiguousParseForLHS LHSOrPatSyn C.Pattern [C.Pattern]
+        | OperatorChangeMessage TypeError
 {- UNUSED
         | NoParseForPatternSynonym C.Pattern
         | AmbiguousParseForPatternSynonym C.Pattern [C.Pattern]
