@@ -10,11 +10,7 @@ TOP=.
 # mk/path.mk uses TOP, so include after the definition of TOP.
 include ./mk/paths.mk
 
-# Note that BUILD_DIR is used elsewhere as well, so if CABAL_OPTIONS
-# is overridden on the command-line, then BUILD_DIR should perhaps
-# also be overridden.
-CABAL_OPTIONS=--builddir=$(BUILD_DIR)
-
+CABAL_OPTS=--builddir=$(BUILD_DIR)
 CABAL_CMD=cabal
 override CABAL_OPTS+=$(CABAL_OPTIONS)
 
@@ -45,7 +41,7 @@ install-O2-bin :
 
 .PHONY : install-prof-bin
 install-prof-bin :
-	$(CABAL_CMD) install --enable-library-profiling --enable-executable-profiling \
+	$(CABAL_CMD) install --enable-library-profiling --enable-profiling \
                              --program-suffix=_p --disable-documentation $(CABAL_OPTS)
 
 .PHONY : compile-emacs-mode
