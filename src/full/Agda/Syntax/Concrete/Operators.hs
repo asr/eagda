@@ -186,6 +186,12 @@ buildParsers r flat use =
         higher  = zip levels (init $ inits levels)
                   where levels = map fst relatedOperators
 
+    reportSLn "scope.operators" 50 $ unlines
+      [ "unrelatedOperators = " ++ show unrelatedOperators
+      , "relatedOperators   = " ++ show relatedOperators
+      , "higher             = " ++ show higher
+      ]
+
     return $ Data.Function.fix $ \p -> Parsers
         { pTop    = memoise TopK $
                     Fold.asum $
@@ -590,15 +596,8 @@ parseApplication es = do
     -- Parse
     case force $ parse (pTop p) es of
         [e] -> return e
-        [] -> do
-          -- When the parser fails and a name is not in scope, it is more
-          -- useful to say that to the user rather than just "failed".
-          inScope <- partsInScope flat
-          case [ x | Ident x <- es, not (Set.member x inScope) ] of
-              [] -> typeError $ OperatorChangeMessage $
-                                  NoParseForApplication es
-              xs -> typeError $ OperatorChangeMessage $ NotInScope xs
-
+        []  -> typeError $ OperatorChangeMessage $
+                             NoParseForApplication es
         es' -> typeError $ OperatorChangeMessage $
                  AmbiguousParseForApplication es $ map fullParen es'
 
@@ -619,13 +618,8 @@ parseRawModuleApplication es = do
     -- Parse
     case {-force $-} parse (pArgs p) es_args of -- TODO: not sure about forcing
         [as] -> return (m, as)
-        [] -> do
-          inScope <- partsInScope flat
-          case [ x | Ident x <- es_args, not (Set.member x inScope) ] of
-              [] -> typeError $ OperatorChangeMessage $
-                                  NoParseForApplication es
-              xs -> typeError $ OperatorChangeMessage $ NotInScope xs
-
+        []   -> typeError $ OperatorChangeMessage $
+                              NoParseForApplication es
         ass -> do
           let f = fullParen . foldl (App noRange) (Ident m)
           typeError $ OperatorChangeMessage
