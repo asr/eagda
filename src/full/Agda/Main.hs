@@ -7,13 +7,10 @@ module Agda.Main where
 import Control.Monad.State
 import Control.Applicative
 
-import qualified Data.List as List
 import Data.Maybe
 
 import System.Environment
 import System.Exit
-
-import qualified Text.PrettyPrint.Boxes as Boxes
 
 import Agda.Syntax.Concrete.Pretty ()
 import Agda.Syntax.Abstract.Name (toTopLevelModuleName)
@@ -29,7 +26,6 @@ import qualified Agda.Interaction.Highlighting.LaTeX as LaTeX
 import Agda.Interaction.Highlighting.HTML
 
 import Agda.TypeChecking.Monad
-import Agda.TypeChecking.Monad.Benchmark
 import qualified Agda.TypeChecking.Monad.Benchmark as Bench
 import Agda.TypeChecking.Errors
 
@@ -39,9 +35,7 @@ import Agda.Compiler.JS.Compiler as JS
 
 import Agda.Utils.Lens
 import Agda.Utils.Monad
-import Agda.Utils.Pretty (prettyShow)
 import Agda.Utils.String
-import qualified Agda.Utils.Trie as Trie
 
 import Agda.Tests
 import Agda.Version
@@ -81,24 +75,10 @@ runAgdaWithOptions generateHTML progName opts
           setCommandLineOptions opts
           -- Main function.
           -- Bill everything to root of Benchmark trie.
-          billTo [] $ checkFile
+          Bench.billTo [] $ checkFile
 
           -- Print benchmarks.
-          whenM benchmarking $ do
-            (accounts, times) <- List.unzip . Trie.toList <$> getBenchmark
-            -- Generate a table.
-            let showAccount [] = "Total time"
-                showAccount ks = List.concat . List.intersperse "." . map show $ ks
-                -- First column is accounts.
-                col1 = Boxes.vcat Boxes.left $
-                       map (Boxes.text . showAccount) $
-                       accounts
-                -- Second column is times.
-                col2 = Boxes.vcat Boxes.right $
-                       map (Boxes.text . prettyShow) $
-                       times
-                table = Boxes.hsep 1 Boxes.left [col1, col2]
-            reportBenchmarkingLn $ Boxes.render table
+          Bench.print
 
           -- Print accumulated statistics.
           printStatistics 20 Nothing =<< use lensAccumStatistics

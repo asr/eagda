@@ -74,7 +74,6 @@ import qualified Agda.Interaction.Highlighting.Precise as HP
 import Agda.Interaction.FindFile
 
 import qualified Agda.TypeChecking.Monad.Benchmark as Bench
-import Agda.TypeChecking.Monad.Benchmark (billSub, billTo)
 
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.CompiledClause
@@ -273,19 +272,19 @@ encode a = do
         liftIO $ H.toList stats
       modifyStatistics $ Map.union stats
     -- Encode hashmaps and root, and compress.
-    bits1 <- billSub [ Bench.Serialization, Bench.BinaryEncode ] $
+    bits1 <- Bench.billTo [ Bench.Serialization, Bench.BinaryEncode ] $
       returnForcedByteString $ B.encode (root, nL, sL, iL, dL)
     let compressParams = G.defaultCompressParams
           { G.compressLevel    = G.bestSpeed
           , G.compressStrategy = G.huffmanOnlyStrategy
           }
-    cbits <- billSub [ Bench.Serialization, Bench.Compress ] $
+    cbits <- Bench.billTo [ Bench.Serialization, Bench.Compress ] $
       returnForcedByteString $ G.compressWith compressParams bits1
     let x = B.encode currentInterfaceVersion `L.append` cbits
     return x
   where
     l h = List.map fst . List.sortBy (compare `on` snd) <$> H.toList h
-    benchSort = billTo [Bench.Serialization, Bench.Sort] . liftIO
+    benchSort = Bench.billTo [Bench.Serialization, Bench.Sort] . liftIO
     statistics :: String -> IORef FreshAndReuse -> TCM ()
     statistics kind ioref = do
       FreshAndReuse fresh reused <- liftIO $ readIORef ioref
@@ -912,12 +911,14 @@ instance EmbPrj Agda.Syntax.Common.Hiding where
 instance EmbPrj Agda.Syntax.Common.Relevance where
   icod_ Relevant   = icode0'
   icod_ Irrelevant = icode0 1
-  icod_ Forced     = icode0 2
+  icod_ (Forced Small) = icode0 2
+  icod_ (Forced Big)   = icode0 5
   icod_ NonStrict  = icode0 3
   icod_ UnusedArg  = icode0 4
   value = vcase valu where valu []  = valu0 Relevant
                            valu [1] = valu0 Irrelevant
-                           valu [2] = valu0 Forced
+                           valu [2] = valu0 (Forced Small)
+                           valu [5] = valu0 (Forced Big)
                            valu [3] = valu0 NonStrict
                            valu [4] = valu0 UnusedArg
                            valu _   = malformed

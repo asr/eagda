@@ -47,7 +47,6 @@ import Agda.Syntax.Scope.Base
 import Agda.Syntax.Scope.Monad
 
 import Agda.TypeChecking.Monad.Base (typeError, TypeError(..), LHSOrPatSyn(..))
-import Agda.TypeChecking.Monad.Benchmark (billSub)
 import qualified Agda.TypeChecking.Monad.Benchmark as Bench
 import Agda.TypeChecking.Monad.State (getScope)
 import Agda.TypeChecking.Monad.Options
@@ -62,6 +61,15 @@ import Agda.Utils.List
 
 #include "undefined.h"
 import Agda.Utils.Impossible
+
+---------------------------------------------------------------------------
+-- * Billing
+---------------------------------------------------------------------------
+
+-- | Bills the operator parser.
+
+billToParser :: ScopeM a -> ScopeM a
+billToParser = Bench.billTo [Bench.Parsing, Bench.Operators]
 
 ---------------------------------------------------------------------------
 -- * Building the parser
@@ -120,7 +128,8 @@ localNames flat = do
   where
     localOp (x, y) = namesToNotation (QName x) y
     split ops      = partitionEithers $ concatMap opOrNot ops
-    opOrNot n      = [Left (notaName n), Right n]
+    opOrNot n      = Left (notaName n) :
+                     if null (notation n) then [] else [Right n]
 
 -- | Data structure filled in by @buildParsers@.
 --   The top-level parser @pTop@ is of primary interest,
@@ -146,8 +155,7 @@ data UseBoundNames = UseBoundNames | DontUseBoundNames
     rebound). See test/succeed/OpBind.agda for an example.
 -}
 buildParsers :: forall e. IsExpr e => Range -> FlatScope -> UseBoundNames -> ScopeM (Parsers e)
-buildParsers r flat use =
-  billSub [Bench.Parsing, Bench.Operators, Bench.BuildParser] $ do
+buildParsers r flat use = do
     (names, ops) <- localNames flat
     let cons = getDefinedNames [ConName, PatternSynName] flat
     reportSLn "scope.operators" 50 $ unlines
@@ -251,34 +259,45 @@ buildParsers r flat use =
             -> Parser e e
         mkP key p0 ops higher =
             memoise (NodeK key) $
-              Fold.asum [nonAssoc, preRights, postLefts]
+              Fold.asum $ catMaybes [nonAssoc, preRights, postLefts]
             where
             choice f = Fold.asum . map (f . opP p0)
 
-            nonAssoc = do
-              x <- higher
-              f <- choice binop (filter isinfix ops)
-              y <- higher
-              return (f x y)
+            nonAssoc = case filter isinfix ops of
+              []  -> Nothing
+              ops -> Just $ do
+                x <- higher
+                f <- choice binop ops
+                y <- higher
+                return (f x y)
+
+            or p1 []   p2 []   = Nothing
+            or p1 []   p2 ops2 = Just (p2 ops2)
+            or p1 ops1 p2 []   = Just (p1 ops1)
+            or p1 ops1 p2 ops2 = Just (p1 ops1 <|> p2 ops2)
 
             preRight =
-              choice preop (filter isprefix ops)
-              <|>
-              flip ($) <$> higher
-                       <*> choice binop (filter isinfixr ops)
+              or (choice preop)
+                 (filter isprefix ops)
+                 (\ops -> flip ($) <$> higher <*> choice binop ops)
+                 (filter isinfixr ops)
 
-            preRights =
-              preRight <*> (preRights <|> higher)
+            preRights = do
+              preRight <- preRight
+              return $ Data.Function.fix $ \preRights ->
+                preRight <*> (preRights <|> higher)
 
             postLeft =
-              choice postop (filter ispostfix ops)
-              <|>
-              flip <$> choice binop (filter isinfixl ops)
-                   <*> higher
+              or (choice postop)
+                 (filter ispostfix ops)
+                 (\ops -> flip <$> choice binop ops <*> higher)
+                 (filter isinfixl ops)
 
-            postLefts =
-              memoise (PostLeftsK key) $
-                flip ($) <$> (postLefts <|> higher) <*> postLeft
+            postLefts = do
+              postLeft <- postLeft
+              return $ Data.Function.fix $ \postLefts ->
+                memoise (PostLeftsK key) $
+                  flip ($) <$> (postLefts <|> higher) <*> postLeft
 
 
 ---------------------------------------------------------------------------
@@ -511,7 +530,7 @@ classifyPattern conf p =
 --      intended _* applied to true, or as true applied to a variable *. If we
 --      check arities this problem won't appear.
 parseLHS :: Name -> Pattern -> ScopeM LHSCore
-parseLHS top p = do
+parseLHS top p = billToParser $ do
   res <- parseLHS' IsLHS (Just top) p
   case res of
     Right (f, lhs) -> return lhs
@@ -530,7 +549,7 @@ parsePatternSyn :: Pattern -> ScopeM Pattern
 parsePatternSyn = parsePatternOrSyn IsPatSyn
 
 parsePatternOrSyn :: LHSOrPatSyn -> Pattern -> ScopeM Pattern
-parsePatternOrSyn lhsOrPatSyn p = do
+parsePatternOrSyn lhsOrPatSyn p = billToParser $ do
   res <- parseLHS' lhsOrPatSyn Nothing p
   case res of
     Left p -> return p
@@ -587,7 +606,7 @@ qualifierModules qs =
 -- | Parse a list of expressions into an application.
 parseApplication :: [Expr] -> ScopeM Expr
 parseApplication [e] = return e
-parseApplication es = do
+parseApplication es  = billToParser $ do
     -- Build the parser
     let ms = qualifierModules [ q | Ident q <- es ]
     flat <- flattenScope ms <$> getScope
@@ -606,7 +625,7 @@ parseModuleIdentifier (Ident m) = return m
 parseModuleIdentifier e = typeError $ NotAModuleExpr e
 
 parseRawModuleApplication :: [Expr] -> ScopeM (QName, [NamedArg Expr])
-parseRawModuleApplication es = do
+parseRawModuleApplication es = billToParser $ do
     let e : es_args = es
     m <- parseModuleIdentifier e
 
