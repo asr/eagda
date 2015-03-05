@@ -10,6 +10,7 @@
 module Agda.Syntax.Fixity where
 
 import Data.Foldable
+import Data.Function
 import Data.Hashable
 import Data.List as List
 import Data.Set (Set)
@@ -106,10 +107,10 @@ noFixity' = Fixity' noFixity noNotation
 -- then this fixity is preserved, and otherwise it is replaced by
 -- 'noFixity'.
 --
--- Precondition: No 'A.QName' may occur in more than one list element.
+-- Precondition: No 'A.Name' may occur in more than one list element.
 -- Every 'NewNotation' must have the same 'notaName'.
 --
--- Postcondition: No 'A.QName' occurs in more than one list element.
+-- Postcondition: No 'A.Name' occurs in more than one list element.
 mergeNotations :: [NewNotation] -> [NewNotation]
 mergeNotations = map (merge . fixFixities) . groupOn notation
   where
@@ -127,7 +128,7 @@ mergeNotations = map (merge . fixFixities) . groupOn notation
 -- | Precedence levels for operators.
 
 data PrecedenceLevel = Unrelated | Related Integer
-  deriving (Eq, Show, Typeable)
+  deriving (Eq, Ord, Show, Typeable)
 
 -- | Fixity of operators.
 
@@ -138,10 +139,14 @@ data Fixity
   deriving (Typeable, Show)
 
 instance Eq Fixity where
-    LeftAssoc  _ n == LeftAssoc  _ m = n == m
-    RightAssoc _ n == RightAssoc _ m = n == m
-    NonAssoc   _ n == NonAssoc   _ m = n == m
-    _              == _              = False
+  f1 == f2 = compare f1 f2 == EQ
+
+instance Ord Fixity where
+  compare = compare `on` (\f -> (kind f, fixityLevel f))
+    where
+    kind LeftAssoc{}  = 0
+    kind RightAssoc{} = 1
+    kind NonAssoc{}   = 2
 
 -- For @instance Pretty Fixity@, see Agda.Syntax.Concrete.Pretty
 

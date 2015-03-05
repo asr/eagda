@@ -75,21 +75,6 @@ billToParser = Bench.billTo [Bench.Parsing, Bench.Operators]
 -- * Building the parser
 ---------------------------------------------------------------------------
 
-partsInScope :: FlatScope -> ScopeM (Set QName)
-partsInScope flat = do
-    (names, ops) <- localNames flat
-    let xs = concatMap parts names ++ concatMap notationNames ops
-    return $ Set.fromList xs
-    where
-        qual xs x = foldr Qual (QName x) xs
-        parts q = parts' (init $ qnameParts q) (unqualify q)
-        parts' ms (NoName _ _)   = []
-        parts' ms x@(Name _ [_]) = [qual ms x]
-                                   -- The first part should be qualified, but not the rest
-        parts' ms x@(Name _ xs)  = qual ms x : qual ms (Name noRange [first]) : [ QName $ Name noRange [i] | i <- iparts ]
-          where
-            first:iparts = [ i | i@(Id {}) <- xs ]
-
 type FlatScope = Map QName [AbstractName]
 
 -- | Compute all defined names in scope and their fixities/notations.
@@ -225,7 +210,7 @@ buildParsers r flat use = do
         , pNonfix = memoise NonfixK $
                     Fold.asum $
                       pAtom p :
-                      map (nonfixP . opP (pTop p)) non
+                      map (opP Non (pTop p)) non
         , pAtom   = atomP isAtom
         }
     where
@@ -261,13 +246,13 @@ buildParsers r flat use = do
             memoise (NodeK key) $
               Fold.asum $ catMaybes [nonAssoc, preRights, postLefts]
             where
-            choice f = Fold.asum . map (f . opP p0)
+            choice k = Fold.asum . map (opP k p0)
 
             nonAssoc = case filter isinfix ops of
               []  -> Nothing
               ops -> Just $ do
                 x <- higher
-                f <- choice binop ops
+                f <- choice In ops
                 y <- higher
                 return (f x y)
 
@@ -277,9 +262,9 @@ buildParsers r flat use = do
             or p1 ops1 p2 ops2 = Just (p1 ops1 <|> p2 ops2)
 
             preRight =
-              or (choice preop)
+              or (choice Pre)
                  (filter isprefix ops)
-                 (\ops -> flip ($) <$> higher <*> choice binop ops)
+                 (\ops -> flip ($) <$> higher <*> choice In ops)
                  (filter isinfixr ops)
 
             preRights = do
@@ -288,9 +273,9 @@ buildParsers r flat use = do
                 preRight <*> (preRights <|> higher)
 
             postLeft =
-              or (choice postop)
+              or (choice Post)
                  (filter ispostfix ops)
-                 (\ops -> flip <$> choice binop ops <*> higher)
+                 (\ops -> flip <$> choice In ops <*> higher)
                  (filter isinfixl ops)
 
             postLefts = do
