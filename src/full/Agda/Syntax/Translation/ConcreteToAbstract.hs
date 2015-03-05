@@ -1458,7 +1458,7 @@ instance ToAbstract C.Pragma [A.Pragma] where
         where
           helper :: C.QName -> ScopeM A.QName
           helper q = do
-            e <- toAbstract $ OldQName q
+            e <- toAbstract $ OldQName q Nothing
             case e of
               A.Def aq -> return aq
 
@@ -1473,8 +1473,8 @@ instance ToAbstract C.Pragma [A.Pragma] where
       when (qs /= nub qs)
            (fail "Bad ATP-pragma. A conjecture cannot have duplicate local hints")
 
-      e  <- toAbstract $ OldQName q
-      es <- mapM toAbstract (map OldQName qs)
+      e  <- toAbstract $ OldQName q Nothing
+      es <- mapM toAbstract (map (\x -> OldQName x Nothing) qs)
       case e of
         A.Def postulate -> do
                -- The only accepted local hints are postulates,
@@ -1505,7 +1505,7 @@ instance ToAbstract C.Pragma [A.Pragma] where
         where
           helper :: C.QName -> ScopeM A.QName
           helper q = do
-            e <- toAbstract $ OldQName q
+            e <- toAbstract $ OldQName q Nothing
             case e of
               A.Def aqs -> return aqs
               _         -> fail "Bad ATP-pragma. The role <definition> must be used with functions"
@@ -1516,7 +1516,7 @@ instance ToAbstract C.Pragma [A.Pragma] where
         where
           helper :: C.QName -> ScopeM A.QName
           helper q = do
-            e <- toAbstract $ OldQName q
+            e <- toAbstract $ OldQName q Nothing
             case e of
               A.Def aq -> return aq
               _        -> fail "Bad ATP-pragma. The role <hint> must be used with functions"
