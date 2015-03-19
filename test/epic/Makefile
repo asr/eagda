@@ -1,3 +1,4 @@
+SHELL := /bin/bash
 
 TOP=../..
 
@@ -8,4 +9,4 @@ test:
 	-rm -r tests/bin
 	mkdir tests/bin
 	$(AGDA_BIN) --epic RunTests.agda
-	./RunTests
+	export AGDA_BIN=$(AGDA_BIN) && ./RunTests
