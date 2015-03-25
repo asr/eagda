@@ -227,8 +227,8 @@ rigidlyConstrainedMetas = do
       case clValue $ theConstraint c of
         ValueCmp _ _ u v ->
           case (ignoreSharing u, ignoreSharing v) of
-            (MetaV m _, _) -> ifM (isRigid v) (return $ Just m) (return Nothing)
-            (_, MetaV m _) -> ifM (isRigid u) (return $ Just m) (return Nothing)
+            (MetaV m us, _) | isJust (allApplyElims us) -> ifM (isRigid v) (return $ Just m) (return Nothing)
+            (_, MetaV m vs) | isJust (allApplyElims vs) -> ifM (isRigid u) (return $ Just m) (return Nothing)
             _              -> return Nothing
         ElimCmp{}     -> return Nothing
         TypeCmp{}     -> return Nothing
