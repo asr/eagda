@@ -1,5 +1,8 @@
 {-# OPTIONS_GHC -Wall #-}
+
+{-# LANGUAGE CPP                #-}
 {-# LANGUAGE DeriveDataTypeable #-}
+
 -- | Contains all information required to link Agda modules.
 --
 module Agda.Compiler.UHC.ModuleInfo
@@ -13,9 +16,12 @@ module Agda.Compiler.UHC.ModuleInfo
 where
 
 import qualified Data.Map as M
+
+#if __GLASGOW_HASKELL__ <= 708
 import Data.Monoid
+#endif
+
 import Data.Typeable (Typeable)
-import Data.Time.Clock.POSIX
 
 import Agda.Syntax.Internal
 
@@ -28,7 +34,7 @@ import Data.Word
 -- but we want to use the original definition when compiling.
 type ConInstMp = M.Map QName QName
 
-type ModVersion = POSIXTime
+type ModVersion = Integer
 
 currentModInfoVersion :: Word64
 currentModInfoVersion = 20150323 * 10 + 0

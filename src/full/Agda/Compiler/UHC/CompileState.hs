@@ -30,14 +30,16 @@ module Agda.Compiler.UHC.CompileState
   )
 where
 
-import Control.Applicative
 import Control.Monad.State
 import Control.Monad.Reader.Class
 import Data.List
 import qualified Data.Map as M
 import Data.Maybe
+
+#if __GLASGOW_HASKELL__ <= 708
+import Control.Applicative
 import Data.Monoid
-import Data.Time.Clock.POSIX
+#endif
 
 import Agda.Compiler.UHC.AuxAST as AuxAST
 import Agda.Compiler.UHC.AuxASTUtil
@@ -54,6 +56,17 @@ import Agda.Compiler.UHC.Naming
 
 #include "undefined.h"
 import Agda.Utils.Impossible
+
+-- UHC backend does not support GHC 7.4, but we don't want to break the build.
+#if __GLASGOW_HASKELL__ >= 706
+import Data.Time.Clock.POSIX
+
+getTime :: IO Integer
+getTime = round <$> getPOSIXTime
+#else
+getTime :: IO Integer
+getTime = __IMPOSSIBLE__
+#endif
 
 
 -- | Stuff we need in our compiler
@@ -82,7 +95,7 @@ runCompileT :: MonadIO m
 runCompileT coind amod curImpMods transImpIface nmMp conIMp comp = do
   (result, state') <- runStateT (unCompileT comp) initial
 
-  version <- liftIO getPOSIXTime
+  version <- liftIO getTime
 
   let modInfo = AModuleInfo
         { amiFileVersion = currentModInfoVersion

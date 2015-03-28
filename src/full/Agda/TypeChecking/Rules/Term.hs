@@ -1,11 +1,14 @@
 {-# LANGUAGE CPP                   #-}
-{-# LANGUAGE FlexibleContexts      #-}  -- This will be required by GHC 7.10.
 {-# LANGUAGE FlexibleInstances     #-}
 {-# LANGUAGE NamedFieldPuns        #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PatternGuards         #-}
 {-# LANGUAGE TypeSynonymInstances  #-}
 {-# LANGUAGE TupleSections         #-}
+
+#if __GLASGOW_HASKELL__ >= 710
+{-# LANGUAGE FlexibleContexts #-}
+#endif
 
 module Agda.TypeChecking.Rules.Term where
 
@@ -951,6 +954,14 @@ checkApplication hd args e t = do
           let p' = A.patternToExpr p
               e' = A.lambdaLiftExpr (map unArg ns) (A.substExpr s p')
           checkExpr e' t
+
+    -- Subcase: macro
+    A.Macro x -> do
+      -- First go: no parameters
+      let unq = A.App (A.ExprRange $ fuseRange x args) (A.Unquote A.exprNoRange) . defaultNamedArg
+          q e = A.App (A.ExprRange (getRange e)) (A.QuoteTerm A.exprNoRange) (defaultNamedArg e)
+          desugared = unq $ unAppView $ Application (A.Def x) $ (map . fmap . fmap) q args
+      checkExpr desugared t
 
     -- Subcase: unquote
     A.Unquote _

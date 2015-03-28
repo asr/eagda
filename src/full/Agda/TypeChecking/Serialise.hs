@@ -1,9 +1,12 @@
 {-# LANGUAGE CPP                       #-}
 {-# LANGUAGE ExistentialQuantification #-}
-{-# LANGUAGE FlexibleContexts          #-}  -- This will be required by GHC 7.10.
 {-# LANGUAGE FlexibleInstances         #-}
 {-# LANGUAGE ScopedTypeVariables       #-}
 {-# LANGUAGE TypeSynonymInstances      #-}
+
+#if __GLASGOW_HASKELL__ >= 710
+{-# LANGUAGE FlexibleContexts #-}
+#endif
 
 #if __GLASGOW_HASKELL__ <= 708
 {-# LANGUAGE OverlappingInstances #-}
@@ -54,8 +57,6 @@ import qualified Data.List as List
 import Data.Function
 import Data.Typeable ( cast, Typeable, typeOf, TypeRep )
 import qualified Codec.Compression.GZip as G
-import Data.Time.Clock
-import Data.Ratio
 
 import qualified Agda.Compiler.Epic.Interface as Epic
 import qualified Agda.Compiler.UHC.Pragmas.Base as CR
@@ -120,7 +121,7 @@ returnForcedByteString bs = return $! bs
 -- 32-bit machines). Word64 does not have these problems.
 
 currentInterfaceVersion :: Word64
-currentInterfaceVersion = 20150320 * 10 + 2
+currentInterfaceVersion = 20150327 * 10 + 0
 
 -- | Constructor tag (maybe omitted) and argument indices.
 
@@ -464,12 +465,6 @@ instance EmbPrj Double where
   icod_   = icodeDouble
   value i = (! i) `fmap` gets doubleE
 
-instance EmbPrj Rational where
-  icod_ r = icode2' (numerator r) (denominator r)
-  value = vcase valu where
-    valu [a, b] = valu2 (%) a b
-    valu _      = malformed
-
 instance EmbPrj () where
   icod_ () = icode0'
   value = vcase valu where valu [] = valu0 ()
@@ -505,12 +500,6 @@ instance EmbPrj Bool where
   value = vcase valu where valu []  = valu0 True
                            valu [0] = valu0 False
                            valu _   = malformed
-
-instance EmbPrj NominalDiffTime where
-  icod_ a = icode1' (toRational a)
-  value = vcase valu where
-    valu [a] = valu1 fromRational a
-    valu _   = malformed
 
 instance EmbPrj AbsolutePath where
   icod_ file = do
@@ -657,11 +646,13 @@ instance EmbPrj KindOfName where
   icod_ FldName        = icode0 2
   icod_ PatternSynName = icode0 3
   icod_ QuotableName   = icode0 4
+  icod_ MacroName      = icode0 5
   value = vcase valu where valu []  = valu0 DefName
                            valu [1] = valu0 ConName
                            valu [2] = valu0 FldName
                            valu [3] = valu0 PatternSynName
                            valu [4] = valu0 QuotableName
+                           valu [5] = valu0 MacroName
                            valu _   = malformed
 
 instance EmbPrj Agda.Syntax.Fixity.Associativity where
@@ -770,6 +761,7 @@ instance EmbPrj A.Expr where
   icod_ (A.DontCare a)          = icode1 25 a
   icod_ (A.PatternSyn a)        = icode1 26 a
   icod_ (A.Proj a)              = icode1 27 a
+  icod_ (A.Macro a)             = icode1 28 a
 
   value = vcase valu
     where
@@ -799,6 +791,7 @@ instance EmbPrj A.Expr where
       valu [25, a]    = valu1 A.DontCare a
       valu [26, a]    = valu1 A.PatternSyn a
       valu [27, a]    = valu1 A.Proj a
+      valu [28, a]    = valu1 A.Macro a
       valu _          = malformed
 
       i = ExprRange noRange
@@ -1388,6 +1381,7 @@ instance EmbPrj HP.NameKind where
   icod_ HP.Primitive       = icode0 7
   icod_ HP.Record          = icode0 8
   icod_ HP.Argument        = icode0 9
+  icod_ HP.Macro           = icode0 10
 
   value = vcase valu where
     valu []      = valu0 HP.Bound
@@ -1400,6 +1394,7 @@ instance EmbPrj HP.NameKind where
     valu [7]     = valu0 HP.Primitive
     valu [8]     = valu0 HP.Record
     valu [9]     = valu0 HP.Argument
+    valu [10]    = valu0 HP.Macro
     valu _       = malformed
 
 instance EmbPrj HP.Aspect where

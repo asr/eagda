@@ -139,6 +139,48 @@ Reflection
     `tactic : QName → Term
     `tactic x = quote-goal (abs "g" (unquote-term (def x (vArg (var 0 []) ∷ []))))
 
+* Reflection-based macros
+
+  Macros are functions of type Term → .. → Term that are defined in a 'macro'
+  block. A macro application 'f u v' for a macro f desugars to
+  'unquote (f (quoteTerm u) (quoteTerm v))'.
+
+  Limitations:
+
+    - Macros cannot be recursive. This can be worked around by defining the
+      recursive function outside the macro block and have the macro call the
+      recursive function.
+
+    - Macros cannot have non-reflected arguments. This will hopefully be
+      allowed in the future.
+
+  Silly example:
+
+    macro
+      plus-to-times : Term -> Term
+      plus-to-times (def (quote _+_) (a ∷ b ∷ [])) = def (quote _*_) (a ∷ b ∷ [])
+      plus-to-times v = v
+
+    thm : (a b : Nat) → plus-to-times (a + b) ≡ a * b
+    thm a b = refl
+
+  Macros are most useful when writing tactics, since they let you hide the
+  reflection machinery. For instance, suppose you have a solver
+
+    magic : Term → Term
+
+  that takes a reflected goal and outputs a proof (when successful). You can
+  then use the `tactic function from above to define
+
+    macro
+      by-magic : Term
+      by-magic = `tactic (quote magic)
+
+  This lets you apply the magic tactic without any syntactic noise at all:
+
+    thm : ¬ P ≡ NP
+    thm = by-magic
+
 
 Operator syntax
 ---------------
@@ -395,6 +437,81 @@ Type checking
 
 Compiler backends
 =================
+
+* UHC compiler backend
+
+  A new backend targeting the Utrecht Haskell Compiler (UHC) is available. It targets
+  the UHC Core language, and it's design is inspired by the Epic backend.
+
+  This backend is currently experimental, but should work for most Agda code.
+  It properly supports having function clauses with different arities.
+
+  The backend is disabled by default, as it will pull in some large dependencies.
+  To enable the backend, use the "uhc" cabal flag when installing Agda:
+
+    cabal install Agda -fuhc
+
+  The backend also requires UHC to be installed. UHC is not available on Hackage and needs
+  to be installed manually. This version of Agda has been tested with UHC 1.1.8.7, using other
+  UHC versions may cause problems. To install UHC, the following commands can be used:
+
+    git clone https://github.com/UU-ComputerScience/uhc.git
+    cd uhc
+    git checkout 0dec07e9cb60e78bbca63fc101f8fec6e249269f
+    cd EHC
+    ./configure
+    make
+    make install
+
+
+  Smashing
+
+  The Smashing optimisation from the Epic backend has been ported to the UHC backend. Smashing
+  can be disabled globally using the --no-smashing command line option, or per definition using the
+  {-# DONT_SMASH myDef #-} pragma. The DONT_SMASH pragma has two effects:
+    1. The definition myDef will not be smashed.
+    2. Any definition where the myDef definition is used in the type will not be smashed.
+  The smashing optimisation is experimental and may change in later versions.
+
+
+  FFI
+
+  The UHC backend has a FFI to Haskell similar to MAlonzo's. It is currently not possible
+  to bring arbitrary Haskell modules into scope, it is thus of limited usefulness outside
+  of defining some very basic functionality for Bools, Chars, etc. The target Haskell code
+  also needs to be compilable using UHC, which does not support the Haskell base library version 4.*.
+
+  FFI pragmas for the UHC backend are not checked in any way. If the pragmas are wrong,
+  bad things will happen.
+
+  Datatypes
+  Agda datatypes can be bound to Haskell datatypes as follows:
+    Haskell:
+        data HsData a = HsCon1 | HsCon2 (HsData a)
+    Agda:
+        data AgdaData (A : Set) : Set where
+          AgdaCon1 : AgdaData A
+          AgdaCon2 : AgdaData A -> AgdaData A
+        {-# COMPILED_CORE_DATA AgdaData HsData HsCon1 HsCon2 #-}
+    The mapping has to cover all constructors of the used Haskell datatype,
+    else runtime behavior is undefined!
+
+  There are special reserved names to bind Agda datatypes to certain Haskell
+  datatypes. For example, this binds an Agda datatype to Haskell's list datatype:
+    Agda:
+        data AgdaList (A : Set) : Set where
+          Nil : AgdaList A
+          Cons : A -> AgdaList A -> AgdaList A
+        {-# COMPILED_CORE_DATA AgdaList __LIST__ __NIL__ __CONS__ #-}
+
+  The following "magic" datatypes are available:
+    HS Datatype | Datatype Pragma | HS Constructor | Constructor Pragma
+    ()            __UNIT__          ()               __UNIT__
+    List          __LIST__          (:)              __CONS__
+                                    []               __NIL__
+    Bool          __BOOL__          True             __TRUE__
+                                    False            __FALSE__
+
 
 Tools
 =====

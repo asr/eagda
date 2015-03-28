@@ -10,7 +10,10 @@
 -- -> There is no runtime representation of Coinductive values.
 module Agda.Compiler.UHC.FromAgda where
 
+#if __GLASGOW_HASKELL__ <= 708
 import Control.Applicative
+#endif
+
 import Control.Monad
 import Control.Monad.State
 import qualified Data.Map as M
@@ -135,10 +138,10 @@ translateDataTypes defs = do
     <$> mapM (\(n, def) ->
         case theDef def of
             d@(Constructor {}) -> do
-                let foreign = compiledCore $ defCompiledRep def
+                let isForeign = compiledCore $ defCompiledRep def
                 arity' <- lift $ (fst <$> conArityAndPars n)
                 let conFun = ADataCon n
-                con <- case foreign of
+                con <- case isForeign of
                     (Just (CrConstr crcon)) -> return $ Right (conFun $ coreConstrToCTag crcon arity')
                     (Nothing)   -> do
                         conCrNm <- getCoreName1 n
@@ -151,9 +154,9 @@ translateDataTypes defs = do
   -- now extract all datatypes, and use the constructor info
   -- collected before
   let handleDataRecDef = (\n def -> do
-            let foreign = compiledCore $ defCompiledRep def
+            let isForeign = compiledCore $ defCompiledRep def
             let cons = M.findWithDefault [] n constrMp
-            case (foreign, partitionEithers cons) of
+            case (isForeign, partitionEithers cons) of
               (Just (CrType crty), ([], cons')) -> do -- foreign datatypes (COMPILED_CORE_DATA)
                     let (tyNm, impl) = case crty of
                                 CTMagic tyNm' nm -> (tyNm', ADataImplMagic nm)

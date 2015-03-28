@@ -8,29 +8,26 @@
 -- problem might be error reporting?
 module Agda.Compiler.UHC.Compiler(compilerMain) where
 
+#if __GLASGOW_HASKELL__ <= 708
 import Control.Applicative
-import Control.Exception (try)
+import Data.Monoid
+#endif
+
 import Control.Monad
 import Control.Monad.Reader
 import Control.Monad.State
 import qualified Data.ByteString.Lazy as BS
 import qualified Data.Map as M
 import Data.Maybe
-import Data.Monoid
+
 import System.Directory ( canonicalizePath, createDirectoryIfMissing
                         , setCurrentDirectory
-                        , createDirectory, doesDirectoryExist
+                        , doesDirectoryExist
                         , getDirectoryContents, copyFile
-                        , getTemporaryDirectory, removeDirectoryRecursive
                         )
-import Data.Version
 import Data.List as L
 import System.Exit
 import System.FilePath hiding (normalise)
-import System.Process hiding (env)
-import System.Info (os)
-import System.IO.Error (isAlreadyExistsError)
-import System.IO.Temp
 
 import Paths_Agda
 import Agda.Compiler.CallCompiler
@@ -64,66 +61,18 @@ type CompiledModules = M.Map ModuleName (AModuleInfo, AModuleInterface)
 putCompModule :: Monad m => AModuleInfo -> AModuleInterface -> CompModT m ()
 putCompModule amod modTrans = modify (M.insert (amiModule amod) (amod, modTrans))
 
-installUHCAgdaBase :: TCM ()
-installUHCAgdaBase = do
-    srcDir <- (</> "uhc-agda-base") <$> liftIO getDataDir
+-- for the time being, we just copy the base library into the generated code.
+-- We don't install it into the user db anymore, as that gets complicated when
+-- multiple Agda instances run concurrently.
+-- Just copying it is safe for the time being, as we only have full-program
+-- compilation at the moment.
+copyUHCAgdaBase :: FilePath -> TCM ()
+copyUHCAgdaBase outDir = do
+    dataDir <- liftIO getDataDir
+    let srcDir = dataDir </> "uhc-agda-base" </> "src" </> "UHC"
 
-    -- get user package dir
-    uhcBin <- getUhcBin
-    (pkgSuc, pkgDbOut, _) <- liftIO $ readProcessWithExitCode uhcBin ["--meta-pkgdir-user"] ""
+    liftIO $ copyDirContent srcDir (outDir </> "UHC")
 
-    case pkgSuc of
-        ExitSuccess -> do
-                let pkgDbDir = head $ lines pkgDbOut
-
-                let vers = showVersion version
-                    pkgName = "uhc-agda-base-" ++ vers
-                    hsFiles = ["src/UHC/Agda/Builtins.hs"]
-                -- make sure pkg db dir exists
-                liftIO $ createDirectoryIfMissing True pkgDbDir
-
-
-                agdaBaseInstalling <- liftIO (try $ createDirectory (pkgDbDir </> "installing_" ++ pkgName))
-
-                case agdaBaseInstalling of
-                  Left e | isAlreadyExistsError e -> do
-                        -- check if install finished, else abort compilation
-                        agdaBaseInstalled <- liftIO (doesDirectoryExist (pkgDbDir </> "installed_" ++ pkgName))
-                        case agdaBaseInstalled of
-                            True  -> reportSLn "uhc" 10 $ "Agda base library " ++ pkgName ++ " is already installed."
-                            False -> internalError $ unlines
-                                [ "It looks like the agda base library is currently being installed by another Agda process."
-                                , "Aborting this compile run, please try it again after the other Agda process finished."
-                                , "You can also try deleting the directory \""
-                                    ++ (pkgDbDir </> "installing_" ++ pkgName) ++ "\""
-                                    ++ ", to force reinstallation of the agda base library."
-                                ]
-                  Left _ | otherwise -> __IMPOSSIBLE__
-                  Right _ -> do
-                      reportSLn "uhc" 10 $ "Agda base library " ++ pkgName ++ " missing, installing into package db at " ++ pkgDbDir ++ "."
-
-                      -- UHC requires the source folder to be writable (see UHC bug #51)
-                      -- If Agda is installed system-wide or using Nix, the cabal data files
-                      -- will be readonly.
-                      -- As a work around, we always copy the sources to a temporary directory for the time being.
-                      -- liftIO $ setCurrentDirectory dataDir
-                      -- TODO we should at least use bracket or withTempDir.. functions here, but this is tricky because
-                      -- of the monad transformers.
-                      dir <- liftIO $ getTemporaryDirectory >>= \t -> createTempDirectory t "uhc-agda-base-src"
-                      liftIO $ copyDirContent srcDir dir
-                      when (os == "linux") (liftIO $ system ("chmod -R +w \"" ++ dir ++ "\"/*") >> return ())
-                      let hsFiles' = map (dir </>) hsFiles
-                      callUHC1 (  ["--odir=" ++ pkgDbDir ++""
-                                  , "--pkg-build=" ++ pkgName
-                                  , "--pkg-build-exposed=UHC.Agda.Builtins"
-                                  , "--pkg-expose=base-3.0.0.0"
-                                  ] ++ hsFiles')
-                      liftIO $ removeDirectoryRecursive dir
-                        -- liftIO $ setCurrentDirectory pwd
-                      liftIO $ createDirectory (pkgDbDir </> "installed_" ++ pkgName)
-        ExitFailure _ -> internalError $ unlines
-            [ "Agda couldn't find the UHC user package directory."
-            ]
   where copyDirContent :: FilePath -> FilePath -> IO ()
         copyDirContent src dest = do
             createDirectoryIfMissing True dest
@@ -135,17 +84,21 @@ installUHCAgdaBase = do
                     True  -> copyDirContent (src </> x) (dest </> x)
                     False -> copyFile (src </> x) (dest </> x)
               ) chlds
+
 -- | Compile an interface into an executable using UHC
 compilerMain :: Interface -> TCM ()
 compilerMain inter = do
+#if __GLASGOW_HASKELL__ < 706
+    _ <- internalError "UHC backend requires GHC 7.6 or newer."
+#endif
     when (not uhcBackendEnabled) $ internalError "Agda has been built without UHC support."
     -- TODO do proper check for uhc existance
     let uhc_exist = ExitSuccess
     case uhc_exist of
         ExitSuccess -> do
-            installUHCAgdaBase
+            outDir <- setUHCDir inter
 
-            setUHCDir inter
+            copyUHCAgdaBase outDir
             (modInfo, _) <- evalStateT (compileModule inter) M.empty
             main <- getMain inter
 
@@ -203,19 +156,19 @@ compileModule i = do
             modInfoCached <- case uptodate of
               True  -> do
                     lift $ reportSLn "" 5 $
-                        show moduleName ++ " : UHC backend interface file is up to date."
+                        show modNm ++ " : UHC backend interface file is up to date."
                     uif <- lift $ readModInfoFile uifFile
                     case uif of
                       Nothing -> do
                         lift $ reportSLn "" 5 $
-                            show moduleName ++ " : Could not read UHC interface file, will compile this module from scratch."
+                            show modNm ++ " : Could not read UHC interface file, will compile this module from scratch."
                         return Nothing
                       Just uif' -> do
                         -- now check if the versions inside modInfos match with the dep info
                         let deps = amiDepsVersion uif'
                         if depsMatch deps curModInfos then do
                           lift $ reportSLn "" 1 $
-                            show moduleName ++ " : module didn't change, skipping it."
+                            show modNm ++ " : module didn't change, skip compiling it."
                           return $ Just uif'
                         else
                           return Nothing
@@ -314,7 +267,7 @@ writeCoreFile f cmod = do
 
 -- | Change the current directory to UHC folder, create it if it doesn't already
 --   exist.
-setUHCDir :: Interface -> TCM ()
+setUHCDir :: Interface -> TCM FilePath
 setUHCDir mainI = do
     let tm = toTopLevelModuleName $ iModuleName mainI
     f <- findFile tm
@@ -324,6 +277,7 @@ setUHCDir mainI = do
     liftIO $ setCurrentDirectory compileDir
     liftIO $ createDirectoryIfMissing False "UHC"
     liftIO $ setCurrentDirectory $ compileDir </> "UHC"
+    return $ compileDir </> "UHC"
 
 -- | Create the UHC Core main file, which calls the Agda main function
 runUhcMain :: AModuleInfo -> HsName -> TCM ()
@@ -332,13 +286,17 @@ runUhcMain mainMod mainName = do
     let mmod = createMainModule mainMod mainName
     fp' <- writeCoreFile fp mmod
     -- TODO drop the RTS args as soon as we don't need the additional memory anymore
-    callUHC1 ["--output=" ++ (show $ last $ mnameToList $ amiModule mainMod), fp', "+RTS", "-K50m", "-RTS"]
+    callUHC1 ["--output=" ++ (show $ last $ mnameToList $ amiModule mainMod)
+             , "--pkg-hide-all", "--pkg-expose=uhcbase", "--pkg-expose=base"
+             , fp', "+RTS", "-K50m", "-RTS"]
 
 callUHC1 :: [String] -> TCM ()
 callUHC1 args = do
     uhcBin <- getUhcBin
     doCall <- optUHCCallUHC <$> commandLineOptions
-    when doCall (callCompiler uhcBin args)
+    if doCall
+    then callCompiler uhcBin args
+    else reportSLn "" 1 $ "NOT Calling: " ++ intercalate " " (uhcBin : args)
 
 getUhcBin :: TCM FilePath
 getUhcBin = fromMaybe ("uhc") . optUHCBin <$> commandLineOptions

@@ -14,7 +14,7 @@ data Keyword
         -- here for avoiding conflicts when merging master.
         | KwATP
         | KwPostulate | KwMutual | KwAbstract | KwPrivate | KwInstance
-        | KwOpen | KwImport | KwModule | KwPrimitive
+        | KwOpen | KwImport | KwModule | KwPrimitive | KwMacro
         | KwInfix | KwInfixL | KwInfixR | KwWith | KwRewrite
         | KwSet | KwProp | KwForall | KwRecord | KwConstructor | KwField
         | KwInductive | KwCoInductive
@@ -34,7 +34,7 @@ data Keyword
 
 layoutKeywords :: [Keyword]
 layoutKeywords =
-    [ KwLet, KwWhere, KwPostulate, KwMutual, KwAbstract, KwPrivate, KwInstance, KwPrimitive, KwField ]
+    [ KwLet, KwWhere, KwPostulate, KwMutual, KwAbstract, KwPrivate, KwInstance, KwMacro, KwPrimitive, KwField ]
 
 data Symbol
         = SymDot | SymSemi | SymVirtualSemi | SymBar
