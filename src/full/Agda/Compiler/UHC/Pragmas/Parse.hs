@@ -26,7 +26,7 @@ import Agda.Compiler.UHC.Bridge as CA
 #include "undefined.h"
 import Agda.Utils.Impossible
 
--- | Parse a COMPILED_CORE_DATA specification.
+-- | Parse a COMPILED_DATA_UHC specification.
 parseCoreData :: MonadTCM m => String -> [String] -> m (CoreType, [CoreConstr])
 parseCoreData dt css = do
   let mgcTys = getMagicTypes
@@ -47,9 +47,9 @@ parseCoreData dt css = do
         parseNormalConstr dtCrNm cs
             | isMagic cs = typeError $
                 GenericError $ "Magic constructor " ++ (drop 2 $ init $ init cs) ++ " can only be used for magic datatypes."
-            | otherwise = let dtCrNm' = fromMaybe __IMPOSSIBLE__ dtCrNm
+            | otherwise = let dtCrNmAux = fromMaybe __IMPOSSIBLE__ dtCrNm
                            -- tag gets assigned after we have parsed all ctors
-                           in return $ CCNormal dtCrNm' (mkHsName1 cs) __IMPOSSIBLE__
+                           in return $ CCNormal dtCrNmAux (mkHsName1 cs) __IMPOSSIBLE__
 
         parseMagicConstr :: MonadTCM m => MagicName -> MagicConstrInfo -> String ->  m CoreConstr
         parseMagicConstr dtMgcNm conMp cs
@@ -63,7 +63,7 @@ parseCoreData dt css = do
         ccOrd (CCNormal dtNm1 ctNm1 _) (CCNormal dtNm2 ctNm2 _) | dtNm1 == dtNm2 = compare ctNm1 ctNm2
         ccOrd _ _ = __IMPOSSIBLE__
 
--- | Parse a COMPILED_CORE expression.
+-- | Parse a COMPILED_UHC expression.
 parseCoreExpr :: String -> Either String CoreExpr
 #ifdef UHC_BACKEND
 parseCoreExpr str = either Left (const $ Right str) (coreExprToCExpr str)
