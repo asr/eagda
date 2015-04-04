@@ -12,6 +12,7 @@
 
 module Agda.TypeChecking.Rules.Term where
 
+import Control.Arrow ((&&&), (***), first, second)
 import Control.Applicative
 import Control.Monad.Trans
 import Control.Monad.Reader
@@ -175,11 +176,11 @@ leqType_ t t' = workOnTypes $ leqType t t'
 -- | Force a type to be a Pi. Instantiates if necessary. The 'Hiding' is only
 --   used when instantiating a meta variable.
 
-forcePi :: Hiding -> String -> Type -> TCM (Type, Constraints)
+forcePi :: Hiding -> String -> Type -> TCM Type
 forcePi h name (El s t) =
     do  t' <- reduce t
         case t' of
-            Pi _ _      -> return (El s t', [])
+            Pi _ _      -> return $ El s t'
             _           -> do
                 sa <- newSortMeta
                 sb <- newSortMeta
@@ -187,12 +188,12 @@ forcePi h name (El s t) =
 
                 a <- newTypeMeta sa
                 x <- freshName_ name
-                let arg = Arg h Relevant a
+                let arg = setHiding h $ defaultDom a
                 b <- addCtx x arg $ newTypeMeta sb
                 let ty = El s' $ Pi arg (Abs (show x) b)
-                cs <- equalType (El s t') ty
+                equalType (El s t') ty
                 ty' <- reduce ty
-                return (ty', cs)
+                return ty'
 -}
 
 ---------------------------------------------------------------------------
@@ -958,9 +959,23 @@ checkApplication hd args e t = do
     -- Subcase: macro
     A.Macro x -> do
       -- First go: no parameters
-      let unq = A.App (A.ExprRange $ fuseRange x args) (A.Unquote A.exprNoRange) . defaultNamedArg
+      TelV tel _ <- telView . defType =<< getConstInfo x
+      let visibleArgs = length [ arg | arg <- telToList tel, getHiding arg == NotHidden ]
+          splitVisible 0 args = ([], args)
+          splitVisible n []   = ([], [])
+          splitVisible n (arg : args) = first (arg :) $ splitVisible n' args
+            where
+              n' | getHiding arg == NotHidden = n - 1
+                 | otherwise                  = n
+          (quotedArgs, otherArgs) = splitVisible visibleArgs args
+          unq = A.App (A.ExprRange $ fuseRange x args) (A.Unquote A.exprNoRange) . defaultNamedArg
           q e = A.App (A.ExprRange (getRange e)) (A.QuoteTerm A.exprNoRange) (defaultNamedArg e)
-          desugared = unq $ unAppView $ Application (A.Def x) $ (map . fmap . fmap) q args
+          desugared = A.app (unq $ unAppView $ Application (A.Def x) $ (map . fmap . fmap) q quotedArgs) otherArgs
+      unless (length quotedArgs == visibleArgs) $ do
+        err <- fsep $ pwords "The macro" ++ [prettyTCM x] ++
+                      pwords ("expects " ++ show visibleArgs ++
+                              " arguments, but has been given only " ++ show (length quotedArgs))
+        typeError $ GenericError $ show err
       checkExpr desugared t
 
     -- Subcase: unquote
@@ -1451,7 +1466,7 @@ checkArguments exh expandIFS r args0@(arg@(Arg info e) : args) t0 t1 =
               -- c) We inserted implicits, but did not find his one.
               | otherwise = lift $ typeError $ WrongNamedArgument arg
 
-        -- (t0', cs) <- forcePi h (name e) t0
+        -- t0' <- lift $ forcePi (getHiding info) (maybe "_" rangedThing $ nameOf e) t0'
         case ignoreSharing $ unEl t0' of
           Pi (Dom info' a) b
             | getHiding info == getHiding info'
