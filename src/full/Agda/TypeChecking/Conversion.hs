@@ -1,7 +1,6 @@
-{-# LANGUAGE CPP                  #-}
-{-# LANGUAGE FlexibleInstances    #-}
-{-# LANGUAGE PatternGuards        #-}
-{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE CPP               #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE PatternGuards     #-}
 
 module Agda.TypeChecking.Conversion where
 
@@ -178,7 +177,7 @@ compareTerm cmp a u v = do
         ]
       ifM (isInstantiatedMeta x) patternViolation {-else-} $ do
         assignE dir x es v $ compareTermDir dir a
-      instantiate u
+      _ <- instantiate u
       -- () <- seq u' $ return ()
       reportSLn "tc.conv.term.shortcut" 50 $
         "shortcut successful\n  result: " ++ show u

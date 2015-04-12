@@ -2,7 +2,6 @@
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
-{-# LANGUAGE TypeSynonymInstances       #-}
 {-# LANGUAGE UndecidableInstances       #-}
 
 {-| Primitive functions, such as addition on builtin integers.
@@ -652,6 +651,7 @@ primitiveFunctions = Map.fromList
   -- Other stuff
   , "primTrustMe"         |-> primTrustMe
   , "primQNameEquality"   |-> mkPrimFun2 ((==) :: Rel QName)
+  , "primQNameLess"       |-> mkPrimFun2 ((<) :: Rel QName)
   , "primShowQName"       |-> mkPrimFun1 (Str . show :: QName -> Str)
   ]
   where

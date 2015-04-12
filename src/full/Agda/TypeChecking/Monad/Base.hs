@@ -11,7 +11,6 @@
 {-# LANGUAGE NamedFieldPuns             #-}
 {-# LANGUAGE Rank2Types                 #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
-{-# LANGUAGE TypeSynonymInstances       #-}
 {-# LANGUAGE UndecidableInstances       #-}
 
 module Agda.TypeChecking.Monad.Base where
@@ -2171,8 +2170,8 @@ catchError_ m h = TCM $ \r e ->
 
 finally_ :: TCM a -> TCM a -> TCM a
 finally_ m f = do
-  m `catchError_` \err -> do
-    f
+  _ <- catchError_ m $ \err -> do
+    _ <- f
     throwError err
   f
 

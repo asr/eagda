@@ -676,7 +676,7 @@ parsePragmaOptions argv opts = do
   ps <- getOptSimple argv pragmaOptions
           (\s _ -> throwError $ "Bad option in pragma: " ++ s)
           (optPragmaOptions opts)
-  checkOpts (opts { optPragmaOptions = ps })
+  _ <- checkOpts (opts { optPragmaOptions = ps })
   return ps
 
 -- | Parse options for a plugin.

@@ -1,11 +1,10 @@
-{-# LANGUAGE CPP                    #-}
+{-# LANGUAGE CPP #-}  -- GHC 7.4.2 requires this indentation. See Issue 1460.
 {-# LANGUAGE FlexibleContexts       #-}
 {-# LANGUAGE FlexibleInstances      #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE MultiParamTypeClasses  #-}
 {-# LANGUAGE ScopedTypeVariables    #-}
 {-# LANGUAGE TupleSections          #-}
-{-# LANGUAGE TypeSynonymInstances   #-}
 {-# LANGUAGE UndecidableInstances   #-}
 
 {-|
@@ -862,7 +861,7 @@ reifyPatterns tel perm ps = evalStateT (reifyArgs ps) 0
         lift $ A.VarP <$> nameOfBV (size tel - 1 - j)
       I.DotP v -> do
         t <- lift $ reify v
-        tick
+        _ <- tick
         let vars = Set.map show (dotVars t)
             t'   = if Set.member "()" vars then underscore else t
         return $ A.DotP patNoRange t'
