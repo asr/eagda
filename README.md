@@ -8,6 +8,12 @@ Description
 
 We have extended the development version of Agda in order to handle a
 new built-in ATP-pragma.
+=======
+* [Prerequisites](#prerequisites)
+* [Installing Agda](#installing-agda)
+* [Configuring the Emacs mode](#configuring-the-emacs-mode)
+* [Installing Emacs under Windows](#installing-emacs-under-windows)
+>>>>>>> upstream/master
 
 This version of Agda is used for reasoning about functional programs
 by combining interactive and automatic proofs (see

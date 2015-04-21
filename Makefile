@@ -20,8 +20,12 @@ AGDA_TESTS_OPTIONS ?=-i -j $(shell getconf _NPROCESSORS_ONLN)
 # Known failing tests which are disabled for some reason.
 # (DISABLED_TESTS uses posix regex syntax)
 # MAlonzo/FlexibleInterpreter see issue 1414
-DISABLED_TESTS="(.*MAlonzo.*FlexibleInterpreter)"
+DISABLED_TESTS=(.*MAlonzo.*FlexibleInterpreter)
 
+# The Exec tests using the standard library are horribly
+# slow at the moment (1min or more per test case).
+# Disable them by default for now.
+DISABLED_TESTS:=$(DISABLED_TESTS)|(Exec/.*/with-stdlib)
 ## Default target #########################################################
 
 .PHONY : default
@@ -95,7 +99,9 @@ TAGS :
 quick : install-O0-bin quicktest
 
 .PHONY : test
-test : check-whitespace succeed fail interaction interactive latex-test examples library-test lib-succeed compiler-test epic-test api-test tests benchmark-without-logs exec-test
+# We don't run the `epic-test` because the Epic backend has been
+# disabled. See Issue 1481.
+test : check-whitespace succeed fail interaction interactive latex-test examples library-test lib-succeed compiler-test api-test tests benchmark-without-logs exec-test
 
 .PHONY : quicktest
 quicktest : succeed fail
@@ -193,6 +199,7 @@ lib-succeed :
 	@echo "======================================================================"
 	@$(MAKE) -C test/$@
 
+# The Epic backend has been disabled. See Issue 1481.
 .PHONY : epic-test
 epic-test :
 	@echo "======================================================================"
@@ -205,10 +212,11 @@ exec-test :
 	@echo "======================================================================"
 	@echo "======================== Compiler/exec tests ========================="
 	@echo "======================================================================"
-        # Install MAlonzo ffi lib for tests.
+	# Install MAlonzo ffi lib for tests.
 	@$(CABAL_CMD) install test/agda-tests-ffi.cabal
+	@$(CABAL_CMD) install std-lib/ffi/agda-lib-ffi.cabal
 	@AGDA_BIN=$(AGDA_BIN) $(AGDA_TESTS_BIN) --regex-exclude \
-                              $(DISABLED_TESTS) $(AGDA_TESTS_OPTIONS)
+                              '$(DISABLED_TESTS)' $(AGDA_TESTS_OPTIONS)
 
 .PHONY : api-test
 api-test :
