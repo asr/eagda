@@ -431,9 +431,14 @@ instance ToAbstract OldName A.QName where
   toAbstract (OldName x) = do
     rx <- resolveName (C.QName x)
     case rx of
-      DefinedName _ d -> return $ anameName d
-      _               -> __IMPOSSIBLE__
-        -- error $ show x ++ " - " ++ show rx
+      DefinedName _ d     -> return $ anameName d
+      -- We can get the cases below for DISPLAY pragmas
+      ConstructorName (d : _) -> return $ anameName d   -- We'll throw out this one, so it doesn't matter which one we pick
+      ConstructorName []      -> __IMPOSSIBLE__
+      FieldName d             -> return $ anameName d
+      PatternSynResName d     -> return $ anameName d
+      VarName x               -> typeError $ GenericError $ "Not a defined name: " ++ show x
+      UnknownName             -> typeError $ GenericError $ "Not in scope: " ++ show x
 
 newtype NewModuleName      = NewModuleName      C.Name
 newtype NewModuleQName     = NewModuleQName     C.QName
@@ -1464,6 +1469,39 @@ instance ToAbstract C.Pragma [A.Pragma] where
          e <- showA e
          genericError $ "Pragma ETA: expected identifier, " ++
            "but found expression " ++ e
+    toAbstract (C.DisplayPragma _ lhs rhs) = withLocalVars $ do
+      let err = genericError "DISPLAY pragma left-hand side must have form 'f e1 .. en'"
+          getHead (C.IdentP x)          = return x
+          getHead (C.RawAppP _ (p : _)) = getHead p
+          getHead _                     = err
+
+          setHead x (C.IdentP _) = C.IdentP (C.QName x)
+          setHead x (C.RawAppP r (p : ps)) = C.RawAppP r (setHead x p : ps)
+          setHead x _ = __IMPOSSIBLE__
+
+      hd <- getHead lhs
+      let top  = C.unqualify hd
+          lhs' = setHead top lhs
+
+      hd <- do
+        qx <- resolveName' allKindsOfNames Nothing hd
+        case qx of
+          VarName x'          -> return $ A.qnameFromList [x']
+          DefinedName _ d     -> return $ anameName d
+          FieldName     d     -> return $ anameName d
+          ConstructorName [d] -> return $ anameName d
+          ConstructorName ds  -> genericError $ "Ambiguous constructor " ++ show hd ++ ": " ++ show (map anameName ds)
+          UnknownName         -> notInScope hd
+          PatternSynResName d -> return $ anameName d
+
+      lhs <- toAbstract $ LeftHandSide top lhs' []
+      (f, ps) <-
+        case lhs of
+          A.LHS _ (A.LHSHead _ ps) [] -> return (hd, ps)
+          _ -> err
+      rhs <- toAbstract rhs
+      return [A.DisplayPragma f ps rhs]
+
     -- Termination checking pragmes are handled by the nicifier
     toAbstract C.TerminationCheckPragma{} = __IMPOSSIBLE__
     toAbstract C.CatchallPragma{}         = __IMPOSSIBLE__
