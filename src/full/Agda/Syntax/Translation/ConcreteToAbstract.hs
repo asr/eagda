@@ -48,6 +48,7 @@ import Agda.Syntax.Concrete.Generic
 import Agda.Syntax.Concrete.Operators
 import Agda.Syntax.Abstract as A
 import Agda.Syntax.Abstract.Pretty
+import qualified Agda.Syntax.Internal as I
 import Agda.Syntax.Position
 import Agda.Syntax.Literal
 import Agda.Syntax.Common hiding (Arg, Dom, NamedArg, ArgInfo)
@@ -70,6 +71,7 @@ import Agda.TypeChecking.Monad.State
 import Agda.TypeChecking.Monad.MetaVars (registerInteractionPoint)
 import Agda.TypeChecking.Monad.Options
 import Agda.TypeChecking.Monad.Env (insideDotPattern, isInsideDotPattern)
+import Agda.TypeChecking.Rules.Builtin (isUntypedBuiltin, bindUntypedBuiltin)
 
 import Agda.Interaction.FindFile (checkModuleName)
 -- import Agda.Interaction.Imports  -- for type-checking in ghci
@@ -590,6 +592,15 @@ instance ToAbstract C.Expr A.Expr where
       Ident x -> toAbstract (OldQName x Nothing)
 
   -- Literals
+      C.Lit l@(LitInt r n) -> do
+        let builtin | n < 0     = Just <$> getBuiltin builtinFromNeg    -- negative literals are only allowed if FROMNEG is defined
+                    | otherwise = getBuiltin' builtinFromNat
+            l'   = LitInt r (abs n)
+            info = ExprRange r
+        conv <- builtin
+        case conv of
+          Just (I.Def q _) -> return $ A.App info (A.Def q) $ defaultNamedArg (A.Lit l')
+          _                -> return $ A.Lit l
       C.Lit l -> return $ A.Lit l
 
   -- Meta variables
@@ -1287,13 +1298,13 @@ instance ToAbstract NiceDeclaration A.Declaration where
             }
       return [ A.Import minfo m ]
 
-    NiceUnquoteDecl r fx p a tc x e -> do
+    NiceUnquoteDecl r fx p i a tc x e -> do
       y <- freshAbstractQName fx x
       bindName p QuotableName x y
       e <- toAbstract e
       rebindName p DefName x y
       let mi = MutualInfo tc r
-      return [A.UnquoteDecl mi (mkDefInfo x fx p a r) y e]
+      return [A.UnquoteDecl mi (mkDefInfoInstance x fx p a i NotMacroDef r) y e]
 
     NiceUnquoteDef r fx p a tc x e -> do
       y <- toAbstract (OldName x)
@@ -1439,6 +1450,9 @@ instance ToAbstract C.Pragma [A.Pragma] where
             A.Def x -> return x
             _       -> __IMPOSSIBLE__
         return [ A.StaticPragma y ]
+    toAbstract (C.BuiltinPragma _ b e) | isUntypedBuiltin b = do
+      bindUntypedBuiltin b =<< toAbstract e
+      return []
     toAbstract (C.BuiltinPragma _ b e) = do
       -- Andreas, 2015-02-14
       -- Some builtins cannot be given a valid Agda type,
