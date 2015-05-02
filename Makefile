@@ -26,6 +26,10 @@ DISABLED_TESTS=(.*MAlonzo.*FlexibleInterpreter)
 # slow at the moment (1min or more per test case).
 # Disable them by default for now.
 DISABLED_TESTS:=$(DISABLED_TESTS)|(Exec/.*/with-stdlib)
+
+# Disabled for now, until the UHC backend is a bit more stable.
+DISABLED_TESTS:=$(DISABLED_TESTS)|(Exec/UHC/.*)
+
 ## Default target #########################################################
 
 .PHONY : default
@@ -273,3 +277,19 @@ agda.tix: ./examples/agda.tix ./test/succeed/agda.tix ./test/compiler/agda.tix .
 hpc: hpc-build test agda.tix
 	hpc report --hpcdir=$(BUILD_DIR)/hpc/mix/Agda-$(VERSION) agda.tix
 	hpc markup --hpcdir=$(BUILD_DIR)/hpc/mix/Agda-$(VERSION) agda --destdir=hpc-report
+
+## Lines of Code ##########################################################
+
+agdalocfiles=$(shell find . \( \( -name '*.agda' -o -name '*.in' \) ! -name '.*' \) )
+
+# Agda files (tests) in this project
+
+agda-loc :
+	@wc $(agdalocfiles)
+
+# Source code of Agda
+
+loc :
+	make -C src/full loc
+
+# EOF
