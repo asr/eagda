@@ -1,11 +1,11 @@
-{-# LANGUAGE CPP #-} -- GHC 7.4.2 requires this indentation. See Issue 1460.
-{-# LANGUAGE FlexibleInstances          #-}
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE ImplicitParams             #-}
-{-# LANGUAGE NamedFieldPuns             #-}
-{-# LANGUAGE PatternGuards              #-}
-{-# LANGUAGE StandaloneDeriving         #-}
-{-# LANGUAGE TupleSections              #-}
+{-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TupleSections #-}
 
 {- Checking for Structural recursion
    Authors: Andreas Abel, Nils Anders Danielsson, Ulf Norell,
@@ -1029,8 +1029,12 @@ compareArgs es = do
   cutoff <- terGetCutOff
   let ?cutoff = cutoff
   let guardedness = decr $ projsCaller - projsCallee
-  liftTCM $ reportSLn "term.guardedness" 30 $
-    "compareArgs: guardedness of call: " ++ show guardedness
+  liftTCM $ reportSDoc "term.guardedness" 30 $ sep
+    [ text "compareArgs:"
+    , nest 2 $ text $ "projsCaller = " ++ show projsCaller
+    , nest 2 $ text $ "projsCallee = " ++ show projsCallee
+    , nest 2 $ text $ "guardedness of call: " ++ show guardedness
+    ]
   return $ addGuardedness guardedness (size es) (size pats) matrix
 
 -- | Traverse patterns from left to right.

@@ -1,10 +1,10 @@
-{-# LANGUAGE CPP #-} -- GHC 7.4.2 requires this indentation. See Issue 1460.
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE DeriveFunctor      #-}
-{-# LANGUAGE FlexibleInstances  #-}
-{-# LANGUAGE PatternGuards      #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE TupleSections      #-}
+{-# LANGUAGE TupleSections #-}
 
 #if __GLASGOW_HASKELL__ <= 708
 {-# LANGUAGE OverlappingInstances #-}
@@ -60,6 +60,10 @@ class Apply t where
   apply t args = applyE t $ map Apply args
   applyE t es  = apply  t $ map argFromElim es
     -- precondition: all @es@ are @Apply@s
+
+-- | Apply to a single argument.
+apply1 :: Apply t => t -> Term -> t
+apply1 t u = apply t [ defaultArg u ]
 
 instance Apply Term where
   applyE m [] = m
@@ -298,7 +302,7 @@ instance Apply DisplayTerm where
   apply (DTerm v)          args = DTerm $ apply v args
   apply (DDot v)           args = DDot  $ apply v args
   apply (DCon c vs)        args = DCon c $ vs ++ map (fmap DTerm) args
-  apply (DDef c vs)        args = DDef c $ vs ++ map (fmap DTerm) args
+  apply (DDef c es)        args = DDef c $ es ++ map (Apply . fmap DTerm) args
   apply (DWithApp v ws args') args = DWithApp v ws $ args' ++ args
 
 #if __GLASGOW_HASKELL__ >= 710
@@ -708,7 +712,7 @@ instance Subst DisplayTerm where
   applySubst rho (DTerm v)        = DTerm $ applySubst rho v
   applySubst rho (DDot v)         = DDot  $ applySubst rho v
   applySubst rho (DCon c vs)      = DCon c $ applySubst rho vs
-  applySubst rho (DDef c vs)      = DDef c $ applySubst rho vs
+  applySubst rho (DDef c es)      = DDef c $ applySubst rho es
   applySubst rho (DWithApp v vs ws) = uncurry3 DWithApp $ applySubst rho (v, vs, ws)
 
 instance Subst a => Subst (Tele a) where

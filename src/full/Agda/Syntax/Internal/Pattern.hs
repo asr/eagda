@@ -1,10 +1,10 @@
-{-# LANGUAGE CPP #-} -- GHC 7.4.2 requires this indentation. See Issue 1460.
-{-# LANGUAGE FlexibleContexts       #-}
-{-# LANGUAGE FlexibleInstances      #-}
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE MultiParamTypeClasses  #-}
-{-# LANGUAGE TupleSections          #-}
-{-# LANGUAGE UndecidableInstances   #-}  -- because of func. deps.
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE UndecidableInstances #-}  -- because of func. deps.
 
 #if __GLASGOW_HASKELL__ <= 708
 {-# LANGUAGE OverlappingInstances #-}
@@ -99,9 +99,6 @@ instance LabelPatVars (Pattern' x) (Pattern' (i,x)) i where
       LitP l       -> return $ LitP l
       ProjP q      -> return $ ProjP q
     where next = do (x:xs) <- get; put xs; return x
-
--- | Type used in
-type DeBruijnPattern = Pattern' (Int, PatVarName)
 
 -- | Augment pattern variables with their de Bruijn index.
 {-# SPECIALIZE numberPatVars :: Permutation -> [NamedArg (Pattern' x)] -> [NamedArg (Pattern' (Int, x))] #-}

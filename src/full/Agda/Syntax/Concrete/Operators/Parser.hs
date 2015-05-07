@@ -1,9 +1,9 @@
-{-# LANGUAGE CPP #-} -- GHC 7.4.2 requires this indentation. See Issue 1460.
-{-# LANGUAGE DataKinds           #-}
-{-# LANGUAGE DeriveGeneric       #-}
-{-# LANGUAGE GADTs               #-}
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeFamilies        #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Agda.Syntax.Concrete.Operators.Parser where
 
@@ -24,11 +24,14 @@ import Agda.Syntax.Common hiding (Arg, Dom, NamedArg)
 import Agda.Syntax.Fixity
 import Agda.Syntax.Notation
 import Agda.Syntax.Concrete
+
 import Agda.TypeChecking.Monad.Base (TCErr(Exception))
+
 import qualified Agda.Utils.Parser.MemoisedCPS as MemoisedCPS
 import Agda.Utils.Parser.MemoisedCPS hiding (Parser, parse)
 import qualified Agda.Utils.Parser.MemoisedCPS as Parser
 import Agda.Utils.Monad
+import Agda.Utils.Pretty
 import Agda.Utils.Suffix
 import Agda.Utils.Tuple
 

@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP #-} -- GHC 7.4.2 requires this indentation. See Issue 1460.
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE PatternGuards #-}
 
 module Agda.TypeChecking.With where
@@ -11,7 +11,7 @@ import Data.List
 import Data.Maybe
 import qualified Data.Traversable as Trav (traverse)
 
-import Agda.Syntax.Common
+import Agda.Syntax.Common as Common
 import Agda.Syntax.Internal as I
 import Agda.Syntax.Internal.Pattern
 import qualified Agda.Syntax.Abstract as A
@@ -20,15 +20,17 @@ import Agda.Syntax.Info
 import Agda.Syntax.Position
 
 import Agda.TypeChecking.Monad
-import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Reduce
-import Agda.TypeChecking.Pretty
-import Agda.TypeChecking.Rules.LHS.Implicit
-import Agda.TypeChecking.Patterns.Abstract
-import Agda.TypeChecking.Abstract
 import Agda.TypeChecking.Datatypes
 import Agda.TypeChecking.EtaContract
+import Agda.TypeChecking.Patterns.Abstract
+import Agda.TypeChecking.Pretty
+import Agda.TypeChecking.Records
+import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
+
+import Agda.TypeChecking.Abstract
+import Agda.TypeChecking.Rules.LHS.Implicit
 
 import Agda.Utils.Functor
 import Agda.Utils.List
@@ -80,7 +82,7 @@ buildWithFunction aux t qs perm n1 n cs = mapM buildWithClause cs
       let (wps0, wps1) = genericSplitAt n wps
           ps0          = map defaultNamedArg wps0
       rhs <- buildRHS rhs
-      (ps1, ps2)  <- genericSplitAt n1 <$> stripWithClausePatterns t qs perm ps
+      (ps1, ps2)  <- genericSplitAt n1 <$> stripWithClausePatterns aux t qs perm ps
       let result = A.Clause (A.SpineLHS i aux (ps1 ++ ps0 ++ ps2) wps1) rhs wh catchall
       reportSDoc "tc.with" 20 $ vcat
         [ text "buildWithClause returns" <+> prettyA result
@@ -93,29 +95,71 @@ buildWithFunction aux t qs perm n1 n cs = mapM buildWithClause cs
       mapM (A.spineToLhs <.> buildWithClause . A.lhsToSpine) cs
     buildRHS (A.RewriteRHS qes rhs wh) = flip (A.RewriteRHS qes) wh <$> buildRHS rhs
 
-{-| @stripWithClausePatterns t qs π ps = ps'@
+{-| @stripWithClausePatterns f t qs π ps = ps'@
 
-    @Δ@ - context bound by lhs of original function (not an argument)
+    @Δ@   - context bound by lhs of original function (not an argument)
 
-    @t@ - type of the original function
+    @f@   - name of with-function
 
-    @qs@ - internal patterns for original function
+    @t@   - type of the original function
 
-    @π@ - permutation taking @vars(qs)@ to @support(Δ)@
+    @qs@  - internal patterns for original function
 
-    @ps@ - patterns in with clause (eliminating type @t@)
+    @π@   - permutation taking @vars(qs)@ to @support(Δ)@
+
+    @ps@  - patterns in with clause (eliminating type @t@)
 
     @ps'@ - patterns for with function (presumably of type @Δ@)
+
+Example:
+@
+record Stream (A : Set) : Set where
+  coinductive
+  constructor delay
+  field       force : A × Stream A
+
+record SEq (s t : Stream A) : Set where
+  coinductive
+  field
+    ~force : let a , as = force s
+                 b , bs = force t
+             in  a ≡ b × SEq as bs
+
+test : (s : Nat × Stream Nat) (t : Stream Nat) → SEq (delay s) t → SEq t (delay s)
+~force (test (a     , as) t p) with force t
+~force (test (suc n , as) t p) | b , bs = {!!}
+
+With function:
+
+  f : (t : Stream Nat) (w : Nat × Stream Nat) (a : Nat) (as : Stream Nat)
+      (p : SEq (delay (a , as)) t) → (fst w ≡ a) × SEq (snd w) as
+
+  Δ  = t a as p   -- reorder to bring with-relevant (= needed) vars first
+  π  = a as t p → Δ
+  qs = (a     , as) t p ~force
+  ps = (suc n , as) t p ~force
+  ps' = (suc n) as t p
+
+Resulting with-function clause is:
+
+  f t (b , bs) (suc n) as t p
+
+Note: stripWithClausePatterns factors ps through qs, thus
+
+  ps = qs[ps']
+
+where [..] is to be understood as substitution.
+The projection patterns have vanished from ps' (as they are already in qs).
+@
 -}
--- TODO: this does not work for varying arity or copatterns.
--- Need to do s.th. like in Split.hs with ProblemRest etc.
 stripWithClausePatterns
-  :: Type                       -- ^ @t@
+  :: QName                      -- ^ @f@
+  -> Type                       -- ^ @t@
   -> [I.NamedArg Pattern]       -- ^ @qs@
   -> Permutation                -- ^ @π@
   -> [A.NamedArg A.Pattern]     -- ^ @ps@
   -> TCM [A.NamedArg A.Pattern] -- ^ @ps'@
-stripWithClausePatterns t qs perm ps = do
+stripWithClausePatterns f t qs perm ps = do
   -- Andreas, 2014-03-05 expand away pattern synoyms (issue 1074)
   ps <- expandPatternSynonyms ps
   psi <- insertImplicitPatternsT ExpandLast ps t
@@ -125,7 +169,7 @@ stripWithClausePatterns t qs perm ps = do
     , nest 2 $ text "psi = " <+> fsep (punctuate comma $ map prettyA psi)
     , nest 2 $ text "qs  = " <+> fsep (punctuate comma $ map (prettyTCM . namedArg) qs)
     ]
-  ps' <- strip t psi qs
+  ps' <- strip (Def f []) t psi $ numberPatVars perm qs
   let psp = permute perm ps'
   reportSDoc "tc.with.strip" 10 $ vcat
     [ nest 2 $ text "ps' = " <+> fsep (punctuate comma $ map prettyA ps')
@@ -151,15 +195,21 @@ stripWithClausePatterns t qs perm ps = do
   return psp
   where
 
-    strip :: Type -> [A.NamedArg A.Pattern] -> [I.NamedArg Pattern] -> TCM [A.NamedArg A.Pattern]
+    strip
+      :: Term                         -- ^ Self.
+      -> Type                         -- ^ The type to be eliminated.
+      -> [A.NamedArg A.Pattern]       -- ^ With-clause patterns.
+      -> [I.NamedArg DeBruijnPattern] -- ^ Parent-clause patterns with de Bruijn indices relative to Δ.
+      -> TCM [A.NamedArg A.Pattern]   -- ^ With-clause patterns decomposed by parent-clause patterns.
+
     -- Case: out of with-clause patterns.
-    strip _ []      (_ : _) =
+    strip _ _ []      (_ : _) =
       typeError $ GenericError $ "Too few arguments given in with-clause"
 
     -- Case: out of parent-clause patterns.
     -- This is only ok if all remaining with-clause patterns
     -- are implicit patterns (we inserted too many).
-    strip _ ps      []      = do
+    strip _ _ ps      []      = do
       let implicit (A.ImplicitP{}) = True
           implicit (A.ConP ci _ _) = patImplicit ci
           implicit _               = False
@@ -169,7 +219,7 @@ stripWithClausePatterns t qs perm ps = do
 
     -- Case: both parent-clause pattern and with-clause pattern present.
     -- Make sure they match, and decompose into subpatterns.
-    strip t ps0@(p0 : ps) qs0@(q : qs) = do
+    strip self t ps0@(p0 : ps) qs0@(q : qs) = do
       p <- expandLitPattern p0
       reportSDoc "tc.with.strip" 15 $ vcat
         [ text "strip"
@@ -179,9 +229,14 @@ stripWithClausePatterns t qs perm ps = do
         , nest 2 $ text "t   =" <+> prettyTCM t
         ]
       case namedArg q of
-        ProjP{} -> typeError $ NotImplemented $ "with clauses with copatterns"
-        VarP _  -> do
-          ps <- intro1 t $ \ t -> strip t ps qs
+        ProjP d -> case A.isProjP p of
+          Just d' | d == d' -> do
+            t1 <- fromMaybe __IMPOSSIBLE__ <$> projectType t d
+            strip (self `applyE` [Proj d]) t1 ps qs
+          _ -> mismatch
+
+        VarP (i, _x)  -> do
+          ps <- intro1 t $ \ t -> strip (self `apply1` var i) t ps qs
           return $ p : ps
 
         DotP v  -> case namedArg p of
@@ -205,7 +260,7 @@ stripWithClausePatterns t qs perm ps = do
           where
             ok p = do
               t' <- piApply1 t v
-              (p :) <$> strip t' ps qs
+              (p :) <$> strip (self `apply1` v) t' ps qs
 
         ConP c ci qs' -> do
          reportSDoc "tc.with.strip" 60 $
@@ -216,7 +271,7 @@ stripWithClausePatterns t qs perm ps = do
           -- Andreas, 2013-03-21 if we encounter an implicit pattern in the with-clause
           -- that has been expanded in the parent clause, we expand it and restart
           A.ImplicitP _ | Just True <- conPRecord ci -> do
-            maybe __IMPOSSIBLE__ (\ p -> strip t (p : ps) qs0) =<<
+            maybe __IMPOSSIBLE__ (\ p -> strip self t (p : ps) qs0) =<<
               expandImplicitPattern' (unDom a) p
 
 
@@ -261,7 +316,7 @@ stripWithClausePatterns t qs perm ps = do
             psi' <- insertImplicitPatternsT ExpandLast (psi' ++ ps) t'
 
             -- Keep going
-            strip t' psi' (qs' ++ qs)
+            strip (self `apply1` v) t' psi' (qs' ++ qs)
 
           p@(A.PatternSynP pi' c' ps') -> do
              reportSDoc "impossible" 10 $
@@ -276,7 +331,8 @@ stripWithClausePatterns t qs perm ps = do
         LitP lit -> case namedArg p of
           A.LitP lit' | lit == lit' -> do
             (a, b) <- mustBePi t
-            strip (b `absApp` Lit lit) ps qs
+            let v = Lit lit
+            strip (self `apply1` v) (b `absApp` v) ps qs
 
           p@(A.PatternSynP pi' c' [ps']) -> do
              reportSDoc "impossible" 10 $
@@ -285,7 +341,8 @@ stripWithClausePatterns t qs perm ps = do
 
           _ -> mismatch
       where
-        mismatch = typeError $ WithClausePatternMismatch (namedArg p0) (namedArg q)
+        mismatch = typeError $
+          WithClausePatternMismatch (namedArg p0) (snd <$> namedArg q)
 
 -- | Construct the display form for a with function. It will display
 --   applications of the with function as applications to the original function.
@@ -314,7 +371,7 @@ withDisplayForm f aux delta1 delta2 n qs perm@(Perm m _) lhsPerm = do
   -- Build the rhs of the display form.
   wild <- freshNoName_ <&> \ x -> Def (qualify_ x) []
   let -- Convert the parent patterns to terms.
-      tqs0       = patsToTerms lhsPerm qs
+      tqs0       = patsToElims lhsPerm qs
       -- Build a substitution to replace the parent pattern vars
       -- by the pattern vars of the with-function.
       (ys0, ys1) = splitAt (size delta1) $ permute perm $ downFrom m
@@ -322,9 +379,9 @@ withDisplayForm f aux delta1 delta2 n qs perm@(Perm m _) lhsPerm = do
       rho        = sub top ys wild
       tqs        = applySubst rho tqs0
       -- Build the arguments to the with function.
-      vs         = map (fmap DTerm) topArgs ++ tqs
+      es         = map (Apply . fmap DTerm) topArgs ++ tqs
       withArgs   = map var $ take n $ downFrom $ size delta2 + n
-      dt         = DWithApp (DDef f vs) (map DTerm withArgs) []
+      dt         = DWithApp (DDef f es) (map DTerm withArgs) []
 
   -- Build the lhs of the display form and finish.
   -- @var 0@ is the pattern variable (hole).
@@ -375,15 +432,23 @@ withDisplayForm f aux delta1 delta2 n qs perm@(Perm m _) lhsPerm = do
 -- Andreas, 2014-12-05 refactored using numberPatVars
 -- Andreas, 2013-02-28 modeled after Coverage/Match/buildMPatterns
 -- The permutation is the one of the original clause.
-patsToTerms :: Permutation -> [I.NamedArg Pattern] -> [I.Arg DisplayTerm]
-patsToTerms perm ps = toTerms $ numberPatVars perm ps
+patsToElims :: Permutation -> [I.NamedArg Pattern] -> [I.Elim' DisplayTerm]
+patsToElims perm ps = toElims $ numberPatVars perm ps
   where
+    toElims :: [I.NamedArg DeBruijnPattern] -> [I.Elim' DisplayTerm]
+    toElims = map $ toElim . fmap namedThing
+
+    toElim :: I.Arg DeBruijnPattern -> I.Elim' DisplayTerm
+    toElim (Common.Arg ai p) = case p of
+      ProjP d -> I.Proj d
+      p       -> I.Apply $ Common.Arg ai $ toTerm p
+
     toTerms :: [I.NamedArg DeBruijnPattern] -> [I.Arg DisplayTerm]
     toTerms = map $ fmap $ toTerm . namedThing
 
     toTerm :: DeBruijnPattern -> DisplayTerm
     toTerm p = case p of
-      ProjP d     -> __IMPOSSIBLE__ -- TODO: convert spine to non-spine ... DDef d . defaultArg
+      ProjP d     -> DDef d [] -- WRONG. TODO: convert spine to non-spine ... DDef d . defaultArg
       VarP (i, x) -> DTerm  $ var i
       DotP t      -> DDot   $ t
       ConP c _ ps -> DCon c $ toTerms ps

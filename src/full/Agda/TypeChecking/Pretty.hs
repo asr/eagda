@@ -1,6 +1,6 @@
-{-# LANGUAGE CPP #-} -- GHC 7.4.2 requires this indentation. See Issue 1460.
-{-# LANGUAGE FlexibleContexts     #-}
-{-# LANGUAGE FlexibleInstances    #-}
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 module Agda.TypeChecking.Pretty where
@@ -319,9 +319,16 @@ instance PrettyTCM Context where
   prettyTCM = prettyTCM . PrettyContext
 
 instance PrettyTCM Pattern where
-  prettyTCM = showPat
-    where
-      showPat (VarP x)      = text $ patVarNameToString x
+  prettyTCM = showPat' (text . patVarNameToString)
+
+instance PrettyTCM DeBruijnPattern where
+  prettyTCM = showPat' $ \ (i, x) -> text $ patVarNameToString x ++ "@" ++ show i
+
+-- | Show a pattern, given a method how to show pattern variables.
+showPat' :: (a -> TCM Doc) -> Pattern' a -> TCM Doc
+showPat' showVar = showPat
+  where
+      showPat (VarP x)      = showVar x
       showPat (DotP t)      = text $ ".(" ++ show t ++ ")"
       showPat (ConP c i ps) = (if b then braces else parens) $ prTy $
         prettyTCM c <+> fsep (map (showPat . namedArg) ps)
@@ -330,6 +337,10 @@ instance PrettyTCM Pattern where
         prTy d = caseMaybe (conPType i) d $ \ t -> d  <+> text ":" <+> prettyTCM t
       showPat (LitP l)      = text (show l)
       showPat (ProjP q)     = text (show q)
+
+instance PrettyTCM (Elim' DisplayTerm) where
+  prettyTCM (Apply v) = text "$" <+> prettyTCM (unArg v)
+  prettyTCM (Proj f)  = text "." <> prettyTCM f
 
 instance PrettyTCM (Elim' NLPat) where
   prettyTCM (Apply v) = text "$" <+> prettyTCM (unArg v)

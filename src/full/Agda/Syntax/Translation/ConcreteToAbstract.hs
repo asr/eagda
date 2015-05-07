@@ -1,12 +1,12 @@
-{-# LANGUAGE CPP #-}  -- GHC 7.4.2 requires this indentation. See Issue 1460.
-{-# LANGUAGE DoAndIfThenElse        #-}
-{-# LANGUAGE FlexibleInstances      #-}
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE DoAndIfThenElse #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE MultiParamTypeClasses  #-}
-{-# LANGUAGE PatternGuards          #-}
-{-# LANGUAGE ScopedTypeVariables    #-}
-{-# LANGUAGE TupleSections          #-}
-{-# LANGUAGE UndecidableInstances   #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 #if __GLASGOW_HASKELL__ <= 708
 {-# LANGUAGE OverlappingInstances #-}
@@ -949,7 +949,7 @@ instance ToAbstract (TopLevel [C.Declaration]) TopLevelInfo where
 -- | runs Syntax.Concrete.Definitions.niceDeclarations on main module
 niceDecls :: [C.Declaration] -> ScopeM [NiceDeclaration]
 niceDecls ds = case runNice $ niceDeclarations ds of
-  Left e   -> throwError $ Exception (getRange e) (show e)
+  Left e   -> throwError $ Exception (getRange e) $ pretty e
   Right ds -> return ds
 
 #if __GLASGOW_HASKELL__ >= 710

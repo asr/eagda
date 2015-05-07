@@ -1,6 +1,6 @@
-{-# LANGUAGE CPP #-} -- GHC 7.4.2 requires this indentation. See Issue 1460.
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DoAndIfThenElse #-}
-{-# LANGUAGE TupleSections   #-}
+{-# LANGUAGE TupleSections #-}
 
 module Agda.Interaction.MakeCase where
 
@@ -28,6 +28,7 @@ import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Irrelevance
 import Agda.TheTypeChecker
 
+import Agda.Interaction.Options
 import Agda.Interaction.BasicOps
 
 import Agda.Utils.Functor
@@ -164,18 +165,24 @@ makeCase hole rng s = withInteractionId hole $ do
   let vars = words s
   if null vars then do
     -- split result
-    (newPats, sc) <- fixTarget (clauseToSplitClause clause)
-    res <- splitResult f sc
-    scs <- case res of
-      Nothing  -> if newPats then return [sc] else
-        typeError $ GenericError $ "Cannot split on result here"
-      Just cov -> mapM (snd <.> fixTarget) $ splitClauses cov
+    (newPats, sc) <- fixTarget $ clauseToSplitClause clause
+    -- Andreas, 2015-05-05 If we introduced new function arguments
+    -- do not split on result.  This might be more what the user wants.
+    -- To split on result, he can then C-c C-c again.
+    scs <- if newPats then return [sc] else do
+      res <- splitResult f sc
+      case res of
+        Nothing  -> typeError $ GenericError $ "Cannot split on result here"
+        Just cov -> ifNotM (optCopatterns <$> pragmaOptions) failNoCop $ {-else-} do
+          mapM (snd <.> fixTarget) $ splitClauses cov
     (casectxt,) <$> mapM (makeAbstractClause f) scs
   else do
     -- split on variables
     vars <- parseVariables hole rng vars
     (casectxt,) <$> split f vars clause
   where
+  failNoCop = typeError $ GenericError $
+    "OPTION --copatterns needed to split on result here"
   split :: QName -> [Nat] -> Clause -> TCM [A.Clause]
   split f [] clause =
     (:[]) <$> makeAbstractClause f (clauseToSplitClause clause)

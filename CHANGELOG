@@ -12,6 +12,11 @@ Installation and infrastructure
 Language
 ========
 
+* _ is no longer a valid name for a definition.  The following fails now:
+  [Issue 1465]
+
+    postulate _ : Set
+
 * Typed bindings can now contain hiding information [Issue 1391].
   This means you can now write
 
@@ -86,12 +91,11 @@ Language
   name are in scope, and these notations do not all have the
   same fixity, then they get the default fixity.
 
-* Fixed bug with unquoteDecl not working in instance blocks [Issue 1491].
-
 Type checking
 =============
 
-* Functions of varying arity can now have with-clauses.  Example:
+* Functions of varying arity can now have with-clauses and use rewrite.
+  Example:
 
     NPred : Nat → Set
     NPred 0       = Bool
@@ -107,12 +111,74 @@ Type checking
     ... | true  = const false
     ... | false = allOdd n
 
+* Function defined by copattern matching can now have with-clauses
+  and use rewrite.  Example:
+
+    {-# OPTIONS --copatterns #-}
+
+    record Stream (A : Set) : Set where
+      coinductive
+      constructor delay
+      field
+        force : A × Stream A
+    open Stream
+
+    map : ∀{A B} → (A → B) → Stream A → Stream B
+    force (map f s) with force s
+    ... | a , as = f a , map f as
+
+    record Bisim {A B} (R : A → B → Set) (s : Stream A) (t : Stream B) : Set where
+      coinductive
+      constructor ~delay
+      field
+        ~force : let a , as = force s
+                     b , bs = force t
+                 in  R a b × Bisim R as bs
+    open Bisim
+
+    SEq : ∀{A} (s t : Stream A) → Set
+    SEq = Bisim (_≡_)
+
+    -- Slightly weird definition of symmetry to demonstrate rewrite.
+
+    ~sym' : ∀{A} {s t : Stream A} → SEq s t → SEq t s
+    ~force (~sym' {s = s} {t} p) with force s | force t | ~force p
+    ... | a , as | b , bs | r , q rewrite r = refl , ~sym' q
+
 
 Emacs mode
 ==========
 
 * The new menu option "Switch to another version of Agda" tries to do
   what it says.
+
+* Changed feature: Interactively split result.
+
+  [ This is as before: ]
+  Make-case (C-c C-c) with no variables given tries to split on the
+  result to introduce projection patterns.  The hole needs to be of
+  record type, of course.
+
+    test : {A B : Set} (a : A) (b : B) → A × B
+    test a b = ?
+
+  Result-splitting ? will produce the new clauses:
+
+    proj₁ (test a b) = ?
+    proj₂ (test a b) = ?
+
+  [ This has changed: ]
+  If hole is of function type, make-case will introduce only pattern
+  variables (as much as it can).
+
+    testFun : {A B : Set} (a : A) (b : B) → A × B
+    testFun = ?
+
+  Result-splitting ? will produce the new clause:
+
+    testFun a b = ?
+
+  A second invocation of make-case will then introduce projection patterns.
 
 Compiler backends
 =================
@@ -125,8 +191,11 @@ Epic
 Bug fixes
 =========
 
-* Issues fixed ( see https://code.google.com/p/agda/issues )
+* Fixed bug with unquoteDecl not working in instance blocks [Issue 1491].
+
+* Other issues fixed ( see https://code.google.com/p/agda/issues )
   1497
+  1500
 
 ------------------------------------------------------------------------
 -- Release notes for Agda version 2.4.2.2

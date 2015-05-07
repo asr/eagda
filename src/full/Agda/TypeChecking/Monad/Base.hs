@@ -1,17 +1,17 @@
-{-# LANGUAGE CPP #-} -- GHC 7.4.2 requires this indentation. See Issue 1460.
-{-# LANGUAGE DeriveDataTypeable         #-}
-{-# LANGUAGE DeriveFoldable             #-}
-{-# LANGUAGE DeriveFunctor              #-}
-{-# LANGUAGE DeriveTraversable          #-}
-{-# LANGUAGE ExistentialQuantification  #-}
-{-# LANGUAGE FlexibleContexts           #-}
-{-# LANGUAGE FlexibleInstances          #-}
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE DeriveFoldable #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveTraversable #-}
+{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE MultiParamTypeClasses      #-}
-{-# LANGUAGE NamedFieldPuns             #-}
-{-# LANGUAGE Rank2Types                 #-}
-{-# LANGUAGE ScopedTypeVariables        #-}
-{-# LANGUAGE UndecidableInstances       #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE Rank2Types #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Agda.TypeChecking.Monad.Base where
 
@@ -985,7 +985,7 @@ data DisplayTerm
     --   (possible in case the with-application is of function type).
   | DCon ConHead [Arg DisplayTerm]
     -- ^ @c vs@.
-  | DDef QName [Arg DisplayTerm]
+  | DDef QName [Elim' DisplayTerm]
     -- ^ @d vs@.
   | DDot Term
     -- ^ @.v@.
@@ -2053,7 +2053,7 @@ instance Error TypeError where
 -- | Type-checking errors.
 
 data TCErr = TypeError TCState (Closure TypeError)
-           | Exception Range String
+           | Exception Range Doc
            | IOException Range E.IOException
            | PatternErr  -- TCState -- ^ for pattern violations
            {- AbortAssign TCState -- ^ used to abort assignment to meta when there are instantiations -- UNUSED -}
@@ -2061,11 +2061,11 @@ data TCErr = TypeError TCState (Closure TypeError)
 
 instance Error TCErr where
     noMsg  = strMsg ""
-    strMsg = Exception noRange . strMsg
+    strMsg = Exception noRange . text . strMsg
 
 instance Show TCErr where
     show (TypeError _ e) = show (envRange $ clEnv e) ++ ": " ++ show (clValue e)
-    show (Exception r s) = show r ++ ": " ++ s
+    show (Exception r d) = show r ++ ": " ++ render d
     show (IOException r e) = show r ++ ": " ++ show e
     show PatternErr{}  = "Pattern violation (you shouldn't see this)"
     {- show (AbortAssign _) = "Abort assignment (you shouldn't see this)" -- UNUSED -}
