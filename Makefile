@@ -1,6 +1,8 @@
 # Top-level Makefile for Agda 2
 # Authors: Ulf Norell, Nils Anders Danielsson, Francesco Mazzoli
 
+SHELL=bash
+
 # Profiling verbosity for library-test
 PROFVERB=7
 
@@ -16,19 +18,6 @@ override CABAL_OPTS+=--builddir=$(BUILD_DIR)
 
 # Run in interactive and parallel mode by default
 AGDA_TESTS_OPTIONS ?=-i -j $(shell getconf _NPROCESSORS_ONLN)
-
-# Known failing tests which are disabled for some reason.
-# (DISABLED_TESTS uses posix regex syntax)
-# MAlonzo/FlexibleInterpreter see issue 1414
-DISABLED_TESTS=(.*MAlonzo.*FlexibleInterpreter)
-
-# The Exec tests using the standard library are horribly
-# slow at the moment (1min or more per test case).
-# Disable them by default for now.
-DISABLED_TESTS:=$(DISABLED_TESTS)|(Exec/.*/with-stdlib)
-
-# Disabled for now, until the UHC backend is a bit more stable.
-DISABLED_TESTS:=$(DISABLED_TESTS)|(Exec/UHC/.*)
 
 ## Default target #########################################################
 
@@ -216,12 +205,7 @@ exec-test :
 	@echo "======================================================================"
 	@echo "======================== Compiler/exec tests ========================="
 	@echo "======================================================================"
-	# Install MAlonzo ffi lib for tests.
-	@$(CABAL_CMD) install test/agda-tests-ffi.cabal
-	@$(CABAL_CMD) install std-lib/ffi/agda-lib-ffi.cabal
-	@AGDA_BIN=$(AGDA_BIN) AGDA_TESTS_PROPERLY_SETUP=YES \
-		$(AGDA_TESTS_BIN) --regex-exclude '$(DISABLED_TESTS)' \
-		$(AGDA_TESTS_OPTIONS)
+	@AGDA_BIN=$(AGDA_BIN) $(AGDA_TESTS_BIN) $(AGDA_TESTS_OPTIONS)
 
 .PHONY : api-test
 api-test :
