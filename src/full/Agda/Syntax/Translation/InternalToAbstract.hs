@@ -185,7 +185,7 @@ instance Reify DisplayTerm Expr where
 reifyDisplayForm :: QName -> I.Args -> TCM A.Expr -> TCM A.Expr
 reifyDisplayForm f vs fallback = do
   ifNotM displayFormsEnabled fallback $ {- else -} do
-  caseMaybeM (liftTCM $ displayForm f vs) fallback reify
+    caseMaybeM (liftTCM $ displayForm f vs) fallback reify
 
 -- | @reifyDisplayFormP@ tries to recursively
 --   rewrite a lhs with a display form.
@@ -325,40 +325,40 @@ instance Reify Term Expr where
 
 reifyTerm :: Bool -> Term -> TCM Expr
 reifyTerm expandAnonDefs0 v = do
-    -- Ulf 2014-07-10: Don't expand anonymous when display forms are disabled
-    -- (i.e. when we don't care about nice printing)
-    expandAnonDefs <- return expandAnonDefs0 `and2M` displayFormsEnabled
-    v <- unSpine <$> instantiate v
-    case v of
-      I.Var n es   -> do
-          let vs = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
-          x  <- liftTCM $ nameOfBV n `catchError` \_ -> freshName_ ("@" ++ show n)
-          reifyApp (A.Var x) vs
-      I.Def x es   -> do
+  -- Ulf 2014-07-10: Don't expand anonymous when display forms are disabled
+  -- (i.e. when we don't care about nice printing)
+  expandAnonDefs <- return expandAnonDefs0 `and2M` displayFormsEnabled
+  v <- unSpine <$> instantiate v
+  case v of
+    I.Var n es   -> do
         let vs = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
-        reifyDisplayForm x vs $ reifyDef expandAnonDefs x vs
-      I.Con c vs   -> do
-        let x = conName c
-        isR <- isGeneratedRecordConstructor x
-        case isR of
-          True -> do
-            showImp <- showImplicitArguments
-            let keep (a, v) = showImp || notHidden a
-            r  <- getConstructorData x
-            xs <- getRecordFieldNames r
-            vs <- map unArg <$> reifyIArgs vs
-            return $ A.Rec exprInfo $ map (Left . uncurry A.Assign . mapFst unArg) $ filter keep $ zip xs vs
-          False -> reifyDisplayForm x vs $ do
-            ci <- getConstInfo x
-            let Constructor{conPars = np} = theDef ci
-            -- if we are the the module that defines constructor x
-            -- then we have to drop at least the n module parameters
-            n  <- getDefFreeVars x
-            -- the number of parameters is greater (if the data decl has
-            -- extra parameters) or equal (if not) to n
-            when (n > np) __IMPOSSIBLE__
-            let h = A.Con (AmbQ [x])
-            if null vs then return h else do
+        x  <- liftTCM $ nameOfBV n `catchError` \_ -> freshName_ ("@" ++ show n)
+        reifyApp (A.Var x) vs
+    I.Def x es   -> do
+      let vs = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
+      reifyDisplayForm x vs $ reifyDef expandAnonDefs x vs
+    I.Con c vs   -> do
+      let x = conName c
+      isR <- isGeneratedRecordConstructor x
+      case isR of
+        True -> do
+          showImp <- showImplicitArguments
+          let keep (a, v) = showImp || notHidden a
+          r  <- getConstructorData x
+          xs <- getRecordFieldNames r
+          vs <- map unArg <$> reifyIArgs vs
+          return $ A.Rec exprInfo $ map (Left . uncurry A.Assign . mapFst unArg) $ filter keep $ zip xs vs
+        False -> reifyDisplayForm x vs $ do
+          ci <- getConstInfo x
+          let Constructor{conPars = np} = theDef ci
+          -- if we are the the module that defines constructor x
+          -- then we have to drop at least the n module parameters
+          n  <- getDefFreeVars x
+          -- the number of parameters is greater (if the data decl has
+          -- extra parameters) or equal (if not) to n
+          when (n > np) __IMPOSSIBLE__
+          let h = A.Con (AmbQ [x])
+          if null vs then return h else do
             es <- reifyIArgs vs
             -- Andreas, 2012-04-20: do not reify parameter arguments of constructor
             -- if the first regular constructor argument is hidden
@@ -397,83 +397,83 @@ reifyTerm expandAnonDefs0 v = do
                 ]
               napps h $ genericDrop (n - np) $ nameFirstIfHidden doms es
 -}
---      I.Lam info b | isAbsurdBody b -> return $ A.AbsurdLam exprInfo $ getHiding info
-      I.Lam info b    -> do
-        (x,e) <- reify b
-        info <- reify info
-        return $ A.Lam exprInfo (DomainFree info x) e
-        -- Andreas, 2011-04-07 we do not need relevance information at internal Lambda
-      I.Lit l        -> reify l
-      I.Level l      -> reify l
-      I.Pi a b       -> case b of
-          NoAbs _ b'
-            | notHidden a -> uncurry (A.Fun $ exprInfo) <$> reify (a, b')
-              -- Andreas, 2013-11-11 Hidden/Instance I.Pi must be A.Pi
-              -- since (a) the syntax {A} -> B or {{A}} -> B is not legal
-              -- and (b) the name of the binder might matter.
-              -- See issue 951 (a) and 952 (b).
-            | otherwise   -> mkPi b =<< reify a
-          b               -> mkPi b =<< do
-            ifM (domainFree a (absBody b))
-              {- then -} (Common.Arg <$> reify (domInfo a) <*> pure underscore)
-              {- else -} (reify a)
-        where
-          mkPi b (Common.Arg info a) = do
-            (x, b) <- reify b
-            return $ A.Pi exprInfo [TypedBindings noRange $ Common.Arg info (TBind noRange [pure x] a)] b
-          -- We can omit the domain type if it doesn't have any free variables
-          -- and it's mentioned in the target type.
-          domainFree a b = do
-            df <- asks envPrintDomainFreePi
-            return $ and [df, freeIn 0 b, VSet.null $ allVars $ freeVars a]
+--    I.Lam info b | isAbsurdBody b -> return $ A.AbsurdLam exprInfo $ getHiding info
+    I.Lam info b    -> do
+      (x,e) <- reify b
+      info <- reify info
+      return $ A.Lam exprInfo (DomainFree info x) e
+      -- Andreas, 2011-04-07 we do not need relevance information at internal Lambda
+    I.Lit l        -> reify l
+    I.Level l      -> reify l
+    I.Pi a b       -> case b of
+        NoAbs _ b'
+          | notHidden a -> uncurry (A.Fun $ exprInfo) <$> reify (a, b')
+            -- Andreas, 2013-11-11 Hidden/Instance I.Pi must be A.Pi
+            -- since (a) the syntax {A} -> B or {{A}} -> B is not legal
+            -- and (b) the name of the binder might matter.
+            -- See issue 951 (a) and 952 (b).
+          | otherwise   -> mkPi b =<< reify a
+        b               -> mkPi b =<< do
+          ifM (domainFree a (absBody b))
+            {- then -} (Common.Arg <$> reify (domInfo a) <*> pure underscore)
+            {- else -} (reify a)
+      where
+        mkPi b (Common.Arg info a) = do
+          (x, b) <- reify b
+          return $ A.Pi exprInfo [TypedBindings noRange $ Common.Arg info (TBind noRange [pure x] a)] b
+        -- We can omit the domain type if it doesn't have any free variables
+        -- and it's mentioned in the target type.
+        domainFree a b = do
+          df <- asks envPrintDomainFreePi
+          return $ and [df, freeIn 0 b, VSet.null $ allVars $ freeVars a]
 
-      I.Sort s     -> reify s
-      I.MetaV x es -> do
-        let vs = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
-        x' <- reify x
-        apps x' =<< reifyIArgs vs
-      I.DontCare v -> A.DontCare <$> reifyTerm expandAnonDefs v
-      I.Shared p   -> reifyTerm expandAnonDefs $ derefPtr p
-    where
-      -- Andreas, 2012-10-20  expand a copy in an anonymous module
-      -- to improve error messages.
-      -- Don't do this if we have just expanded into a display form,
-      -- otherwise we loop!
-      reifyDef :: Bool -> QName -> I.Args -> TCM Expr
-      reifyDef True x@(QName m name) vs | A.isAnonymousModuleName m = do
-        r <- reduceDefCopy x vs
-        case r of
-          YesReduction _ v -> do
-            reportSLn "reify.anon" 60 $ unlines
-              [ "reduction on defined ident. in anonymous module"
-              , "x = " ++ show x
-              , "v = " ++ show v
-              ]
-            reify v
-          NoReduction () -> do
-            reportSLn "reify.anon" 60 $ unlines
-              [ "no reduction on defined ident. in anonymous module"
-              , "x  = " ++ show x
-              , "vs = " ++ show vs
-              ]
-            reifyDef' x vs
-      reifyDef _ x vs = reifyDef' x vs
+    I.Sort s     -> reify s
+    I.MetaV x es -> do
+      let vs = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
+      x' <- reify x
+      apps x' =<< reifyIArgs vs
+    I.DontCare v -> A.DontCare <$> reifyTerm expandAnonDefs v
+    I.Shared p   -> reifyTerm expandAnonDefs $ derefPtr p
+  where
+    -- Andreas, 2012-10-20  expand a copy in an anonymous module
+    -- to improve error messages.
+    -- Don't do this if we have just expanded into a display form,
+    -- otherwise we loop!
+    reifyDef :: Bool -> QName -> I.Args -> TCM Expr
+    reifyDef True x@(QName m name) vs | A.isAnonymousModuleName m = do
+      r <- reduceDefCopy x vs
+      case r of
+        YesReduction _ v -> do
+          reportSLn "reify.anon" 60 $ unlines
+            [ "reduction on defined ident. in anonymous module"
+            , "x = " ++ show x
+            , "v = " ++ show v
+            ]
+          reify v
+        NoReduction () -> do
+          reportSLn "reify.anon" 60 $ unlines
+            [ "no reduction on defined ident. in anonymous module"
+            , "x  = " ++ show x
+            , "vs = " ++ show vs
+            ]
+          reifyDef' x vs
+    reifyDef _ x vs = reifyDef' x vs
 
-      reifyDef' :: QName -> I.Args -> TCM Expr
-      reifyDef' x@(QName _ name) vs = do
-        -- We should drop this many arguments from the local context.
-        n <- getDefFreeVars x
-        mdefn <- liftTCM $ (Just <$> getConstInfo x) `catchError` \_ -> return Nothing
-        -- check if we have an absurd lambda
-        let reifyAbsurdLambda cont =
-              case theDef <$> mdefn of
-                Just Function{ funCompiled = Just Fail, funClauses = [cl] }
-                  | isAbsurdLambdaName x -> do
-                    -- get hiding info from last pattern, which should be ()
-                    let h = getHiding $ last (clausePats cl)
-                    apps (A.AbsurdLam exprInfo h) =<< reifyIArgs vs
-                _ -> cont
-        reifyAbsurdLambda $ do
+    reifyDef' :: QName -> I.Args -> TCM Expr
+    reifyDef' x@(QName _ name) vs = do
+      -- We should drop this many arguments from the local context.
+      n <- getDefFreeVars x
+      mdefn <- liftTCM $ (Just <$> getConstInfo x) `catchError` \_ -> return Nothing
+      -- check if we have an absurd lambda
+      let reifyAbsurdLambda cont =
+            case theDef <$> mdefn of
+              Just Function{ funCompiled = Just Fail, funClauses = [cl] }
+                | isAbsurdLambdaName x -> do
+                  -- get hiding info from last pattern, which should be ()
+                  let h = getHiding $ last (clausePats cl)
+                  apps (A.AbsurdLam exprInfo h) =<< reifyIArgs vs
+              _ -> cont
+      reifyAbsurdLambda $ do
         (pad, vs :: [I.NamedArg Term]) <- do
           case mdefn of
             Nothing   -> return ([], map (fmap unnamed) $ genericDrop n vs)
@@ -522,14 +522,14 @@ reifyTerm expandAnonDefs0 v = do
            let apps = foldl' (\e a -> A.App exprInfo e (fmap unnamed a))
            napps (A.Def x `apps` pad) =<< reifyIArgs vs
 
-      reifyExtLam :: QName -> Int -> [I.Clause] -> [I.NamedArg Term] -> TCM Expr
-      reifyExtLam x n cls vs = do
-        reportSLn "reify.def" 10 $ "reifying extended lambda with definition: x = " ++ show x
-        -- drop lambda lifted arguments
-        cls <- mapM (reify . QNamed x . dropArgs n) $ cls
-        let cx    = nameConcrete $ qnameName x
-            dInfo = mkDefInfo cx noFixity' PublicAccess ConcreteDef (getRange x)
-        napps (A.ExtendedLam exprInfo dInfo x cls) =<< reifyIArgs vs
+    reifyExtLam :: QName -> Int -> [I.Clause] -> [I.NamedArg Term] -> TCM Expr
+    reifyExtLam x n cls vs = do
+      reportSLn "reify.def" 10 $ "reifying extended lambda with definition: x = " ++ show x
+      -- drop lambda lifted arguments
+      cls <- mapM (reify . QNamed x . dropArgs n) $ cls
+      let cx    = nameConcrete $ qnameName x
+          dInfo = mkDefInfo cx noFixity' PublicAccess ConcreteDef (getRange x)
+      napps (A.ExtendedLam exprInfo dInfo x cls) =<< reifyIArgs vs
 
 -- | @nameFirstIfHidden n (a1->...an->{x:a}->b) ({e} es) = {x = e} es@
 nameFirstIfHidden :: [I.Dom (ArgName, t)] -> [I.Arg a] -> [I.NamedArg a]
@@ -662,95 +662,95 @@ stripImplicits :: ([A.NamedArg A.Pattern], [A.Pattern]) ->
                   TCM ([A.NamedArg A.Pattern], [A.Pattern])
 stripImplicits (ps, wps) = do          -- v if show-implicit we don't need the names
   ifM showImplicitArguments (return (map (unnamed . namedThing <$>) ps, wps)) $ do
-  let vars = dotVars (ps, wps)
-  reportSLn "reify.implicit" 30 $ unlines
-    [ "stripping implicits"
-    , "  ps   = " ++ show ps
-    , "  wps  = " ++ show wps
-    , "  vars = " ++ show vars
-    ]
-  let allps       = ps ++ map defaultNamedArg wps
-      sps         = blankDots $ foldl (.) (strip Set.empty) (map rearrangeBinding $ Set.toList vars) $ allps
-      (ps', wps') = splitAt (length sps - length wps) sps
-  reportSLn "reify.implicit" 30 $ unlines
-    [ "  ps'  = " ++ show ps'
-    , "  wps' = " ++ show (map namedArg wps')
-    ]
-  return (ps', map namedArg wps')
-  where
-    argsVars = Set.unions . map argVars
-    argVars = patVars . namedArg
-    patVars p = case p of
-      A.VarP x      -> Set.singleton x
-      A.ConP _ _ ps -> argsVars ps
-      A.DefP _ _ ps -> Set.empty
-      A.DotP _ e    -> Set.empty
-      A.WildP _     -> Set.empty
-      A.AbsurdP _   -> Set.empty
-      A.LitP _      -> Set.empty
-      A.ImplicitP _ -> Set.empty
-      A.AsP _ _ p   -> patVars p
-      A.PatternSynP _ _ _ -> __IMPOSSIBLE__ -- Set.empty
+    let vars = dotVars (ps, wps)
+    reportSLn "reify.implicit" 30 $ unlines
+      [ "stripping implicits"
+      , "  ps   = " ++ show ps
+      , "  wps  = " ++ show wps
+      , "  vars = " ++ show vars
+      ]
+    let allps       = ps ++ map defaultNamedArg wps
+        sps         = blankDots $ foldl (.) (strip Set.empty) (map rearrangeBinding $ Set.toList vars) $ allps
+        (ps', wps') = splitAt (length sps - length wps) sps
+    reportSLn "reify.implicit" 30 $ unlines
+      [ "  ps'  = " ++ show ps'
+      , "  wps' = " ++ show (map namedArg wps')
+      ]
+    return (ps', map namedArg wps')
+    where
+      argsVars = Set.unions . map argVars
+      argVars = patVars . namedArg
+      patVars p = case p of
+        A.VarP x      -> Set.singleton x
+        A.ConP _ _ ps -> argsVars ps
+        A.DefP _ _ ps -> Set.empty
+        A.DotP _ e    -> Set.empty
+        A.WildP _     -> Set.empty
+        A.AbsurdP _   -> Set.empty
+        A.LitP _      -> Set.empty
+        A.ImplicitP _ -> Set.empty
+        A.AsP _ _ p   -> patVars p
+        A.PatternSynP _ _ _ -> __IMPOSSIBLE__ -- Set.empty
 
-    -- Replace dot variables by ._ if they use implicitly bound variables. This
-    -- is slightly nicer than making the implicts explicit.
-    blankDots ps = (map . fmap . fmap . fmap) blank ps
-      where
-        bound = argsVars ps
-        blank e | Set.null (Set.difference (dotVars e) bound) = e
-                | otherwise = A.Underscore emptyMetaInfo
+      -- Replace dot variables by ._ if they use implicitly bound variables. This
+      -- is slightly nicer than making the implicts explicit.
+      blankDots ps = (map . fmap . fmap . fmap) blank ps
+        where
+          bound = argsVars ps
+          blank e | Set.null (Set.difference (dotVars e) bound) = e
+                  | otherwise = A.Underscore emptyMetaInfo
 
-    -- Pick the "best" place to bind the variable. Best in this case
-    -- is the left-most explicit binding site. But, of course we can't
-    -- do this since binding site might be forced by a parent clause.
-    -- Why? Because the binding site we pick might not exist in the
-    -- generated with function if it corresponds to a dot pattern.
-    rearrangeBinding x ps = ps
+      -- Pick the "best" place to bind the variable. Best in this case
+      -- is the left-most explicit binding site. But, of course we can't
+      -- do this since binding site might be forced by a parent clause.
+      -- Why? Because the binding site we pick might not exist in the
+      -- generated with function if it corresponds to a dot pattern.
+      rearrangeBinding x ps = ps
 
-    strip dvs ps = stripArgs True ps
-      where
-        stripArgs _ [] = []
-        stripArgs fixedPos (a : as) =
-          case getHiding a of
-            Hidden   | canStrip a as -> stripArgs False as
-            Instance | canStrip a as -> stripArgs False as
-            _                        -> stripName fixedPos (stripArg a) :
-                                        stripArgs True as
+      strip dvs ps = stripArgs True ps
+        where
+          stripArgs _ [] = []
+          stripArgs fixedPos (a : as) =
+            case getHiding a of
+              Hidden   | canStrip a as -> stripArgs False as
+              Instance | canStrip a as -> stripArgs False as
+              _                        -> stripName fixedPos (stripArg a) :
+                                          stripArgs True as
 
-        stripName True  = fmap (unnamed . namedThing)
-        stripName False = id
+          stripName True  = fmap (unnamed . namedThing)
+          stripName False = id
 
-        canStrip a as = and
-          [ varOrDot p
-          , noInterestingBindings p
-          , all (flip canStrip []) $ takeWhile isUnnamedHidden as
-          ]
-          where p = namedArg a
+          canStrip a as = and
+            [ varOrDot p
+            , noInterestingBindings p
+            , all (flip canStrip []) $ takeWhile isUnnamedHidden as
+            ]
+            where p = namedArg a
 
-        isUnnamedHidden x = notVisible x && nameOf (unArg x) == Nothing
+          isUnnamedHidden x = notVisible x && nameOf (unArg x) == Nothing
 
-        stripArg a = fmap (fmap stripPat) a
+          stripArg a = fmap (fmap stripPat) a
 
-        stripPat p = case p of
-          A.VarP _      -> p
-          A.ConP i c ps -> A.ConP i c $ stripArgs True ps
-          A.DefP _ _ _  -> p
-          A.DotP _ e    -> p
-          A.WildP _     -> p
-          A.AbsurdP _   -> p
-          A.LitP _      -> p
-          A.ImplicitP _ -> p
-          A.AsP i x p   -> A.AsP i x $ stripPat p
-          A.PatternSynP _ _ _ -> __IMPOSSIBLE__ -- p
+          stripPat p = case p of
+            A.VarP _      -> p
+            A.ConP i c ps -> A.ConP i c $ stripArgs True ps
+            A.DefP _ _ _  -> p
+            A.DotP _ e    -> p
+            A.WildP _     -> p
+            A.AbsurdP _   -> p
+            A.LitP _      -> p
+            A.ImplicitP _ -> p
+            A.AsP i x p   -> A.AsP i x $ stripPat p
+            A.PatternSynP _ _ _ -> __IMPOSSIBLE__ -- p
 
-        noInterestingBindings p =
-          Set.null $ dvs `Set.intersection` patVars p
+          noInterestingBindings p =
+            Set.null $ dvs `Set.intersection` patVars p
 
-        varOrDot A.VarP{}      = True
-        varOrDot A.WildP{}     = True
-        varOrDot A.DotP{}      = True
-        varOrDot A.ImplicitP{} = True
-        varOrDot _             = False
+          varOrDot A.VarP{}      = True
+          varOrDot A.WildP{}     = True
+          varOrDot A.DotP{}      = True
+          varOrDot A.ImplicitP{} = True
+          varOrDot _             = False
 
 -- | @dotVars ps@ gives all the variables inside of dot patterns of @ps@
 --   It is only invoked for patternish things. (Ulf O-tone!)

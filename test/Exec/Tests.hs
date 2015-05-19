@@ -1,8 +1,9 @@
-{-# LANGUAGE CPP #-} -- GHC 7.4.2 requires this indentation. See Issue 1460.
-{-# LANGUAGE DoAndIfThenElse      #-}
-{-# LANGUAGE FlexibleInstances    #-}
-{-# LANGUAGE OverloadedStrings    #-}
-{-# LANGUAGE TypeSynonymInstances #-}
+-- GHC 7.4.2 requires this layout for the pragmas. See Issue 1460.
+{-# LANGUAGE CPP,
+             DoAndIfThenElse,
+             FlexibleInstances,
+             OverloadedStrings,
+             TypeSynonymInstances #-}
 
 module Exec.Tests where
 
@@ -19,7 +20,7 @@ import System.Process.Text as PT
 #if MIN_VERSION_process(1,2,3)
 import System.Process (callProcess, proc, readCreateProcess, CreateProcess (..))
 #else
-import System.Process (callProcess)
+import System.Process (callProcess, proc, createProcess, waitForProcess, CreateProcess (..))
 #endif
 
 
@@ -57,8 +58,10 @@ disabledTests =
   [ RFInclude "Exec/.*/with-stdlib"
 -- See issue 1414
   , RFInclude "Exec/MAlonzo/simple/FlexibleInterpreter"
--- Disabled for now, until the UHC backend is a bit more stable.
+-- Disable UHC backend tests if the backend is also disabled.
+#if !defined(UHC_BACKEND)
   , RFInclude "Exec/UHC/"
+#endif
   ]
 
 tests :: IO TestTree
@@ -149,7 +152,11 @@ withGhcLibs pkgDirs mkTree = do
             callProcess1 pkgDir "runhaskell" ["Setup.hs", "build"]
             callProcess1 pkgDir "runhaskell" ["Setup.hs", "install"]
         mkArgs :: (FilePath, FilePath) -> AgdaArgs
-        mkArgs (_, pkgDb) = ["--ghc-flag=-package-db=" ++ pkgDb]
+#if __GLASGOW_HASKELL__ > 704
+        mkArgs (_, pkgDb) = ["--ghc-flag=-no-user-package-db",   "--ghc-flag=-package-db=" ++ pkgDb]
+#else
+        mkArgs (_, pkgDb) = ["--ghc-flag=-no-user-package-conf", "--ghc-flag=-package-conf=" ++ pkgDb]
+#endif
         callProcess1 :: FilePath -> FilePath -> [String] -> IO ()
 #if MIN_VERSION_process(1,2,3)
         callProcess1 wd cmd args = readCreateProcess ((proc cmd args) {cwd = Just wd}) "" >> return ()
@@ -157,10 +164,12 @@ withGhcLibs pkgDirs mkTree = do
         -- trying to use process 1.2.3.0 with GHC 7.4 leads to cabal hell,
         -- so we really want to support older versions of process for the time being.
         callProcess1 wd cmd args = do
-            oldPwd <- getCurrentDirectory
-            setCurrentDirectory wd
-            callProcess cmd args
-            setCurrentDirectory oldPwd
+            -- note: the new process will inherit stdout/stdin/stderr from us,
+            -- and will spam the console a bit. This will make the UI a bit
+            -- ugly, but shouldn't cause any problems.
+            (_, _, _, pHandle) <- createProcess (proc cmd args) {cwd = Just wd}
+            ExitSuccess <- waitForProcess pHandle
+            return ()
 #endif
 
 agdaRunProgGoldenTest :: FilePath -- ^ path to the agda executable.
