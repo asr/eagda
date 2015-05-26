@@ -6,6 +6,14 @@ SHELL=bash
 # Profiling verbosity for library-test
 PROFVERB=7
 
+# The GHC version.
+GHC_VERSION=$(shell ghc --numeric-version)
+
+# Stack size for library-test [Issue 1521].
+ifeq ($(GHC_VERSION), 7.4.2)
+STACK_SIZE=-K16M
+endif
+
 # Various paths and commands
 
 TOP=.
@@ -94,7 +102,7 @@ quick : install-O0-bin quicktest
 .PHONY : test
 # We don't run the `epic-test` because the Epic backend has been
 # disabled. See Issue 1481.
-test : check-whitespace succeed fail interaction interactive latex-test examples library-test lib-succeed compiler-test api-test tests benchmark-without-logs exec-test
+test : check-whitespace succeed fail interaction interactive latex-test examples library-test lib-succeed api-test tests benchmark-without-logs compiler-test
 
 .PHONY : quicktest
 quicktest : succeed fail
@@ -169,21 +177,15 @@ library-test : # up-to-date-std-lib
 	@echo "======================================================================"
 	@echo "========================== Standard library =========================="
 	@echo "======================================================================"
-	@(cd std-lib && runhaskell GenerateEverything.hs && \
-          time $(AGDA_BIN) --ignore-interfaces -v profile:$(PROFVERB) -i. -isrc README.agda \
-            +RTS -s -H1G -M1.5G)
+	(cd std-lib && runhaskell GenerateEverything.hs && \
+          time $(AGDA_BIN) --ignore-interfaces -v profile:$(PROFVERB) \
+                           -i. -isrc README.agda \
+                           +RTS -s -H1G -M1.5G $(STACK_SIZE))
 
 .PHONY : continue-library-test
 continue-library-test :
 	@(cd std-lib && \
           time $(AGDA_BIN) -v profile:$(PROFVERB) -i. -isrc README.agda +RTS -s -H1G -M1.5G)
-
-.PHONY : compiler-test
-compiler-test : # up-to-date-std-lib
-	@echo "======================================================================"
-	@echo "============================== Compiler =============================="
-	@echo "======================================================================"
-	@$(MAKE) -C test/compiler
 
 .PHONY : lib-succeed
 lib-succeed :
@@ -200,10 +202,10 @@ epic-test :
 	@echo "======================================================================"
 	@$(MAKE) -C test/epic
 
-.PHONY : exec-test
-exec-test :
+.PHONY : compiler-test
+compiler-test :
 	@echo "======================================================================"
-	@echo "======================== Compiler/exec tests ========================="
+	@echo "========================== Compiler tests ============================"
 	@echo "======================================================================"
 	@AGDA_BIN=$(AGDA_BIN) $(AGDA_TESTS_BIN) $(AGDA_TESTS_OPTIONS)
 

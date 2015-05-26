@@ -482,6 +482,13 @@ checkPrimitive i x e =
       defaultDefn defaultArgInfo x t $
         Primitive (Info.defAbstract i) s [] Nothing
 
+assertCurrentModule :: QName -> String -> TCM ()
+assertCurrentModule x err =
+  do def <- getConstInfo x
+     m <- currentModule
+     let m' = qnameModule $ defName def
+     unless (m == m') $ typeError $ GenericError err
+
 -- | Check a pragma.
 checkPragma :: Range -> A.Pragma -> TCM ()
 checkPragma r p =
@@ -489,6 +496,17 @@ checkPragma r p =
         A.BuiltinPragma x e -> bindBuiltin x e
         A.BuiltinNoDefPragma b x -> bindBuiltinNoDef b x
         A.RewritePragma q   -> addRewriteRule q
+        A.CompiledDeclareDataPragma x hs -> do
+          def <- getConstInfo x
+          assertCurrentModule x $
+              "COMPILED_DECLARE_DATA directives must appear in the same module " ++
+              "as their corresponding datatype definition,"
+          case theDef def of
+            Datatype{} -> addHaskellType x hs
+            Axiom{}    -> -- possible when the data type has only been declared yet
+              addHaskellType x hs
+            _          -> typeError $ GenericError
+                          "COMPILED_DECLARE_DATA directive only works on data types"
         A.CompiledTypePragma x hs -> do
           def <- getConstInfo x
           case theDef def of
@@ -499,9 +517,7 @@ checkPragma r p =
           def <- getConstInfo x
           -- Check that the pragma appears in the same module
           -- as the datatype.
-          do m <- currentModule
-             let m' = qnameModule $ defName def
-             unless (m == m') $ typeError $ GenericError $
+          assertCurrentModule x $
               "COMPILED_DATA directives must appear in the same module " ++
               "as their corresponding datatype definition,"
           let addCompiledData cs = do
@@ -563,8 +579,8 @@ checkPragma r p =
           if not correct
             then typeError $ GenericError "COMPILED_EXPORT directive only works on functions"
             else do
-          ty <- haskellType $ defType def
-          addHaskellExport x ty hs
+              ty <- haskellType $ defType def
+              addHaskellExport x ty hs
         A.CompiledEpicPragma x ep -> do
           def <- getConstInfo x
           case theDef def of
@@ -809,46 +825,46 @@ checkSectionApplication' i m1 (A.SectionApp ptel m2 args) rd rm = do
   when (extraParams > 0) $ reportSLn "tc.mod.apply" 30 $ "Extra parameters to " ++ show m1 ++ ": " ++ show extraParams
   -- Type-check the LHS (ptel) of the module macro.
   checkTelescope ptel $ \ ptel -> do
-  -- We are now in the context @ptel@.
-  -- Get the correct parameter telescope of @m2@.
-  tel <- lookupSection m2
-  vs  <- freeVarsToApply $ mnameToQName m2
-  let tel'  = apply tel vs
-      args' = convColor args
-  -- Compute the remaining parameter telescope after stripping of
-  -- the initial parameters that are determined by the @args@.
-  -- Warning: @etaTel@ is not well-formed in @ptel@, since
-  -- the actual application has not happened.
-  etaTel <- checkModuleArity m2 tel' args'
-  -- Take the module parameters that will be instantiated by @args@.
-  let tel'' = telFromList $ take (size tel' - size etaTel) $ telToList tel'
-  reportSDoc "tc.mod.apply" 15 $ vcat
-    [ text "applying section" <+> prettyTCM m2
-    , nest 2 $ text "args =" <+> sep (map prettyA args)
-    , nest 2 $ text "ptel =" <+> escapeContext (size ptel) (prettyTCM ptel)
-    , nest 2 $ text "tel  =" <+> prettyTCM tel
-    , nest 2 $ text "tel' =" <+> prettyTCM tel'
-    , nest 2 $ text "tel''=" <+> prettyTCM tel''
-    , nest 2 $ text "eta  =" <+> escapeContext (size ptel) (addContext tel'' $ prettyTCM etaTel)
-    ]
-  -- Now, type check arguments.
-  ts <- noConstraints $ checkArguments_ DontExpandLast (getRange i) args' tel''
-  -- Perform the application of the module parameters.
-  let aTel = tel' `apply` ts
-  reportSDoc "tc.mod.apply" 15 $ vcat
-    [ nest 2 $ text "aTel =" <+> prettyTCM aTel
-    ]
-  -- Andreas, 2014-04-06, Issue 1094:
-  -- Add the section with well-formed telescope.
-  addCtxTel aTel $ addSection m1 (size ptel + size aTel + extraParams)
+    -- We are now in the context @ptel@.
+    -- Get the correct parameter telescope of @m2@.
+    tel <- lookupSection m2
+    vs  <- freeVarsToApply $ mnameToQName m2
+    let tel'  = apply tel vs
+        args' = convColor args
+    -- Compute the remaining parameter telescope after stripping of
+    -- the initial parameters that are determined by the @args@.
+    -- Warning: @etaTel@ is not well-formed in @ptel@, since
+    -- the actual application has not happened.
+    etaTel <- checkModuleArity m2 tel' args'
+    -- Take the module parameters that will be instantiated by @args@.
+    let tel'' = telFromList $ take (size tel' - size etaTel) $ telToList tel'
+    reportSDoc "tc.mod.apply" 15 $ vcat
+      [ text "applying section" <+> prettyTCM m2
+      , nest 2 $ text "args =" <+> sep (map prettyA args)
+      , nest 2 $ text "ptel =" <+> escapeContext (size ptel) (prettyTCM ptel)
+      , nest 2 $ text "tel  =" <+> prettyTCM tel
+      , nest 2 $ text "tel' =" <+> prettyTCM tel'
+      , nest 2 $ text "tel''=" <+> prettyTCM tel''
+      , nest 2 $ text "eta  =" <+> escapeContext (size ptel) (addContext tel'' $ prettyTCM etaTel)
+      ]
+    -- Now, type check arguments.
+    ts <- noConstraints $ checkArguments_ DontExpandLast (getRange i) args' tel''
+    -- Perform the application of the module parameters.
+    let aTel = tel' `apply` ts
+    reportSDoc "tc.mod.apply" 15 $ vcat
+      [ nest 2 $ text "aTel =" <+> prettyTCM aTel
+      ]
+    -- Andreas, 2014-04-06, Issue 1094:
+    -- Add the section with well-formed telescope.
+    addCtxTel aTel $ addSection m1 (size ptel + size aTel + extraParams)
 
-  reportSDoc "tc.mod.apply" 20 $ vcat
-    [ sep [ text "applySection", prettyTCM m1, text "=", prettyTCM m2, fsep $ map prettyTCM (vs ++ ts) ]
-    , nest 2 $ text "  defs:" <+> text (show rd)
-    , nest 2 $ text "  mods:" <+> text (show rm)
-    ]
-  args <- instantiateFull $ vs ++ ts
-  applySection m1 ptel m2 args rd rm
+    reportSDoc "tc.mod.apply" 20 $ vcat
+      [ sep [ text "applySection", prettyTCM m1, text "=", prettyTCM m2, fsep $ map prettyTCM (vs ++ ts) ]
+      , nest 2 $ text "  defs:" <+> text (show rd)
+      , nest 2 $ text "  mods:" <+> text (show rm)
+      ]
+    args <- instantiateFull $ vs ++ ts
+    applySection m1 ptel m2 args rd rm
 
 checkSectionApplication' i m1 (A.RecordModuleIFS x) rd rm = do
   let name = mnameToQName x

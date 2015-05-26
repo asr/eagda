@@ -4,8 +4,8 @@
 
 module Agda.Interaction.MakeCase where
 
-import Prelude hiding (mapM, mapM_)
-import Control.Applicative
+import Prelude hiding (mapM, mapM_, null)
+import Control.Applicative hiding (empty)
 import Control.Monad hiding (mapM, mapM_, forM)
 import Data.Maybe
 import Data.Traversable
@@ -34,6 +34,7 @@ import Agda.Interaction.BasicOps
 import Agda.Utils.Functor
 import Agda.Utils.List
 import Agda.Utils.Monad
+import Agda.Utils.Null
 import qualified Agda.Utils.Pretty as P
 import Agda.Utils.Size
 import qualified Agda.Utils.HashMap as HMap
@@ -103,48 +104,48 @@ parseVariables ii rng ss = do
   mi  <- getMetaInfo <$> lookupMeta mId
   enterClosure mi $ \ r -> do
 
-  -- Get printed representation of variables in context.
-  n  <- getContextSize
-  xs <- forM (downFrom n) $ \ i -> do
-    (,i) . P.render <$> prettyTCM (var i)
+    -- Get printed representation of variables in context.
+    n  <- getContextSize
+    xs <- forM (downFrom n) $ \ i -> do
+      (,i) . P.render <$> prettyTCM (var i)
 
-  -- Get number of module parameters.  These cannot be split on.
-  fv <- getModuleFreeVars =<< currentModule
-  let numSplittableVars = n - fv
+    -- Get number of module parameters.  These cannot be split on.
+    fv <- getModuleFreeVars =<< currentModule
+    let numSplittableVars = n - fv
 
-  -- Resolve each string to a variable.
-  forM ss $ \ s -> do
-    let failNotVar = typeError $ GenericError $ "Not a (splittable) variable: " ++ s
-        done i
-          | i < numSplittableVars = return i
-          | otherwise             = failNotVar
+    -- Resolve each string to a variable.
+    forM ss $ \ s -> do
+      let failNotVar = typeError $ GenericError $ "Not a (splittable) variable: " ++ s
+          done i
+            | i < numSplittableVars = return i
+            | otherwise             = failNotVar
 
-    -- Note: the range in the concrete name is only approximate.
-    resName <- resolveName $ C.QName $ C.Name r $ C.stringNameParts s
-    case resName of
+      -- Note: the range in the concrete name is only approximate.
+      resName <- resolveName $ C.QName $ C.Name r $ C.stringNameParts s
+      case resName of
 
-      -- Fail if s is a name, but not of a variable.
-      DefinedName{}       -> failNotVar
-      FieldName{}         -> failNotVar
-      ConstructorName{}   -> failNotVar
-      PatternSynResName{} -> failNotVar
+        -- Fail if s is a name, but not of a variable.
+        DefinedName{}       -> failNotVar
+        FieldName{}         -> failNotVar
+        ConstructorName{}   -> failNotVar
+        PatternSynResName{} -> failNotVar
 
-      -- If s is a variable name in scope, get its de Bruijn index
-      -- via the type checker.
-      VarName x -> do
-        (v, _) <- getVarInfo x
-        case ignoreSharing v of
-          Var i [] -> done i
-          _        -> failNotVar
+        -- If s is a variable name in scope, get its de Bruijn index
+        -- via the type checker.
+        VarName x -> do
+          (v, _) <- getVarInfo x
+          case ignoreSharing v of
+            Var i [] -> done i
+            _        -> failNotVar
 
-      -- If s is not a name, compare it to the printed variable representation.
-      -- This fallback is to enable splitting on hidden variables.
-      UnknownName -> do
-        case filter ((s ==) . fst) xs of
-          []      -> typeError $ GenericError $ "Unbound variable " ++ s
-          [(_,i)] -> done i
-          -- Issue 1325: Variable names in context can be ambiguous.
-          _       -> typeError $ GenericError $ "Ambiguous variable " ++ s
+        -- If s is not a name, compare it to the printed variable representation.
+        -- This fallback is to enable splitting on hidden variables.
+        UnknownName -> do
+          case filter ((s ==) . fst) xs of
+            []      -> typeError $ GenericError $ "Unbound variable " ++ s
+            [(_,i)] -> done i
+            -- Issue 1325: Variable names in context can be ambiguous.
+            _       -> typeError $ GenericError $ "Ambiguous variable " ++ s
 
 
 -- | Entry point for case splitting tactic.
@@ -165,10 +166,18 @@ makeCase hole rng s = withInteractionId hole $ do
   let vars = words s
   if null vars then do
     -- split result
-    (newPats, sc) <- fixTarget $ clauseToSplitClause clause
+    (piTel, sc) <- fixTarget $ clauseToSplitClause clause
     -- Andreas, 2015-05-05 If we introduced new function arguments
     -- do not split on result.  This might be more what the user wants.
     -- To split on result, he can then C-c C-c again.
+    -- Andreas, 2015-05-21 Issue 1516:  However, if only hidden
+    -- arguments are introduced, C-c C-c virtually does nothing
+    -- (as they are not shown and get lost on the way to emacs and back).
+    newPats <- if null piTel then return False else do
+      -- If there were any pattern introduce, they will only have effect
+      -- if any of them is shown by the printer
+      imp <- optShowImplicit <$> pragmaOptions
+      return $ imp || any visible (telToList piTel)
     scs <- if newPats then return [sc] else do
       res <- splitResult f sc
       case res of

@@ -42,6 +42,8 @@ import Data.Foldable
 import Data.Traversable
 import Data.IORef
 
+import Agda.Benchmarking (Benchmark)
+
 import Agda.Syntax.Concrete (TopLevelModuleName)
 import Agda.Syntax.Common hiding (Arg, Dom, NamedArg, ArgInfo)
 import qualified Agda.Syntax.Common as Common
@@ -69,9 +71,6 @@ import Agda.Interaction.Highlighting.Precise
 import qualified Agda.Compiler.JS.Syntax as JS
 import qualified Agda.Compiler.UHC.Pragmas.Base as CR
 
-import Agda.TypeChecking.Monad.Base.Benchmark (Benchmark)
-import qualified Agda.TypeChecking.Monad.Base.Benchmark as Benchmark
-
 import Agda.Utils.Except
   ( Error(noMsg, strMsg)
   , ExceptT
@@ -79,7 +78,8 @@ import Agda.Utils.Except
   )
 
 import Agda.Utils.FileName
-import Agda.Utils.HashMap as HMap hiding (singleton)
+import Agda.Utils.HashMap (HashMap)
+import qualified Agda.Utils.HashMap as HMap
 import Agda.Utils.Hash
 import Agda.Utils.Lens
 import Agda.Utils.ListT
@@ -229,7 +229,7 @@ initPersistentState = PersistentTCSt
   { stPersistentOptions         = defaultOptions
   , stDecodedModules            = Map.empty
   , stInteractionOutputCallback = defaultInteractionOutputCallback
-  , stBenchmark                 = Benchmark.empty
+  , stBenchmark                 = empty
   , stAccumStatistics           = Map.empty
   , stLoadedFileCache           = Nothing
   }
@@ -2176,12 +2176,15 @@ catchError_ m h = TCM $ \r e ->
   unTCM m r e
   `E.catch` \err -> unTCM (h err) r e
 
-finally_ :: TCM a -> TCM a -> TCM a
+-- | Execute a finalizer even when an exception is thrown.
+--   Does not catch any errors.
+--   In case both the regular computation and the finalizer
+--   throw an exception, the one of the finalizer is propagated.
+finally_ :: TCM a -> TCM b -> TCM a
 finally_ m f = do
-  _ <- catchError_ m $ \err -> do
+    x <- m `catchError_` \ err -> f >> throwError err
     _ <- f
-    throwError err
-  f
+    return x
 
 {-# SPECIALIZE INLINE mapTCMT :: (forall a. IO a -> IO a) -> TCM a -> TCM a #-}
 mapTCMT :: (forall a. m a -> n a) -> TCMT m a -> TCMT n a

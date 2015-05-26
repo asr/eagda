@@ -24,7 +24,6 @@ ghc:
 # make interactive
 # make latex-test
 # make examples
-# make compiler-test
 # make api-test
 # make tests
 # make benchmark-without-logs
@@ -35,12 +34,15 @@ ghc:
 #
 # make library-test
 # make lib-succeed
-# make exec
+# make compiler-test
 env:
   - TEST=non_require_stdlib
   - TEST=require_stdlib
 
 install:
+  # Asking for the shell.
+  - echo $SHELL
+
   # With old GHCs, we get an old cabal-install
   - cabal install cabal-install
   - export PATH=$HOME/.cabal/bin:$PATH
@@ -101,17 +103,21 @@ install:
         ;;
     esac
 
-  # Cabal needs the --avoid-reinstalls flag on GHC 7.4.2, else it will complain about
-  # breaking previously installed packages.
+  # The GHC version.
+  - GHC_VERSION_TRAVIS=`ghc --numeric-version`
+
+  # In Travis (because the Haskell platform is installed?) Cabal needs the
+  # `--avoid-reinstalls` flag on GHC 7.4.2 and 7.6.3, else it will complain
+  # about breaking previously installed packages [Issue 1520].
 
   # The `enable-test` option is required only if $TEST=require_stdlib.
   - case "$TEST" in
       "non_require_stdlib")
-        if [ `ghc --numeric-version` == 7.4.2 ]; then cabal install --avoid-reinstalls --only-dependencies -j; else cabal install --only-dependencies -j; fi;
+        if [ $GHC_VERSION_TRAVIS == 7.4.2 -o $GHC_VERSION_TRAVIS == 7.6.3 ]; then cabal install --avoid-reinstalls --only-dependencies -j; else cabal install --only-dependencies -j; fi;
         ;;
 
       "require_stdlib")
-        if [ `ghc --numeric-version` == 7.4.2 ]; then cabal install --enable-tests --avoid-reinstalls --only-dependencies -j; else cabal install --enable-tests --only-dependencies -j; fi;
+        if [ $GHC_VERSION_TRAVIS == 7.4.2 -o $GHC_VERSION_TRAVIS == 7.6.3 ]; then cabal install --enable-tests --avoid-reinstalls --only-dependencies -j; else cabal install --enable-tests --only-dependencies -j; fi;
        ;;
 
       *)
@@ -184,15 +190,15 @@ script:
 
   - case "$TEST" in
       "non_require_stdlib")
-        yes q | make BUILD_DIR=$BUILD_DIR check-whitespace succeed fail interaction interactive latex-test examples compiler-test api-test tests benchmark-without-logs;
+        yes q | make BUILD_DIR=$BUILD_DIR check-whitespace succeed fail interaction interactive latex-test examples api-test tests benchmark-without-logs;
 
         make BUILD_DIR=$BUILD_DIR TAGS;
 
-        if [ `ghc --numeric-version` == 7.8.4 ]; then cabal configure -v2 --builddir=$BUILD_DIR --constraint=transformers==0.3.0.0 && cabal -v2 --builddir=$BUILD_DIR build; fi;
+        if [ $GHC_VERSION_TRAVIS == 7.8.4 ]; then cabal configure -v2 --builddir=$BUILD_DIR --constraint=transformers==0.3.0.0 && cabal -v2 --builddir=$BUILD_DIR build; fi;
         ;;
 
       "require_stdlib")
-        yes q | make AGDA_TESTS_OPTIONS="" BUILD_DIR=$BUILD_DIR library-test lib-succeed exec-test;
+        yes q | make AGDA_TESTS_OPTIONS="" BUILD_DIR=$BUILD_DIR library-test lib-succeed compiler-test;
         ;;
 
       *)

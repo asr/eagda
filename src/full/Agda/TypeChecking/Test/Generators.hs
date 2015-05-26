@@ -1,8 +1,14 @@
-{-# LANGUAGE CPP #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE UndecidableInstances #-}
+-- GHC 7.4.2 requires this layout for the pragmas. See Issue 1460.
+{-# LANGUAGE CPP,
+             FlexibleContexts,
+             FlexibleInstances,
+             FunctionalDependencies,
+             MultiParamTypeClasses,
+             UndecidableInstances #-}
+
+#if __GLASGOW_HASKELL__ <= 704
+{-# LANGUAGE ConstraintKinds #-}
+#endif
 
 module Agda.TypeChecking.Test.Generators where
 
@@ -546,8 +552,8 @@ instance (KillVar a, KillVar b) => KillVar (a, b) where
 
 -- Tests ------------------------------------------------------------------
 
-isWellScoped :: Free a => TermConfiguration -> a -> Bool
-isWellScoped conf t = allVars (freeVars t) `Set.isSubsetOf` Set.fromList (tcFreeVariables conf)
+isWellScoped :: FreeVS a => TermConfiguration -> a -> Bool
+isWellScoped conf t = allFreeVars t `Set.isSubsetOf` Set.fromList (tcFreeVariables conf)
 
 -- | Check that the generated terms don't have any out of scope variables.
 prop_wellScopedVars :: TermConfiguration -> Property

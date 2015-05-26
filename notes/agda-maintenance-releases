@@ -33,6 +33,12 @@ followed:
 
 * Update the LICENSE file, if necessary.
 
+* Add the line
+
+    RELEASE=true
+
+  at the top of the Makefile.
+
 * Add a second source-repository section to Agda.cabal:
 
     source-repository this
@@ -60,8 +66,9 @@ followed:
   warnings (except for the "cl package required at runtime" warning):
 
     (cd src/data/emacs-mode && \
-      emacs --batch -L . -f batch-byte-compile *.el; \
-      rm -f *.elc)
+    for file in *.el; do \
+        emacs --batch -L . -f batch-byte-compile $file; \
+        rm -f $(basename $file .el).elc; done)
 
 * Test compilation using cpp instead of cpphs:
 
@@ -102,10 +109,6 @@ followed:
     cd $BASE
     cabal upload dist/Agda-$VERSION.tar.gz
 
-* Remove the "this" source-repository section from the Cabal
-  file. (This would be unnecessary if we had two repositories, one
-  stable and one for development.)
-
 * Restore the Cabal test-suite:
 
   ** Restore the agda-tests test suite in Agda.cabal.
@@ -114,17 +117,38 @@ followed:
 
   ** Add exec-test to the tests rule in Makefile.
 
-* Add back -Werror and -fprof-auto in Agda.cabal.
+* Restore -Werror and -fprof-auto in Agda.cabal.
+
+* Remove the "this" source-repository section from the Cabal
+  file. (This would be unnecessary if we had two repositories, one
+  stable and one for development.)
+
+* Remove the line
+
+    RELEASE=true
+
+  from the top of the Makefile.
 
 * Add a new header to CHANGELOG.
 
-* Update the version numbers in:
+* Update the version numbers in
 
-  Agda.cabal (twice),
-  src/data/emacs-mode/agda2-mode.el, and
-  mk/version.mk.
-  test/interaction/Issue1244a.out
-  test/interaction/Issue1244b.out
+    Agda.cabal (twice)
+    src/data/emacs-mode/agda2-mode.el
+    mk/version.mk
+    test/interaction/Issue1244a.out
+    test/interaction/Issue1244b.out
+
+  to the new version
+
+    NEWVERSION=<VERSION + 1>
+
+* Create a new branch in the standard library repository from the
+  VERSION branch called NEWVERSION.
+
+* Update in the Makefile the STD_LIB_BRANCH variable:
+
+    STD_LIB_BRANCH = NEWVERSION
 
 * Push all changes and merge into 'master' branch (requires Git >= 1.8.3).
 
@@ -133,12 +157,14 @@ followed:
     git checkout master
     git merge maint-$MAJORVERSION
 
-* Restore version numbers in 'master'
-  (possibly by just resolving the merge conflicts).
+* Restore version numbers in 'master' (possibly by just resolving the
+  merge conflicts):
 
-    Agda.cabal (twice),
-    src/data/emacs-mode/agda2-mode.el, and
-    mk/version.mk.
+    Agda.cabal (twice)
+    src/data/emacs-mode/agda2-mode.el
+    mk/version.mk
+    test/interaction/Issue1244a.out
+    test/interaction/Issue1244b.out
 
 * Push master
 
@@ -159,4 +185,5 @@ followed:
 
   ** Update the standard library page (tested with Agda $VERSION).
 
-* Announce the release of the new version on the Agda mailing list.
+* Announce the release of the new version on the Agda mailing lists
+  (users and developers).

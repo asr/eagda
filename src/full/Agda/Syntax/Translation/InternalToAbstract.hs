@@ -7,6 +7,10 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE UndecidableInstances #-}
 
+#if __GLASGOW_HASKELL__ <= 704
+{-# LANGUAGE ConstraintKinds #-}
+#endif
+
 {-|
     Translating from internal syntax to abstract syntax. Enables nice
     pretty printing of internal syntax.
@@ -47,7 +51,6 @@ import qualified Agda.Syntax.Common as Common
 import Agda.Syntax.Info as Info
 import Agda.Syntax.Abstract as A
 import Agda.Syntax.Internal as I
-import qualified Agda.Utils.VarSet as VSet
 
 import Agda.TypeChecking.Monad as M hiding (MetaInfo)
 import Agda.TypeChecking.Monad.Builtin
@@ -425,7 +428,7 @@ reifyTerm expandAnonDefs0 v = do
         -- and it's mentioned in the target type.
         domainFree a b = do
           df <- asks envPrintDomainFreePi
-          return $ and [df, freeIn 0 b, VSet.null $ allVars $ freeVars a]
+          return $ and [df, freeIn 0 b, closed a]
 
     I.Sort s     -> reify s
     I.MetaV x es -> do

@@ -383,13 +383,13 @@ insertHiddenLambdas h target postpone ret = do
         let h' = getHiding dom
         -- Found expected hiding: return function type.
         if h == h' then ret t else do
-        -- Found a visible argument but expected a hidden one:
-        -- That's an error, as we cannot insert a visible lambda.
-        if visible h' then typeError $ WrongHidingInLambda target else do
-        -- Otherwise, we found a hidden argument that we can insert.
-        let x = absName b
-        Lam (domInfo dom) . Abs x <$> do
-          addContext (x, dom) $ insertHiddenLambdas h (absBody b) postpone ret
+          -- Found a visible argument but expected a hidden one:
+          -- That's an error, as we cannot insert a visible lambda.
+          if visible h' then typeError $ WrongHidingInLambda target else do
+            -- Otherwise, we found a hidden argument that we can insert.
+            let x = absName b
+            Lam (domInfo dom) . Abs x <$> do
+              addContext (x, dom) $ insertHiddenLambdas h (absBody b) postpone ret
 
       _ -> typeError . GenericDocError =<< do
         text "Expected " <+> prettyTCM target <+> text " to be a function type"
@@ -930,19 +930,19 @@ checkApplication hd args e t = do
       -- Lets look at the target type at this point
       let getCon :: TCM (Maybe ConHead)
           getCon = do
-          TelV tel t1 <- telView t
-          addCtxTel tel $ do
-           reportSDoc "tc.check.term.con" 40 $ nest 2 $
-             text "target type: " <+> prettyTCM t1
-           ifBlockedType t1 (\ m t -> return Nothing) $ \ t' ->
-             caseMaybeM (isDataOrRecord $ unEl t') (badCon t') $ \ d ->
-               case [ c | (d', c) <- dcs, d == d' ] of
-                 [c] -> do
-                   reportSLn "tc.check.term" 40 $ "  decided on: " ++ show c
-                   storeDisambiguatedName $ conName c
-                   return $ Just c
-                 []  -> badCon $ t' $> Def d []
-                 cs  -> typeError $ CantResolveOverloadedConstructorsTargetingSameDatatype d $ map conName cs
+            TelV tel t1 <- telView t
+            addCtxTel tel $ do
+             reportSDoc "tc.check.term.con" 40 $ nest 2 $
+               text "target type: " <+> prettyTCM t1
+             ifBlockedType t1 (\ m t -> return Nothing) $ \ t' ->
+               caseMaybeM (isDataOrRecord $ unEl t') (badCon t') $ \ d ->
+                 case [ c | (d', c) <- dcs, d == d' ] of
+                   [c] -> do
+                     reportSLn "tc.check.term" 40 $ "  decided on: " ++ show c
+                     storeDisambiguatedName $ conName c
+                     return $ Just c
+                   []  -> badCon $ t' $> Def d []
+                   cs  -> typeError $ CantResolveOverloadedConstructorsTargetingSameDatatype d $ map conName cs
       let unblock = isJust <$> getCon -- to unblock, call getCon later again
       mc <- getCon
       case mc of
@@ -1166,42 +1166,42 @@ checkConstructorApplication org t c args = do
     t0 <- reduce (Def d [])
     case (ignoreSharing t0, ignoreSharing $ unEl t) of -- Only fully applied constructors get special treatment
       (Def d0 _, Def d' es) -> do
-       let ~(Just vs) = allApplyElims es
-       reportSDoc "tc.term.con" 50 $ nest 2 $ text "d0   =" <+> prettyTCM d0
-       reportSDoc "tc.term.con" 50 $ nest 2 $ text "d'   =" <+> prettyTCM d'
-       reportSDoc "tc.term.con" 50 $ nest 2 $ text "vs   =" <+> prettyTCM vs
-       if d' /= d0 then fallback else do
-        -- Issue 661: d' may take more parameters than d, in particular
-        -- these additional parameters could be a module parameter telescope.
-        -- Since we get the constructor type ctype from d but the parameters
-        -- from t = Def d' vs, we drop the additional parameters.
-        npars  <- getNumberOfParameters d
-        npars' <- getNumberOfParameters d'
-        caseMaybe (sequenceA $ List2 (npars, npars')) fallback $ \ (List2 (n,n')) -> do
-        reportSDoc "tc.term.con" 50 $ nest 2 $ text $ "n    = " ++ show n
-        reportSDoc "tc.term.con" 50 $ nest 2 $ text $ "n'   = " ++ show n'
-        when (n > n')  -- preprocessor does not like ', so put on next line
-          __IMPOSSIBLE__
-        let ps    = genericTake n $ genericDrop (n' - n) vs
-            ctype = defType cdef
-        reportSDoc "tc.term.con" 20 $ vcat
-          [ text "special checking of constructor application of" <+> prettyTCM c
-          , nest 2 $ vcat [ text "ps     =" <+> prettyTCM ps
-                          , text "ctype  =" <+> prettyTCM ctype ] ]
-        let ctype' = ctype `piApply` ps
-        reportSDoc "tc.term.con" 20 $ nest 2 $ text "ctype' =" <+> prettyTCM ctype'
-        -- get the parameter names
-        TelV ptel _ <- telViewUpTo n ctype
-        let pnames = map (fst . unDom) $ telToList ptel
-        -- drop the parameter arguments
-            args' = dropArgs pnames args
-        -- check the non-parameter arguments
-        expandLast <- asks envExpandLast
-        checkArguments' expandLast ExpandInstanceArguments (getRange c) args' ctype' t $ \us t' -> do
-          reportSDoc "tc.term.con" 20 $ nest 2 $ vcat
-            [ text "us     =" <+> prettyTCM us
-            , text "t'     =" <+> prettyTCM t' ]
-          coerce (Con c us) t' t
+        let ~(Just vs) = allApplyElims es
+        reportSDoc "tc.term.con" 50 $ nest 2 $ text "d0   =" <+> prettyTCM d0
+        reportSDoc "tc.term.con" 50 $ nest 2 $ text "d'   =" <+> prettyTCM d'
+        reportSDoc "tc.term.con" 50 $ nest 2 $ text "vs   =" <+> prettyTCM vs
+        if d' /= d0 then fallback else do
+         -- Issue 661: d' may take more parameters than d, in particular
+         -- these additional parameters could be a module parameter telescope.
+         -- Since we get the constructor type ctype from d but the parameters
+         -- from t = Def d' vs, we drop the additional parameters.
+         npars  <- getNumberOfParameters d
+         npars' <- getNumberOfParameters d'
+         caseMaybe (sequenceA $ List2 (npars, npars')) fallback $ \ (List2 (n,n')) -> do
+           reportSDoc "tc.term.con" 50 $ nest 2 $ text $ "n    = " ++ show n
+           reportSDoc "tc.term.con" 50 $ nest 2 $ text $ "n'   = " ++ show n'
+           when (n > n')  -- preprocessor does not like ', so put on next line
+             __IMPOSSIBLE__
+           let ps    = genericTake n $ genericDrop (n' - n) vs
+               ctype = defType cdef
+           reportSDoc "tc.term.con" 20 $ vcat
+             [ text "special checking of constructor application of" <+> prettyTCM c
+             , nest 2 $ vcat [ text "ps     =" <+> prettyTCM ps
+                             , text "ctype  =" <+> prettyTCM ctype ] ]
+           let ctype' = ctype `piApply` ps
+           reportSDoc "tc.term.con" 20 $ nest 2 $ text "ctype' =" <+> prettyTCM ctype'
+           -- get the parameter names
+           TelV ptel _ <- telViewUpTo n ctype
+           let pnames = map (fst . unDom) $ telToList ptel
+           -- drop the parameter arguments
+               args' = dropArgs pnames args
+           -- check the non-parameter arguments
+           expandLast <- asks envExpandLast
+           checkArguments' expandLast ExpandInstanceArguments (getRange c) args' ctype' t $ \us t' -> do
+             reportSDoc "tc.term.con" 20 $ nest 2 $ vcat
+               [ text "us     =" <+> prettyTCM us
+               , text "t'     =" <+> prettyTCM t' ]
+             coerce (Con c us) t' t
       _ -> do
         reportSDoc "tc.term.con" 50 $ nest 2 $ text "we are not at a datatype, falling back"
         fallback
@@ -1590,25 +1590,25 @@ inferExprForWith e = do
   reportSDoc "tc.with.infer" 20 $ text "inferExprforWith " <+> prettyTCM e
   reportSLn  "tc.with.infer" 80 $ "inferExprforWith " ++ show e
   traceCall (InferExpr e) $ do
-  -- With wants type and term fully instantiated!
-  (v, t) <- instantiateFull =<< inferExpr e
-  v0 <- reduce v
-  -- Andreas 2014-11-06, issue 1342.
-  -- Check that we do not `with` on a module parameter!
-  case ignoreSharing v0 of
-    Var i [] -> whenM (isModuleFreeVar i) $ typeError $ WithOnFreeVariable e
-    _        -> return ()
-  -- Possibly insert hidden arguments.
-  TelV tel t0 <- telViewUpTo' (-1) ((NotHidden /=) . getHiding) t
-  case ignoreSharing $ unEl t0 of
-    Def d vs -> do
-      res <- isDataOrRecordType d
-      case res of
-        Nothing -> return (v, t)
-        Just{}  -> do
-          (args, t1) <- implicitArgs (-1) (NotHidden /=) t
-          return (v `apply` args, t1)
-    _ -> return (v, t)
+    -- With wants type and term fully instantiated!
+    (v, t) <- instantiateFull =<< inferExpr e
+    v0 <- reduce v
+    -- Andreas 2014-11-06, issue 1342.
+    -- Check that we do not `with` on a module parameter!
+    case ignoreSharing v0 of
+      Var i [] -> whenM (isModuleFreeVar i) $ typeError $ WithOnFreeVariable e
+      _        -> return ()
+    -- Possibly insert hidden arguments.
+    TelV tel t0 <- telViewUpTo' (-1) ((NotHidden /=) . getHiding) t
+    case ignoreSharing $ unEl t0 of
+      Def d vs -> do
+        res <- isDataOrRecordType d
+        case res of
+          Nothing -> return (v, t)
+          Just{}  -> do
+            (args, t1) <- implicitArgs (-1) (NotHidden /=) t
+            return (v `apply` args, t1)
+      _ -> return (v, t)
 
 ---------------------------------------------------------------------------
 -- * Let bindings
