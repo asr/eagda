@@ -102,7 +102,7 @@ quick : install-O0-bin quicktest
 .PHONY : test
 # We don't run the `epic-test` because the Epic backend has been
 # disabled. See Issue 1481.
-test : check-whitespace succeed fail interaction interactive latex-test examples library-test lib-succeed api-test tests benchmark-without-logs compiler-test
+test : check-whitespace succeed fail interaction interactive latex-test examples library-test api-test tests benchmark-without-logs compiler-test lib-succeed
 
 .PHONY : quicktest
 quicktest : succeed fail
@@ -119,6 +119,7 @@ succeed :
 	@echo "======================================================================"
 	@echo "===================== Suite of successfull tests ====================="
 	@echo "======================================================================"
+	@$(MAKE) -C test/Common
 	@chmod +x test/succeed/checkOutput
 	@$(MAKE) -C test/succeed
 
@@ -218,10 +219,16 @@ api-test :
 
 .PHONY : benchmark
 benchmark :
+	@echo "======================================================================"
+	@echo "========================= Bencharmk suite ============================"
+	@echo "======================================================================"
 	@$(MAKE) -C benchmark
 
 .PHONY : benchmark-without-logs
 benchmark-without-logs :
+	@echo "======================================================================"
+	@echo "============ Bencharmk suite without creating logs ==================="
+	@echo "======================================================================"
 	@$(MAKE) -C benchmark without-creating-logs
 
 ## Clean ##################################################################
