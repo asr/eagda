@@ -120,12 +120,12 @@ isType_ e =
       return t'
     A.Pi _ tel e | null tel -> isType_ e
     A.Pi _ tel e -> do
-      checkPiTelescope tel $ \tel -> do
-        t   <- instantiateFull =<< isType_ e
+      (t0, t') <- checkPiTelescope tel $ \ tel -> do
+        t0  <- instantiateFull =<< isType_ e
         tel <- instantiateFull tel
-        let t' = telePi tel t
-        noFunctionsIntoSize t t'
-        return t'
+        return (t0, telePi tel t0)
+      noFunctionsIntoSize t0 t'
+      return t'
     A.Set _ n    -> do
       n <- ifM typeInType (return 0) (return n)
       return $ sort (mkType n)
@@ -147,6 +147,10 @@ ptsRule :: (LensSort a, LensSort b) => a -> b -> TCM Sort
 ptsRule a b = pts <$> reduce (getSort a) <*> reduce (getSort b)
 
 -- | Ensure that a (freshly created) function type does not inhabit 'SizeUniv'.
+--   Precondition:  When @noFunctionsIntoSize t tBlame@ is called,
+--   we are in the context of @tBlame@ in order to print it correctly.
+--   Not being in context of @t@ should not matter, as we are only
+--   checking whether its sort reduces to 'SizeUniv'.
 noFunctionsIntoSize :: Type -> Type -> TCM ()
 noFunctionsIntoSize t tBlame = do
   reportSDoc "tc.fun" 20 $ do
@@ -669,10 +673,10 @@ checkLiteral lit t = do
 --
 -- Checks @e := ((_ : t0) args) : t@.
 checkArguments' ::
-  ExpandHidden -> ExpandInstances -> Range -> [I.NamedArg A.Expr] -> Type -> Type ->
+  ExpandHidden -> Range -> [I.NamedArg A.Expr] -> Type -> Type ->
   (Args -> Type -> TCM Term) -> TCM Term
-checkArguments' exph expIFS r args t0 t k = do
-  z <- runExceptT $ checkArguments exph expIFS r args t0 t
+checkArguments' exph r args t0 t k = do
+  z <- runExceptT $ checkArguments exph r args t0 t
   case z of
     Right (vs, t1) -> k vs t1
       -- vs = evaluated args
@@ -687,7 +691,7 @@ checkArguments' exph expIFS r args t0 t k = do
             , nest 2 $ text "checked" <+> prettyList (map prettyTCM us)
             , nest 2 $ text "remaining" <+> sep [ prettyList (map (prettyA . namedThing . unArg) es)
                                                 , nest 2 $ text ":" <+> prettyTCM t0 ] ]
-      postponeTypeCheckingProblem_ (CheckArgs exph expIFS r es t0 t $ \vs t -> k (us ++ vs) t)
+      postponeTypeCheckingProblem_ (CheckArgs exph r es t0 t $ \vs t -> k (us ++ vs) t)
       -- if unsuccessful, postpone checking until t0 unblocks
 
 -- | Type check an expression.
@@ -815,12 +819,11 @@ checkExpr e t0 =
         A.Let i ds e -> checkLetBindings ds $ checkExpr e t
         A.Pi _ tel e | null tel -> checkExpr e t
         A.Pi _ tel e -> do
-            t' <- checkPiTelescope tel $ \tel -> do
-                    t   <- instantiateFull =<< isType_ e
+            (t0, t') <- checkPiTelescope tel $ \ tel -> do
+                    t0  <- instantiateFull =<< isType_ e
                     tel <- instantiateFull tel
-                    let t' = telePi tel t
-                    noFunctionsIntoSize t t'
-                    return t'
+                    return (t0, telePi tel t0)
+            noFunctionsIntoSize t0 t'
             let s = getSort t'
                 v = unEl t'
             when (s == Inf) $ reportSDoc "tc.term.sort" 20 $
@@ -1207,7 +1210,7 @@ checkConstructorApplication org t c args = do
                args' = dropArgs pnames args
            -- check the non-parameter arguments
            expandLast <- asks envExpandLast
-           checkArguments' expandLast ExpandInstanceArguments (getRange c) args' ctype' t $ \us t' -> do
+           checkArguments' expandLast (getRange c) args' ctype' t $ \us t' -> do
              reportSDoc "tc.term.con" 20 $ nest 2 $ vcat
                [ text "us     =" <+> prettyTCM us
                , text "t'     =" <+> prettyTCM t' ]
@@ -1287,7 +1290,7 @@ checkHeadApplication e t hd args = do
           prettyTCM c <+> text ":" <+> prettyTCM t0
         ]
       expandLast <- asks envExpandLast
-      checkArguments' expandLast ExpandInstanceArguments (getRange hd) args t0 t $ \vs t1 -> do
+      checkArguments' expandLast (getRange hd) args t0 t $ \vs t1 -> do
         TelV eTel eType <- telView t
         -- If the expected type @eType@ is a metavariable we have to make
         -- sure it's instantiated to the proper pi type
@@ -1397,7 +1400,7 @@ checkHeadApplication e t hd args = do
   defaultResult = do
     (f, t0) <- inferHead hd
     expandLast <- asks envExpandLast
-    checkArguments' expandLast ExpandInstanceArguments (getRange hd) args t0 t $ \vs t1 -> do
+    checkArguments' expandLast (getRange hd) args t0 t $ \vs t1 -> do
       coerce (f vs) t1 t
 
 -- Stupid ErrorT!
@@ -1421,14 +1424,14 @@ traceCallE call m = do
 --   make this happen.  Returns the evaluated arguments @vs@, the remaining
 --   type @t0'@ (which should be a subtype of @t1@) and any constraints @cs@
 --   that have to be solved for everything to be well-formed.
-checkArguments :: ExpandHidden -> ExpandInstances -> Range -> [I.NamedArg A.Expr] -> Type -> Type ->
+checkArguments :: ExpandHidden -> Range -> [I.NamedArg A.Expr] -> Type -> Type ->
                   ExceptT (Args, [I.NamedArg A.Expr], Type) TCM (Args, Type)
 
 -- Case: no arguments, do not insert trailing hidden arguments: We are done.
-checkArguments DontExpandLast DontExpandInstanceArguments _ [] t0 t1 = return ([], t0)
+checkArguments DontExpandLast _ [] t0 t1 = return ([], t0)
 
 -- Case: no arguments, but need to insert trailing hiddens.
-checkArguments exh    expandIFS r [] t0 t1 =
+checkArguments exh r [] t0 t1 =
     traceCallE (CheckArguments r [] t0 t1) $ lift $ do
       t1' <- unEl <$> reduce t1
       implicitArgs (-1) (expand t1') t0
@@ -1436,13 +1439,12 @@ checkArguments exh    expandIFS r [] t0 t1 =
       expand (Pi (Dom info _) _)   Hidden = getHiding info /= Hidden &&
                                             exh == ExpandLast
       expand _                     Hidden = exh == ExpandLast
-      expand (Pi (Dom info _) _) Instance = getHiding info /= Instance &&
-                                            expandIFS == ExpandInstanceArguments
-      expand _                   Instance = expandIFS == ExpandInstanceArguments
+      expand (Pi (Dom info _) _) Instance = getHiding info /= Instance
+      expand _                   Instance = True
       expand _                  NotHidden = False
 
 -- Case: argument given.
-checkArguments exh expandIFS r args0@(arg@(Arg info e) : args) t0 t1 =
+checkArguments exh r args0@(arg@(Arg info e) : args) t0 t1 =
     traceCallE (CheckArguments r args0 t0 t1) $ do
       lift $ reportSDoc "tc.term.args" 30 $ sep
         [ text "checkArguments"
@@ -1508,7 +1510,7 @@ checkArguments exh expandIFS r args0@(arg@(Arg info e) : args) t0 t1 =
                   checkExpr (namedThing e) a
                 -- save relevance info' from domain in argument
                 addCheckedArgs us (Arg info' u) $
-                  checkArguments exh expandIFS (fuseRange r e) args (absApp b u) t1
+                  checkArguments exh (fuseRange r e) args (absApp b u) t1
             | otherwise -> wrongPi info'
           _ -> shouldBePi
   where
@@ -1520,7 +1522,7 @@ checkArguments exh expandIFS r args0@(arg@(Arg info e) : args) t0 t1 =
 -- | Check that a list of arguments fits a telescope.
 checkArguments_ :: ExpandHidden -> Range -> [I.NamedArg A.Expr] -> Telescope -> TCM Args
 checkArguments_ exh r args tel = do
-    z <- runExceptT $ checkArguments exh ExpandInstanceArguments r args (telePi tel $ sort Prop) (sort Prop)
+    z <- runExceptT $ checkArguments exh r args (telePi tel $ sort Prop) (sort Prop)
     case z of
       Right (args, _) -> return args
       Left _          -> __IMPOSSIBLE__
@@ -1533,7 +1535,7 @@ inferExpr :: A.Expr -> TCM (Term, Type)
 inferExpr e = case e of
   _ | Application hd args <- appView e, defOrVar hd -> traceCall (InferExpr e) $ do
     (f, t0) <- inferHead hd
-    res <- runExceptT $ checkArguments DontExpandLast ExpandInstanceArguments (getRange hd) (map convColor args) t0 (sort Prop)
+    res <- runExceptT $ checkArguments DontExpandLast (getRange hd) (map convColor args) t0 (sort Prop)
     case res of
       Right (vs, t1) -> return (f vs, t1)
       Left t1 -> fallback -- blocked on type t1
@@ -1565,7 +1567,7 @@ inferOrCheck :: A.Expr -> Maybe Type -> TCM (Term, Type)
 inferOrCheck e mt = case e of
   _ | Application hd args <- appView e, defOrVar hd -> traceCall (InferExpr e) $ do
     (f, t0) <- inferHead hd
-    res <- runErrorT $ checkArguments DontExpandLast ExpandInstanceArguments
+    res <- runErrorT $ checkArguments DontExpandLast
                                       (getRange hd) (map convColor args) t0 $
                                       maybe (sort Prop) id mt
     case res of

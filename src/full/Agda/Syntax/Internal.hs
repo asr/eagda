@@ -1,5 +1,6 @@
 -- GHC 7.4.2 requires this layout for the pragmas. See Issue 1460.
-{-# LANGUAGE CPP,
+{-# LANGUAGE BangPatterns,
+             CPP,
              DeriveDataTypeable,
              DeriveFoldable,
              DeriveFunctor,
@@ -440,6 +441,13 @@ data ClauseBodyF a = Body a
 
 type ClauseBody = ClauseBodyF Term
 
+imapClauseBody :: (Nat -> a -> b) -> ClauseBodyF a -> ClauseBodyF b
+imapClauseBody f b = go 0 b
+  where
+    go i  (Body x)  = Body (f i x)
+    go _   NoBody   = NoBody
+    go !i (Bind b)  = Bind $ go (i + 1) <$> b
+
 instance HasRange Clause where
   getRange = clauseRange
 
@@ -728,6 +736,16 @@ instance SgTel (ArgName, Dom Type) where
 
 instance SgTel (Dom (ArgName, Type)) where
   sgTel (Common.Dom ai (x, t)) = ExtendTel (Common.Dom ai t) $ Abs x EmptyTel
+
+instance SgTel (Dom Type) where
+  sgTel dom = sgTel (stringToArgName "_", dom)
+
+hackReifyToMeta :: Term
+hackReifyToMeta = DontCare $ Lit $ LitInt noRange (-42)
+
+isHackReifyToMeta :: Term -> Bool
+isHackReifyToMeta (DontCare (Lit (LitInt r (-42)))) = r == noRange
+isHackReifyToMeta _ = False
 
 ---------------------------------------------------------------------------
 -- * Handling blocked terms.

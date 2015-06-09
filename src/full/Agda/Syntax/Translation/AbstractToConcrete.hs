@@ -849,6 +849,7 @@ instance ToConcrete RangeAndPragma C.Pragma where
     A.NoSmashingPragma x -> C.NoSmashingPragma r <$> toConcrete x
     A.StaticPragma x -> C.StaticPragma r <$> toConcrete x
     A.EtaPragma x    -> C.EtaPragma    r <$> toConcrete x
+    A.NoEtaPragma x  -> C.NoEtaPragma  r <$> toConcrete x
     A.DisplayPragma f ps rhs ->
       C.DisplayPragma r <$> toConcrete (A.DefP (PatRange noRange) f ps) <*> toConcrete rhs
 
@@ -920,7 +921,8 @@ data Hd = HdVar A.Name | HdCon A.QName | HdDef A.QName
 
 cOpApp :: Range -> C.QName -> A.Name -> [C.Expr] -> C.Expr
 cOpApp r x n es =
-  C.OpApp r x (Set.singleton n) (map (defaultNamedArg . Ordinary) es)
+  C.OpApp r x (Set.singleton n)
+          (map (defaultNamedArg . NoPlaceholder . Ordinary) es)
 
 tryToRecoverOpApp :: A.Expr -> AbsToCon C.Expr -> AbsToCon C.Expr
 tryToRecoverOpApp e def = recoverOpApp bracket cOpApp view e def

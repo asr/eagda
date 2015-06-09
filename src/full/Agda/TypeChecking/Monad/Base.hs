@@ -155,6 +155,8 @@ data PostScopeState = PostScopeState
   , stPostSignature           :: Signature
     -- ^ Declared identifiers of the current file.
     --   These will be serialized after successful type checking.
+  , stPostImportsDisplayForms :: !DisplayForms
+    -- ^ Display forms we add for imported identifiers
   , stPostCurrentModule       :: Maybe ModuleName
     -- ^ The current module is available after it has been type
     -- checked.
@@ -263,6 +265,7 @@ initPostScopeState = PostScopeState
   , stPostDirty                = False
   , stPostOccursCheckDefs      = Set.empty
   , stPostSignature            = emptySignature
+  , stPostImportsDisplayForms  = HMap.empty
   , stPostCurrentModule        = Nothing
   , stPostInstanceDefs         = (Map.empty , [])
   , stPostStatistics           = Map.empty
@@ -395,6 +398,11 @@ stSignature :: Lens' Signature TCState
 stSignature f s =
   f (stPostSignature (stPostScopeState s)) <&>
   \x -> s {stPostScopeState = (stPostScopeState s) {stPostSignature = x}}
+
+stImportsDisplayForms :: Lens' DisplayForms TCState
+stImportsDisplayForms f s =
+  f (stPostImportsDisplayForms (stPostScopeState s)) <&>
+  \x -> s {stPostScopeState = (stPostScopeState s) {stPostImportsDisplayForms = x}}
 
 stCurrentModule :: Lens' (Maybe ModuleName) TCState
 stCurrentModule f s =
@@ -667,7 +675,7 @@ data Constraint
     -- ^ The range is the one of the absurd pattern.
   | CheckSizeLtSat Type
     -- ^ Check that the 'Type' is either not a SIZELT or a non-empty SIZELT.
-  | FindInScope MetaId (Maybe MetaId) (Maybe [(Term, Type)])
+  | FindInScope MetaId (Maybe MetaId) (Maybe [Candidate])
     -- ^ the first argument is the instance argument, the second one is the meta
     --   on which the constraint may be blocked on and the third one is the list
     --   of candidates (or Nothing if we haven’t determined the list of
@@ -811,7 +819,7 @@ data MetaInstantiation
 
 data TypeCheckingProblem
   = CheckExpr A.Expr Type
-  | CheckArgs ExpandHidden ExpandInstances Range [I.NamedArg A.Expr] Type Type (Args -> Type -> TCM Term)
+  | CheckArgs ExpandHidden Range [I.NamedArg A.Expr] Type Type (Args -> Type -> TCM Term)
   | CheckLambda (Arg ([WithHiding Name], Maybe Type)) A.Expr Type
     -- ^ @(λ (xs : t₀) → e) : t@
     --   This is not an instance of 'CheckExpr' as the domain type
@@ -936,6 +944,7 @@ data Signature = Sig
 
 type Sections    = Map ModuleName Section
 type Definitions = HashMap QName Definition
+type DisplayForms = HashMap QName [Open DisplayForm]
 
 data Section = Section
       { secTelescope :: Telescope
@@ -1736,10 +1745,20 @@ data ExpandHidden
   | DontExpandLast  -- ^ Do not append implicit arguments.
   deriving (Eq)
 
-data ExpandInstances
-  = ExpandInstanceArguments
-  | DontExpandInstanceArguments
-    deriving (Eq)
+data ExplicitToInstance
+  = ExplicitToInstance    -- ^ Explicit arguments are considered as instance arguments
+  | ExplicitStayExplicit
+    deriving (Eq, Show)
+
+-- | A candidate solution for an instance meta is a term with its type.
+--   It may be the case that the candidate is not fully applied yet or
+--   of the wrong type, hence the need for the type.
+data Candidate  = Candidate { candidateTerm :: Term
+                            , candidateType :: Type
+                            , candidateEti  :: ExplicitToInstance
+                            }
+  deriving (Show)
+
 
 ---------------------------------------------------------------------------
 -- * Type checking errors
@@ -1882,6 +1901,8 @@ data TypeError
             -- ^ A function is applied to a hidden named argument it does not have.
         | WrongIrrelevanceInLambda Type
             -- ^ Expected a relevant function and found an irrelevant lambda.
+        | WrongInstanceDeclaration
+            -- ^ A term is declared as an instance but it’s not allowed
         | HidingMismatch Hiding Hiding
             -- ^ The given hiding does not correspond to the expected hiding.
         | RelevanceMismatch Relevance Relevance

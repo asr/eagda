@@ -100,9 +100,14 @@ Pragmas and options
   This causes f e1 .. en to be printed as e, where ei can bind variables used
   in e. The expressions ei and e are scope checked, but not type checked.
 
-  Example
+  For example this can be used to print overloaded (instance) functions with
+  the overloaded name:
 
-    {-# DISPLAY _∷_ x [] = [ x ] #-}
+    instance
+      NumNat : Num Nat
+      NumNat = record { ..; _+_ = natPlus }
+
+    {-# DISPLAY natPlus a b = a + b #-}
 
   Limitations
 
@@ -113,6 +118,44 @@ Pragmas and options
     Since DISPLAY pragmas are not type checked implicit argument insertion may
     not work properly if the type of f computes to an implicit function space
     after pattern matching.
+
+* New pragma {-# NO_ETA R #-}
+
+  The pragma {-# NO_ETA R #-} disables eta rules for the record type R.
+
+  record Σ (A : Set) (B : A -> Set) : Set where
+    inductive
+    constructor _,_
+    field
+      fst : A
+      snd : B fst
+  open Σ
+
+  {-# NO_ETA Σ #-}
+
+  -- fail : ∀ {A : Set}{B : A -> Set} → (x : Σ A B) → x ≡ (fst x , snd x)
+  -- fail x = refl
+  --
+  -- x != fst x , snd x of type Σ .A .B
+  -- when checking that the expression refl has type x ≡ (fst x , snd x)
+
+
+  The effect can be reverted with the {-# ETA R #-} pragma.
+
+  {-# ETA Σ #-}
+
+  works : ∀ {A : Set}{B : A -> Set} → (x : Σ A B) → x ≡ (fst x , snd x)
+  works x = refl
+
+* New option --no-eta.
+
+  The --no-eta flag disables eta rules for declared record types.
+  It has the same effect as {-# NO_ETA R #-} after each declaration of
+  a record type R.
+
+  If used with the OPTIONS pragma it will not affect records defined
+  in other modules.
+
 
 Language
 ========
@@ -292,14 +335,16 @@ Operator syntax
 
   Sections are translated into lambda expressions. Examples:
 
-    _∸ 1              ↦  λ .section₀ → .section₀ ∸ 1
+    _∸ 1              ↦  λ section → section ∸ 1
 
-    if_then ⊤ else ⊥  ↦  λ .section₀ → if .section₀ then ⊤ else ⊥
+    if_then ⊤ else ⊥  ↦  λ section → if section then ⊤ else ⊥
 
-    if b then_else_   ↦  λ .section₀ .section₁ →
-                             if b then .section₀ else .section₁
+    if b then_else_   ↦  λ section section₁ →
+                             if b then section else section₁
 
-  Operator sections are unrelated to all other operators.
+  Operator sections have the same fixity as the underlying operator
+  (except in cases like "if b then_else_", in which the section is
+  "closed", but the operator is not).
 
   Operator sections are not supported in patterns (with the exception
   of dot patterns), and notations coming from syntax declarations
@@ -371,11 +416,18 @@ Operator syntax
   included in the operator grammar, possibly leading to ambiguity.
   Previously the operator was given the default fixity [Issue 1436].
 
-  If some instances of an overloaded operator have distinct
-  associativities (but equal precedence levels), then these instances
-  are treated as being non-associative.
+  There is an exception to this rule: If there are multiple
+  precedences, but all except for at most one is "unrelated", then
+  only one instance will be included in the grammar. If all
+  precedences are "unrelated", then the instance will get this
+  precedence, and otherwise the instance will get the related
+  precedence level.
 
-  The two paragraphs above also apply to identical notations (coming
+  If multiple occurrences of an operator are "merged" in the grammar,
+  and they have distinct associativities, then they are treated as
+  being non-associative.
+
+  The three paragraphs above also apply to identical notations (coming
   from syntax declarations) for a given overloaded name.
 
   Examples:
@@ -384,6 +436,7 @@ Operator syntax
 
       infixr 5 _∷_
       infixr 5 _∙_
+      infixl 3 _+_
       infix  1 bind
 
       syntax bind c (λ x → d) = x ← c , d
@@ -392,6 +445,7 @@ Operator syntax
 
       infix  5 _∷_
       infixr 4 _∙_
+      -- No fixity declaration for _+_.
       infixl 2 bind
 
       syntax bind c d = c ∙ d
@@ -408,10 +462,12 @@ Operator syntax
 
     -- _∷_ is infix 5.
     -- _∙_ has two fixities: infixr 4 and infixr 5.
+    -- _+_ is infixl 3.
     -- A.bind's notation is infix 1.
     -- B.bind and C.bind's notations are infix 2.
 
-    -- There is one instance of "_ ∷ _" in the grammar.
+    -- There is one instance of "_ ∷ _" in the grammar, and one
+    -- instance of "_ + _".
 
     -- There are three instances of "_ ∙ _" in the grammar, one
     -- corresponding to A._∙_, one corresponding to B._∙_, and one
@@ -515,6 +571,46 @@ Other changes
 
 * Unicode ellipsis character is allowed for the ellipsis token ... in
   `with` expressions.
+
+* Instance search
+
+  Performance has been improved, recursive instance search which was previously
+  exponential in the depth is now only quadratic.
+
+
+  Constructors of records and datatypes are not anymore automatically considered
+  as instances, you have to do so explicitely, for instance:
+
+    -- only [b] is an instance of D
+    data D : Set where
+      a : D
+      instance
+        b : D
+      c : D
+
+    -- the constructor is now an instance
+    record tt : Set where
+      instance constructor tt
+
+
+  Instance search can now find arguments in variable types (but such candidates can
+  only be lambda-bound variables, they can’t be declared as instances)
+
+    module _ {A : Set} (P : A → Set) where
+
+      postulate
+        bla : {x : A} {{_ : P x}} → Set → Set
+
+      -- Works, the instance argument is found in the context
+      test :  {x : A} {{_ : P x}} → Set → Set
+      test B = bla B
+
+      -- Still forbidden, because [P] could be instantiated later to anything
+      instance
+       postulate
+        forbidden : {x : A} → P x
+
+
 
 Goal and error display
 ======================

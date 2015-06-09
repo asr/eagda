@@ -209,18 +209,23 @@ buildParsers r flat kind exprNames = do
           IsPattern -> DoNotParseSections
           IsExpr    -> ParseSections
 
-    let unrelatedOperators :: [NotationSection]
-        unrelatedOperators =
-          map noSection (filter ((== Unrelated) . level) fix)
-            ++
+    let nonClosedSections l ns =
           case parseSections of
             DoNotParseSections -> []
             ParseSections      ->
-              [ NotationSection n k (Just Unrelated) True
-              | n <- fix
+              [ NotationSection n k (Just l) True
+              | n <- ns
               , isinfix n && notaIsOperator n
               , k <- [PrefixNotation, PostfixNotation]
               ]
+
+        unrelatedOperators :: [NotationSection]
+        unrelatedOperators =
+          map noSection unrelated
+            ++
+          nonClosedSections Unrelated unrelated
+          where
+          unrelated = filter ((== Unrelated) . level) fix
 
         nonWithSections :: [NotationSection]
         nonWithSections =
@@ -238,12 +243,14 @@ buildParsers r flat kind exprNames = do
         -- level comes first.
         relatedOperators :: [(Integer, [NotationSection])]
         relatedOperators =
-          map (\((l, n) : ns) -> (l, map noSection (n : map snd ns))) .
+          map (\((l, ns) : rest) -> (l, ns ++ concat (map snd rest))) .
           groupBy ((==) `on` fst) .
           sortBy (compare `on` fst) .
           mapMaybe (\n -> case level n of
-                            Unrelated -> Nothing
-                            Related l -> Just (l, n)) $
+                            Unrelated     -> Nothing
+                            r@(Related l) ->
+                              Just (l, noSection n :
+                                       nonClosedSections r [n])) $
           fix
 
         everything :: [NotationSection]
@@ -436,7 +443,8 @@ instance IsExpr Pattern where
     exprView e = case e of
         IdentP x         -> LocalV x
         AppP e1 e2       -> AppV e1 e2
-        OpAppP r d ns es -> OpAppV d ns ((map . fmap . fmap) Ordinary es)
+        OpAppP r d ns es -> OpAppV d ns ((map . fmap . fmap)
+                                           (NoPlaceholder . Ordinary) es)
         HiddenP _ e      -> HiddenArgV e
         InstanceP _ e    -> InstanceArgV e
         ParenP _ e       -> ParenV e
@@ -446,8 +454,12 @@ instance IsExpr Pattern where
         LocalV x       -> IdentP x
         AppV e1 e2     -> AppP e1 e2
         OpAppV d ns es -> let ess :: [NamedArg Pattern]
-                              ess = (map . fmap . fmap) (fromOrdinary __IMPOSSIBLE__) es
-                          in OpAppP (fuseRange d es) d ns ess
+                              ess = (map . fmap . fmap)
+                                      (\x -> case x of
+                                          Placeholder{}   -> __IMPOSSIBLE__
+                                          NoPlaceholder x -> fromOrdinary __IMPOSSIBLE__ x)
+                                      es
+                          in OpAppP (fuseRange d ess) d ns ess
         HiddenArgV e   -> HiddenP (getRange e) e
         InstanceArgV e -> InstanceP (getRange e) e
         ParenV e       -> ParenP (getRange e) e
@@ -786,7 +798,7 @@ fullParen' e = case exprView e of
                 Hidden    -> e2
                 Instance  -> e2
                 NotHidden -> fullParen' <$> e2
-    OpAppV x ns es -> par $ unExprView $ OpAppV x ns $ (map . fmap . fmap . fmap) fullParen' es
+    OpAppV x ns es -> par $ unExprView $ OpAppV x ns $ (map . fmap . fmap . fmap . fmap) fullParen' es
     LamV bs e -> par $ unExprView $ LamV bs (fullParen e)
     where
         par = unExprView . ParenV
