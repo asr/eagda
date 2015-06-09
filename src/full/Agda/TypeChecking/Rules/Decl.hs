@@ -493,6 +493,72 @@ assertCurrentModule x err =
 checkPragma :: Range -> A.Pragma -> TCM ()
 checkPragma r p =
     traceCall (CheckPragma r p) $ case p of
+        -- ASR TODO (09 June 2015). Move to the end. We wrote the data
+        -- type here for avoiding conflicts when merging master.
+
+        -- The ATP-pragma.
+
+        -- This error must be detected by Agda.Syntax.Translation.ConcreteToAbstract.
+        A.ATPPragma _ [] -> __IMPOSSIBLE__
+
+        A.ATPPragma ATPAxiom qs -> do
+          mapM_ helper qs
+           where
+             helper :: QName -> TCM ()
+             helper q = do
+               def <- getConstInfo q
+               case theDef def of
+                 Axiom{} -> do
+                   reportSLn "tc.pragma.atp" 10 $
+                             "Processing the postulate " ++ show q ++ " as an axiom"
+                   addATPPragma ATPAxiom q []
+
+                 Constructor{} -> do
+                   reportSLn "tc.pragma.atp" 10 $
+                             "Processing the data constructor " ++ show q ++ " as an axiom"
+                   addATPPragma ATPAxiom q []
+
+                 _  -> typeError $ GenericError "ATP directive with the role <axiom> works only on postulates or data constructors"
+
+        A.ATPPragma ATPConjecture (q : qs) -> do
+          def <- getConstInfo q
+          case theDef def of
+            Axiom{} -> do
+              reportSLn "tc.pragma.atp" 10 $
+                "Processing the postulate " ++ show q ++ " as an ATP conjecture"
+              addATPPragma ATPConjecture q qs
+
+            _   -> typeError $ GenericError "ATP directive with the role <prove> only works on postulates"
+
+        A.ATPPragma ATPDefinition qs -> do
+          mapM_ helper qs
+           where
+             helper :: QName -> TCM ()
+             helper q = do
+               def <- getConstInfo q
+               case theDef def of
+                 Function{} -> do
+                   reportSLn "tc.pragma.atp" 10 $
+                              "Processing the function " ++ show q ++ " as an ATP declaration"
+                   addATPPragma ATPDefinition q []
+
+                 _  -> typeError $ GenericError "ATP directive with the role <definition> only works on functions"
+
+
+        A.ATPPragma ATPHint qs -> do
+          mapM_ helper qs
+           where
+             helper :: QName -> TCM ()
+             helper q = do
+               def <- getConstInfo q
+               case theDef def of
+                 Function{} -> do
+                   reportSLn "tc.pragma.atp" 10 $
+                              "Processing the function " ++ show q ++ " as an ATP general hint"
+                   addATPPragma ATPHint q []
+
+                 _  -> typeError $ GenericError "ATP directive with the role <hint> only works on functions"
+
         A.BuiltinPragma x e -> bindBuiltin x e
         A.BuiltinNoDefPragma b x -> bindBuiltinNoDef b x
         A.RewritePragma q   -> addRewriteRule q
@@ -652,69 +718,6 @@ checkPragma r p =
             setEta d = case d of
               Record{} -> d { recEtaEquality = b }
               _        -> __IMPOSSIBLE__
-
-        -- The ATP-pragma.
-
-        -- This error must be detected by Agda.Syntax.Translation.ConcreteToAbstract.
-        A.ATPPragma _ [] -> __IMPOSSIBLE__
-
-        A.ATPPragma ATPAxiom qs -> do
-          mapM_ helper qs
-           where
-             helper :: QName -> TCM ()
-             helper q = do
-               def <- getConstInfo q
-               case theDef def of
-                 Axiom{} -> do
-                   reportSLn "tc.pragma.atp" 10 $
-                             "Processing the postulate " ++ show q ++ " as an axiom"
-                   addATPPragma ATPAxiom q []
-
-                 Constructor{} -> do
-                   reportSLn "tc.pragma.atp" 10 $
-                             "Processing the data constructor " ++ show q ++ " as an axiom"
-                   addATPPragma ATPAxiom q []
-
-                 _  -> typeError $ GenericError "ATP directive with the role <axiom> works only on postulates or data constructors"
-
-        A.ATPPragma ATPConjecture (q : qs) -> do
-          def <- getConstInfo q
-          case theDef def of
-            Axiom{} -> do
-              reportSLn "tc.pragma.atp" 10 $
-                "Processing the postulate " ++ show q ++ " as an ATP conjecture"
-              addATPPragma ATPConjecture q qs
-
-            _   -> typeError $ GenericError "ATP directive with the role <prove> only works on postulates"
-
-        A.ATPPragma ATPDefinition qs -> do
-          mapM_ helper qs
-           where
-             helper :: QName -> TCM ()
-             helper q = do
-               def <- getConstInfo q
-               case theDef def of
-                 Function{} -> do
-                   reportSLn "tc.pragma.atp" 10 $
-                              "Processing the function " ++ show q ++ " as an ATP declaration"
-                   addATPPragma ATPDefinition q []
-
-                 _  -> typeError $ GenericError "ATP directive with the role <definition> only works on functions"
-
-
-        A.ATPPragma ATPHint qs -> do
-          mapM_ helper qs
-           where
-             helper :: QName -> TCM ()
-             helper q = do
-               def <- getConstInfo q
-               case theDef def of
-                 Function{} -> do
-                   reportSLn "tc.pragma.atp" 10 $
-                              "Processing the function " ++ show q ++ " as an ATP general hint"
-                   addATPPragma ATPHint q []
-
-                 _  -> typeError $ GenericError "ATP directive with the role <hint> only works on functions"
 
 -- | Type check a bunch of mutual inductive recursive definitions.
 --
