@@ -1,8 +1,10 @@
-{-# LANGUAGE CPP #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE UndecidableInstances #-}
+-- GHC 7.4.2 requires this layout for the pragmas. See Issue 1460.
+{-# LANGUAGE CPP,
+             FlexibleContexts,
+             FlexibleInstances,
+             TemplateHaskell,
+             TupleSections,
+             UndecidableInstances #-}
 
 -- | Check that a datatype is strictly positive.
 module Agda.TypeChecking.Positivity where
@@ -13,14 +15,18 @@ import Control.Applicative hiding (empty)
 import Control.DeepSeq
 import Control.Monad.Reader
 
-import Data.Set (Set)
-import qualified Data.Set as Set
-import Data.Map (Map)
-import qualified Data.Map as Map
+import Data.Either
+import Data.Graph (SCC(..), flattenSCC)
 import Data.List as List hiding (null)
 import Data.Maybe (mapMaybe, fromMaybe)
+import Data.Map (Map)
+import qualified Data.Map as Map
+import Data.Set (Set)
+import qualified Data.Set as Set
 
 import Debug.Trace
+
+import Test.QuickCheck
 
 import Agda.Syntax.Position
 import Agda.Syntax.Common
@@ -34,18 +40,20 @@ import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
 
-import Agda.Utils.Size
+import qualified Agda.Utils.Graph.AdjacencyMap.Unidirectional as Graph
+import Agda.Utils.Functor
 import Agda.Utils.List
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.Null
 import qualified Agda.Utils.Permutation as Perm
 import Agda.Utils.SemiRing
-import qualified Agda.Utils.Graph.AdjacencyMap as Graph
-import Agda.Utils.Graph.AdjacencyMap (Graph)
+import Agda.Utils.Size
 
 #include "undefined.h"
 import Agda.Utils.Impossible
+
+type Graph n e = Graph.Graph n n e
 
 -- | Check that the datatypes in the mutual block containing the given
 --   declarations are strictly positive.
@@ -56,8 +64,9 @@ checkStrictlyPositive :: Set QName -> TCM ()
 checkStrictlyPositive qs = disableDestructiveUpdate $ do
   -- compute the occurrence graph for qs
   reportSDoc "tc.pos.tick" 100 $ text "positivity of" <+> prettyTCM (Set.toList qs)
-  g <- Graph.filterEdges (\ (Edge o _) -> o /= Unused) <$> buildOccurrenceGraph qs
-  let gstar = Graph.transitiveClosure $ fmap occ g
+  -- remove @Unused@ edges
+  g <- Graph.clean <$> buildOccurrenceGraph qs
+  let gstar = Graph.gaussJordanFloydWarshallMcNaughtonYamada $ fmap occ g
   reportSDoc "tc.pos.tick" 100 $ text "constructed graph"
   reportSLn "tc.pos.graph" 5 $ "Positivity graph: N=" ++ show (size $ Graph.nodes g) ++
                                " E=" ++ show (length $ Graph.edges g)
@@ -65,6 +74,8 @@ checkStrictlyPositive qs = disableDestructiveUpdate $ do
     [ text "positivity graph for" <+> prettyTCM (Set.toList qs)
     , nest 2 $ prettyTCM g
     ]
+  reportSLn "tc.pos.graph" 5 $
+    "Positivity graph (completed): E=" ++ show (length $ Graph.edges gstar)
   reportSDoc "tc.pos.graph" 50 $ vcat
     [ text "transitive closure of positivity graph for" <+>
       prettyTCM (Set.toList qs)
@@ -76,7 +87,16 @@ checkStrictlyPositive qs = disableDestructiveUpdate $ do
   reportSDoc "tc.pos.tick" 100 $ text "set args"
 
   -- check positivity for all strongly connected components of the graph for qs
-  let sccs = Graph.sccs gstar
+  let sccs' = Graph.sccs' gstar
+      sccs  = map flattenSCC sccs'
+  reportSDoc "tc.pos.graph.sccs" 10 $ do
+    let (triv, others) = partitionEithers $ for sccs' $ \ scc -> case scc of
+          AcyclicSCC v -> Left v
+          CyclicSCC vs -> Right vs
+    sep [ text $ show (length triv) ++ " trivial sccs"
+        , text $ show (length others) ++ " non-trivial sccs with lengths " ++
+            show (map length others)
+        ]
   reportSDoc "tc.pos.graph.sccs" 15 $ text $ "  sccs = " ++ show sccs
   forM_ sccs $ \ scc -> setMut [ q | DefNode q <- scc ]
   mapM_ (checkPos g) $ Set.toList qs
@@ -182,6 +202,9 @@ getDefArity def = case theDef def of
 --   For 'otimes', 'StrictPos' is neutral (one) and 'Unused' is dominant.
 
 instance SemiRing Occurrence where
+  ozero = Unused
+  oone  = StrictPos
+
   oplus Mixed _           = Mixed     -- dominant
   oplus _ Mixed           = Mixed
   oplus Unused o          = o         -- neutral
@@ -207,6 +230,17 @@ instance SemiRing Occurrence where
   otimes GuardPos _          = GuardPos   -- _ `elem` [StrictPos, GuardPos]
   otimes _ GuardPos          = GuardPos
   otimes StrictPos StrictPos = StrictPos  -- neutral
+
+instance StarSemiRing Occurrence where
+  ostar Mixed     = Mixed
+  ostar JustNeg   = Mixed
+  ostar JustPos   = JustPos
+  ostar StrictPos = StrictPos
+  ostar GuardPos  = StrictPos
+  ostar Unused    = StrictPos
+
+instance Null Occurrence where
+  empty = Unused
 
 -- | Description of an occurrence.
 data OccursWhere
@@ -573,7 +607,7 @@ instance PrettyTCM n => PrettyTCM (WithNode n Occurrence) where
   prettyTCM (WithNode n o) = prettyTCM o <+> prettyTCM n
 
 instance (PrettyTCM n, PrettyTCM (WithNode n e)) => PrettyTCM (Graph n e) where
-  prettyTCM g = vcat $ map pr $ Map.assocs $ Graph.unGraph g
+  prettyTCM g = vcat $ map pr $ Map.assocs $ Graph.graph g
     where
       pr (n, es) = sep
         [ prettyTCM n
@@ -584,10 +618,17 @@ instance (PrettyTCM n, PrettyTCM (WithNode n e)) => PrettyTCM (Graph n e) where
 data Edge = Edge Occurrence OccursWhere
   deriving (Show)
 
+instance Null Edge where
+  null (Edge o _) = null o
+  empty = Edge empty Unknown
+
 -- | These operations form a semiring if we quotient by the relation
 -- \"the 'Occurrence' components are equal\".
 
 instance SemiRing Edge where
+  ozero = Edge ozero Unknown
+  oone  = Edge oone  Unknown
+
   oplus _                    e@(Edge Mixed _)     = e -- dominant
   oplus e@(Edge Mixed _) _                        = e
   oplus (Edge Unused _)      e                    = e -- neutral
@@ -604,16 +645,17 @@ instance SemiRing Edge where
   otimes (Edge o1 w1) (Edge o2 w2) = Edge (otimes o1 o2) (w1 >*< w2)
 
 buildOccurrenceGraph :: Set QName -> TCM (Graph Node Edge)
-buildOccurrenceGraph qs = Graph.unions <$> mapM defGraph (Set.toList qs)
+buildOccurrenceGraph qs = Graph.unionsWith oplus <$> mapM defGraph (Set.toList qs)
   where
     defGraph :: QName -> TCM (Graph Node Edge)
     defGraph q = do
       occs <- computeOccurrences q
-      let onItem (item, occs) = do
-            es <- mapM (computeEdge qs) occs
-            return $ Graph.unions $
-                map (\(b, w) -> Graph.singleton (itemToNode item) b w) es
-      Graph.unions <$> mapM onItem (Map.assocs occs)
+      Graph.unionsWith oplus <$> do
+        forM (Map.assocs occs) $ \ (item, occs) -> do
+          let src = itemToNode item
+          es <- mapM (computeEdge qs) occs
+          return $ Graph.unionsWith oplus $
+            for es $ \ (tgt, w) -> Graph.singleton src tgt w
       where
         itemToNode (AnArg i) = ArgNode q i
         itemToNode (ADef q)  = DefNode q
@@ -662,3 +704,61 @@ computeEdge muts o = do
         -- D: (A B -> C) generates a positive edge B --> A.1
         -- even though the context is negative.
         inArg d i = mkEdge (ArgNode d i) StrictPos
+
+------------------------------------------------------------------------
+-- * All tests
+------------------------------------------------------------------------
+
+prop_Occurrence_oplus_associative ::
+  Occurrence -> Occurrence -> Occurrence -> Bool
+prop_Occurrence_oplus_associative x y z =
+  oplus x (oplus y z) == oplus (oplus x y) z
+
+prop_Occurrence_oplus_ozero :: Occurrence -> Bool
+prop_Occurrence_oplus_ozero x =
+  oplus ozero x == x
+
+prop_Occurrence_oplus_commutative :: Occurrence -> Occurrence -> Bool
+prop_Occurrence_oplus_commutative x y =
+  oplus x y == oplus y x
+
+prop_Occurrence_otimes_associative ::
+  Occurrence -> Occurrence -> Occurrence -> Bool
+prop_Occurrence_otimes_associative x y z =
+  otimes x (otimes y z) == otimes (otimes x y) z
+
+prop_Occurrence_otimes_oone :: Occurrence -> Bool
+prop_Occurrence_otimes_oone x =
+  otimes oone x == x
+    &&
+  otimes x oone == x
+
+prop_Occurrence_distributive ::
+  Occurrence -> Occurrence -> Occurrence -> Bool
+prop_Occurrence_distributive x y z =
+  otimes x (oplus y z) == oplus (otimes x y) (otimes x z)
+    &&
+  otimes (oplus x y) z == oplus (otimes x z) (otimes y z)
+
+prop_Occurrence_otimes_ozero :: Occurrence -> Bool
+prop_Occurrence_otimes_ozero x =
+  otimes ozero x == ozero
+    &&
+  otimes x ozero == ozero
+
+prop_Occurrence_ostar :: Occurrence -> Bool
+prop_Occurrence_ostar x =
+  ostar x == oplus oone (otimes x (ostar x))
+    &&
+  ostar x == oplus oone (otimes (ostar x) x)
+
+-- Template Haskell hack to make the following $quickCheckAll work
+-- under GHC 7.8.
+return []
+
+-- | Tests.
+
+tests :: IO Bool
+tests = do
+  putStrLn "Agda.TypeChecking.Positivity"
+  $quickCheckAll

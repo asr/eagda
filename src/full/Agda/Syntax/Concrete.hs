@@ -49,7 +49,7 @@ module Agda.Syntax.Concrete
   , ThingWithFixity(..)
   , topLevelModuleName
     -- * Pattern tools
-  , patternHead, patternNames
+  , patternNames, patternQNames
     -- * Lenses
   , mapLhsOriginalPattern
     -- * Concrete instances
@@ -433,6 +433,8 @@ data Pragma
   | StaticPragma           !Range QName
   | ImportPragma           !Range String
     -- ^ Invariant: The string must be a valid Haskell module name.
+  | ImportUHCPragma        !Range String
+    -- ^ same as above, but for the UHC backend
   | ImpossiblePragma       !Range
   | EtaPragma              !Range QName
   | NoEtaPragma            !Range QName
@@ -488,44 +490,27 @@ appView e = AppView e []
     Patterns
  --------------------------------------------------------------------------}
 
--- | Get the leftmost symbol in a pattern.
-patternHead :: Pattern -> Maybe Name
-patternHead p =
-  case p of
-    IdentP x               -> return $ unqualify x
-    AppP p p'              -> patternHead p
-    RawAppP _ []           -> __IMPOSSIBLE__
-    RawAppP _ (p:_)        -> patternHead p
-    OpAppP _ name _ ps     -> return $ unqualify name
-    HiddenP _ (namedPat)   -> patternHead (namedThing namedPat)
-    ParenP _ p             -> patternHead p
-    WildP _                -> Nothing
-    AbsurdP _              -> Nothing
-    AsP _ x p              -> patternHead p
-    DotP{}                 -> Nothing
-    LitP (LitQName _ x)    -> Nothing -- return $ unqualify x -- does not compile
-    LitP _                 -> Nothing
-    QuoteP _               -> Nothing
-    InstanceP _ (namedPat) -> patternHead (namedThing namedPat)
-
-
 -- | Get all the identifiers in a pattern in left-to-right order.
-patternNames :: Pattern -> [Name]
-patternNames p =
+patternQNames :: Pattern -> [QName]
+patternQNames p =
   case p of
-    IdentP x               -> [unqualify x]
-    AppP p p'              -> concatMap patternNames [p, namedArg p']
-    RawAppP _ ps           -> concatMap patternNames  ps
-    OpAppP _ name _ ps     -> unqualify name : concatMap (patternNames . namedArg) ps
-    HiddenP _ (namedPat)   -> patternNames (namedThing namedPat)
-    ParenP _ p             -> patternNames p
+    IdentP x               -> [x]
+    AppP p p'              -> concatMap patternQNames [p, namedArg p']
+    RawAppP _ ps           -> concatMap patternQNames  ps
+    OpAppP _ x _ ps        -> x : concatMap (patternQNames . namedArg) ps
+    HiddenP _ (namedPat)   -> patternQNames (namedThing namedPat)
+    ParenP _ p             -> patternQNames p
     WildP _                -> []
     AbsurdP _              -> []
-    AsP _ x p              -> patternNames p
+    AsP _ x p              -> patternQNames p
     DotP{}                 -> []
     LitP _                 -> []
     QuoteP _               -> []
-    InstanceP _ (namedPat) -> patternNames (namedThing namedPat)
+    InstanceP _ (namedPat) -> patternQNames (namedThing namedPat)
+
+-- | Get all the identifiers in a pattern in left-to-right order.
+patternNames :: Pattern -> [Name]
+patternNames = map unqualify . patternQNames
 
 {--------------------------------------------------------------------------
     Instances
@@ -684,6 +669,7 @@ instance HasRange Pragma where
   getRange (NoSmashingPragma r _)        = r
   getRange (StaticPragma r _)           = r
   getRange (ImportPragma r _)           = r
+  getRange (ImportUHCPragma r _)        = r
   getRange (ImpossiblePragma r)         = r
   getRange (EtaPragma r _)              = r
   getRange (NoEtaPragma r _)            = r
@@ -879,6 +865,7 @@ instance KillRange Pragma where
   killRange (NoSmashingPragma _ q)        = killRange1 (NoSmashingPragma noRange) q
   killRange (StaticPragma _ q)            = killRange1 (StaticPragma noRange) q
   killRange (ImportPragma _ s)            = ImportPragma noRange s
+  killRange (ImportUHCPragma _ s)         = ImportUHCPragma noRange s
   killRange (ImpossiblePragma _)          = ImpossiblePragma noRange
   killRange (EtaPragma _ q)               = killRange1 (EtaPragma noRange) q
   killRange (NoEtaPragma _ q)             = killRange1 (NoEtaPragma noRange) q

@@ -79,9 +79,12 @@ fromAgdaModule modNm curModImps transModIface defs cont = do
 
     funs <- evalFreshNameT "nl.uu.agda.from-agda" (catMaybes <$> mapM translateDefn defs)
 
+    -- additional core/HS imports for the FFI
+    additionalImports <- lift getHaskellImportsUHC
     let amod = AMod { xmodName = modNm
                   , xmodFunDefs = funs
                   , xmodDataTys = dats
+                  , xmodCrImports = additionalImports
                   }
     cont amod
     )
@@ -163,7 +166,7 @@ translateDataTypes defs = do
                     let (tyNm, impl) = case crty of
                                 CTMagic mgcNm -> let tyNm' = fst $ getMagicTypes M.! mgcNm
                                         in (tyNm', ADataImplMagic mgcNm)
-                                CTNormal tyNm' -> (tyNm', ADataImplForeign)
+                                CTNormal tyNm' -> (Just $ mkHsName1 tyNm', ADataImplForeign)
                     return $ Just (ADataTy tyNm n cons' impl)
               (Nothing, (cons', [])) -> do
                     tyCrNm <- getCoreName1 n
@@ -287,8 +290,8 @@ translateDefn (n, defini) = do
 -- here to de-Bruin levels.
 reverseCCBody :: Int -> CC.CompiledClauses -> CC.CompiledClauses
 reverseCCBody c cc = case cc of
-  CC.Case n (CC.Branches cbr lbr cabr) -> CC.Case (c+n)
-      $ CC.Branches (M.map (fmap $ reverseCCBody c) cbr)
+  CC.Case n (CC.Branches cop cbr lbr cabr) -> CC.Case (c+n)
+      $ CC.Branches cop (M.map (fmap $ reverseCCBody c) cbr)
         (M.map (reverseCCBody c) lbr)
         (fmap  (reverseCCBody c) cabr)
   CC.Done i t -> CC.Done i (S.applySubst
@@ -309,10 +312,11 @@ removeCoindCopatterns cc = do
     Just x  -> return $ go x cc
     Nothing -> return cc
   where go :: QName -> CC.CompiledClauses -> CC.CompiledClauses
-        go flat (CC.Case n (CC.Branches cbr lbr cabr)) =
+        go flat (CC.Case n (CC.Branches cop cbr lbr cabr)) =
                 case flat `M.lookup` cbr of
                     (Just flatCon) -> go flat $ CC.content flatCon
                     Nothing -> CC.Case n $ CC.Branches
+                            cop
                             (fmap (fmap (go flat)) cbr)
                             (fmap (go flat) lbr)
                             (fmap (go flat) cabr)
@@ -476,4 +480,3 @@ substLit lit = case lit of
   TL.LitChar   _ c -> return $ LChar c
   TL.LitFloat  _ f -> return $ LFloat f
   TL.LitQName  _ q -> return $ LQName q
-

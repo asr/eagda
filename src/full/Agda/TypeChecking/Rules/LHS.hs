@@ -464,16 +464,15 @@ checkLHS f st@(LHSState problem sigma dpi asb) = do
     unlessM (optPatternMatching <$> gets getPragmaOptions) $
       typeError $ GenericError $ "Pattern matching is disabled"
 
-    sp <- runListT $ splitProblem f problem
-    reportSDoc "tc.lhs.split" 20 $ text "splitting completed"
-    foldListT trySplit nothingToSplit $ ListT $ return sp
+    foldListT trySplit nothingToSplit $ splitProblem f problem
   where
 
     nothingToSplit = do
       reportSLn "tc.lhs.split" 50 $ "checkLHS: nothing to split in problem " ++ show problem
       nothingToSplitError problem
 
-    -- Split problem rest (projection pattern)
+    -- Split problem rest (projection pattern, does not fail as there is no call to unifier)
+
     trySplit (SplitRest projPat projType) _ = do
 
       -- Compute the new problem
@@ -490,7 +489,8 @@ checkLHS f st@(LHSState problem sigma dpi asb) = do
       applyRelevanceToContext (getRelevance projPat) $ do
         checkLHS f st'
 
-    -- Split on literal pattern
+    -- Split on literal pattern (does not fail as there is no call to unifier)
+
     trySplit (Split p0 xs (Arg _ (LitFocus lit iph hix a)) p1) _ = do
 
       -- plug the hole with a lit pattern
@@ -500,7 +500,9 @@ checkLHS f st@(LHSState problem sigma dpi asb) = do
       -- substitute the literal in p1 and sigma and dpi and asb
       let delta1 = problemTel p0
           delta2 = absApp (fmap problemTel p1) (Lit lit)
-          rho    = liftS (size delta2) $ singletonS (Lit lit)
+          rho    = singletonS (size delta2) (Lit lit)
+          -- Andreas, 2015-06-13 Literals are closed, so need to raise them!
+          -- rho    = liftS (size delta2) $ singletonS 0 (Lit lit)
           -- rho    = [ var i | i <- [0..size delta2 - 1] ]
           --       ++ [ raise (size delta2) $ Lit lit ]
           --       ++ [ var i | i <- [size delta2 ..] ]
@@ -518,7 +520,7 @@ checkLHS f st@(LHSState problem sigma dpi asb) = do
       st' <- updateProblemRest (LHSState problem' sigma' dpi' asb')
       checkLHS f st'
 
-    -- Split on constructor pattern
+    -- Split on constructor pattern (unifier might fail)
 
     trySplit (Split p0 xs focus@(Arg info Focus{}) p1) tryNextSplit = do
       res <- trySplitConstructor p0 xs focus p1

@@ -37,9 +37,11 @@ import Control.DeepSeq
 import qualified Control.Exception as E
 import Control.Monad
 import Control.Monad.Reader
-import Control.Monad.State.Strict
+import Control.Monad.State.Strict (StateT, runStateT, gets, modify)
+
 import Data.Array.IArray
 import Data.Word
+import Data.ByteString.Lazy (ByteString)
 import qualified Data.ByteString.Lazy as L
 import Data.Hashable
 import qualified Data.HashTable.IO as H
@@ -55,6 +57,7 @@ import qualified Data.Binary.Put as B
 import qualified Data.List as List
 import Data.Function
 import Data.Typeable ( cast, Typeable, typeOf, TypeRep )
+
 import qualified Codec.Compression.GZip as G
 
 import qualified Agda.Compiler.Epic.Interface as Epic
@@ -64,14 +67,16 @@ import qualified Agda.Compiler.UHC.AuxAST as UHCA
 import qualified Agda.Compiler.UHC.Naming as UHCN
 import qualified Agda.Compiler.UHC.Bridge as UHCB
 
-import Agda.Syntax.Common
+import Agda.Syntax.Common as Common
 import Agda.Syntax.Concrete.Name as C
+import qualified Agda.Syntax.Concrete as C
 import qualified Agda.Syntax.Abstract as A
 import Agda.Syntax.Info
 import Agda.Syntax.Internal as I
 import Agda.Syntax.Scope.Base
-import Agda.Syntax.Position (Position, Range, noRange)
-import qualified Agda.Syntax.Position as P
+import Agda.Syntax.Position as P
+-- import Agda.Syntax.Position (Position, Range, noRange)
+-- import qualified Agda.Syntax.Position as P
 import Agda.Syntax.Fixity
 import Agda.Syntax.Notation
 import Agda.Syntax.Literal
@@ -120,7 +125,7 @@ returnForcedByteString bs = return $! bs
 -- 32-bit machines). Word64 does not have these problems.
 
 currentInterfaceVersion :: Word64
-currentInterfaceVersion = 20150511 * 10 + 0
+currentInterfaceVersion = 20150617 * 10 + 0
 
 -- | Constructor tag (maybe omitted) and argument indices.
 
@@ -155,42 +160,58 @@ lensFresh f r = f (farFresh r) <&> \ i -> r { farFresh = i }
 lensReuse :: Lens' Int32 FreshAndReuse
 lensReuse f r = f (farReuse r) <&> \ i -> r { farReuse = i }
 
+-- | Two 'A.QName's are equal if their @QNameId@ is equal.
+type QNameId = [NameId]
+
+-- | Computing a qualified names composed ID.
+qnameId :: A.QName -> QNameId
+qnameId (A.QName (A.MName ns) n) = map A.nameId $ n:ns
+
 -- | State of the the encoder.
 data Dict = Dict
-  { nodeD        :: !(HashTable Node    Int32)
-  , stringD      :: !(HashTable String  Int32)
-  , bstringD     :: !(HashTable L.ByteString Int32)
-  , integerD     :: !(HashTable Integer Int32)
-  , doubleD      :: !(HashTable Double  Int32)
-  , termD        :: !(HashTable (Ptr Term) Int32)
+  -- Dictionaries which are serialized:
+  { nodeD        :: !(HashTable Node    Int32)    -- ^ Written to interface file.
+  , stringD      :: !(HashTable String  Int32)    -- ^ Written to interface file.
+  , bstringD     :: !(HashTable L.ByteString Int32) -- ^ Written to interface file.
+  , integerD     :: !(HashTable Integer Int32)    -- ^ Written to interface file.
+  , doubleD      :: !(HashTable Double  Int32)    -- ^ Written to interface file.
+  -- Dicitionaries which are not serialized, but provide
+  -- short cuts to speed up serialization:
+  , termD        :: !(HashTable (Ptr Term) Int32) -- ^ Not written to interface file.
+  -- Andreas, Makoto, AIM XXI
+  -- Memoizing A.Name does not buy us much if we already memoize A.QName.
+  -- , nameD        :: !(HashTable NameId Int32)
+  , qnameD       :: !(HashTable QNameId Int32)    -- ^ Not written to interface file.
+  -- Fresh UIDs and reuse statistics:
   , nodeC        :: !(IORef FreshAndReuse)  -- counters for fresh indexes
   , stringC      :: !(IORef FreshAndReuse)
   , bstringC     :: !(IORef FreshAndReuse)
   , integerC     :: !(IORef FreshAndReuse)
   , doubleC      :: !(IORef FreshAndReuse)
   , termC        :: !(IORef FreshAndReuse)
-  , stats        :: !(HashTable String Int32)
+  -- , nameC        :: !(IORef FreshAndReuse)
+  , qnameC       :: !(IORef FreshAndReuse)
+  , stats        :: !(HashTable String Int)
   , collectStats :: Bool
     -- ^ If @True@ collect in @stats@ the quantities of
     --   calls to @icode@ for each @Typeable a@.
-  , fileMod      :: !SourceToModule
+  , absPathD     :: !(HashTable AbsolutePath Int32) -- ^ Not written to interface file.
   }
 
 -- | Creates an empty dictionary.
 emptyDict
   :: Bool
      -- ^ Collect statistics for @icode@ calls?
-  -> SourceToModule
-     -- ^ Maps file names to the corresponding module names.
-     --   Must contain a mapping for every file name that is later encountered.
   -> IO Dict
-emptyDict collectStats fileMod = Dict
+emptyDict collectStats = Dict
   <$> H.new
   <*> H.new
   <*> H.new
   <*> H.new
   <*> H.new
   <*> H.new
+  <*> H.new
+  <*> newIORef farEmpty
   <*> newIORef farEmpty
   <*> newIORef farEmpty
   <*> newIORef farEmpty
@@ -199,7 +220,7 @@ emptyDict collectStats fileMod = Dict
   <*> newIORef farEmpty
   <*> H.new
   <*> pure collectStats
-  <*> pure fileMod
+  <*> H.new
 
 -- | Universal type, wraps everything.
 data U    = forall a . Typeable a => U !a
@@ -209,15 +230,16 @@ type Memo = HashTable (Int32, TypeRep) U    -- (node index, type rep)
 
 -- | State of the decoder.
 data St = St
-  { nodeE     :: !(Array Int32 Node)
-  , stringE   :: !(Array Int32 String)
-  , bstringE  :: !(Array Int32 L.ByteString)
-  , integerE  :: !(Array Int32 Integer)
-  , doubleE   :: !(Array Int32 Double)
+  { nodeE     :: !(Array Int32 Node)     -- ^ Obtained from interface file.
+  , stringE   :: !(Array Int32 String)   -- ^ Obtained from interface file.
+  , bstringE  :: !(Array Int32 L.ByteString) -- ^ Obtained from interface file.
+  , integerE  :: !(Array Int32 Integer)  -- ^ Obtained from interface file.
+  , doubleE   :: !(Array Int32 Double)   -- ^ Obtained from interface file.
   , nodeMemo  :: !Memo
+    -- ^ Created and modified by decoder.
+    --   Used to introduce sharing while deserializing objects.
   , modFile   :: !ModuleToSource
-    -- ^ Maps module names to file names. This is the only component
-    -- of the state which is updated by the decoder.
+    -- ^ Maps module names to file names. Constructed by the decoder.
   , includes  :: [AbsolutePath]
     -- ^ The include directories.
   , mkShared  :: Term -> Term
@@ -265,9 +287,11 @@ encode :: EmbPrj a => a -> TCM L.ByteString
 encode a = do
     collectStats <- hasVerbosity "profile.serialize" 20
     fileMod <- sourceToModule
-    newD@(Dict nD sD bD iD dD _ nC sC bC iC dC tC stats _ _) <- liftIO $
-      emptyDict collectStats fileMod
-    root <- liftIO $ runReaderT (icode a) newD
+    newD@(Dict nD sD bD iD dD _tD _qnameD nC sC bC iC dC tC qnameC stats _ _) <- liftIO $
+      emptyDict collectStats
+    root <- liftIO $ (`runReaderT` newD) $ do
+       icodeFileMod fileMod
+       icode a
     nL <- benchSort $ l nD
     sL <- benchSort $ l sD
     bL <- benchSort $ l bD
@@ -282,6 +306,8 @@ encode a = do
       statistics "ByteString" bC
       statistics "Double"   dC
       statistics "Node"     nC
+      statistics "Shared Term" tC
+      statistics "A.QName"  qnameC
     when collectStats $ do
       stats <- Map.fromList . map (second toInteger) <$> do
         liftIO $ H.toList stats
@@ -423,6 +449,20 @@ decodeHashes s
 decodeFile :: FilePath -> TCM (Maybe Interface)
 decodeFile f = decodeInterface =<< liftIO (L.readFile f)
 
+-- | Store a 'SourceToModule' (map from 'AbsolutePath' to 'TopLevelModuleName')
+--   as map from 'AbsolutePath' to 'Int32', in order to directly get the identifiers
+--   from absolute pathes rather than going through top level module names.
+icodeFileMod
+  :: SourceToModule
+     -- ^ Maps file names to the corresponding module names.
+     --   Must contain a mapping for every file name that is later encountered.
+  -> S ()
+icodeFileMod fileMod = do
+  hmap <- asks absPathD
+  forM_ (Map.toList fileMod) $ \ (absolutePath, topLevelModuleName) -> do
+    i <- icod_ topLevelModuleName
+    liftIO $ H.insert hmap absolutePath i
+
 #if __GLASGOW_HASKELL__ >= 710
 instance {-# OVERLAPPING #-} EmbPrj String where
 #else
@@ -502,10 +542,8 @@ instance EmbPrj Bool where
 
 instance EmbPrj AbsolutePath where
   icod_ file = do
-    mm <- Map.lookup file <$> asks fileMod
-    case mm of
-      Just m  -> icode m
-      Nothing -> __IMPOSSIBLE__
+    d <-  asks absPathD
+    liftIO $ fromMaybe __IMPOSSIBLE__ <$> H.lookup d file
   value m = do
     m :: TopLevelModuleName
             <- value m
@@ -692,7 +730,7 @@ instance EmbPrj GenPart where
                            valu _      = malformed
 
 instance EmbPrj A.QName where
-  icod_ (A.QName a b) = icode2' a b
+  icod_ n@(A.QName a b) = icodeMemo qnameD qnameC (qnameId n) $ icode2' a b
   value = vcase valu where valu [a, b] = valu2 A.QName a b
                            valu _      = malformed
 
@@ -705,6 +743,7 @@ instance EmbPrj A.ModuleName where
   value n = A.MName `fmap` value n
 
 instance EmbPrj A.Name where
+  -- icod_ (A.Name a b c d) = icodeMemo nameD nameC a $ icode4' a b c d
   icod_ (A.Name a b c d) = icode4' a b c d
   value = vcase valu where valu [a, b, c, d] = valu4 A.Name a b c d
                            valu _            = malformed
@@ -861,7 +900,7 @@ instance EmbPrj A.TypedBinding where
                            valu [1, a, b]    = valu2 A.TLet a b
                            valu _            = malformed
 
-instance EmbPrj c => EmbPrj (Agda.Syntax.Common.ArgInfo c) where
+instance EmbPrj c => EmbPrj (Common.ArgInfo c) where
   icod_ (ArgInfo h r cs) = icode3' h r cs
 
   value = vcase valu where valu [h, r, cs] = valu3 ArgInfo h r cs
@@ -915,46 +954,61 @@ instance EmbPrj a => EmbPrj (WithHiding a) where
   value = vcase valu where valu [a, b] = valu2 WithHiding a b
                            valu _      = malformed
 
-instance (EmbPrj a, EmbPrj c) => EmbPrj (Agda.Syntax.Common.Arg c a) where
+instance (EmbPrj a, EmbPrj c) => EmbPrj (Common.Arg c a) where
   icod_ (Arg i e) = icode2' i e
   value = vcase valu where valu [i, e] = valu2 Arg i e
                            valu _      = malformed
 
-instance (EmbPrj a, EmbPrj c) => EmbPrj (Agda.Syntax.Common.Dom c a) where
+instance (EmbPrj a, EmbPrj c) => EmbPrj (Common.Dom c a) where
   icod_ (Dom i e) = icode2' i e
   value = vcase valu where valu [i, e] = valu2 Dom i e
                            valu _      = malformed
 
-instance EmbPrj Agda.Syntax.Common.Induction where
+instance EmbPrj Common.Induction where
   icod_ Inductive   = icode0'
   icod_ CoInductive = icode0 1
   value = vcase valu where valu []  = valu0 Inductive
                            valu [1] = valu0 CoInductive
                            valu _   = malformed
 
-instance EmbPrj Agda.Syntax.Common.Hiding where
-  icod_ Hidden    = icode0 0
-  icod_ NotHidden = icode0'
-  icod_ Instance  = icode0 2
-  value = vcase valu where valu [0] = valu0 Hidden
-                           valu []  = valu0 NotHidden
-                           valu [2] = valu0 Instance
-                           valu _   = malformed
+instance EmbPrj Common.Hiding where
+  icod_ Hidden    = return 0
+  icod_ NotHidden = return 1
+  icod_ Instance  = return 2
+  value 0 = return Hidden
+  value 1 = return NotHidden
+  value 2 = return Instance
+  value _ = malformed
 
-instance EmbPrj Agda.Syntax.Common.Relevance where
-  icod_ Relevant   = icode0'
-  icod_ Irrelevant = icode0 1
-  icod_ (Forced Small) = icode0 2
-  icod_ (Forced Big)   = icode0 5
-  icod_ NonStrict  = icode0 3
-  icod_ UnusedArg  = icode0 4
-  value = vcase valu where valu []  = valu0 Relevant
-                           valu [1] = valu0 Irrelevant
-                           valu [2] = valu0 (Forced Small)
-                           valu [5] = valu0 (Forced Big)
-                           valu [3] = valu0 NonStrict
-                           valu [4] = valu0 UnusedArg
-                           valu _   = malformed
+instance EmbPrj Common.Relevance where
+  icod_ Relevant       = return 0
+  icod_ Irrelevant     = return 1
+  icod_ (Forced Small) = return 2
+  icod_ (Forced Big)   = return 3
+  icod_ NonStrict      = return 4
+  icod_ UnusedArg      = return 5
+  value 0 = return Relevant
+  value 1 = return Irrelevant
+  value 2 = return (Forced Small)
+  value 3 = return (Forced Big)
+  value 4 = return NonStrict
+  value 5 = return UnusedArg
+  value _ = malformed
+
+-- instance EmbPrj Common.Relevance where
+--   icod_ Relevant   = icode0'
+--   icod_ Irrelevant = icode0 1
+--   icod_ (Forced Small) = icode0 2
+--   icod_ (Forced Big)   = icode0 5
+--   icod_ NonStrict  = icode0 3
+--   icod_ UnusedArg  = icode0 4
+--   value = vcase valu where valu []  = valu0 Relevant
+--                            valu [1] = valu0 Irrelevant
+--                            valu [2] = valu0 (Forced Small)
+--                            valu [5] = valu0 (Forced Big)
+--                            valu [3] = valu0 NonStrict
+--                            valu [4] = valu0 UnusedArg
+--                            valu _   = malformed
 
 instance EmbPrj I.ConHead where
   icod_ (ConHead a b c) = icode3' a b c
@@ -974,6 +1028,7 @@ instance (EmbPrj a) => EmbPrj (I.Abs a) where
                            valu _         = malformed
 
 instance EmbPrj I.Term where
+  icod_ (Var     a []) = icode1' a
   icod_ (Var      a b) = icode2 0 a b
   icod_ (Lam      a b) = icode2 1 a b
   icod_ (Lit      a  ) = icode1 2 a
@@ -984,23 +1039,12 @@ instance EmbPrj I.Term where
   icod_ (MetaV    a b) = __IMPOSSIBLE__
   icod_ (DontCare a  ) = icode1 8 a
   icod_ (Level    a  ) = icode1 9 a
-  icod_ (Shared p)     = do
-    h  <- asks termD
-    mi <- liftIO $ H.lookup h p
-    st <- asks termC
-    case mi of
-      Just i  -> liftIO $ do
-        modifyIORef' st $ over lensReuse (+ 1)
-        return i
-      Nothing -> do
-        liftIO $ modifyIORef' st $ over lensFresh (+1)
-        n <- icode (derefPtr p)
-        liftIO $ H.insert h p n
-        return n
+  icod_ (Shared p)     = icodeMemo termD termC p $ icode (derefPtr p)
 
   value r = vcase valu' r
     where
       valu' xs = gets mkShared <*> valu xs
+      valu [a]       = valu1 var   a
       valu [0, a, b] = valu2 Var   a b
       valu [1, a, b] = valu2 Lam   a b
       valu [2, a]    = valu1 Lit   a
@@ -1213,34 +1257,62 @@ instance EmbPrj CR.HsName where
   value n = value n >>= return . (B.runGet UHCB.unserialize)
 
 instance EmbPrj Polarity where
-  icod_ Covariant     = icode0'
-  icod_ Contravariant = icode0 1
-  icod_ Invariant     = icode0 2
-  icod_ Nonvariant    = icode0 3
+  icod_ Covariant     = return 0
+  icod_ Contravariant = return 1
+  icod_ Invariant     = return 2
+  icod_ Nonvariant    = return 3
 
-  value = vcase valu where
-    valu []  = valu0 Covariant
-    valu [1] = valu0 Contravariant
-    valu [2] = valu0 Invariant
-    valu [3] = valu0 Nonvariant
-    valu _   = malformed
+  value 0 = return Covariant
+  value 1 = return Contravariant
+  value 2 = return Invariant
+  value 3 = return Nonvariant
+  value _  = malformed
+
+-- instance EmbPrj Polarity where
+--   icod_ Covariant     = icode0'
+--   icod_ Contravariant = icode0 1
+--   icod_ Invariant     = icode0 2
+--   icod_ Nonvariant    = icode0 3
+
+--   value = vcase valu where
+--     valu []  = valu0 Covariant
+--     valu [1] = valu0 Contravariant
+--     valu [2] = valu0 Invariant
+--     valu [3] = valu0 Nonvariant
+--     valu _   = malformed
 
 instance EmbPrj Occurrence where
-  icod_ StrictPos = icode0'
-  icod_ Mixed     = icode0 1
-  icod_ Unused    = icode0 2
-  icod_ GuardPos  = icode0 3
-  icod_ JustPos   = icode0 4
-  icod_ JustNeg   = icode0 5
+  icod_ StrictPos = return 0
+  icod_ Mixed     = return 1
+  icod_ Unused    = return 2
+  icod_ GuardPos  = return 3
+  icod_ JustPos   = return 4
+  icod_ JustNeg   = return 5
 
-  value = vcase valu where
-    valu []  = valu0 StrictPos
-    valu [1] = valu0 Mixed
-    valu [2] = valu0 Unused
-    valu [3] = valu0 GuardPos
-    valu [4] = valu0 JustPos
-    valu [5] = valu0 JustNeg
-    valu _   = malformed
+  value 0 = return StrictPos
+  value 1 = return Mixed
+  value 2 = return Unused
+  value 3 = return GuardPos
+  value 4 = return JustPos
+  value 5 = return JustNeg
+  value _ = malformed
+
+-- instance EmbPrj Occurrence where
+--   icod_ StrictPos = icode0'
+--   icod_ Mixed     = icode0 1
+--   icod_ Unused    = icode0 2
+--   icod_ GuardPos  = icode0 3
+--   icod_ JustPos   = icode0 4
+--   icod_ JustNeg   = icode0 5
+
+--   value = vcase valu where
+--     valu []  = valu0 StrictPos
+--     valu [1] = valu0 Mixed
+--     valu [2] = valu0 Unused
+--     valu [3] = valu0 GuardPos
+--     valu [4] = valu0 JustPos
+--     valu [5] = valu0 JustNeg
+--     valu _   = malformed
 
 -- ASR TODO (25 March 2015). Move to the end. We wrote this instance
 -- here for avoiding conflicts when merging master.
@@ -1286,11 +1358,11 @@ instance EmbPrj a => EmbPrj (WithArity a) where
     valu _      = malformed
 
 instance EmbPrj a => EmbPrj (Case a) where
-  icod_ (Branches a b c) = icode3' a b c
+  icod_ (Branches a b c d) = icode4' a b c d
 
   value = vcase valu where
-    valu [a, b, c] = valu3 Branches a b c
-    valu _         = malformed
+    valu [a, b, c, d] = valu4 Branches a b c d
+    valu _            = malformed
 
 instance EmbPrj CompiledClauses where
   icod_ Fail       = icode0'
@@ -1319,7 +1391,7 @@ instance EmbPrj TermHead where
                            valu [2, a] = valu1 ConsHead a
                            valu _      = malformed
 
-instance EmbPrj Agda.Syntax.Common.IsAbstract where
+instance EmbPrj Common.IsAbstract where
   icod_ AbstractDef = icode0 0
   icod_ ConcreteDef = icode0'
   value = vcase valu where valu [0] = valu0 AbstractDef
@@ -1481,11 +1553,11 @@ instance EmbPrj HP.CompressedFile where
     valu _   = malformed
 
 instance EmbPrj Interface where
-  icod_ (Interface a b c d e f g h i j k) = icode11' a b c d e f g h i j k
+  icod_ (Interface a b c d e f g h i j k l) = icode12' a b c d e f g h i j k l
   value = vcase valu
     where
-      valu [a, b, c, d, e, f, g, h, i, j, k] = valu11 Interface a b c d e f g h i j k
-      valu _                                 = malformed
+      valu [a, b, c, d, e, f, g, h, i, j, k, l] = valu12 Interface a b c d e f g h i j k l
+      valu _                                    = malformed
 
 -- This is used for the Epic compiler backend
 instance EmbPrj Epic.EInterface where
@@ -1695,6 +1767,28 @@ icodeN key = do
 
 -- icodeN :: [Int32] -> S Int32
 -- icodeN = icodeX nodeD nodeC
+
+-- | @icode@ only if thing has not seen before.
+icodeMemo
+  :: (Eq a, Ord a, Hashable a)
+  => (Dict -> HashTable a Int32)    -- ^ Memo structure for thing of key @a@.
+  -> (Dict -> IORef FreshAndReuse)  -- ^ Statistics.
+  -> a        -- ^ Key to the thing.
+  -> S Int32  -- ^ Fallback computation to encode the thing.
+  -> S Int32  -- ^ Encoded thing.
+icodeMemo getDict getCounter a icodeP = do
+    h  <- asks getDict
+    mi <- liftIO $ H.lookup h a
+    st <- asks getCounter
+    case mi of
+      Just i  -> liftIO $ do
+        modifyIORef' st $ over lensReuse (+ 1)
+        return i
+      Nothing -> do
+        liftIO $ modifyIORef' st $ over lensFresh (+1)
+        i <- icodeP
+        liftIO $ H.insert h a i
+        return i
 
 {-# INLINE vcase #-}
 -- | @vcase value ix@ decodes thing represented by @ix :: Int32@

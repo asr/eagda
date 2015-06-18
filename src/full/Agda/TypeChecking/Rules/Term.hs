@@ -1,10 +1,11 @@
-{-# LANGUAGE CPP #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE PatternGuards #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
+-- GHC 7.4.2 requires this layout for the pragmas. See Issue 1460.
+{-# LANGUAGE CPP,
+             FlexibleInstances,
+             NamedFieldPuns,
+             MultiParamTypeClasses,
+             PatternGuards,
+             ScopedTypeVariables,
+             TupleSections #-}
 
 #if __GLASGOW_HASKELL__ >= 710
 {-# LANGUAGE FlexibleContexts #-}
@@ -1405,7 +1406,6 @@ checkHeadApplication e t hd args = do
 
 -- Stupid ErrorT!
 instance Error (a, b, c) where
-  strMsg _ = __IMPOSSIBLE__
   noMsg = __IMPOSSIBLE__
 
 traceCallE :: Error e => (Maybe r -> Call) -> ExceptT e TCM r -> ExceptT e TCM r
@@ -1468,7 +1468,7 @@ checkArguments exh r args0@(arg@(Arg info e) : args) t0 t1 =
       let (mxs, us) = unzip $ map (\ (Arg ai (Named mx u)) -> (mx, Arg ai u)) nargs
           xs        = catMaybes mxs
       -- We are done inserting implicit args.  Now, try to check @arg@.
-      ifBlockedType t (\ m t -> throwError ([], args0, t)) $ \ t0' -> do
+      ifBlockedType t (\ m t -> throwError (us, args0, t)) $ \ t0' -> do
 
         -- What can go wrong?
 

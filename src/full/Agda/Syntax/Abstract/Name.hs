@@ -25,7 +25,7 @@ import Data.Hashable
 
 import Agda.Syntax.Position
 import Agda.Syntax.Common
-import Agda.Syntax.Fixity
+import {-# SOURCE #-} Agda.Syntax.Fixity
 import Agda.Syntax.Concrete.Name (IsNoName(..))
 import qualified Agda.Syntax.Concrete.Name as C
 

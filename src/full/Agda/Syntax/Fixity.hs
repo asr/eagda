@@ -23,7 +23,7 @@ import Data.Typeable (Typeable)
 
 import Agda.Syntax.Position
 import Agda.Syntax.Common
-import {-# SOURCE #-} qualified Agda.Syntax.Abstract.Name as A
+import qualified Agda.Syntax.Abstract.Name as A
 import Agda.Syntax.Concrete.Name
 import Agda.Syntax.Notation
 
@@ -236,8 +236,7 @@ data Precedence = TopCtx | FunctionSpaceDomainCtx
                 | LeftOperandCtx Fixity | RightOperandCtx Fixity
                 | FunctionCtx | ArgumentCtx | InsideOperandCtx
                 | WithFunCtx | WithArgCtx | DotPatternCtx
-    deriving (Show,Typeable, Eq)
-
+    deriving (Show, Typeable, Eq)
 
 -- | The precedence corresponding to a possibly hidden argument.
 hiddenArgumentCtx :: Hiding -> Precedence

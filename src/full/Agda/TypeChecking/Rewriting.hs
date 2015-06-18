@@ -45,6 +45,7 @@ module Agda.TypeChecking.Rewriting where
 
 import Prelude hiding (null)
 
+import Control.Applicative hiding (empty)
 import Control.Monad
 import Control.Monad.Reader (local)
 
@@ -68,6 +69,7 @@ import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.Rewriting.NonLinMatch
 import qualified Agda.TypeChecking.Reduce.Monad as Red
 
+import Agda.Utils.Functor
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.Null
@@ -147,6 +149,10 @@ addRewriteRule q = inTopContext $ do
   -- Get rewrite rule (type of q).
   t <- defType <$> getConstInfo q
   TelV gamma core <- telView t
+  reportSDoc "rewriting" 30 $ do
+    text "attempting to add rewrite rule of type " <+> do
+      inTopContext $ prettyTCM gamma <+> text " |- " <+> do
+        addContext gamma $ prettyTCM core
 
   let failureWrongTarget = typeError . GenericDocError =<< hsep
         [ prettyTCM q , text " does not target rewrite relation" ]
@@ -172,13 +178,17 @@ addRewriteRule q = inTopContext $ do
           n  = size vs
           (us, [lhs, rhs]) = splitAt (n - 2) vs
       unless (size delta == size us) __IMPOSSIBLE__
-      let b  = applySubst (parallelS $ reverse us) a
+      b <- instantiateFull $ applySubst (parallelS $ reverse us) a
+      gamma <- instantiateFull gamma
 
       -- Find head symbol f of the lhs.
       f <- case ignoreSharing lhs of
         Def f es -> return f
         Con c vs -> return $ conName c
         _        -> failureNotDefOrCon
+
+      whenM (null . lookupDefinition f <$> getSignature) $ typeError . GenericDocError =<< hsep
+        [ text "Cannot add a rewrite rule for " , prettyTCM f , text " because it is defined in a different file" ]
 
       -- Normalize lhs: we do not want to match redexes.
       lhs <- normaliseArgs lhs
@@ -239,20 +249,21 @@ updateRewriteRules f def = def { defRewriteRules = f (defRewriteRules def) }
 
 -- | @rewriteWith t v rew@
 --   tries to rewrite @v : t@ with @rew@, returning the reduct if successful.
-rewriteWith :: Maybe Type -> Term -> RewriteRule -> ReduceM (Maybe Term)
+rewriteWith :: Maybe Type -> Term -> RewriteRule -> ReduceM (Either (Blocked Term) Term)
 rewriteWith mt v (RewriteRule q gamma lhs rhs b) = do
   Red.traceSDoc "rewriting" 95 (sep
     [ text "attempting to rewrite term " <+> prettyTCM v
     , text " with rule " <+> prettyTCM q
     ]) $ do
-    let no = return Nothing
-    caseMaybeM (nonLinMatch lhs v) no $ \ sub -> do
-      let v' = applySubst sub rhs
-      Red.traceSDoc "rewriting" 90 (sep
-        [ text "rewrote " <+> prettyTCM v
-        , text " to " <+> prettyTCM v'
-        ]) $ do
-        return $ Just v'
+    result <- nonLinMatch lhs v
+    case result of
+      Left block -> return $ Left $ const v <$> block
+      Right sub  -> do
+        let v' = applySubst sub rhs
+        Red.traceSDoc "rewriting" 90 (sep
+          [ text "rewrote " <+> prettyTCM v
+          , text " to " <+> prettyTCM v'
+          ]) $ return $ Right v'
 
     {- OLD CODE:
     -- Freeze all metas, remember which one where not frozen before.
@@ -281,26 +292,37 @@ rewriteWith mt v (RewriteRule q gamma lhs rhs b) = do
     return res-}
 
 -- | @rewrite t@ tries to rewrite a reduced term.
-rewrite :: Term -> ReduceM (Maybe Term)
-rewrite v = do
+rewrite :: Blocked Term -> ReduceM (Either (Blocked Term) Term)
+rewrite bv = do
+  let v     = ignoreBlocking bv
   case ignoreSharing v of
     -- We only rewrite @Def@s and @Con@s.
     Def f es -> rew f (Def f) es
     Con c vs -> rew (conName c) hd (Apply <$> vs)
       where hd es = Con c $ fromMaybe __IMPOSSIBLE__ $ allApplyElims es
-    _ -> return Nothing
+    _ -> return $ Left bv
   where
+    block = void bv
     -- Try all rewrite rules for f.
-    rew :: QName -> (Elims -> Term) -> Elims -> ReduceM (Maybe Term)
-    rew f hd es = loop =<< do defRewriteRules <$> getConstInfo f
+    rew :: QName -> (Elims -> Term) -> Elims -> ReduceM (Either (Blocked Term) Term)
+    rew f hd es = do
+      rules <- defRewriteRules <$> getConstInfo f
+      case rules of
+        [] -> return $ Left $ block $> hd es
+        _  -> do
+          es <- etaContract =<< instantiateFull' es
+          loop es rules
       where
-      loop [] = return Nothing
-      loop (rew:rews)
+      loop es [] = return $ Left $ block $> hd es
+      loop es (rew:rews)
        | let n = rewArity rew, length es >= n = do
            let (es1, es2) = List.genericSplitAt n es
-           caseMaybeM (rewriteWith Nothing (hd es1) rew) (loop rews) $ \ w ->
-             return $ Just $ w `applyE` es2
-       | otherwise = loop rews
+           result <- rewriteWith Nothing (hd es1) rew
+           case result of
+             Left (Blocked m u)    -> return $ Left $ block *> Blocked m (hd es)
+             Left (NotBlocked _ _) -> loop es rews
+             Right w               -> return $ Right $ w `applyE` es2
+       | otherwise = return $ Left $ block *> NotBlocked Underapplied (hd es)
 
 ------------------------------------------------------------------------
 -- * Auxiliary functions

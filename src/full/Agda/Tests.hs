@@ -19,6 +19,7 @@ import Agda.Termination.SparseMatrix          as TermSparse (tests)
 import Agda.Termination.Termination           as TermTerm   (tests)
 import Agda.TypeChecking.Free.Tests           as Free       (tests)
 import Agda.TypeChecking.Irrelevance          as Irrel      (tests)
+import Agda.TypeChecking.Positivity           as Positivity (tests)
 import Agda.TypeChecking.Tests                as TypeChck   (tests)
 import Agda.TypeChecking.SizedTypes.Tests     as SizedTypes (tests)
 import Agda.Utils.Bag                         as UtilBag    (tests)
@@ -27,8 +28,7 @@ import Agda.Utils.Cluster                     as UtilClust  (tests)
 import Agda.Utils.Either                      as UtilEith   (tests)
 import Agda.Utils.Favorites                   as UtilFav    (tests)
 import Agda.Utils.FileName                    as UtilFile   (tests)
-import Agda.Utils.Graph.AdjacencyMap          as UtilGrap   (tests)
-import Agda.Utils.Graph.AdjacencyMap.Unidirectional as UtilGraphUni (tests)
+import Agda.Utils.Graph.AdjacencyMap.Unidirectional.Tests as UtilGraphUni (tests)
 import Agda.Utils.List                        as UtilList   (tests)
 import Agda.Utils.ListT.Tests                 as UtilListT  (tests)
 import Agda.Utils.PartialOrd                  as UtilPOrd   (tests)
@@ -58,13 +58,13 @@ testSuite = runTests "QuickCheck test suite:"
   , TermRing.tests
   , TermSparse.tests
   , TermTerm.tests
+  , Positivity.tests
   , TypeChck.tests
   , UtilBag.tests
   , UtilBiMap.tests
   , UtilClust.tests
   , UtilEith.tests
   , UtilFile.tests
-  , UtilGrap.tests
   , UtilGraphUni.tests
   , UtilList.tests
   , UtilWarsh.tests

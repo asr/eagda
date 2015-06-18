@@ -113,6 +113,7 @@ import Agda.Utils.Tuple
     'BUILTIN'       { TokKeyword KwBUILTIN $$ }
     'REWRITE'       { TokKeyword KwREWRITE $$ }
     'IMPORT'        { TokKeyword KwIMPORT $$ }
+    'IMPORT_UHC'    { TokKeyword KwIMPORT_UHC $$ }
     'IMPOSSIBLE'    { TokKeyword KwIMPOSSIBLE $$ }
     'ETA'           { TokKeyword KwETA $$ }
     'NO_ETA'        { TokKeyword KwNO_ETA $$ }
@@ -236,6 +237,7 @@ Token
     | 'BUILTIN'     { TokKeyword KwBUILTIN $1 }
     | 'REWRITE'     { TokKeyword KwREWRITE $1 }
     | 'IMPORT'      { TokKeyword KwIMPORT $1 }
+    | 'IMPORT_UHC'  { TokKeyword KwIMPORT_UHC $1 }
     | 'COMPILED'    { TokKeyword KwCOMPILED $1 }
     | 'COMPILED_EXPORT'    { TokKeyword KwCOMPILED_EXPORT $1 }
     | 'COMPILED_DECLARE_DATA'{ TokKeyword KwCOMPILED_DECLARE_DATA $1 }
@@ -1330,6 +1332,7 @@ DeclarationPragma
   | NoSmashingPragma         { $1 }
   | StaticPragma             { $1 }
   | ImportPragma             { $1 }
+  | ImportUHCPragma          { $1 }
   | ImpossiblePragma         { $1 }
   | RecordEtaPragma          { $1 }
   | RecordNoEtaPragma        { $1 }
@@ -1467,6 +1470,16 @@ ImportPragma
        then return $ ImportPragma (getRange ($1,$2,fst $3,$4)) s
        else parseError $ "Malformed module name: " ++ s ++ "."
     }
+
+ImportUHCPragma :: { Pragma }
+ImportPragma
+  : '{-#' 'IMPORT_UHC' string '#-}'
+    {% let s = snd $3 in
+       if validHaskellModuleName s
+       then return $ ImportUHCPragma (getRange ($1,$2,fst $3,$4)) s
+       else parseError $ "Malformed module name: " ++ s ++ "."
+    }
+
 
 ImpossiblePragma :: { Pragma }
   : '{-#' 'IMPOSSIBLE' '#-}'  { ImpossiblePragma (getRange ($1,$2,$3)) }

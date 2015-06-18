@@ -1,8 +1,11 @@
-{-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE DoAndIfThenElse #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE BangPatterns,
+             CPP,
+             DeriveFunctor,
+             DoAndIfThenElse,
+             FlexibleInstances,
+             GeneralizedNewtypeDeriving,
+             ScopedTypeVariables,
+             TupleSections #-}
 
 -- | Directed graphs (can of course simulate undirected graphs).
 --
@@ -13,6 +16,9 @@
 --
 --   This allows to get outgoing edges in O(log n) time where
 --   @n@ is the number of nodes in the graph.
+--
+--   However, the set of incoming edges can only be obtained in
+--   @O(n log n)@ or @O(e)@ where @e@ is the total number of edges.
 
 module Agda.Utils.Graph.AdjacencyMap.Unidirectional
   ( Graph(..)
@@ -30,6 +36,8 @@ module Agda.Utils.Graph.AdjacencyMap.Unidirectional
   , fromNodes
   , fromList, fromListWith
   , toList
+  , discrete
+  , clean
   , empty
   , singleton
   , insert, insertWith
@@ -42,38 +50,51 @@ module Agda.Utils.Graph.AdjacencyMap.Unidirectional
   , unzip
   , sccs'
   , sccs
+  , DAG(..)
+  , dagInvariant
+  , oppositeDAG
+  , reachable
+  , sccDAG'
+  , sccDAG
   , acyclic
   , composeWith
-  , transitiveClosure1
-  , transitiveClosure
+  , complete
+  , gaussJordanFloydWarshallMcNaughtonYamadaReference
+  , gaussJordanFloydWarshallMcNaughtonYamada
   , findPath
   , allPaths
-  , nodeIn
-  , edgeIn
-  , tests
   )
   where
 
-import Prelude hiding (lookup, unzip)
+import Prelude hiding (lookup, unzip, null)
 
-import Control.Applicative ((<$>), (<*>))
+import Control.Applicative ((<$>))
 
+import qualified Data.Array.IArray as Array
 import Data.Function
 import qualified Data.Graph as Graph
+import Data.IntMap.Strict (IntMap)
+import qualified Data.IntMap.Strict as IntMap
+import qualified Data.IntSet as IntSet
 import qualified Data.List as List
-import qualified Data.Map as Map
-import Data.Map (Map)
+import qualified Data.Map.Strict as Map
+import Data.Map.Strict (Map)
 import qualified Data.Maybe as Maybe
 import Data.Maybe (maybeToList)
 import qualified Data.Set as Set
 import Data.Set (Set)
+import qualified Data.Tree as Tree
 
-import Agda.Utils.Function (iterateUntil)
+import Agda.Utils.Function (iterateUntil, repeatWhile)
 import Agda.Utils.Functor (for)
 import Agda.Utils.List (headMaybe)
-import Agda.Utils.QuickCheck as QuickCheck
+import Agda.Utils.Null (Null(null))
+import qualified Agda.Utils.Null as Null
 import Agda.Utils.SemiRing
-import Agda.Utils.TestHelpers
+import Agda.Utils.Tuple
+
+#include "undefined.h"
+import Agda.Utils.Impossible
 
 -- | @Graph s t e@ is a directed graph with
 --   source nodes in @s@
@@ -86,6 +107,9 @@ import Agda.Utils.TestHelpers
 --   Represented as "adjacency list", or rather, adjacency map.
 --   This allows to get all outgoing edges for a node
 --   in @O(log n)@ time where @n@ is the number of nodes of the graph.
+--
+--   Incoming edges can only be computed in @O(n + e)@ time where
+--   @e@ is the number of edges.
 
 newtype Graph s t e = Graph
   { graph :: Map s (Map t e) -- ^ Forward edges.
@@ -160,10 +184,6 @@ lookup s t (Graph g) = Map.lookup t =<< Map.lookup s g
 neighbours :: (Ord s, Ord t) => s -> Graph s t e -> [(t, e)]
 neighbours s (Graph g) = maybe [] Map.assocs $ Map.lookup s g
 
-prop_neighbours :: (Ord s, Ord t, Eq e) => s -> Graph s t e -> Bool
-prop_neighbours s g =
-  neighbours s g == map (\ (Edge s t e) -> (t, e)) (edgesFrom g [s])
-
 -- * Node queries
 
 -- | Returns all the nodes with outgoing edges.  @O(n)@.
@@ -208,9 +228,6 @@ nodes = allNodes . computeNodes
 fromNodes :: Ord n => [n] -> Graph n n e
 fromNodes ns = Graph $ Map.fromList $ map (, Map.empty) ns
 
-prop_nodes_fromNodes :: Ord n => [n] -> Bool
-prop_nodes_fromNodes ns = sourceNodes (fromNodes ns) == Set.fromList ns
-
 -- | Constructs a graph from a list of edges.  O(e log n)
 --
 --   Later edges overwrite earlier edges.
@@ -229,6 +246,20 @@ fromListWith f = List.foldl' (flip (insertEdgeWith f)) empty
 
 toList :: (Ord s, Ord t) => Graph s t e -> [Edge s t e]
 toList (Graph g) = [ Edge s t a | (s,m) <- Map.assocs g, (t,a) <- Map.assocs m ]
+
+-- | Check whether the graph is discrete (no edges).
+--   This could be seen as an empty graph.
+--   Worst-case (is discrete): @O(e)@.
+discrete :: Null e => Graph s t e -> Bool
+discrete = all' (all' null) . graph
+  where all' p = List.all p . Map.elems
+
+-- | Remove 'Null' edges.
+clean :: (Ord s, Ord t, Null e) => Graph s t e -> Graph s t e
+clean = Graph . filt . fmap filt . graph
+  where
+    filt :: (Ord k, Null a) => Map k a -> Map k a
+    filt = Map.fromAscList . List.filter (not . null . snd) . Map.toAscList
 
 -- | Empty graph (no nodes, no edges).
 
@@ -275,17 +306,6 @@ unions = unionsWith $ \ left right -> left
 
 unionsWith :: (Ord s, Ord t) => (e -> e -> e) -> [Graph s t e] -> Graph s t e
 unionsWith f = List.foldl' (unionWith f) empty
-
-prop_insertWith :: (Eq e, Ord s, Ord t) =>
-                   (e -> e -> e) -> s -> t -> e -> Graph s t e -> Bool
-prop_insertWith f s t e g =
-  insertWith f s t e g == unionWith (flip f) g (singleton s t e)
-
-{- This property only holds only if the edge is new.
-
-prop_insert ::  (Ord s, Ord t) => s -> t -> e -> Graph s t e -> Bool
-prop_insert s t e g = insert s t e g == union g (singleton s t e)
--}
 
 -- * Graph reversal
 
@@ -346,14 +366,139 @@ unzip g = (fst <$> g, snd <$> g)
 -- order.
 
 sccs' :: Ord n => Graph n n e -> [Graph.SCC n]
-sccs' (Graph g) =
-  Graph.stronglyConnComp [ (n, n, Map.keys m) | (n, m) <- Map.assocs g ]
+sccs' g =
+  Graph.stronglyConnComp
+    [ (n, n, map target (edgesFrom g [n]))
+    | n <- Set.toList (nodes g)
+    ]
 
 -- | The graph's strongly connected components, in reverse topological
 -- order.
 
 sccs :: Ord n => Graph n n e -> [[n]]
 sccs = map Graph.flattenSCC . sccs'
+
+-- | SCC DAGs.
+--
+-- The maps map SCC indices to and from SCCs/nodes.
+
+data DAG n = DAG
+  { dagGraph        :: Graph.Graph
+  , dagComponentMap :: IntMap (Graph.SCC n)
+  , dagNodeMap      :: Map n Int
+  }
+
+-- | 'DAG' invariant.
+
+dagInvariant :: Ord n => DAG n -> Bool
+dagInvariant g =
+  Set.fromList (concatMap Graph.flattenSCC
+                          (IntMap.elems (dagComponentMap g)))
+    ==
+  Map.keysSet (dagNodeMap g)
+    &&
+  IntSet.fromList (Map.elems (dagNodeMap g))
+    ==
+  IntMap.keysSet (dagComponentMap g)
+    &&
+  and [ n `elem` Graph.flattenSCC
+                   (dagComponentMap g IntMap.! (dagNodeMap g Map.! n))
+      | n <- Map.keys (dagNodeMap g)
+      ]
+    &&
+  and [ dagNodeMap g Map.! n == i
+      | i <- Graph.vertices (dagGraph g)
+      , n <- Graph.flattenSCC (dagComponentMap g IntMap.! i)
+      ]
+    &&
+  IntSet.fromList (Graph.vertices (dagGraph g))
+    ==
+  IntMap.keysSet (dagComponentMap g)
+    &&
+  all isAcyclic (Graph.scc (dagGraph g))
+  where
+  isAcyclic (Tree.Node r []) = not (r `elem` (dagGraph g Array.! r))
+  isAcyclic _                = False
+
+-- | The opposite DAG.
+
+oppositeDAG :: DAG n -> DAG n
+oppositeDAG g = g { dagGraph = Graph.transposeG (dagGraph g) }
+
+-- | The nodes reachable from the given SCC.
+
+reachable :: Ord n => DAG n -> Graph.SCC n -> [n]
+reachable g scc = case scc of
+  Graph.AcyclicSCC n      -> List.delete n (reachable' n)
+  Graph.CyclicSCC (n : _) -> reachable' n
+  Graph.CyclicSCC []      -> __IMPOSSIBLE__
+  where
+  lookup' g k = case IntMap.lookup k g of
+    Nothing -> __IMPOSSIBLE__
+    Just x  -> x
+
+  lookup'' g k = case Map.lookup k g of
+    Nothing -> __IMPOSSIBLE__
+    Just x  -> x
+
+  reachable' n =
+    concatMap (Graph.flattenSCC . lookup' (dagComponentMap g)) $
+    Graph.reachable (dagGraph g) (lookup'' (dagNodeMap g) n)
+
+-- | Constructs a DAG containing the graph's strongly connected
+-- components.
+
+sccDAG' ::
+  forall n e. Ord n
+  => Graph n n e
+  -> [Graph.SCC n]
+     -- ^ The graph's strongly connected components.
+  -> DAG n
+sccDAG' g sccs = DAG theDAG componentMap secondNodeMap
+  where
+  components :: [(Int, Graph.SCC n)]
+  components = zip [1..] sccs
+
+  firstNodeMap :: Map n Int
+  firstNodeMap = Map.fromList
+    [ (n, i)
+    | (i, c) <- components
+    , n      <- Graph.flattenSCC c
+    ]
+
+  targets :: Int -> [n] -> [Int]
+  targets i ns =
+    IntSet.toList $ IntSet.fromList
+      [ j
+      | e <- edgesFrom g ns
+      , let j = case Map.lookup (target e) firstNodeMap of
+                  Nothing -> __IMPOSSIBLE__
+                  Just j  -> j
+      , j /= i
+      ]
+
+  (theDAG, _, toVertex) =
+    Graph.graphFromEdges
+      [ (i, i, targets i (Graph.flattenSCC c))
+      | (i, c) <- components
+      ]
+
+  convertInt :: Int -> Graph.Vertex
+  convertInt i = case toVertex i of
+    Nothing -> __IMPOSSIBLE__
+    Just i  -> i
+
+  componentMap :: IntMap (Graph.SCC n)
+  componentMap = IntMap.fromList (map (mapFst convertInt) components)
+
+  secondNodeMap :: Map n Int
+  secondNodeMap = fmap convertInt firstNodeMap
+
+-- | Constructs a DAG containing the graph's strongly connected
+-- components.
+
+sccDAG :: Ord n => Graph n n e -> DAG n
+sccDAG g = sccDAG' g (sccs' g)
 
 -- | Returns @True@ iff the graph is acyclic.
 
@@ -383,89 +528,132 @@ composeWith times plus (Graph g) (Graph g') = Graph $
       , (u, d) <- Map.assocs m'
       ]
 
--- | Computes the transitive closure of the graph.
+-- | Transitive closure ported from "Agda.Termination.CallGraph".
 --
--- Note that this algorithm is not guaranteed to be correct (or
--- terminate) for arbitrary semirings.
---
--- This function operates on the entire graph at once.
+--   Relatively efficient, see Issue 1560.
 
-transitiveClosure1 :: (Eq e, SemiRing e, Ord n) =>
-                      Graph n n e -> Graph n n e
-transitiveClosure1 = completeUntilWith (==) otimes oplus
-{-
- iterateUntil (==) growGraph  where
-
-  -- @growGraph g@ unions @g@ with @(s --> t) `compose` g@ for each
-  -- edge @s --> t@ in @g@
-  growGraph g = List.foldl' (unionWith oplus) g $ for (edges g) $ \ (Edge s t e) ->
-    case Map.lookup t (graph g) of
-      Just es -> Graph $ Map.singleton s $ Map.map (otimes e) es
-      Nothing -> empty
--}
-
--- | Computes the transitive closure of the graph.
---
--- Note that this algorithm is not guaranteed to be correct (or
--- terminate) for arbitrary semirings.
---
--- This function operates on the entire graph at once.
-
-completeUntilWith :: (Ord n) => (Graph n n e -> Graph n n e -> Bool) ->
-  (e -> e -> e) -> (e -> e -> e) -> Graph n n e -> Graph n n e
-completeUntilWith done otimes oplus = iterateUntil done growGraph  where
-
-  -- @growGraph g@ unions @g@ with @(s --> t) `compose` g@ for each
-  -- edge @s --> t@ in @g@
-  growGraph g = List.foldl' (unionWith oplus) g $ for (edges g) $ \ (Edge s t e) ->
-    case Map.lookup t (graph g) of
-      Just es -> Graph $ Map.singleton s $ Map.map (otimes e) es
-      Nothing -> empty
-
--- | Computes the transitive closure of the graph.
---
--- Note that this algorithm is not guaranteed to be correct (or
--- terminate) for arbitrary semirings.
---
--- This function operates on one strongly connected component (SCC)
--- at a time.
---
--- For each SCC, it uses a saturation algorithm on state @(g, es)@
--- where initially @es@ is the set of edges of the SCC and @g@ the graph.
--- The algorithm finishes if @es@ has not changed in an iteration.
--- At each step, all @es@ are composed with @g@, the resulting
--- new graphs are unioned with @g@.  The new @es@ is then computed
--- as the edges of the SCC in the new @g@.
-
-transitiveClosure :: (Eq e, SemiRing e, Ord n) => Graph n n e -> Graph n n e
-transitiveClosure g = List.foldl' extend g $ sccs' g
+complete :: (Eq e, Null e, SemiRing e, Ord n) => Graph n n e -> Graph n n e
+complete g = repeatWhile (mapFst (not . discrete) . combineNewOld' g) g
   where
-  -- extend the graph by new edges generated from a scc
-  -- until there are no
-  extend g (Graph.AcyclicSCC scc) = fst $ growGraph [scc] (edgesFrom' [scc] g)
-  extend g (Graph.CyclicSCC  scc) = fst $
-    iterateUntil ((==) `on` snd) (growGraph scc) (edgesFrom' scc g)
+    combineNewOld' new old = unzip $ unionWith comb new' old'
+      where
+      -- The following procedure allows us to check if anything new happened:
+      -- Pair the composed graphs with an empty graph.
+      -- The empty graph will remain empty.  We only need it due to the typing
+      -- of Map.unionWith.
+      new' = (,Null.empty) <$> composeWith otimes oplus new old
+      -- Pair an empty graph with the old graph.
+      old' = (Null.empty,) <$> old
+      -- Combine the pairs.
+      -- Update 'old' with 'new'.  This will be the new 'old'. No new 'new' if no change.
+      comb (new, _) (_, old) = (if x == old then Null.empty else x, x)
+        where x = old `oplus` new
 
-  edgesFrom' ns g = (g, edgesFrom g ns)
+-- | Computes the transitive closure of the graph.
+--
+-- Uses the Gauss-Jordan-Floyd-Warshall-McNaughton-Yamada algorithm
+-- (as described by Russell O'Connor in \"A Very General Method of
+-- Computing Shortest Paths\"
+-- <http://r6.ca/blog/20110808T035622Z.html>), implemented using
+-- matrices.
+--
+-- The resulting graph does not contain any zero edges.
+--
+-- This algorithm should be seen as a reference implementation. In
+-- practice 'gaussJordanFloydWarshallMcNaughtonYamada' is likely to be
+-- more efficient.
 
-  growGraph scc (g, es) = edgesFrom' scc $
-    -- the new graph:
-    List.foldl' (unionWith oplus) g $ for es $ \ (Edge s t e) ->
-      case Map.lookup t (graph g) of
-        Just es -> Graph $ Map.singleton s $ Map.map (e `otimes`) es
-        Nothing -> empty
-
--- | Correctness of the optimized algorithm that proceeds by SCC.
-
-prop_transitiveClosure :: (Eq e, SemiRing e, Ord n) => Graph n n e -> Property
-prop_transitiveClosure g = QuickCheck.label sccInfo $
-  transitiveClosure g == transitiveClosure1 g
+gaussJordanFloydWarshallMcNaughtonYamadaReference ::
+  forall n e. (Ord n, Eq e, StarSemiRing e) =>
+  Graph n n e -> Graph n n e
+gaussJordanFloydWarshallMcNaughtonYamadaReference g =
+  toGraph (foldr step initialMatrix nodeIndices)
   where
-  sccInfo =
-    (if noSCCs <= 3 then "   " ++ show noSCCs
-                    else ">= 4") ++
-    " strongly connected component(s)"
-    where noSCCs = length (sccs g)
+  indicesAndNodes = zip [1..] $ Set.toList $ nodes g
+  nodeMap         = Map.fromList $ map swap indicesAndNodes
+  indexMap        = Map.fromList            indicesAndNodes
+
+  noNodes      = Map.size nodeMap
+  nodeIndices  = [1 .. noNodes]
+  matrixBounds = ((1, 1), (noNodes, noNodes))
+
+  initialMatrix :: Array.Array (Int, Int) e
+  initialMatrix =
+    Array.accumArray
+      oplus ozero
+      matrixBounds
+      [ ((nodeMap Map.! source e, nodeMap Map.! target e), label e)
+      | e <- edges g
+      ]
+
+  rightStrictPair i !e = (i , e)
+
+  step k !m =
+    Array.array
+      matrixBounds
+      [ rightStrictPair
+          (i, j)
+          (oplus (m Array.! (i, j))
+                 (otimes (m Array.! (i, k))
+                         (otimes (ostar (m Array.! (k, k)))
+                                 (m Array.! (k, j)))))
+      | i <- nodeIndices, j <- nodeIndices
+      ]
+
+  toGraph m =
+    fromList [ Edge (indexMap Map.! i) (indexMap Map.! j) e
+             | ((i, j), e) <- Array.assocs m
+             , e /= ozero
+             ]
+
+-- | Computes the transitive closure of the graph.
+--
+-- Uses the Gauss-Jordan-Floyd-Warshall-McNaughton-Yamada algorithm
+-- (as described by Russell O'Connor in \"A Very General Method of
+-- Computing Shortest Paths\"
+-- <http://r6.ca/blog/20110808T035622Z.html>), implemented using
+-- 'Graph', and with some shortcuts:
+--
+-- * Zero edge differences are not added to the graph, thus avoiding
+--   some zero edges.
+--
+-- * Strongly connected components are used to avoid computing some
+--   zero edges.
+
+gaussJordanFloydWarshallMcNaughtonYamada ::
+  forall n e. (Ord n, Eq e, StarSemiRing e) =>
+  Graph n n e -> Graph n n e
+gaussJordanFloydWarshallMcNaughtonYamada g = loop components g
+  where
+  components = sccs' g
+  forwardDAG = sccDAG' g components
+  reverseDAG = oppositeDAG forwardDAG
+
+  loop :: [Graph.SCC n] -> Graph n n e -> Graph n n e
+  loop []           !g = g
+  loop (scc : sccs)  g =
+    loop sccs (foldr step g (Graph.flattenSCC scc))
+    where
+    -- All nodes that are reachable from the SCC.
+    canBeReached = reachable forwardDAG scc
+    -- All nodes that can reach the SCC.
+    canReach     = reachable reverseDAG scc
+
+    step :: n -> Graph n n e -> Graph n n e
+    step k !g =
+      foldr (insertEdgeWith oplus) g
+        [ Edge i j e
+        | i <- canReach
+        , j <- canBeReached
+        , let e = otimes (lookup' i k) (starTimes (lookup' k j))
+        , e /= ozero
+        ]
+      where
+      starTimes = otimes (ostar (lookup' k k))
+
+      lookup' s t = case lookup s t g of
+        Nothing -> ozero
+        Just e  -> e
 
 -- | Find a path from a source node to a target node.
 --
@@ -487,77 +675,3 @@ allPaths classify s t g = paths Set.empty s
       if tag `Set.member` visited then []
       else if s' == t then e : recurse
       else recurse
-
-
-------------------------------------------------------------------------
--- Utilities used to test the code above
-
-instance (Arbitrary s, Arbitrary t, Arbitrary e) => Arbitrary (Edge s t e) where
-  arbitrary = Edge <$> arbitrary <*> arbitrary <*> arbitrary
-
-instance (CoArbitrary s, CoArbitrary t, CoArbitrary e) => CoArbitrary (Edge s t e) where
-  coarbitrary (Edge s t e) = coarbitrary s . coarbitrary t . coarbitrary e
-
-instance (Ord n, SemiRing e, Arbitrary n, Arbitrary e) =>
-         Arbitrary (Graph n n e) where
-  arbitrary = do
-    nodes <- sized $ \ n -> resize (isqrt n) arbitrary
-    edges <- mapM (\ (n1, n2) -> Edge n1 n2 <$> arbitrary) =<<
-                  listOfElements ((,) <$> nodes <*> nodes)
-    return (fromList edges `union` fromNodes nodes)
-    where
-    isqrt :: Int -> Int
-    isqrt = round . sqrt . fromIntegral
-
-  shrink g =
-    [ removeNode n g     | n <- Set.toList $ nodes g ] ++
-    [ removeEdge n1 n2 g | Edge n1 n2 _ <- edges g ]
-
--- | Generates a node from the graph. (Unless the graph is empty.)
-
-nodeIn :: (Ord n, Arbitrary n) => Graph n n e -> Gen n
-nodeIn g = elementsUnlessEmpty (Set.toList $ nodes g)
-
--- | Generates an edge from the graph. (Unless the graph contains no
--- edges.)
-
-edgeIn :: (Ord n, Arbitrary n, Arbitrary e) =>
-          Graph n n e -> Gen (Edge n n e)
-edgeIn g = elementsUnlessEmpty (edges g)
-
--- | Sample graph type used to test 'transitiveClosure' and 'transitiveClosure1'.
-
-type G = Graph N N E
-
--- | Sample node type used to test 'transitiveClosure' and 'transitiveClosure1'.
-
-newtype N = N (Positive Int)
-  deriving (Arbitrary, Eq, Ord)
-
-n :: Int -> N
-n = N . Positive
-
-instance Show N where
-  show (N (Positive n)) = "n " ++ show n
-
--- | Sample edge type used to test 'transitiveClosure' and 'transitiveClosure1'.
-
-newtype E = E Bool
-  deriving (Arbitrary, Eq, Show)
-
--- instance Show E where
---   show = show . unE
-
-instance SemiRing E where
-  oplus  (E x) (E y) = E (x || y)
-  otimes (E x) (E y) = E (x && y)
-
--- | All tests.
-
-tests :: IO Bool
-tests = runTests "Agda.Utils.Graph.AdjacencyMap.Unidirectional"
-  -- Other properties.
-  [ quickCheck' (prop_nodes_fromNodes :: [Int] -> Bool)
-  , quickCheck' (prop_transitiveClosure :: G -> Property)
-  ]
-

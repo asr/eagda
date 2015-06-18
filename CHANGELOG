@@ -106,7 +106,21 @@ Interaction
 
     bogus (sup s k) = ?
 
+Performance
+===========
 
+* As one result of the 21st Agda Implementor's Meeting (AIM XXI),
+  serialization of the standard library is 50% faster (time reduced by
+  a third), without using additional disk space for the interface
+  files.
+
+
+Bug fixes
+=========
+
+* Issues fixed ( see https://code.google.com/p/agda/issues ):
+  1546 (copattern matching and with-clauses)
+  1560 (positivity checker inefficiency)
 
 ------------------------------------------------------------------------
 -- Release notes for Agda version 2.4.2.3
@@ -357,7 +371,7 @@ Error messages
 Compiler backends
 =================
 
-* The Epic backend has been disabled [Issue 1481].
+* The Epic backend has been removed [Issue 1481].
 
 Bug fixes
 =========

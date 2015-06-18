@@ -107,7 +107,7 @@ instance KillRange c => KillRange (WithArity c) where
   killRange = fmap killRange
 
 instance KillRange c => KillRange (Case c) where
-  killRange (Branches con lit all) = Branches
+  killRange (Branches cop con lit all) = Branches cop
     (killRangeMap con)
     (killRangeMap lit)
     (killRange all)
@@ -133,4 +133,3 @@ instance KillRange String where
 -- | Remove ranges in keys and values of a map.
 killRangeMap :: (KillRange k, KillRange v) => KillRangeT (Map k v)
 killRangeMap = Map.mapKeysMonotonic killRange . Map.map killRange
-
