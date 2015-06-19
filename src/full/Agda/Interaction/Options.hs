@@ -117,10 +117,6 @@ data CommandLineOptions = Options
 
 data PragmaOptions = PragmaOptions
   { optShowImplicit              :: Bool
-  -- ASR TODO (24 October 2014). Move to the end. We wrote they here
-  -- for avoiding conflicts when merging master.
-  , optFOLPropositionalFunctions :: Bool
-  , optFOLPropositionalSymbols   :: Bool
   , optShowIrrelevant            :: Bool
   , optVerbose                   :: Verbosity
   , optProofIrrelevance          :: Bool
@@ -203,10 +199,6 @@ defaultOptions = Options
 defaultPragmaOptions :: PragmaOptions
 defaultPragmaOptions = PragmaOptions
   { optShowImplicit              = False
-  -- ASR TODO (24 October 2014). Move to the end. We wrote they here
-  -- for avoiding conflicts when merging master.
-  , optFOLPropositionalFunctions = False
-  , optFOLPropositionalSymbols   = False
   , optShowIrrelevant            = False
   , optVerbose                   = defaultVerbosity
   , optProofIrrelevance          = False
@@ -518,13 +510,6 @@ terminationDepthFlag s o =
        return $ o { optTerminationDepth = CutOff $ k-1 }
     where usage = throwError "argument to termination-depth should be >= 1"
 
-folPropositionalFunctionsFlag :: Flag PragmaOptions
-folPropositionalFunctionsFlag o =
-  return $ o { optFOLPropositionalFunctions = True }
-
-folPropositionalSymbolsFlag :: Flag PragmaOptions
-folPropositionalSymbolsFlag o = return $ o { optFOLPropositionalSymbols = True }
-
 integerArgument :: String -> String -> Either String Int
 integerArgument flag s =
     readM s `catchError` \_ ->
@@ -606,12 +591,6 @@ pragmaOptions :: [OptDescr (Flag PragmaOptions)]
 pragmaOptions =
     [ Option []     ["show-implicit"] (NoArg showImplicitFlag)
                     "show implicit arguments when printing"
-    -- ASR TODO (24 October 2014). Move to the end. We wrote they here
-    -- for avoiding conflicts when merging master.
-    , Option []     ["schematic-propositional-functions"] (NoArg folPropositionalFunctionsFlag)
-                    "the Apia program translates universal quantified FOL propositional functions"
-    , Option []     ["schematic-propositional-symbols"] (NoArg folPropositionalSymbolsFlag)
-                    "the Apia program translates universal quantified FOL propositional symbols"
     , Option []     ["show-irrelevant"] (NoArg showIrrelevantFlag)
                     "show irrelevant arguments when printing"
     , Option ['v']  ["verbose"] (ReqArg verboseFlag "N")

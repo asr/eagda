@@ -36,8 +36,6 @@ Usage: agda [OPTIONS...] [FILE]
           --sharing                                   enable sharing and call-by-need evaluation (default: ON)
           --no-sharing                                disable sharing and call-by-need evaluation
           --show-implicit                             show implicit arguments when printing
-          --schematic-propositional-functions         the Apia program translates universal quantified FOL propositional functions
-          --schematic-propositional-symbols           the Apia program translates universal quantified FOL propositional symbols
           --show-irrelevant                           show irrelevant arguments when printing
   -v N    --verbose=N                                 set verbosity level to N
           --allow-unsolved-metas                      allow unsolved meta variables (only needed in batch mode)
