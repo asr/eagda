@@ -1323,11 +1323,12 @@ instance EmbPrj ATPRole where
   icod_ ATPConjecture = icode0 1
   icod_ ATPDefinition = icode0 2
   icod_ ATPHint       = icode0 3
-  value = vcase valu where valu []  = valu0 ATPAxiom
-                           valu [1] = valu0 ATPConjecture
-                           valu [2] = valu0 ATPDefinition
-                           valu [3] = valu0 ATPHint
-                           valu _   = malformed
+  value = vcase valu where
+    valu []  = valu0 ATPAxiom
+    valu [1] = valu0 ATPConjecture
+    valu [2] = valu0 ATPDefinition
+    valu [3] = valu0 ATPHint
+    valu _   = malformed
 
 instance EmbPrj CompiledRepresentation where
   icod_ (CompiledRep a b c d e) = icode5' a b c d e

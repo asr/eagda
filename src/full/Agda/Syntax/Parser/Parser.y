@@ -106,7 +106,7 @@ import Agda.Utils.Tuple
     'forall'        { TokKeyword KwForall $$ }
     'syntax'        { TokKeyword KwSyntax $$ }
     'pattern'       { TokKeyword KwPatternSyn $$ }
-     -- ASR-TODO (07 July 2014): Move the ATP-pragma to the end. We
+     -- ASR TODO (07 July 2014): Move the ATP-pragma to the end. We
      -- wrote it here for avoiding conflicts with Agda upstream.
     'ATP'           { TokKeyword KwATP $$ }
     'OPTIONS'       { TokKeyword KwOPTIONS $$ }
