@@ -1,9 +1,9 @@
-Before merging
+Before merging:
 
-* Revert versions on Agda.cabal, mk/paths and
-  src/data/emacs-mode/aagda2-mode.el
+* Revert versions on Agda.cabal, mk/version.mk and
+  src/data/emacs-mode/agda2-mode.el
 
-* Fix ASR-TODO in .hs and .y files
+* Fix 'ASR TODO' in .hs and .y files
 
 * Update the currentInterfaceVersion in Agda.TypeChecking.Serialise
 
