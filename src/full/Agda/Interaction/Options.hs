@@ -193,7 +193,7 @@ defaultOptions = Options
   , optPragmaOptions    = defaultPragmaOptions
   , optEpicFlags        = []
   , optSafe             = False
-  , optSharing          = True
+  , optSharing          = False
   }
 
 defaultPragmaOptions :: PragmaOptions

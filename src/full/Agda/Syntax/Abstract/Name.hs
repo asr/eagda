@@ -14,8 +14,6 @@ module Agda.Syntax.Abstract.Name
   , IsNoName(..)
   ) where
 
-import Control.Monad.State
-
 import Data.Foldable (Foldable)
 import Data.Traversable (Traversable)
 import Data.Typeable (Typeable)
@@ -23,13 +21,15 @@ import Data.List
 import Data.Function
 import Data.Hashable
 
+import Test.QuickCheck
+
 import Agda.Syntax.Position
 import Agda.Syntax.Common
 import {-# SOURCE #-} Agda.Syntax.Fixity
 import Agda.Syntax.Concrete.Name (IsNoName(..))
 import qualified Agda.Syntax.Concrete.Name as C
 
--- import Agda.Utils.Function
+import Agda.Utils.Monad
 import Agda.Utils.Pretty
 import Agda.Utils.Size
 import Agda.Utils.Suffix
@@ -360,3 +360,26 @@ instance Sized QName where
 
 instance Sized ModuleName where
   size = size . mnameToList
+
+------------------------------------------------------------------------
+-- * Arbitrary instances
+------------------------------------------------------------------------
+
+-- | The generated names all have the same 'Fixity'': 'noFixity''.
+
+instance Arbitrary Name where
+  arbitrary =
+    Name <$> arbitrary <*> arbitrary <*> arbitrary
+         <*> return noFixity'
+
+instance CoArbitrary Name where
+  coarbitrary = coarbitrary . nameId
+
+instance Arbitrary QName where
+  arbitrary = do
+    ms <- arbitrary
+    n  <- arbitrary
+    return (QName (MName ms) n)
+
+instance CoArbitrary QName where
+  coarbitrary = coarbitrary . qnameName

@@ -8,17 +8,9 @@ module Agda.Utils.Pretty
     , module Text.PrettyPrint
     ) where
 
-import Data.Function
 import Data.Int ( Int32 )
-import Data.Monoid
 
 import Text.PrettyPrint hiding (TextDetails(Str), empty)
-
-import Agda.Utils.Null
-
-instance Null Doc where
-  empty = mempty
-  null  = (== mempty)
 
 -- * Pretty class
 
@@ -58,11 +50,6 @@ instance Pretty String where
   pretty = text
 
 -- * 'Doc' utilities
-
-#if !MIN_VERSION_pretty(1,1,2)
-instance Eq Doc where
-  (==) = (==) `on` render
-#endif
 
 pwords :: String -> [Doc]
 pwords = map text . words

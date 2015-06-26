@@ -21,8 +21,6 @@ import Prelude hiding (foldr, mapM, null)
 
 import Control.Applicative hiding (empty)
 import Control.Monad.Identity hiding (mapM)
-import Control.Monad.State hiding (mapM)
-import Control.Parallel
 
 import Data.Foldable ( Foldable, foldMap )
 import Data.Function
@@ -42,14 +40,13 @@ import Agda.Syntax.Position
 import Agda.Syntax.Common hiding (Arg, Dom, NamedArg, ArgInfo)
 import qualified Agda.Syntax.Common as Common
 import Agda.Syntax.Literal
+import Agda.Syntax.Abstract (IsProjP(..))
 import Agda.Syntax.Abstract.Name
 
 import Agda.Utils.Empty
-import Agda.Utils.Except ( Error(noMsg) )
 import Agda.Utils.Functor
 import Agda.Utils.Geniplate
 import Agda.Utils.Lens
-import Agda.Utils.List
 import Agda.Utils.Null
 import Agda.Utils.Permutation
 import Agda.Utils.Pointer
@@ -275,7 +272,7 @@ newtype MetaId = MetaId { metaId :: Nat }
 --   for another reason.
 data NotBlocked
   = StuckOn Elim
-    -- ^ The 'Elim' is neutral and block a pattern match.
+    -- ^ The 'Elim' is neutral and blocks a pattern match.
   | Underapplied
     -- ^ Not enough arguments were supplied to complete the matching.
   | AbsurdMatch
@@ -530,6 +527,10 @@ properlyMatching LitP{} = True
 properlyMatching (ConP _ ci ps) = isNothing (conPRecord ci) || -- not a record cons
   List.any (properlyMatching . namedArg) ps  -- or one of subpatterns is a proper m
 properlyMatching ProjP{} = True
+
+instance IsProjP Pattern where
+  isProjP (ProjP d) = Just d
+  isProjP _         = Nothing
 
 -----------------------------------------------------------------------------
 -- * Explicit substitutions
@@ -1042,7 +1043,7 @@ instance KillRange LevelAtom where
   killRange (NeutralLevel r v) = killRange1 (NeutralLevel r) v
   killRange (UnreducedLevel v) = killRange1 UnreducedLevel v
 
-instance KillRange Type where
+instance (KillRange a) => KillRange (Type' a) where
   killRange (El s v) = killRange2 El s v
 
 instance KillRange Sort where
@@ -1072,9 +1073,6 @@ instance KillRange Pattern where
       ConP con info ps -> killRange3 ConP con info ps
       LitP l           -> killRange1 LitP l
       ProjP q          -> killRange1 ProjP q
-
-instance KillRange Permutation where
-  killRange = id
 
 instance KillRange Clause where
   killRange (Clause r tel perm ps body t catchall) = killRange7 Clause r tel perm ps body t catchall

@@ -14,7 +14,6 @@ import Prelude hiding (null)
 
 import qualified Control.Exception as E (evaluate)
 import Control.Monad.Reader
-import Control.Monad.State
 
 import Data.Functor
 import qualified Data.List as List
@@ -33,7 +32,6 @@ import qualified Agda.Utils.Trie as Trie
 -- * Benchmark trie
 
 -- | Account we can bill computation time to.
---   A word of 'Phase's.
 type Account a = [a]
 
 -- | Record when we started billing the current account.

@@ -1,4 +1,7 @@
-{-# LANGUAGE DefaultSignatures #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
+
+{-# LANGUAGE CPP,
+             DefaultSignatures #-}
 
 -- | Overloaded @null@ and @empty@ for collections and sequences.
 
@@ -10,6 +13,7 @@ import Control.Monad
 
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString.Char8 as ByteString
+import Data.Function
 import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 import Data.HashSet (HashSet)
@@ -21,15 +25,24 @@ import qualified Data.IntSet as IntSet
 import qualified Data.List as List
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Monoid
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import Data.Set (Set)
 import qualified Data.Set as Set
 
+import Text.PrettyPrint (Doc, render)
+
 import Agda.Utils.Bag (Bag)
 import qualified Agda.Utils.Bag as Bag
-import Agda.Utils.Functor
-import Agda.Utils.Monad
+
+-- Andreas, 2015-06-24 orphan instance has to go here
+-- to be able to define instance Null Doc
+
+#if !MIN_VERSION_pretty(1,1,2)
+instance Eq Doc where
+  (==) = (==) `on` render
+#endif
 
 class Null a where
   empty :: a
@@ -92,6 +105,10 @@ instance Null (Maybe a) where
   empty = Nothing
   null Nothing  = True
   null (Just a) = False
+
+instance Null Doc where
+  empty = mempty
+  null  = (== mempty)
 
 -- * Testing for null.
 

@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -39,21 +38,15 @@ import Data.Foldable (foldMap)
 import Data.IntMap (IntMap)
 import Data.Monoid
 
-import qualified Agda.Benchmarking as Bench
+import Test.QuickCheck
 
 import Agda.Syntax.Common hiding (Arg, Dom, NamedArg)
 import Agda.Syntax.Internal
 
 -- import Agda.TypeChecking.Irrelevance
 
-import Agda.Utils.Function
 import Agda.Utils.Functor
 import Agda.Utils.Monad
-import Agda.Utils.Singleton
-import Agda.Utils.VarSet (VarSet)
-
-#include "undefined.h"
-import Agda.Utils.Impossible
 
 -- | Depending on the surrounding context of a variable,
 --   it's occurrence can be classified as flexible or rigid,
@@ -375,5 +368,13 @@ instance Free' Clause c where
   -- {-# SPECIALIZE freeVars' :: Clause -> FreeM VarSet #-}
   -- {-# SPECIALIZE freeVars' :: Clause -> FreeM VarMap #-}
   freeVars' = freeVars' . clauseBody
+
+-- Generators
+
+instance Arbitrary FlexRig where
+  arbitrary = arbitraryBoundedEnum
+
+instance Arbitrary VarOcc where
+  arbitrary = VarOcc <$> arbitrary <*> arbitrary
 
 -- -}

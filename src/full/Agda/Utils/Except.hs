@@ -1,6 +1,10 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE FlexibleInstances #-}
 
+#if !(MIN_VERSION_mtl(2,2,1))
+{-# OPTIONS_GHC -fno-warn-orphans #-}
+#endif
+
 ------------------------------------------------------------------------------
 -- | Wrapper for Control.Monad.Except from the mtl package
 ------------------------------------------------------------------------------
@@ -13,6 +17,9 @@ module Agda.Utils.Except
   , runExceptT
   , mapExceptT
   ) where
+
+#include "undefined.h"
+import Agda.Utils.Impossible
 
 ------------------------------------------------------------------------
 #if MIN_VERSION_mtl(2,2,1)
@@ -63,3 +70,11 @@ mapExceptT :: (m (Either e a) -> m' (Either e' a')) -> ExceptT e m a -> ExceptT 
 mapExceptT = mapErrorT
 
 #endif
+
+-- | To simulate @MaybeT@ by @ExceptT@.
+instance Error () where
+  noMsg = ()
+
+-- Stupid ErrorT!
+instance Error (a, b, c) where
+  noMsg = __IMPOSSIBLE__

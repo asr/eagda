@@ -1,6 +1,5 @@
 {-# OPTIONS_GHC -fno-warn-missing-signatures #-}
 
-{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE TemplateHaskell #-}
 
 -- | Quickcheck properties for 'Agda.Utils.ListT'.
@@ -9,13 +8,12 @@ module Agda.Utils.ListT.Tests (tests) where
 
 import Control.Applicative
 
-import Data.Functor
 import Data.Functor.Identity
 
 import Test.QuickCheck
-import Test.QuickCheck.All
 
-import Agda.Utils.Functor
+import Text.Show.Functions
+
 import Agda.Utils.ListT
 
 -- * Identity monad instance of ListT (simply lists)
@@ -31,9 +29,6 @@ fromList = foldr consListT nilListT
 
 toList :: List a -> [a]
 toList = foldList (:) []
-
-instance Arbitrary a => Arbitrary (List a) where
-  arbitrary = fromList <$> arbitrary
 
 prop_concat xxs = toList (concatListT (fromList (map fromList xxs))) == concat xxs
 

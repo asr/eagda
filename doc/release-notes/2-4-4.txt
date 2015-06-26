@@ -90,9 +90,6 @@ Pragmas and options
   command line arguments or added to the Agda Program Args from Emacs with M-x
   customize-group agda2.
 
-  TODO REMOVE THIS: the default is --sharing on master, but should be
-                    --no-sharing for the 2.4.4 release.
-
 * New pragma DISPLAY.
 
   {-# DISPLAY f e1 .. en = e #-}
@@ -609,6 +606,16 @@ Other changes
       instance
        postulate
         forbidden : {x : A} → P x
+
+* Detection of datatypes that satisfy K (i.e. sets)
+
+  Agda will now try to detect datatypes that satisfy K when --without-K is
+  enabled. A datatype satisfies K when it follows these three rules:
+  - The types of all non-recursive constructor arguments should satisfy K
+  - All recursive constructor arguments should be first-order
+  - The types of all indices should satisfy K
+  For example, the types [Nat], [List Nat], and [x ≡ x] (where x : Nat) are
+  all recognized by Agda as satisfying K.
 
 
 

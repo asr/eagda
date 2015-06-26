@@ -26,7 +26,7 @@ module Agda.Syntax.Concrete
   , TypedBinding'(..)
   , RecordAssignment
   , RecordAssignments
-  , FieldAssignment(..)
+  , FieldAssignment, FieldAssignment'(..), nameFieldA, exprFieldA
   , ModuleAssignment(..)
   , ColoredTypedBinding(..)
   , BoundName(..), mkBoundName_, mkBoundName
@@ -62,7 +62,6 @@ module Agda.Syntax.Concrete
   where
 
 import Control.DeepSeq
-import Data.Functor
 import Data.Typeable (Typeable)
 import Data.Foldable (Foldable)
 import Data.Traversable (Traversable)
@@ -83,7 +82,6 @@ import Agda.Utils.Lens
 
 #include "undefined.h"
 import Agda.Utils.Impossible
-import Agda.Utils.Lens
 
 type Color      = Expr
 type Arg a      = Common.Arg Color a
@@ -102,8 +100,11 @@ fromOrdinary :: e -> OpApp e -> e
 fromOrdinary d (Ordinary e) = e
 fromOrdinary d _            = d
 
-data FieldAssignment   = FieldAssignment { _nameFieldA :: Name, _exprFieldA :: Expr }
-  deriving (Typeable)
+data FieldAssignment' a = FieldAssignment { _nameFieldA :: Name, _exprFieldA :: a }
+  deriving (Typeable, Functor, Foldable, Traversable, Show, Eq)
+
+type FieldAssignment = FieldAssignment' Expr
+
 data ModuleAssignment  = ModuleAssignment
                            { _qnameModA     :: QName
                            , _exprModA      :: [Expr]
@@ -113,10 +114,10 @@ data ModuleAssignment  = ModuleAssignment
 type RecordAssignment  = Either FieldAssignment ModuleAssignment
 type RecordAssignments = [RecordAssignment]
 
-nameFieldA :: Lens' Name FieldAssignment
+nameFieldA :: Lens' Name (FieldAssignment' a)
 nameFieldA f r = f (_nameFieldA r) <&> \x -> r { _nameFieldA = x }
 
-exprFieldA :: Lens' Expr FieldAssignment
+exprFieldA :: Lens' a (FieldAssignment' a)
 exprFieldA f r = f (_exprFieldA r) <&> \x -> r { _exprFieldA = x }
 
 qnameModA :: Lens' QName ModuleAssignment
@@ -606,7 +607,7 @@ instance HasRange ModuleApplication where
   getRange (SectionApp r _ _) = r
   getRange (RecordModuleIFS r _) = r
 
-instance HasRange FieldAssignment where
+instance HasRange a => HasRange (FieldAssignment' a) where
   getRange (FieldAssignment a b) = fuseRange a b
 
 instance HasRange ModuleAssignment where
@@ -733,7 +734,7 @@ instance SetRange Pattern where
 -- KillRange instances
 ------------------------------------------------------------------------
 
-instance KillRange FieldAssignment where
+instance KillRange a => KillRange (FieldAssignment' a) where
   killRange (FieldAssignment a b) = killRange2 FieldAssignment a b
 
 instance KillRange ModuleAssignment where

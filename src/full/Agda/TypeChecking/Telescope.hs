@@ -8,7 +8,8 @@ module Agda.TypeChecking.Telescope where
 
 import Control.Applicative
 import Control.Monad (forM_, unless)
-import Data.List
+import Data.IntSet (IntSet)
+import qualified Data.IntSet as IntSet
 
 import Agda.Syntax.Common hiding (Arg, Dom, NamedArg, ArgInfo)
 import qualified Agda.Syntax.Common as Common
@@ -113,6 +114,24 @@ teleArgs :: Telescope -> Args
 teleArgs tel = [ Common.Arg info (var i) | (i, Common.Dom info _) <- zip (downFrom $ size l) l ]
   where l = telToList tel
 
+-- | Recursively computes dependencies of a set of variables in a given
+--   telescope. Any dependencies outside of the telescope are ignored.
+varDependencies :: Telescope -> IntSet -> IntSet
+varDependencies tel = allDependencies IntSet.empty
+  where
+    n  = size tel
+    ts = flattenTel tel
+
+    directDependencies :: Int -> IntSet
+    directDependencies i = allFreeVars $ ts !! (n-1-i)
+
+    allDependencies :: IntSet -> IntSet -> IntSet
+    allDependencies =
+      IntSet.foldr $ \j soFar ->
+        if j >= n || j `IntSet.member` soFar
+        then soFar
+        else IntSet.insert j $ allDependencies soFar $ directDependencies j
+
 -- | A telescope split in two.
 data SplitTel = SplitTel
   { firstPart  :: Telescope
@@ -136,29 +155,17 @@ splitTelescope fv tel = SplitTel tel1 tel2 perm
     ts0   = flattenTel tel
     n     = size tel
 
-    -- We start with a rough split into fv and the rest. This will most likely
-    -- not be correct so we patch it up later with reorderTel.
+    is    = varDependencies tel fv
+    isC   = IntSet.fromList [0..(n-1)] `IntSet.difference` is
 
-    -- Convert given de Bruijn indices into ascending list of de Bruijn levels.
-    is    = map (n - 1 -) $ dropWhile (>= n) $ VarSet.toDescList fv
-    -- Compute the complement (de Bruijn levels not mentioned in @fv@).
-    isC   = [0..n - 1] \\ is
-    perm0 = Perm n $ is ++ isC
+    perm  = Perm n $ map (n-1-) $ VarSet.toDescList is ++ VarSet.toDescList isC
 
-    permuteTel p ts = renameP (reverseP p) (permute p ts)
+    ts1   = renameP (reverseP perm) (permute perm ts0)
 
-    ts1   = permuteTel perm0 ts0
+    tel'  = unflattenTel (permute perm names) ts1
 
-    perm1 = reorderTel_ ts1
-
-    ts2   = permuteTel perm1 ts1
-
-    perm  = composeP perm1 perm0
-
-    tel'  = unflattenTel (permute perm names) ts2
-
-    m            = length $ takeWhile (`notElem` is) $ reverse $ permPicks perm
-    (tel1, tel2) = telFromList -*- telFromList $ splitAt (n - m) $ telToList tel'
+    m     = size is
+    (tel1, tel2) = telFromList -*- telFromList $ splitAt m $ telToList tel'
 
 telView :: Type -> TCM TelView
 telView = telViewUpTo (-1)
@@ -184,11 +191,31 @@ telViewUpTo' n p t = do
 -- | Decomposing a function type.
 
 mustBePi :: MonadTCM tcm => Type -> tcm (Dom Type, Abs Type)
-mustBePi t = liftTCM $ do
-  t <- reduce t
-  case ignoreSharing $ unEl t of
-    Pi a b -> return (a, b)
-    _      -> __IMPOSSIBLE__
+mustBePi t = ifNotPiType t __IMPOSSIBLE__ $ \ a b -> return (a,b)
+
+-- | If the given type is a @Pi@, pass its parts to the first continuation.
+--   If not (or blocked), pass the reduced type to the second continuation.
+ifPi :: MonadTCM tcm => Term -> (Dom Type -> Abs Type -> tcm a) -> (Term -> tcm a) -> tcm a
+ifPi t yes no = do
+  t <- liftTCM $ reduce t
+  case ignoreSharing t of
+    Pi a b -> yes a b
+    _      -> no t
+
+-- | If the given type is a @Pi@, pass its parts to the first continuation.
+--   If not (or blocked), pass the reduced type to the second continuation.
+ifPiType :: MonadTCM tcm => Type -> (Dom Type -> Abs Type -> tcm a) -> (Type -> tcm a) -> tcm a
+ifPiType (El s t) yes no = ifPi t yes (no . El s)
+
+-- | If the given type is blocked or not a @Pi@, pass it reduced to the first continuation.
+--   If it is a @Pi@, pass its parts to the second continuation.
+ifNotPi :: MonadTCM tcm => Term -> (Term -> tcm a) -> (Dom Type -> Abs Type -> tcm a) -> tcm a
+ifNotPi = flip . ifPi
+
+-- | If the given type is blocked or not a @Pi@, pass it reduced to the first continuation.
+--   If it is a @Pi@, pass its parts to the second continuation.
+ifNotPiType :: MonadTCM tcm => Type -> (Type -> tcm a) -> (Dom Type -> Abs Type -> tcm a) -> tcm a
+ifNotPiType = flip . ifPiType
 
 -- | A safe variant of piApply.
 

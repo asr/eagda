@@ -25,7 +25,6 @@ import Agda.Syntax.Internal hiding (Arg)
 import qualified Agda.Syntax.Internal as I
 
 import Agda.Utils.List
-import Agda.Utils.Functor ((<.>))
 import Agda.Utils.Permutation
 import Agda.Utils.Size (size)
 import Agda.Utils.Tuple
@@ -107,10 +106,6 @@ instance LabelPatVars (Pattern' x) (Pattern' (i,x)) i where
 numberPatVars :: LabelPatVars a b Int => Permutation -> a -> b
 numberPatVars perm ps = evalState (labelPatVars ps) $
   permute (invertP __IMPOSSIBLE__ perm) $ downFrom $ size perm
-
-instance IsProjP Pattern where
-  isProjP (ProjP d) = Just d
-  isProjP _         = Nothing
 
 patternsToElims :: Permutation -> [I.NamedArg Pattern] -> [Elim]
 patternsToElims perm ps = map build' $ numberPatVars perm ps

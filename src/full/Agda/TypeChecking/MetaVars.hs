@@ -13,13 +13,10 @@ import Data.List hiding (sort)
 import qualified Data.List as List
 import qualified Data.Map as Map
 import qualified Data.Foldable as Fold
-import qualified Data.Traversable as Trav
 
 import Agda.Syntax.Common
 import Agda.Syntax.Internal as I
 import Agda.Syntax.Internal.Generic
-import Agda.Syntax.Position
-import qualified Agda.Syntax.Abstract as A
 
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Monad.Builtin
@@ -27,7 +24,6 @@ import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.Constraints
-import Agda.TypeChecking.Errors
 import Agda.TypeChecking.Free
 import Agda.TypeChecking.Level
 import Agda.TypeChecking.Records
@@ -41,8 +37,7 @@ import Agda.TypeChecking.SizedTypes (boundedSizeMetaHook, isSizeProblem)
 import Agda.TypeChecking.MetaVars.Occurs
 
 import Agda.Utils.Except
-  ( Error(noMsg)
-  , ExceptT
+  ( ExceptT
   , MonadError(throwError)
   , runExceptT
   )
@@ -876,7 +871,15 @@ assignMeta' m x t n ids v = do
 -- | Turn the assignment problem @_X args <= SizeLt u@ into
 -- @_X args = SizeLt (_Y args)@ and constraint
 -- @_Y args <= u@.
-subtypingForSizeLt :: CompareDirection -> MetaId -> MetaVariable -> Type -> Args -> Term -> (Term -> TCM ()) -> TCM ()
+subtypingForSizeLt
+  :: CompareDirection -- ^ @dir@
+  -> MetaId           -- ^ The meta variable @x@.
+  -> MetaVariable     -- ^ Its associated information @mvar <- lookupMeta x@.
+  -> Type             -- ^ Its type @t = jMetaType $ mvJudgement mvar@
+  -> Args             -- ^ Its arguments.
+  -> Term             -- ^ Its to-be-assigned value @v@, such that @x args `dir` v@.
+  -> (Term -> TCM ()) -- ^ Continuation taking its possibly assigned value.
+  -> TCM ()
 subtypingForSizeLt DirEq x mvar t args v cont = cont v
 subtypingForSizeLt dir   x mvar t args v cont = do
   let fallback = cont v

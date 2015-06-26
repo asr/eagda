@@ -1,4 +1,3 @@
-{-# OPTIONS_GHC -Wall #-}
 {-# LANGUAGE CPP, DoAndIfThenElse #-}
 
 -- | Convert the AuxAST code to UHC Core code.
@@ -137,10 +136,7 @@ exprToCore (App f es)   = do
 exprToCore (Case e brs def (CTCon dt)) = do
   caseScr <- freshLocalName
   defVar <- freshLocalName
-  def' <- case def of
-        Nothing -> return $ mkError opts "Non-exhaustive case didn't match any alternative."
-        Just x -> exprToCore x
-
+  def' <- exprToCore def
 
   branches <- branchesToCore brs
   defBranches <- defaultBranches dt brs (mkVar defVar)
@@ -151,9 +147,7 @@ exprToCore (Case e brs def (CTCon dt)) = do
 exprToCore (Case e brs def ct) = do
   e' <- exprToCore e
   var <- freshLocalName
-  def' <- case def of
-        Nothing -> return $ mkError opts "Non-exhaustive case didn't match any alternative."
-        Just x -> exprToCore x
+  def' <- exprToCore def
 
   css <- buildPrimCases (eq ct) (mkVar var) brs (getLit ct) def'
   return $ mkLet1Strict var e' css
@@ -248,4 +242,3 @@ coreTrace msg x = mkApp (mkVar $ mkHsName ["UHC", "Agda", "Builtins"] "primTrace
 
 coreImpossible :: String -> CExpr
 coreImpossible msg = mkError opts $ "BUG! Impossible code reached. " ++ msg
-

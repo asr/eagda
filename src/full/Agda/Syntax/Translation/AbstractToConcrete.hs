@@ -33,7 +33,6 @@ import Prelude hiding (null)
 import Control.Applicative hiding (empty)
 import Control.Monad.Reader
 
-import Data.List as List hiding (null)
 import qualified Data.Map as Map
 import Data.Maybe
 import Data.Monoid
@@ -528,8 +527,8 @@ makeDomainFree b@(A.DomainFull (A.TypedBindings r (Common.Arg info (A.TBind _ [W
     _ -> b
 makeDomainFree b = b
 
-instance ToConcrete A.Assign C.FieldAssignment where
-    toConcrete (Assign x e) = FieldAssignment x <$> toConcrete e
+instance ToConcrete a c => ToConcrete (FieldAssignment' a) (FieldAssignment' c) where
+    toConcrete = traverse toConcrete
 
 -- Binder instances -------------------------------------------------------
 
@@ -1030,3 +1029,12 @@ recoverOpApp bracket opApp view e mDefault = case view e of
     es <- mapM (toConcreteCtx InsideOperandCtx) as
     bracket roundFixBrackets
       $ return $ opApp (getRange x) x n es
+
+-- Some instances that are related to interaction with users -----------
+
+instance ToConcrete InteractionId C.Expr where
+    toConcrete (InteractionId i) = return $ C.QuestionMark noRange (Just i)
+
+instance ToConcrete NamedMeta C.Expr where
+    toConcrete i = do
+      return $ C.Underscore noRange (Just $ prettyShow i)

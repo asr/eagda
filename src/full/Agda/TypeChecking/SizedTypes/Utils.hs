@@ -3,7 +3,6 @@
 module Agda.TypeChecking.SizedTypes.Utils where
 
 import Control.Applicative
-import Data.Functor
 import qualified Debug.Trace as Debug
 import Agda.Utils.Function
 
@@ -23,6 +22,9 @@ class Eq a => Top a where
 
 class Plus a b c where
   plus :: a -> b -> c
+
+instance Plus Int Int Int where
+  plus = (+)
 
 class MeetSemiLattice a where
   meet :: a -> a -> a

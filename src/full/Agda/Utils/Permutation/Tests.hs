@@ -17,19 +17,12 @@ import Data.List as List
 import Data.Maybe
 
 import Test.QuickCheck
-import Test.QuickCheck.All
 
 import Agda.Utils.Permutation
 
 ------------------------------------------------------------------------
 -- * Properties
 ------------------------------------------------------------------------
-
-instance Arbitrary Permutation where
-  arbitrary = do
-    is <- nub . map getNonNegative <$> arbitrary
-    NonNegative n <- arbitrary
-    return $ Perm (if null is then n else maximum is + n + 1) is
 
 data ComposablePermutations = ComposablePermutations Permutation Permutation
   deriving (Eq, Show)

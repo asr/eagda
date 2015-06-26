@@ -18,7 +18,7 @@ module Agda.Syntax.Abstract
     ) where
 
 import Prelude hiding (foldl, foldr)
-import Control.Arrow ((***), first, second)
+import Control.Arrow (first)
 import Control.Applicative
 
 import Data.Foldable as Fold
@@ -29,22 +29,20 @@ import qualified Data.Sequence as Seq
 import Data.Traversable
 import Data.Typeable (Typeable)
 
+import Agda.Syntax.Concrete (FieldAssignment'(..), exprFieldA)
 import qualified Agda.Syntax.Concrete as C
 import Agda.Syntax.Concrete.Pretty ()
 import Agda.Syntax.Info
 import Agda.Syntax.Common hiding (Arg, Dom, NamedArg, ArgInfo)
 import qualified Agda.Syntax.Common as Common
-import Agda.Syntax.Fixity
 import Agda.Syntax.Position
 import Agda.Syntax.Abstract.Name
 import Agda.Syntax.Abstract.Name as A (QNamed)
 import Agda.Syntax.Literal
 import Agda.Syntax.Scope.Base
 
-import Agda.Utils.Either
 import Agda.Utils.Geniplate
 import Agda.Utils.Lens
-import Agda.Utils.Tuple
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -105,17 +103,10 @@ data Expr
   deriving (Typeable, Show, Eq)
 
 -- | Record field assignment @f = e@.
-data Assign  = Assign { _fieldAssign :: C.Name, _exprAssign :: Expr }
-  deriving (Typeable, Show, Eq)
+type Assign  = FieldAssignment' Expr
 type Assigns = [Assign]
 type RecordAssign  = Either Assign ModuleName
 type RecordAssigns = [RecordAssign]
-
-fieldAssign :: Lens' C.Name Assign
-fieldAssign f r = f (_fieldAssign r) <&> \x -> r {_fieldAssign = x}
-
-exprAssign :: Lens' Expr Assign
-exprAssign f r = f (_exprAssign r) <&> \x -> r {_exprAssign = x}
 
 -- | Is a type signature a `postulate' or a function signature?
 data Axiom
@@ -430,6 +421,10 @@ instance IsProjP a => IsProjP (Named n a) where
     Instances
  --------------------------------------------------------------------------}
 
+instance Underscore Expr where
+  underscore   = Underscore emptyMetaInfo
+  isUnderscore = __IMPOSSIBLE__
+
 instance LensHiding TypedBindings where
   getHiding   (TypedBindings _ a) = getHiding a
   mapHiding f (TypedBindings r a) = TypedBindings r $ mapHiding f a
@@ -528,9 +523,6 @@ instance HasRange (LHSCore' e) where
 instance HasRange a => HasRange (Clause' a) where
     getRange (Clause lhs rhs ds catchall) = getRange (lhs,rhs,ds)
 
-instance HasRange Assign where
-    getRange (Assign a b) = fuseRange a b
-
 instance HasRange RHS where
     getRange AbsurdRHS                = noRange
     getRange (RHS e)                  = getRange e
@@ -562,9 +554,6 @@ instance KillRange LamBinding where
 
 instance KillRange TypedBindings where
   killRange (TypedBindings r b) = TypedBindings (killRange r) (killRange b)
-
-instance KillRange Assign where
-  killRange (Assign a b) = killRange2 Assign a b
 
 instance KillRange TypedBinding where
   killRange (TBind r xs e) = killRange3 TBind r xs e
@@ -626,9 +615,6 @@ instance KillRange Declaration where
 instance KillRange ModuleApplication where
   killRange (SectionApp a b c  ) = killRange3 SectionApp a b c
   killRange (RecordModuleIFS a ) = killRange1 RecordModuleIFS a
-
-instance KillRange x => KillRange (ThingWithFixity x) where
-  killRange (ThingWithFixity c f) = ThingWithFixity (killRange c) f
 
 instance KillRange e => KillRange (Pattern' e) where
   killRange (VarP x)            = killRange1 VarP x
@@ -758,8 +744,8 @@ instance AllNames Expr where
   allNames Prop{}                  = Seq.empty
   allNames (Let _ lbs e)           = allNames lbs >< allNames e
   allNames ETel{}                  = __IMPOSSIBLE__
-  allNames (Rec _ fields)          = allNames [ e | Left (Assign _ e) <- fields ]
-  allNames (RecUpdate _ e fs)      = allNames e >< allNames (map (view exprAssign) fs)
+  allNames (Rec _ fields)          = allNames [ a ^. exprFieldA | Left a <- fields ]
+  allNames (RecUpdate _ e fs)      = allNames e >< allNames (map (view exprFieldA) fs)
   allNames (ScopedExpr _ e)        = allNames e
   allNames (QuoteGoal _ _ e)       = allNames e
   allNames (QuoteContext _)        = Seq.empty
@@ -902,7 +888,7 @@ instance SubstExpr ModuleName where
   substExpr _ = id
 
 instance SubstExpr Assign where
-  substExpr s (Assign n x) = Assign n (substExpr s x)
+  substExpr s (FieldAssignment n x) = FieldAssignment n (substExpr s x)
 
 instance SubstExpr Expr where
   substExpr s e = case e of

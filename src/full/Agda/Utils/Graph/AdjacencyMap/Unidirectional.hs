@@ -68,10 +68,9 @@ module Agda.Utils.Graph.AdjacencyMap.Unidirectional
 
 import Prelude hiding (lookup, unzip, null)
 
-import Control.Applicative ((<$>))
+import Control.Applicative hiding (empty)
 
 import qualified Data.Array.IArray as Array
-import Data.Function
 import qualified Data.Graph as Graph
 import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap
@@ -79,18 +78,19 @@ import qualified Data.IntSet as IntSet
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
-import qualified Data.Maybe as Maybe
 import Data.Maybe (maybeToList)
 import qualified Data.Set as Set
 import Data.Set (Set)
 import qualified Data.Tree as Tree
 
-import Agda.Utils.Function (iterateUntil, repeatWhile)
-import Agda.Utils.Functor (for)
+import Test.QuickCheck hiding (label)
+
+import Agda.Utils.Function (repeatWhile)
 import Agda.Utils.List (headMaybe)
 import Agda.Utils.Null (Null(null))
 import qualified Agda.Utils.Null as Null
 import Agda.Utils.SemiRing
+import Agda.Utils.TestHelpers
 import Agda.Utils.Tuple
 
 #include "undefined.h"
@@ -675,3 +675,31 @@ allPaths classify s t g = paths Set.empty s
       if tag `Set.member` visited then []
       else if s' == t then e : recurse
       else recurse
+
+------------------------------------------------------------------------
+-- Generators
+
+instance (Arbitrary s, Arbitrary t, Arbitrary e) => Arbitrary (Edge s t e) where
+  arbitrary = Edge <$> arbitrary <*> arbitrary <*> arbitrary
+
+instance (CoArbitrary s, CoArbitrary t, CoArbitrary e) => CoArbitrary (Edge s t e) where
+  coarbitrary (Edge s t e) = coarbitrary s . coarbitrary t . coarbitrary e
+
+instance (Ord n, SemiRing e, Arbitrary n, Arbitrary e) =>
+         Arbitrary (Graph n n e) where
+  arbitrary = do
+    nodes <- sized $ \ n -> resize (2 * isqrt n) arbitrary
+    edges <- mapM (\ (n1, n2) -> Edge n1 n2 <$> arbitrary) =<<
+                  listOfElements ((,) <$> nodes <*> nodes)
+    let g1 = fromList edges
+        g2 = g1 `union` fromNodes nodes
+    elements [ g1  -- Does not contain empty outermost node maps.
+             , g2  -- May contain empty outermost node maps.
+             ]
+    where
+    isqrt :: Int -> Int
+    isqrt = round . sqrt . fromIntegral
+
+  shrink g =
+    [ removeNode n g     | n <- Set.toList $ nodes g ] ++
+    [ removeEdge n1 n2 g | Edge n1 n2 _ <- edges g ]

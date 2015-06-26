@@ -8,11 +8,12 @@
 {-# LANGUAGE OverlappingInstances #-}
 #endif
 
+{-# OPTIONS_GHC -fno-warn-orphans #-}
+
 -- | Agda-specific benchmarking structure.
 
 module Agda.Benchmarking where
 
-import Control.Monad.IO.Class
 import qualified Control.Exception as E
 
 import Data.IORef

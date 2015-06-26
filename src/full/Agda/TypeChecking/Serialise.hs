@@ -32,7 +32,7 @@ module Agda.TypeChecking.Serialise
   where
 
 import Control.Applicative
-import Control.Arrow (first, second)
+import Control.Arrow (second)
 import Control.DeepSeq
 import qualified Control.Exception as E
 import Control.Monad
@@ -41,7 +41,6 @@ import Control.Monad.State.Strict (StateT, runStateT, gets, modify)
 
 import Data.Array.IArray
 import Data.Word
-import Data.ByteString.Lazy (ByteString)
 import qualified Data.ByteString.Lazy as L
 import Data.Hashable
 import qualified Data.HashTable.IO as H
@@ -89,6 +88,7 @@ import qualified Agda.TypeChecking.Monad.Benchmark as Bench
 
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.CompiledClause
+import Agda.TypeChecking.Positivity.Occurrence
 -- import Agda.TypeChecking.Pretty
 
 import Agda.Utils.BiMap (BiMap)
@@ -125,7 +125,7 @@ returnForcedByteString bs = return $! bs
 -- 32-bit machines). Word64 does not have these problems.
 
 currentInterfaceVersion :: Word64
-currentInterfaceVersion = 20150617 * 10 + 0
+currentInterfaceVersion = 20150625 * 10 + 0
 
 -- | Constructor tag (maybe omitted) and argument indices.
 
@@ -748,9 +748,9 @@ instance EmbPrj A.Name where
   value = vcase valu where valu [a, b, c, d] = valu4 A.Name a b c d
                            valu _            = malformed
 
-instance EmbPrj A.Assign where
-  icod_ (A.Assign a b) = icode2' a b
-  value = vcase valu where valu [a, b] = valu2 A.Assign a b
+instance EmbPrj a => EmbPrj (C.FieldAssignment' a) where
+  icod_ (C.FieldAssignment a b) = icode2' a b
+  value = vcase valu where valu [a, b] = valu2 C.FieldAssignment a b
                            valu _      = malformed
 
 instance (EmbPrj s, EmbPrj t) => EmbPrj (Named s t) where
@@ -1015,7 +1015,7 @@ instance EmbPrj I.ConHead where
   value = vcase valu where valu [a, b, c] = valu3 ConHead a b c
                            valu _         = malformed
 
-instance EmbPrj I.Type where
+instance (EmbPrj a) => EmbPrj (I.Type' a) where
   icod_ (El a b) = icode2' a b
   value = vcase valu where valu [a, b] = valu2 El a b
                            valu _      = malformed
@@ -1145,11 +1145,17 @@ instance EmbPrj NLPat where
   icod_ (PVar a)   = icode1 0 a
   icod_ (PWild)    = icode0 1
   icod_ (PDef a b) = icode2 2 a b
-  icod_ (PTerm a)  = icode1 3 a
+  icod_ (PLam a b) = icode2 3 a b
+  icod_ (PPi a b)  = icode2 4 a b
+  icod_ (PBoundVar a b) = icode2 5 a b
+  icod_ (PTerm a)  = icode1 6 a
   value = vcase valu where valu [0, a]    = valu1 PVar a
                            valu [1]       = valu0 PWild
                            valu [2, a, b] = valu2 PDef a b
-                           valu [3, a]    = valu1 PTerm a
+                           valu [3, a, b] = valu2 PLam a b
+                           valu [4, a, b] = valu2 PPi a b
+                           valu [5, a, b] = valu2 PBoundVar a b
+                           valu [6, a]    = valu1 PTerm a
                            valu _         = malformed
 
 instance EmbPrj RewriteRule where
@@ -1604,10 +1610,10 @@ instance EmbPrj UHC.AModuleInfo where
     valu _ = malformed
 
 instance EmbPrj UHC.AModuleInterface where
-  icod_ (UHC.AModuleInterface a b c) = icode3' a b c
+  icod_ (UHC.AModuleInterface a b) = icode2' a b
   value = vcase valu where
-    valu [a, b, c] = valu3 UHC.AModuleInterface a b c
-    valu _         = malformed
+    valu [a, b] = valu2 UHC.AModuleInterface a b
+    valu _      = malformed
 
 instance EmbPrj UHC.AConInfo where
   icod_ (UHC.AConInfo a b) = icode2' a b

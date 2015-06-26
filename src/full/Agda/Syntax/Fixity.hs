@@ -13,7 +13,6 @@ import Prelude hiding (concatMap)
 
 import Data.Foldable
 import Data.Function
-import Data.Hashable
 import qualified Data.List as List
 import Data.Maybe
 import Data.Set (Set)
@@ -309,6 +308,9 @@ instance KillRange Fixity where
 
 instance KillRange Fixity' where
   killRange (Fixity' f n) = killRange2 Fixity' f n
+
+instance KillRange x => KillRange (ThingWithFixity x) where
+  killRange (ThingWithFixity c f) = ThingWithFixity (killRange c) f
 
 ------------------------------------------------------------------------
 -- * Some lenses

@@ -19,7 +19,6 @@ module Agda.Syntax.Concrete.Operators
     , parsePatternSyn
     ) where
 
-import Control.Arrow ((***))
 import Control.DeepSeq
 import Control.Applicative
 import Control.Monad
@@ -31,7 +30,6 @@ import Data.List
 import Data.Maybe
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Traversable (traverse)
 import qualified Data.Traversable as Trav
@@ -410,62 +408,6 @@ buildParsers r flat kind exprNames = do
                 memoise (PostLeftsK key) $
                   flip ($) <$> (NoPlaceholder <$> (postLefts <|> higher))
                            <*> postLeft
-
-
----------------------------------------------------------------------------
--- * Expression instances
----------------------------------------------------------------------------
-
-instance IsExpr Expr where
-    exprView e = case e of
-        Ident x         -> LocalV x
-        App _ e1 e2     -> AppV e1 e2
-        OpApp r d ns es -> OpAppV d ns es
-        HiddenArg _ e   -> HiddenArgV e
-        InstanceArg _ e -> InstanceArgV e
-        Paren _ e       -> ParenV e
-        Lam _ bs    e   -> LamV bs e
-        Underscore{}    -> WildV e
-        _               -> OtherV e
-    unExprView e = case e of
-        LocalV x       -> Ident x
-        AppV e1 e2     -> App (fuseRange e1 e2) e1 e2
-        OpAppV d ns es -> OpApp (fuseRange d es) d ns es
-        HiddenArgV e   -> HiddenArg (getRange e) e
-        InstanceArgV e -> InstanceArg (getRange e) e
-        ParenV e       -> Paren (getRange e) e
-        LamV bs e      -> Lam (fuseRange bs e) bs e
-        WildV e        -> e
-        OtherV e       -> e
-
-
-instance IsExpr Pattern where
-    exprView e = case e of
-        IdentP x         -> LocalV x
-        AppP e1 e2       -> AppV e1 e2
-        OpAppP r d ns es -> OpAppV d ns ((map . fmap . fmap)
-                                           (NoPlaceholder . Ordinary) es)
-        HiddenP _ e      -> HiddenArgV e
-        InstanceP _ e    -> InstanceArgV e
-        ParenP _ e       -> ParenV e
-        WildP{}          -> WildV e
-        _                -> OtherV e
-    unExprView e = case e of
-        LocalV x       -> IdentP x
-        AppV e1 e2     -> AppP e1 e2
-        OpAppV d ns es -> let ess :: [NamedArg Pattern]
-                              ess = (map . fmap . fmap)
-                                      (\x -> case x of
-                                          Placeholder{}   -> __IMPOSSIBLE__
-                                          NoPlaceholder x -> fromOrdinary __IMPOSSIBLE__ x)
-                                      es
-                          in OpAppP (fuseRange d ess) d ns ess
-        HiddenArgV e   -> HiddenP (getRange e) e
-        InstanceArgV e -> InstanceP (getRange e) e
-        ParenV e       -> ParenP (getRange e) e
-        LamV _ _       -> __IMPOSSIBLE__
-        WildV e        -> e
-        OtherV e       -> e
 
 ---------------------------------------------------------------------------
 -- * Helpers for pattern and lhs parsing

@@ -1,13 +1,3 @@
-{-# LANGUAGE CPP,
-             FlexibleInstances,
-             MultiParamTypeClasses,
-             TypeSynonymInstances,
-             UndecidableInstances #-}
-
-#if __GLASGOW_HASKELL__ <= 708
-{-# LANGUAGE OverlappingInstances #-}
-#endif
-
 -- | Measure CPU time for individual phases of the Agda pipeline.
 
 module Agda.TypeChecking.Monad.Benchmark
@@ -21,48 +11,16 @@ module Agda.TypeChecking.Monad.Benchmark
 
 import Prelude hiding (print)
 
-import qualified Control.Exception as E (evaluate)
-import Control.Monad.State
-
-import Data.List
-
-import qualified Text.PrettyPrint.Boxes as Boxes
-
 import Agda.Benchmarking
 
-import Agda.TypeChecking.Monad.Base as TCM
+import Agda.TypeChecking.Monad.Base
 import{-# SOURCE #-} Agda.TypeChecking.Monad.Options
-import qualified Agda.TypeChecking.Monad.State as TCState
 
 import Agda.Utils.Benchmark (MonadBench(..), billTo, billPureTo)
 import qualified Agda.Utils.Benchmark as B
 
 import Agda.Utils.Monad
 import Agda.Utils.Pretty (prettyShow)
-
-#include "undefined.h"
-import Agda.Utils.Impossible
-
--- Select one of the following two instances.
--- For Benchmarking.billToPure to work, only the IORef alternative works.
-
--- | We store benchmark statistics in an IORef.
---   This enables benchmarking pure computation, see
---   ''Agda.Benchmarking''.
-instance MonadBench Phase TCM where
--- instance MonadTCM tcm => MonadBench Phase tcm where
-  getBenchmark = liftIO $ getBenchmark
-  putBenchmark = liftIO . putBenchmark
-  finally = TCM.finally_
-
--- -- | We store benchmark statistics in the TCM.
--- instance MonadBench Phase TCM where
---   getBenchmark    = TCState.getBenchmark
---   modifyBenchmark = TCState.modifyBenchmark
---   finally = TCM.finally_
--- -- instance MonadTCM tcm => MonadBench Phase tcm where
--- --   getBenchmark    = liftTCM $ TCState.getBenchmark
--- --   modifyBenchmark = liftTCM . TCState.modifyBenchmark
 
 benchmarkKey :: String
 benchmarkKey = "profile"

@@ -41,13 +41,10 @@ import {-# SOURCE #-} Agda.TypeChecking.Patterns.Match
 import {-# SOURCE #-} Agda.TypeChecking.Pretty
 import {-# SOURCE #-} Agda.TypeChecking.Rewriting
 
-import Agda.Utils.Either
 import Agda.Utils.Function
 import Agda.Utils.Functor
 import Agda.Utils.Monad
 import Agda.Utils.HashMap (HashMap)
-import Agda.Utils.Maybe
-import Agda.Utils.Monad
 import Agda.Utils.Tuple
 
 #include "undefined.h"
@@ -929,7 +926,7 @@ instance InstantiateFull Sort where
             Inf        -> return s
             SizeUniv   -> return s
 
-instance InstantiateFull Type where
+instance (InstantiateFull a) => InstantiateFull (Type' a) where
     instantiateFull' (El s t) =
       El <$> instantiateFull' s <*> instantiateFull' t
 
@@ -1087,6 +1084,9 @@ instance InstantiateFull NLPat where
   instantiateFull' (PVar x)   = return $ PVar x
   instantiateFull' (PWild)    = return PWild
   instantiateFull' (PDef x y) = PDef <$> instantiateFull' x <*> instantiateFull' y
+  instantiateFull' (PLam x y) = PLam x <$> instantiateFull' y
+  instantiateFull' (PPi x y)  = PPi <$> instantiateFull' x <*> instantiateFull' y
+  instantiateFull' (PBoundVar x y) = PBoundVar x <$> instantiateFull' y
   instantiateFull' (PTerm x)  = PTerm <$> instantiateFull' x
 
 instance InstantiateFull RewriteRule where
