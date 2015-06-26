@@ -680,6 +680,9 @@ instance Show ATPRole where
     show ATPDefinition = "definition"
     show ATPHint       = "hint"
 
+instance KillRange ATPRole where
+  killRange = id
+
 -- | Functions can be defined in both infix and prefix style. See
 --   'Agda.Syntax.Concrete.LHS'.
 data IsInfix = InfixDef | PrefixDef

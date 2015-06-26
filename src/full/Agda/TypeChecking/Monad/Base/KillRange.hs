@@ -101,9 +101,6 @@ instance KillRange DisplayTerm where
       DDot v            -> killRange1 DDot v
       DTerm v           -> killRange1 DTerm v
 
-instance KillRange ATPRole where
-  killRange = id
-
 -- * KillRange on CompiledClause
 
 instance KillRange c => KillRange (WithArity c) where
