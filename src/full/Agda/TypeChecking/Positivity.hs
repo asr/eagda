@@ -2,7 +2,6 @@
 {-# LANGUAGE CPP,
              FlexibleContexts,
              FlexibleInstances,
-             TemplateHaskell,
              TupleSections,
              UndecidableInstances #-}
 
@@ -60,29 +59,30 @@ type Graph n e = Graph.Graph n n e
 --   Also add information about positivity and recursivity of records
 --   to the signature.
 checkStrictlyPositive :: Set QName -> TCM ()
-checkStrictlyPositive qs = disableDestructiveUpdate $ do
+checkStrictlyPositive qset = disableDestructiveUpdate $ do
   -- compute the occurrence graph for qs
-  reportSDoc "tc.pos.tick" 100 $ text "positivity of" <+> prettyTCM (Set.toList qs)
+  let qs = Set.toList qset
+  reportSDoc "tc.pos.tick" 100 $ text "positivity of" <+> prettyTCM qs
   -- remove @Unused@ edges
-  g <- Graph.clean <$> buildOccurrenceGraph qs
+  g <- Graph.clean <$> buildOccurrenceGraph qset
   let gstar = Graph.gaussJordanFloydWarshallMcNaughtonYamada $ fmap occ g
   reportSDoc "tc.pos.tick" 100 $ text "constructed graph"
   reportSLn "tc.pos.graph" 5 $ "Positivity graph: N=" ++ show (size $ Graph.nodes g) ++
                                " E=" ++ show (length $ Graph.edges g)
   reportSDoc "tc.pos.graph" 10 $ vcat
-    [ text "positivity graph for" <+> prettyTCM (Set.toList qs)
+    [ text "positivity graph for" <+> prettyTCM qs
     , nest 2 $ prettyTCM g
     ]
   reportSLn "tc.pos.graph" 5 $
     "Positivity graph (completed): E=" ++ show (length $ Graph.edges gstar)
   reportSDoc "tc.pos.graph" 50 $ vcat
     [ text "transitive closure of positivity graph for" <+>
-      prettyTCM (Set.toList qs)
+      prettyTCM qs
     , nest 2 $ prettyTCM gstar
     ]
 
   -- remember argument occurrences for qs in the signature
-  mapM_ (setArgs gstar) $ Set.toList qs
+  setArgOccs qset qs gstar
   reportSDoc "tc.pos.tick" 100 $ text "set args"
 
   -- check positivity for all strongly connected components of the graph for qs
@@ -98,46 +98,63 @@ checkStrictlyPositive qs = disableDestructiveUpdate $ do
         ]
   reportSDoc "tc.pos.graph.sccs" 15 $ text $ "  sccs = " ++ show sccs
   forM_ sccs $ \ scc -> setMut [ q | DefNode q <- scc ]
-  mapM_ (checkPos g) $ Set.toList qs
+  mapM_ (checkPos g gstar) $ qs
   reportSDoc "tc.pos.tick" 100 $ text "checked positivity"
 
   where
-    checkPos g q = do
+    checkPos :: Graph Node Edge ->
+                Graph Node Occurrence ->
+                QName -> TCM ()
+    checkPos g gstar q = inConcreteOrAbstractMode q $ do
       -- we check positivity only for data or record definitions
       whenJustM (isDatatype q) $ \ dr -> do
         reportSDoc "tc.pos.check" 10 $ text "Checking positivity of" <+> prettyTCM q
-        -- get all pathes from q to q that exhibit a non-strictly occurrence
-        -- or, in case of records, any recursive occurrence
-        let critical IsData   = \ (Edge o _) -> o <= JustPos
-            critical IsRecord = \ (Edge o _) -> o /= Unused
-            loops      = filter (critical dr) $ Graph.allPaths (critical dr) (DefNode q) (DefNode q) g
+
+        let loop      = Graph.lookup (DefNode q) (DefNode q) gstar
+            how msg p =
+              fsep $ [prettyTCM q] ++ pwords "is" ++
+                case filter (p . occ) $
+                     Graph.allTrails (DefNode q) (DefNode q) g of
+                  Edge _ how : _ -> pwords (msg ++ ", because it occurs") ++
+                                    [prettyTCM how]
+                  _              -> pwords msg
+
+                  -- For an example of code that exercises the latter,
+                  -- uninformative clause above, see
+                  -- test/fail/BadInductionRecursion5.agda.
+
+                  -- If a suitable StarSemiRing instance can be
+                  -- defined for Edge, then
+                  -- gaussJordanFloydWarshallMcNaughtonYamada can be
+                  -- used instead of allTrails, thus avoiding the
+                  -- uninformative clause.
 
         -- if we have a negative loop, raise error
-        whenM positivityCheckEnabled $ do
-          forM_ [ how | Edge o how <- loops, o <= JustPos ] $ \ how -> do
-            err <- fsep $
-              [prettyTCM q] ++ pwords "is not strictly positive, because it occurs" ++
-              [prettyTCM how]
-            setCurrentRange q $ typeError $ GenericDocError err
+        whenM positivityCheckEnabled $
+          case loop of
+            Just o | p o -> do
+              err <- how "not strictly positive" p
+              setCurrentRange q $ typeError $ GenericDocError err
+              where p = (<= JustPos)
+            _ -> return ()
 
         -- if we find an unguarded record, mark it as such
-        when (dr == IsRecord) $ do
-         case headMaybe [ how | Edge o how <- loops, o <= StrictPos ] of
-          Just how -> do
-            reportSDoc "tc.pos.record" 5 $ sep
-              [ prettyTCM q <+> text "is not guarded, because it occurs"
-              , prettyTCM how
-              ]
-            unguardedRecord q
-            checkInduction q
-          -- otherwise, if the record is recursive, mark it as well
-          Nothing -> forM_ (take 1 [ how | Edge GuardPos how <- loops ]) $ \ how -> do
-            reportSDoc "tc.pos.record" 5 $ sep
-              [ prettyTCM q <+> text "is recursive, because it occurs"
-              , prettyTCM how
-              ]
-            recursiveRecord q
-            checkInduction q
+        when (dr == IsRecord) $
+          case loop of
+            Just o | p o -> do
+              reportSDoc "tc.pos.record" 5 $ how "not guarded" p
+              unguardedRecord q
+              checkInduction q
+              where p = (<= StrictPos)
+            _ ->
+              -- otherwise, if the record is recursive, mark it as well
+              case loop of
+                Just o | p o -> do
+                  reportSDoc "tc.pos.record" 5 $ how "recursive" p
+                  recursiveRecord q
+                  checkInduction q
+                  where p = (== GuardPos)
+                _ -> return ()
 
     checkInduction q = whenM positivityCheckEnabled $ do
       -- Check whether the recursive record has been declared as
@@ -162,23 +179,28 @@ checkStrictlyPositive qs = disableDestructiveUpdate $ do
     setMut [q] = return ()  -- no mutual recursion
     setMut qs  = forM_ qs $ \ q -> setMutual q (delete q qs)
 
-    -- Set the polarity of the arguments to a definition
-    setArgs g q = do
-      reportSDoc "tc.pos.args" 10 $ text "checking args of" <+> prettyTCM q
-      n <- getDefArity =<< getConstInfo q
-      let nArgs = maximum $ n :
-                    [ i + 1 | (ArgNode q1 i) <- Set.toList $ Graph.nodes g
-                    , q1 == q ]
-          findOcc i = fromMaybe Unused $ Graph.lookup (ArgNode q i) (DefNode q) g
-          args = map findOcc [0..nArgs - 1]
-      reportSDoc "tc.pos.args" 10 $ sep
-        [ text "args of" <+> prettyTCM q <+> text "="
-        , nest 2 $ prettyList $ map (text . show) args
-        ]
-      -- The list args can take a long time to compute, but contains
-      -- small elements, and is stored in the interface (right?), so
-      -- it is computed deep-strictly.
-      setArgOccurrences q $!! args
+    -- Set the polarity of the arguments to a couple of definitions
+    setArgOccs :: Set QName -> [QName] -> Graph Node Occurrence -> TCM ()
+    setArgOccs qset qs g = do
+      -- Compute a map from each name in q to the maximal argument index
+      let maxs = Map.fromListWith max
+           [ (q, i) | ArgNode q i <- Set.toList $ Graph.sourceNodes g, q `Set.member` qset ]
+      forM_ qs $ \ q -> inConcreteOrAbstractMode q $ do
+        reportSDoc "tc.pos.args" 10 $ text "checking args of" <+> prettyTCM q
+        n <- getDefArity =<< getConstInfo q
+        -- If there is no outgoing edge @ArgNode q i@, all @n@ arguments are @Unused@.
+        -- Otherwise, we obtain the occurrences from the Graph.
+        let findOcc i = fromMaybe Unused $ Graph.lookup (ArgNode q i) (DefNode q) g
+            args = caseMaybe (Map.lookup q maxs) (replicate n Unused) $ \ m ->
+              map findOcc [0 .. max m (n - 1)]
+        reportSDoc "tc.pos.args" 10 $ sep
+          [ text "args of" <+> prettyTCM q <+> text "="
+          , nest 2 $ prettyList $ map (text . show) args
+          ]
+        -- The list args can take a long time to compute, but contains
+        -- small elements, and is stored in the interface (right?), so
+        -- it is computed deep-strictly.
+        setArgOccurrences q $!! args
 
 getDefArity :: Definition -> TCM Int
 getDefArity def = case theDef def of
@@ -346,9 +368,10 @@ withExtendedOccEnv i = local $ \ e -> e { vars = i : vars e }
 
 -- | Running the monad
 getOccurrences
-  :: (PrettyTCM a, ComputeOccurrences a)
+  :: (Show a, PrettyTCM a, ComputeOccurrences a)
   => [Maybe Item] -> a -> TCM Occurrences
 getOccurrences vars a = do
+  reportSDoc "tc.pos.occ" 70 $ text "computing occurrences in " <+> text (show a)
   reportSDoc "tc.pos.occ" 20 $ text "computing occurrences in " <+> prettyTCM a
   kit <- coinductionKit
   return $ runReader (occurrences a) $ OccEnv vars $ fmap nameOfInf kit
@@ -383,7 +406,7 @@ instance ComputeOccurrences Clause where
       patItem i p = map (const $ Just $ AnArg i) $ patternVars p
 
 instance ComputeOccurrences Term where
-  occurrences v = case v of
+  occurrences v = case unSpine v of
     Var i args -> do
       vars <- asks vars
       occs <- occurrences args
@@ -442,7 +465,7 @@ instance ComputeOccurrences a => ComputeOccurrences (Abs a) where
   occurrences (NoAbs _ b) = occurrences b
 
 instance ComputeOccurrences a => ComputeOccurrences (Elim' a) where
-  occurrences Proj{}    = return empty
+  occurrences Proj{}    = __IMPOSSIBLE__
   occurrences (Apply a) = occurrences a
 
 instance ComputeOccurrences a => ComputeOccurrences (I.Arg a) where
@@ -462,7 +485,11 @@ instance (ComputeOccurrences a, ComputeOccurrences b) => ComputeOccurrences (a, 
 
 -- | Compute the occurrences in a given definition.
 computeOccurrences :: QName -> TCM Occurrences
-computeOccurrences q = do
+computeOccurrences q = inConcreteOrAbstractMode q $ do
+  reportSDoc "tc.pos" 25 $ do
+    a <- defAbstract <$> getConstInfo q
+    m <- asks envAbstractMode
+    text "computeOccurrences" <+> prettyTCM q <+> text (show a) <+> text (show m)
   def <- getConstInfo q
   occursAs (InDefOf q) <$> case theDef def of
     Function{funClauses = cs} -> do
@@ -500,17 +527,19 @@ computeOccurrences q = do
     Primitive{}   -> return empty
 
 -- | Eta expand a clause to have the given number of variables.
---   Warning: doesn't update telescope or permutation!
+--   Warning: doesn't put correct types in telescope!
 --   This is used instead of special treatment of lambdas
 --   (which was unsound: issue 121)
 etaExpandClause :: Nat -> Clause -> Clause
-etaExpandClause n c@Clause{ namedClausePats = ps, clauseBody = b }
+etaExpandClause n c@Clause{ clauseTel = tel, clausePerm = perm, namedClausePats = ps, clauseBody = b }
   | m <= 0    = c
   | otherwise = c
       { namedClausePats = ps ++ genericReplicate m (defaultArg $ unnamed $ VarP underscore)
       , clauseBody      = liftBody m b
-      , clauseTel       = telFromList $ replicate n $ (underscore,) <$> dummyDom -- Not __IMPOSSIBLE__ because of debug printing
-      , clausePerm      = Perm.idP n  -- ditto
+      , clauseTel       = telFromList $
+          telToList tel ++ (replicate m $ (underscore,) <$> dummyDom)
+          -- dummyDom, not __IMPOSSIBLE__, because of debug printing.
+      , clausePerm      = Perm.liftP m perm -- Andreas, 2015-06-28 this is probably correct.
       }
   where
     m = n - genericLength ps
@@ -701,20 +730,4 @@ instance Arbitrary Edge where
 instance CoArbitrary Edge where
   coarbitrary (Edge o w) = coarbitrary (o, w)
 
--- | The 'oplus' method for 'Occurrence' matches that for 'Edge'.
-
-prop_oplus_Occurrence_Edge :: Edge -> Edge -> Bool
-prop_oplus_Occurrence_Edge e1@(Edge o1 _) e2@(Edge o2 _) =
-  case oplus e1 e2 of
-    Edge o _ -> o == oplus o1 o2
-
--- Template Haskell hack to make the following $quickCheckAll work
--- under GHC 7.8.
-return []
-
--- | Tests.
-
-tests :: IO Bool
-tests = do
-  putStrLn "Agda.TypeChecking.Positivity"
-  $quickCheckAll
+-- properties moved to Agda.TypeChecking.Positivity.Tests

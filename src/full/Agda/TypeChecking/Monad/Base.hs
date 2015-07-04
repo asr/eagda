@@ -1067,7 +1067,13 @@ data Definition = Defn
   , defName           :: QName
   , defType           :: Type    -- ^ Type of the lifted definition.
   , defPolarity       :: [Polarity]
+    -- ^ Variance information on arguments of the definition.
+    --   Does not include info for dropped parameters to
+    --   projection(-like) functions and constructors.
   , defArgOccurrences :: [Occurrence]
+    -- ^ Positivity information on arguments of the definition.
+    --   Does not include info for dropped parameters to
+    --   projection(-like) functions and constructors.
   , defDisplay        :: [Open DisplayForm]
   , defMutual         :: MutualId
   , defCompiledRep    :: CompiledRepresentation
@@ -1402,6 +1408,13 @@ defCopy :: Definition -> Bool
 defCopy Defn{theDef = Function{funCopy = b}} = b
 defCopy _                                    = False
 
+-- | Beware when using this function on a @def@ obtained with @getConstInfo q@!
+--   If the identifier @q@ is abstract, 'getConstInfo' will turn its @def@ into
+--   an 'Axiom' and you always get 'ConcreteDef', paradoxically.
+--   Use it in 'IgnoreAbstractMode', like this:
+--   @
+--     a <- ignoreAbstractMode $ defAbstract <$> getConstInfo q
+--   @
 defAbstract :: Definition -> IsAbstract
 defAbstract d = case theDef d of
     Axiom{}                   -> ConcreteDef

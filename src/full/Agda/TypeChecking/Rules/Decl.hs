@@ -127,6 +127,7 @@ checkDeclCached d = do
 -- | Type check a sequence of declarations.
 checkDecls :: [A.Declaration] -> TCM ()
 checkDecls ds = do
+  reportSLn "tc.decl" 45 $ "Checking " ++ show (length ds) ++ " declarations..."
   mapM_ checkDecl ds
   -- Andreas, 2011-05-30, unfreezing moved to Interaction/Imports
   -- whenM onTopLevel unfreezeMetas
@@ -135,10 +136,10 @@ checkDecls ds = do
 
 checkDecl :: A.Declaration -> TCM ()
 checkDecl d = setCurrentRange d $ do
-    reportSDoc "tc.decl" 10 $ vcat
-      [ text "checking declaration"
-      , prettyA d
-      ]
+    reportSDoc "tc.decl" 10 $ text "checking declaration"
+    debugPrintDecl d
+    reportSDoc "tc.decl" 90 $ (text . show) d
+    reportSDoc "tc.decl" 10 $ prettyA d  -- Might loop, see e.g. Issue 1597
 
     -- Issue 418 fix: freeze metas before checking an abstract thing
     when_ isAbstract freezeMetas
@@ -207,6 +208,7 @@ checkDecl d = setCurrentRange d $ do
 
     check x i m = do
       reportSDoc "tc.decl" 5 $ text "Checking" <+> prettyTCM x <> text "."
+      reportSLn "tc.decl.abstract" 25 $ show (Info.defAbstract i)
       r <- abstract (Info.defAbstract i) m
       reportSDoc "tc.decl" 5 $ text "Checked" <+> prettyTCM x <> text "."
       return r
@@ -235,7 +237,12 @@ mutualChecks i d ds names = do
   -- checkCoinductiveRecords  ds
   -- Andreas, 2012-09-11:  Injectivity check stores clauses
   -- whose 'Relevance' is affected by polarity computation,
-  -- so do it here.
+  -- so do it here (again).
+  -- Andreas, 2015-07-01:  In particular, 'UnusedArg's of local functions
+  -- are only recognized after the polarity computation.
+  -- See Issue 1366 for an example where injectivity of a local function
+  -- is used to solve metas.  It fails if we do injectivity analysis
+  -- before polarity only.
   checkInjectivity_        names
   checkProjectionLikeness_ names
 
@@ -372,18 +379,7 @@ checkPositivity_ names = Bench.billTo [Bench.Positivity] $ do
   -- Andreas, 2012-02-13: Polarity computation uses info from
   -- positivity check, so it needs happen after positivity
   -- check.
-  let -- | Do we need to compute polarity information for the
-      -- definition corresponding to the given name?
-      relevant q = do
-        def <- theDef <$> getConstInfo q
-        return $ case def of
-          Function{}    -> Just q
-          Datatype{}    -> Just q
-          Record{}      -> Just q
-          Axiom{}       -> Nothing
-          Constructor{} -> Nothing
-          Primitive{}   -> Nothing
-  mapM_ computePolarity =<< do mapMaybeM relevant $ Set.toList names
+  mapM_ computePolarity $ Set.toList names
 
 -- | Check that all coinductive records are actually recursive.
 --   (Otherwise, one can implement invalid recursion schemes just like
@@ -399,38 +395,61 @@ checkCoinductiveRecords ds = forM_ ds $ \ d -> case d of
 checkInjectivity_ :: Set QName -> TCM ()
 checkInjectivity_ names = Bench.billTo [Bench.Injectivity] $ do
   reportSLn "tc.decl" 20 $ "checkDecl: checking injectivity..."
-
-  -- OLD CODE, REFACTORED using for-loop
-  -- let checkInj (q, def@Defn{ theDef = d@Function{ funClauses = cs, funTerminates = Just True }}) = do
-  --       inv <- checkInjectivity q cs
-  --       modifySignature $ updateDefinition q $ const $
-  --         def { theDef = d { funInv = inv }}
-  --     checkInj _ = return ()
-  -- namesDefs <- mapM (\ q -> (q,) <$> getConstInfo q) $ Set.toList names
-  -- mapM_ checkInj namesDefs
-
-  Fold.forM_ names $ \ q -> do
+  -- Andreas, 2015-07-01, see Issue1366b:
+  -- Injectivity check needs also to be run for abstract definitions.
+  -- Fold.forM_ names $ \ q -> ignoreAbstractMode $ do -- NOT NECESSARY after all
+  Fold.forM_ names $ \ q -> inConcreteOrAbstractMode q $ do
+    -- For abstract q, we should be inAbstractMode,
+    -- otherwise getConstInfo returns Axiom.
+    --
+    -- Andreas, 2015-07-01:
+    -- Quite surprisingly, inAbstractMode does not allow us to look
+    -- at a local definition (@where@ block) of an abstract definition.
+    -- This is because the local definition is defined in a strict submodule.
+    -- We can only see through abstract definitions in the current module
+    -- or super modules inAbstractMode.
+    -- I changed that in Monad.Signature.treatAbstractly', so we can see
+    -- our own local definitions.
     def <- getConstInfo q
     case theDef def of
-      d@Function{ funClauses = cs, funTerminates = Just True } -> do
-        inv <- checkInjectivity q cs
-        modifySignature $ updateDefinition q $ const $
-          def { theDef = d { funInv = inv }}
-      _ -> return ()
+      d@Function{ funClauses = cs, funTerminates = term } -> do
+        case term of
+          Just True -> do
+            inv <- checkInjectivity q cs
+            modifySignature $ updateDefinition q $ const $
+              def { theDef = d { funInv = inv }}
+          _ -> reportSLn "tc.inj.check" 20 $
+             show q ++ " is not verified as terminating, thus, not considered for injectivity"
+      _ -> do
+        abstr <- asks envAbstractMode
+        reportSLn "tc.inj.check" 20 $
+          "we are in " ++ show abstr ++ " and " ++
+             show q ++ " is abstract or not a function, thus, not considered for injectivity"
 
 -- | Check a set of mutual names for projection likeness.
+--
+--   Only a single, non-abstract function can be projection-like.
+--   Making an abstract function projection-like would break the
+--   invariant that the type of the principle argument of a projection-like
+--   function is always inferable.
+
 checkProjectionLikeness_ :: Set QName -> TCM ()
 checkProjectionLikeness_ names = Bench.billTo [Bench.ProjectionLikeness] $ do
       -- Non-mutual definitions can be considered for
       -- projection likeness
-      reportSLn "tc.decl" 20 $ "checkDecl: checking projection-likeness..."
-      case Set.toList names of
+      let ds = Set.toList names
+      reportSLn "tc.proj.like" 20 $ "checkDecl: checking projection-likeness of " ++ show ds
+      case ds of
         [d] -> do
           def <- getConstInfo d
+          -- For abstract identifiers, getConstInfo returns Axiom.
+          -- Thus, abstract definitions are not considered for projection-likeness.
           case theDef def of
             Function{} -> makeProjection (defName def)
-            _          -> return ()
-        _ -> return ()
+            _          -> reportSLn "tc.proj.like" 25 $
+              show d ++ " is abstract or not a function, thus, not considered for projection-likeness"
+        _ -> reportSLn "tc.proj.like" 25 $
+               "mutual definitions are not considered for projection-likeness"
 
 -- | Type check an axiom.
 checkAxiom :: A.Axiom -> Info.DefInfo -> A.ArgInfo -> QName -> A.Expr -> TCM ()
@@ -929,3 +948,47 @@ checkSectionApplication' i m1 (A.RecordModuleIFS x) rd rm = do
 --   the work is done when scope checking.
 checkImport :: Info.ModuleInfo -> ModuleName -> TCM ()
 checkImport i x = return ()
+
+------------------------------------------------------------------------
+-- * Debugging
+------------------------------------------------------------------------
+
+class ShowHead a where
+  showHead :: a -> String
+
+instance ShowHead A.Declaration where
+  showHead d =
+    case d of
+      A.Axiom        {} -> "Axiom"
+      A.Field        {} -> "Field"
+      A.Primitive    {} -> "Primitive"
+      A.Mutual       {} -> "Mutual"
+      A.Section      {} -> "Section"
+      A.Apply        {} -> "Apply"
+      A.Import       {} -> "Import"
+      A.Pragma       {} -> "Pragma"
+      A.Open         {} -> "Open"
+      A.FunDef       {} -> "FunDef"
+      A.DataSig      {} -> "DataSig"
+      A.DataDef      {} -> "DataDef"
+      A.RecSig       {} -> "RecSig"
+      A.RecDef       {} -> "RecDef"
+      A.PatternSynDef{} -> "PatternSynDef"
+      A.UnquoteDecl  {} -> "UnquoteDecl"
+      A.ScopedDecl   {} -> "ScopedDecl"
+      A.UnquoteDef   {} -> "UnquoteDef"
+
+debugPrintDecl :: A.Declaration -> TCM ()
+debugPrintDecl d = do
+    verboseS "tc.decl" 45 $ do
+      reportSLn "tc.decl" 45 $ "checking a " ++ showHead d
+      case d of
+        A.Section info mname tel ds -> do
+          reportSLn "tc.decl" 45 $
+            "section " ++ show mname ++ " has "
+              ++ show (length tel) ++ " parameters and "
+              ++ show (length ds) ++ " declarations"
+          reportSDoc "tc.decl" 45 $ prettyA $ A.Section info mname tel []
+          forM_ ds $ \ d -> do
+            reportSDoc "tc.decl" 45 $ prettyA d
+        _ -> return ()

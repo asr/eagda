@@ -11,6 +11,7 @@ import Data.List
 import Data.Maybe
 import Data.Traversable (traverse)
 
+import Agda.Syntax.Abstract.Name
 import Agda.Syntax.Common
 import Agda.Syntax.Internal as I
 
@@ -78,9 +79,10 @@ nextPolarity :: [Polarity] -> (Polarity, [Polarity])
 nextPolarity []       = (Invariant, [])
 nextPolarity (p : ps) = (p, ps)
 
--- | Replace 'Nonvariant' by 'Invariant'.
+-- | Replace 'Nonvariant' by 'Covariant'.
+--   (Arbitrary bias, but better than 'Invariant', see issue 1596).
 purgeNonvariant :: [Polarity] -> [Polarity]
-purgeNonvariant = map (\ p -> if p == Nonvariant then Invariant else p)
+purgeNonvariant = map (\ p -> if p == Nonvariant then Covariant else p)
 
 ------------------------------------------------------------------------
 -- * Computing the polarity of a symbol.
@@ -88,13 +90,13 @@ purgeNonvariant = map (\ p -> if p == Nonvariant then Invariant else p)
 
 -- | Main function of this module.
 computePolarity :: QName -> TCM ()
-computePolarity x = do
+computePolarity x = inConcreteOrAbstractMode x $ do
   reportSLn "tc.polarity.set" 25 $ "Computing polarity of " ++ show x
 
   -- get basic polarity from positivity analysis
   def      <- getConstInfo x
-  let pol0 = map polFromOcc $ defArgOccurrences def
---  let pol0 = map polFromOcc $ getArgOccurrences_ $ theDef def
+  let npars = droppedPars def
+  let pol0 = replicate npars Nonvariant ++ map polFromOcc (defArgOccurrences def)
   reportSLn "tc.polarity.set" 15 $ "Polarity of " ++ show x ++ " from positivity: " ++ show pol0
 
 {-
@@ -119,25 +121,31 @@ computePolarity x = do
   -- t <- instantiateFull t -- Andreas, 2014-04-11 Issue 1099: needed for
   --                        -- variable occurrence test in  dependentPolarity.
   reportSDoc "tc.polarity.set" 15 $ text "Refining polarity with type " <+> prettyTCM t
-  pol <- enablePhantomTypes (theDef def) <$> dependentPolarity t pol1
+  pol <- dependentPolarity t (enablePhantomTypes (theDef def) pol1) pol1
   reportSLn "tc.polarity.set" 10 $ "Polarity of " ++ show x ++ ": " ++ show pol
 
   -- set the polarity in the signature
-  setPolarity x $ pol -- purgeNonvariant pol -- temporarily disable non-variance
+  setPolarity x $ drop npars pol -- purgeNonvariant pol -- temporarily disable non-variance
 
   -- make 'Nonvariant' args 'UnusedArg' in type and clause telescope
   -- Andreas 2012-11-18: skip this for abstract definitions (fixing issue 755).
   -- This means that the most precise type for abstract definitions
   -- is not available, even to other abstract definitions.
   -- A proper fix would be to introduce a second type for use within abstract.
-  t <- if (defAbstract def == AbstractDef) then return t else
-         nonvariantToUnusedArg pol t
+  --
+  -- Andreas, 2015-07-01: I thought one should do this for
+  -- abstract local definitions in @where@ blocks to fix Issue 1366b,
+  --but it is not necessary.
+  -- t <- if (defAbstract def == AbstractDef) && not (isAnonymousModuleName $ qnameModule x)
+  t <- if (defAbstract def == AbstractDef)
+         then return t
+         else nonvariantToUnusedArg pol t
   modifySignature $ updateDefinition x $
    updateTheDef (nonvariantToUnusedArgInDef pol) . updateDefType (const t)
 
 -- | Data and record parameters are used as phantom arguments all over
 --   the test suite (and possibly in user developments).
---   @enablePhantomTypes@ turns 'Nonvariant' parameters to 'Invariant'
+--   @enablePhantomTypes@ turns 'Nonvariant' parameters to 'Covariant'
 --   to enable phantoms.
 enablePhantomTypes :: Defn -> [Polarity] -> [Polarity]
 enablePhantomTypes def pol = case def of
@@ -170,14 +178,20 @@ usagePolarity def = case def of
 
 -- | Make arguments 'Invariant' if the type of a not-'Nonvariant'
 --   later argument depends on it.
-dependentPolarity :: Type -> [Polarity] -> TCM [Polarity]
-dependentPolarity t []          = return []  -- all remaining are 'Invariant'
-dependentPolarity t pols@(p:ps) = do
+--   Also, enable phantom types by turning 'Nonvariant' into something
+--   else if it is a data/record parameter but not a size argument. [See issue 1596]
+--
+--   Precondition: the "phantom" polarity list has the same length as the polarity list.
+dependentPolarity :: Type -> [Polarity] -> [Polarity] -> TCM [Polarity]
+dependentPolarity t _      []          = return []  -- all remaining are 'Invariant'
+dependentPolarity t []     (_ : _)     = __IMPOSSIBLE__
+dependentPolarity t (q:qs) pols@(p:ps) = do
   t <- reduce $ unEl t
   case ignoreSharing t of
-    Pi a b -> do
+    Pi dom b -> do
       let c = absBody b
-      ps <- dependentPolarity c ps
+      ps <- dependentPolarity c qs ps
+      let mp = ifM (isJust <$> isSizeType (unDom dom)) (return p) (return q)
       p  <- case b of
               Abs{} | p /= Invariant  ->
                 -- Andreas, 2014-04-11 see Issue 1099
@@ -185,8 +199,8 @@ dependentPolarity t pols@(p:ps) = do
                 -- hence metas must have been instantiated before!
                 ifM (relevantInIgnoringNonvariant 0 c ps)
                   (return Invariant)
-                  (return p)
-              _ -> return p
+                  mp
+              _ -> mp
       return $ p : ps
     _ -> return pols
 
@@ -254,6 +268,8 @@ nonvariantToUnusedArgInClause pol cl@Clause{clauseTel = tel, clausePerm = perm, 
 ------------------------------------------------------------------------
 
 -- | Hack for polarity of size indices.
+--   As a side effect, this sets the positivity of the size index.
+--   See test/succeed/PolaritySizeSucData.agda for a case where this is needed.
 sizePolarity :: QName -> [Polarity] -> TCM [Polarity]
 sizePolarity d pol0 = do
   let exit = return pol0
@@ -303,9 +319,14 @@ sizePolarity d pol0 = do
                             text "size polarity check"
                           return ok
 
-            ifM (andM $ map check cons)
-                (return polCo) -- yes, we have a sized type here
+            ifNotM (andM $ map check cons)
                 (return polIn) -- no, does not conform to the rules of sized types
+              $ do  -- yes, we have a sized type here
+                -- Andreas, 2015-07-01
+                -- As a side effect, mark the size also covariant for subsequent
+                -- positivity checking (which feeds back into polarity analysis).
+                modifyArgOccurrences d $ \ occ -> take np occ ++ [JustPos]
+                return polCo
       _ -> exit
 
 -- | @checkSizeIndex d np i a@ checks that constructor target type @a@

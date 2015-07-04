@@ -130,11 +130,11 @@ addImportedThings isig ibuiltin hsImports hsImportsUHC patsyns = do
 
 scopeCheckImport :: ModuleName -> TCM (ModuleName, Map ModuleName Scope)
 scopeCheckImport x = do
-    reportSLn "import.scope" 5 $ "Scope checking " ++ show x
+    reportSLn "import.scope" 5 $ "Scope checking " ++ prettyShow x
     verboseS "import.scope" 10 $ do
       visited <- Map.keys <$> getVisitedModules
       reportSLn "import.scope" 10 $
-        "  visited: " ++ intercalate ", " (map (render . pretty) visited)
+        "  visited: " ++ intercalate ", " (map prettyShow visited)
     -- Since scopeCheckImport is called from the scope checker,
     -- we need to reimburse her account.
     i <- Bench.billTo [] $ getInterface x
@@ -161,12 +161,12 @@ alreadyVisited x getIface = do
         -- A module with warnings should never be allowed to be
         -- imported from another module.
         Just mi | not (miWarnings mi) -> do
-          reportSLn "import.visit" 10 $ "  Already visited " ++ render (pretty x)
+          reportSLn "import.visit" 10 $ "  Already visited " ++ prettyShow x
           return (miInterface mi, NoWarnings)
         _ -> do
-          reportSLn "import.visit" 5 $ "  Getting interface for " ++ render (pretty x)
+          reportSLn "import.visit" 5 $ "  Getting interface for " ++ prettyShow x
           r@(i, wt) <- getIface
-          reportSLn "import.visit" 5 $ "  Now we've looked at " ++ render (pretty x)
+          reportSLn "import.visit" 5 $ "  Now we've looked at " ++ prettyShow x
           visitModule $ ModuleInfo
             { miInterface  = i
             , miWarnings   = hasWarnings wt
@@ -182,7 +182,7 @@ alreadyVisited x getIface = do
 
 typeCheckMain :: AbsolutePath -> TCM (Interface, MaybeWarnings)
 typeCheckMain f = do
-  -- liftIO $ putStrLn $ "This is typeCheckMain " ++ show f
+  -- liftIO $ putStrLn $ "This is typeCheckMain " ++ prettyShow f
   -- liftIO . putStrLn . show =<< getVerbosity
   reportSLn "import.main" 10 $ "Importing the primitive modules."
   libdir <- liftIO defaultLibDir
@@ -264,7 +264,7 @@ getInterface' x isMain = do
         return $ unchanged && (not ignore || isJust cached)
 
       reportSLn "import.iface" 5 $
-        "  " ++ render (pretty x) ++ " is " ++
+        "  " ++ prettyShow x ++ " is " ++
         (if uptodate then "" else "not ") ++ "up-to-date."
 
       -- Andreas, 2014-10-20 AIM XX:
@@ -317,7 +317,7 @@ getInterface' x isMain = do
       chaseMsg kind file = do
         nesting <- envModuleNestingLevel <$> ask
         let s = genericReplicate nesting ' ' ++ kind ++
-                " " ++ render (pretty x) ++
+                " " ++ prettyShow x ++
                 case file of
                   Nothing -> "."
                   Just f  -> " (" ++ f ++ ")."
@@ -530,11 +530,11 @@ createInterface file mname =
     stTokens .= fileTokenInfo
 
     reportSLn "import.iface.create" 5 $
-      "Creating interface for " ++ render (pretty mname) ++ "."
+      "Creating interface for " ++ prettyShow mname ++ "."
     verboseS "import.iface.create" 10 $ do
       visited <- Map.keys <$> getVisitedModules
       reportSLn "import.iface.create" 10 $
-        "  visited: " ++ intercalate ", " (map (render . pretty) visited)
+        "  visited: " ++ intercalate ", " (map prettyShow visited)
 
     previousHsImports <- getHaskellImports
     previousHsImportsUHC <- getHaskellImportsUHC
@@ -552,17 +552,21 @@ createInterface file mname =
 
 
     -- Scope checking.
+    reportSLn "import.iface.create" 7 $ "Starting scope checking."
     topLevel <- Bench.billTo [Bench.Scoping] $
       concreteToAbstract_ (TopLevel file top)
+    reportSLn "import.iface.create" 7 $ "Finished scope checking."
 
     let ds = topLevelDecls topLevel
 
     -- Highlighting from scope checker.
+    reportSLn "import.iface.create" 7 $ "Starting highlighting from scope."
     Bench.billTo [Bench.Highlighting] $ do
       ifTopLevelAndHighlightingLevelIs NonInteractive $ do
         -- Generate and print approximate syntax highlighting info.
         printHighlightingInfo fileTokenInfo
         mapM_ (\ d -> generateAndPrintSyntaxInfo d Partial) ds
+    reportSLn "import.iface.create" 7 $ "Finished highlighting from scope."
 
 
     -- Type checking.
@@ -579,7 +583,9 @@ createInterface file mname =
         cleanCachedLog
     writeToCurrentLog $ Pragmas opts
 
+    reportSLn "import.iface.create" 7 $ "Starting type checking."
     Bench.billTo [Bench.Typing] $ mapM_ checkDeclCached ds `finally_` cacheCurrentLog
+    reportSLn "import.iface.create" 7 $ "Finished type checking."
 
     -- Ulf, 2013-11-09: Since we're rethrowing the error, leave it up to the
     -- code that handles that error to reset the state.
@@ -597,6 +603,7 @@ createInterface file mname =
       tickN "metas" (fromIntegral n)
 
     -- Highlighting from type checker.
+    reportSLn "import.iface.create" 7 $ "Starting highlighting from type info."
     Bench.billTo [Bench.Highlighting] $ do
 
       -- Move any remaining token highlighting to stSyntaxInfo.
@@ -608,12 +615,13 @@ createInterface file mname =
       whenM (optGenerateVimFile <$> commandLineOptions) $
         -- Generate Vim file.
         withScope_ (insideScope topLevel) $ generateVimFile $ filePath file
+    reportSLn "import.iface.create" 7 $ "Finished highlighting from type info."
 
     setScope $ outsideScope topLevel
-
     reportSLn "scope.top" 50 $ "SCOPE " ++ show (insideScope topLevel)
 
     -- Serialization.
+    reportSLn "import.iface.create" 7 $ "Starting serialization."
     syntaxInfo <- use stSyntaxInfo
     i <- Bench.billTo [Bench.Serialization] $ do
       buildInterface file topLevel syntaxInfo previousHsImports previousHsImportsUHC options
@@ -625,6 +633,7 @@ createInterface file mname =
       | (x, def) <- HMap.toList $ sigDefinitions $ iSignature i,
         Function{ funCompiled = cc } <- [theDef def]
       ]
+    reportSLn "import.iface.create" 7 $ "Finished serialization."
 
     -- TODO: It would be nice if unsolved things were highlighted
     -- after every mutual block.
@@ -639,6 +648,7 @@ createInterface file mname =
     ifTopLevelAndHighlightingLevelIs NonInteractive $
       printUnsolvedInfo
 
+    reportSLn "import.iface.create" 7 $ "Starting writing to interface file."
     r <- if and [ null unsolvedMetas, null unsolvedConstraints, null interactionPoints ]
      then Bench.billTo [Bench.Serialization] $ do
       -- The file was successfully type-checked (and no warnings were
@@ -648,6 +658,7 @@ createInterface file mname =
       return (i, NoWarnings)
      else do
       return (i, SomeWarnings $ Warnings unsolvedMetas unsolvedConstraints)
+    reportSLn "import.iface.create" 7 $ "Finished writing to interface file."
 
     -- Profiling: Print statistics.
     printStatistics 30 (Just mname) =<< getStatistics

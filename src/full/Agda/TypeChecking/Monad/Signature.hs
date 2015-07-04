@@ -307,7 +307,7 @@ applySection new ptel old ts rd rm = do
       copyDef' np def
       where
         copyDef' np d = do
-          reportSLn "tc.mod.apply" 80 $ "making new def for " ++ show y ++ " from " ++ show x ++ " with " ++ show np ++ " args"
+          reportSLn "tc.mod.apply" 60 $ "making new def for " ++ show y ++ " from " ++ show x ++ " with " ++ show np ++ " args " ++ show abstr
           reportSLn "tc.mod.apply" 80 $
             "args = " ++ show ts' ++ "\n" ++
             "old type = " ++ prettyShow (defType d) ++ "\n" ++
@@ -332,6 +332,7 @@ applySection new ptel old ts rd rm = do
             occ = defArgOccurrences d `apply` ts'
             rew = defRewriteRules d `apply` ts'
             inst = defInstance d
+            abstr = defAbstract d
             -- the name is set by the addConstant function
             nd :: QName -> TCM Definition
             nd y = Defn (defArgInfo d) y t pol occ [] (-1) noCompiledRep rew inst <$> def  -- TODO: mutual block?
@@ -377,7 +378,7 @@ applySection new ptel old ts rd rm = do
                         , funDelayed        = NotDelayed
                         , funInv            = NotInjective
                         , funMutual         = mutual
-                        , funAbstr          = ConcreteDef
+                        , funAbstr          = ConcreteDef -- OR: abstr -- ?!
                         , funProjection     = proj
                         , funStatic         = False
                         , funSmashable      = True
@@ -545,50 +546,20 @@ getPolarity' CmpLeq q = getPolarity q -- composition with Covariant is identity
 setPolarity :: QName -> [Polarity] -> TCM ()
 setPolarity q pol = modifySignature $ updateDefinition q $ updateDefPolarity $ const pol
 
--- | Return a finite list of argument occurrences.
-getArgOccurrences :: QName -> TCM [Occurrence]
-getArgOccurrences d = defArgOccurrences <$> getConstInfo d
-
-{- OLD
--- | Return a finite list of argument occurrences.
-getArgOccurrences :: QName -> TCM [Occurrence]
-getArgOccurrences d = do
-  def <- theDef <$> getConstInfo d
-  return $ getArgOccurrences_ def
-
-getArgOccurrences_ :: Defn -> [Occurrence]
-getArgOccurrences_ def = case def of
-    Function { funArgOccurrences  = os } -> os
-    Datatype { dataArgOccurrences = os } -> os
-    Record   { recArgOccurrences  = os } -> os
-    Constructor{}                        -> [] -- repeat StrictPos
-    _                                    -> [] -- repeat Mixed
--}
-
+-- | Get argument occurrence info for argument @i@ of definition @d@ (never fails).
 getArgOccurrence :: QName -> Nat -> TCM Occurrence
 getArgOccurrence d i = do
   def <- getConstInfo d
   return $ case theDef def of
     Constructor{} -> StrictPos
-    _             -> (defArgOccurrences def ++ repeat Mixed) !! i
+    _             -> fromMaybe Mixed $ defArgOccurrences def !!! i
 
 setArgOccurrences :: QName -> [Occurrence] -> TCM ()
-setArgOccurrences d os =
-  modifySignature $ updateDefinition d $ updateDefArgOccurrences $ const os
+setArgOccurrences d os = modifyArgOccurrences d $ const os
 
-{- OLD
-getArgOccurrence :: QName -> Nat -> TCM Occurrence
-getArgOccurrence d i = do
-  def <- theDef <$> getConstInfo d
-  return $ case def of
-    Function { funArgOccurrences  = os } -> look i os
-    Datatype { dataArgOccurrences = os } -> look i os
-    Record   { recArgOccurrences  = os } -> look i os
-    Constructor{}                        -> StrictPos
-    _                                    -> Mixed
-  where
-    look i os = (os ++ repeat Mixed) !! fromIntegral i
--}
+modifyArgOccurrences :: QName -> ([Occurrence] -> [Occurrence]) -> TCM ()
+modifyArgOccurrences d f =
+  modifySignature $ updateDefinition d $ updateDefArgOccurrences f
 
 -- | Get the mutually recursive identifiers.
 getMutual :: QName -> TCM [QName]
@@ -708,20 +679,43 @@ ignoreAbstractMode = local $ \e -> e { envAbstractMode = IgnoreAbstractMode,
                                        -- Allowing destructive updates when ignoring
                                        -- abstract may break the abstraction.
 
+-- | Enter concrete or abstract mode depending on whether the given identifier
+--   is concrete or abstract.
+inConcreteOrAbstractMode :: QName -> TCM a -> TCM a
+inConcreteOrAbstractMode q cont = do
+  -- Andreas, 2015-07-01: If we do not ignoreAbstractMode here,
+  -- we will get ConcreteDef for abstract things, as they are turned into axioms.
+  a <- ignoreAbstractMode $ defAbstract <$> getConstInfo q
+  case a of
+    AbstractDef -> inAbstractMode cont
+    ConcreteDef -> inConcreteMode cont
+
 -- | Check whether a name might have to be treated abstractly (either if we're
 --   'inAbstractMode' or it's not a local name). Returns true for things not
 --   declared abstract as well, but for those 'makeAbstract' will have no effect.
 treatAbstractly :: MonadReader TCEnv m => QName -> m Bool
 treatAbstractly q = asks $ treatAbstractly' q
 
+-- | Andreas, 2015-07-01:
+--   If the @current@ module is a weak suffix of the identifier module,
+--   we can see through its abstract definition if we are abstract.
+--   (Then @treatAbstractly'@ returns @False@).
+--
+--   If I am not mistaken, then we cannot see definitions in the @where@
+--   block of an abstract function from the perspective of the function,
+--   because then the current module is a strict prefix of the module
+--   of the local identifier.
+--   This problem is fixed by removing trailing anonymous module name parts
+--   (underscores) from both names.
 treatAbstractly' :: QName -> TCEnv -> Bool
 treatAbstractly' q env = case envAbstractMode env of
   ConcreteMode       -> True
   IgnoreAbstractMode -> False
   AbstractMode       -> not $ current == m || current `isSubModuleOf` m
   where
-    current = envCurrentModule env
-    m       = qnameModule q
+    current = dropAnon $ envCurrentModule env
+    m       = dropAnon $ qnameModule q
+    dropAnon (MName ms) = MName $ reverse $ dropWhile isNoName $ reverse ms
 
 -- | Get type of a constant, instantiated to the current context.
 typeOfConst :: QName -> TCM Type
@@ -743,6 +737,27 @@ sortOfConst q =
             Datatype{dataSort = s} -> return s
             _                      -> fail $ "Expected " ++ show q ++ " to be a datatype."
 
+-- | The number of parameters of a definition.
+defPars :: Definition -> Int
+defPars d = case theDef d of
+    Axiom{}                  -> 0
+    def@Function{}           -> projectionArgs def
+    Datatype  {dataPars = n} -> n
+    Record     {recPars = n} -> n
+    Constructor{conPars = n} -> n
+    Primitive{}              -> 0
+
+-- | The number of dropped parameters for a definition.
+--   0 except for projection(-like) functions and constructors.
+droppedPars :: Definition -> Int
+droppedPars d = case theDef d of
+    Axiom{}                  -> 0
+    def@Function{}           -> projectionArgs def
+    Datatype  {dataPars = _} -> 0  -- not dropped
+    Record     {recPars = _} -> 0  -- not dropped
+    Constructor{conPars = n} -> n
+    Primitive{}              -> 0
+
 -- | Is it the name of a record projection?
 {-# SPECIALIZE isProjection :: QName -> TCM (Maybe Projection) #-}
 isProjection :: HasConstInfo m => QName -> m (Maybe Projection)
@@ -761,7 +776,7 @@ isProperProjection :: Defn -> Bool
 isProperProjection d = caseMaybe (isProjection_ d) False $ \ isP ->
   if projIndex isP <= 0 then False else isJust $ projProper isP
 
--- | Number of dropped initial arguments.
+-- | Number of dropped initial arguments of a projection(-like) function.
 projectionArgs :: Defn -> Int
 projectionArgs = maybe 0 (max 0 . pred . projIndex) . isProjection_
 

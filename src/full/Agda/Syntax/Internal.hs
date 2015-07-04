@@ -44,6 +44,12 @@ import Agda.Syntax.Abstract (IsProjP(..))
 import Agda.Syntax.Abstract.Name
 
 import Agda.Utils.Empty
+
+-- See Issue 1593.
+#if !MIN_VERSION_transformers(0,4,1)
+import Agda.Utils.Except ( Error(noMsg) )
+#endif
+
 import Agda.Utils.Functor
 import Agda.Utils.Geniplate
 import Agda.Utils.Lens
@@ -694,14 +700,11 @@ typeDontCare = El Prop (Sort Prop)
 topSort :: Type
 topSort = El Inf (Sort Inf)
 
-prop :: Type
-prop = sort Prop
-
 sort :: Sort -> Type
 sort s = El (sSuc s) $ Sort s
 
 varSort :: Int -> Sort
-varSort n = Type $ Max [Plus 0 $ NeutralLevel mempty $ Var n []]
+varSort n = Type $ Max [Plus 0 $ NeutralLevel mempty $ var n]
 
 -- | Get the next higher sort.
 sSuc :: Sort -> Sort

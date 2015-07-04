@@ -29,7 +29,7 @@ module Agda.Utils.Graph.AdjacencyMap.Unidirectional
   , edgesTo
   , diagonal
   , lookup
-  , neighbours
+  , neighbours, neighboursMap
   , sourceNodes, targetNodes
   , Nodes(..)
   , computeNodes, nodes
@@ -61,8 +61,7 @@ module Agda.Utils.Graph.AdjacencyMap.Unidirectional
   , complete
   , gaussJordanFloydWarshallMcNaughtonYamadaReference
   , gaussJordanFloydWarshallMcNaughtonYamada
-  , findPath
-  , allPaths
+  , allTrails
   )
   where
 
@@ -78,7 +77,8 @@ import qualified Data.IntSet as IntSet
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict (Map)
-import Data.Maybe (maybeToList)
+import qualified Data.Maybe as Maybe
+import Data.Maybe (maybeToList, fromMaybe)
 import qualified Data.Set as Set
 import Data.Set (Set)
 import qualified Data.Tree as Tree
@@ -183,6 +183,11 @@ lookup s t (Graph g) = Map.lookup t =<< Map.lookup s g
 
 neighbours :: (Ord s, Ord t) => s -> Graph s t e -> [(t, e)]
 neighbours s (Graph g) = maybe [] Map.assocs $ Map.lookup s g
+
+-- | Get a list of outgoing edges with target.
+
+neighboursMap :: (Ord s, Ord t) => s -> Graph s t e -> Map t e
+neighboursMap s (Graph g) = fromMaybe Map.empty $ Map.lookup s g
 
 -- * Node queries
 
@@ -655,24 +660,23 @@ gaussJordanFloydWarshallMcNaughtonYamada g = loop components g
         Nothing -> ozero
         Just e  -> e
 
--- | Find a path from a source node to a target node.
+-- | @allTrails a b g@ returns all trails (walks where all edges are
+-- distinct) from node @a@ to node @b@ in @g@. The trails are returned
+-- in the form of accumulated edge weights.
 --
---   The path must satisfy the given predicate @good :: e -> Bool@.
-findPath :: (SemiRing e, Ord n) => (e -> Bool) -> n -> n -> Graph n n e -> Maybe e
-findPath good a b g = headMaybe $ filter good $ allPaths good a b g
+-- This definition can perhaps be optimised through the use of
+-- memoisation.
 
--- | @allPaths classify a b g@ returns a list of pathes (accumulated edge weights)
---   from node @a@ to node @b@ in @g@.
---   Alternative intermediate pathes are only considered if they
---   are distinguished by the @classify@ function.
-allPaths :: (SemiRing e, Ord n, Ord c) => (e -> c) -> n -> n -> Graph n n e -> [e]
-allPaths classify s t g = paths Set.empty s
+allTrails :: forall e n. (SemiRing e, Ord n) =>
+             n -> n -> Graph n n e -> [e]
+allTrails s t g = paths Set.empty s
   where
-    paths visited s = do
+    paths :: Set (n, n) -> n -> [e]
+    paths traversed s = do
       (s', e) <- neighbours s g
-      let tag     = (s', classify e)
-          recurse = map (e `otimes`) (paths (Set.insert tag visited) s')
-      if tag `Set.member` visited then []
+      let edge    = (s, s')
+          recurse = (e `otimes`) <$> paths (Set.insert edge traversed) s'
+      if edge `Set.member` traversed then []
       else if s' == t then e : recurse
       else recurse
 

@@ -38,6 +38,9 @@ import Agda.TypeChecking.MetaVars.Occurs
 
 import Agda.Utils.Except
   ( ExceptT
+#if !MIN_VERSION_transformers(0,4,1)
+  , Error(noMsg)
+#endif
   , MonadError(throwError)
   , runExceptT
   )
@@ -245,7 +248,7 @@ newValueMetaCtx' b t vs = do
   return u
 
 newTelMeta :: Telescope -> TCM Args
-newTelMeta tel = newArgsMeta (abstract tel $ El Prop $ Sort Prop)
+newTelMeta tel = newArgsMeta (abstract tel $ typeDontCare)
 
 type Condition = I.Dom Type -> Abs Type -> Bool
 
