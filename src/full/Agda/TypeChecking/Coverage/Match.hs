@@ -1,7 +1,6 @@
--- GHC 7.4.2 requires this layout for the pragmas. See Issue 1460.
-{-# LANGUAGE CPP,
-             DeriveFunctor,
-             PatternGuards #-}
+{-# LANGUAGE CPP           #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE PatternGuards #-}
 
 module Agda.TypeChecking.Coverage.Match where
 
@@ -77,7 +76,7 @@ data MPat
 buildMPatterns :: Permutation -> [Arg Pattern] -> [Arg MPat]
 buildMPatterns perm ps = evalState (mapM (traverse build) ps) xs
   where
-    xs   = permute (invertP __IMPOSSIBLE__ perm) $ downFrom (size perm)
+    xs   = permPicks $ flipP $ invertP __IMPOSSIBLE__ perm
     tick = do x : xs <- get; put xs; return x
 
     build (VarP _)        = VarMP <$> tick

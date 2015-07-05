@@ -1,15 +1,14 @@
--- GHC 7.4.2 requires this layout for the pragmas. See Issue 1460.
-{-# LANGUAGE BangPatterns,
-             CPP,
-             DeriveDataTypeable,
-             DeriveFoldable,
-             DeriveFunctor,
-             DeriveTraversable,
-             FlexibleInstances,
-             GeneralizedNewtypeDeriving,
-             MultiParamTypeClasses,
-             StandaloneDeriving,
-             TemplateHaskell #-}
+{-# LANGUAGE BangPatterns               #-}
+{-# LANGUAGE CPP                        #-}
+{-# LANGUAGE DeriveDataTypeable         #-}
+{-# LANGUAGE DeriveFoldable             #-}
+{-# LANGUAGE DeriveFunctor              #-}
+{-# LANGUAGE DeriveTraversable          #-}
+{-# LANGUAGE FlexibleInstances          #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE MultiParamTypeClasses      #-}
+{-# LANGUAGE StandaloneDeriving         #-}
+{-# LANGUAGE TemplateHaskell            #-}
 
 module Agda.Syntax.Internal
     ( module Agda.Syntax.Internal
@@ -415,25 +414,6 @@ data Clause = Clause
 
 clausePats :: Clause -> [Arg Pattern]
 clausePats = map (fmap namedThing) . namedClausePats
-
--- MOVED to Agda. Syntax.Internal.Patterns
--- -- | Translate the clause patterns to terms with free variables bound by the
--- --   clause telescope.
--- clauseArgs :: Clause -> Args
--- clauseArgs cl = evalState (argsToTerms $ namedClausePats cl) xs
---   where
---     perm = clausePerm cl
---     xs   = permute (invertP __IMPOSSIBLE__ perm) $ downFrom (size perm)
---
---     next = do x : xs <- get; put xs; return x
---
---     argsToTerms = traverse $ traverse $ patToTerm . namedThing
---     patToTerm p = case p of
---       VarP _      -> flip Var [] <$> next
---       DotP v      -> v <$ next   -- dot patterns count as variables
---       ConP c _ ps -> Con c <$> argsToTerms ps
---       LitP l      -> pure $ Lit l
---       ProjP{}     -> __IMPOSSIBLE__   -- TODO
 
 data ClauseBodyF a = Body a
                    | Bind (Abs (ClauseBodyF a))
