@@ -3,8 +3,8 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Agda.Compiler.ToTreeless
-  ( ifToTreeless
-  , ccToTreeless
+  ( ccToTreeless
+  , closedTermToTreeless
   ) where
 
 import Control.Monad.Reader
@@ -87,6 +87,10 @@ ccToTreeless funNm cc = do
   reportSDoc "treeless.convert" 30 $ text " converted body:" <+> (text . show) body'
   return body'
 
+closedTermToTreeless :: I.Term -> TCM C.TTerm
+closedTermToTreeless t = do
+  substTerm t `runReaderT` (initCCEnv __IMPOSSIBLE__)
+
 
 -- | Returns the original non-instantiated constructor head for instantiated constructors.
 -- If it is already a non-instantiated constructor, returns the given name directly.
@@ -162,8 +166,9 @@ casetree cc = do
                 c' <- I.conName <$> lift (chaseCon c)
                 dtNm <- conData . theDef <$> lift (getConstInfo c')
                 return $ C.CTData dtNm
-              ([], (TL.LitChar _ _):_) -> return C.CTChar
+              ([], (TL.LitChar _ _):_)  -> return C.CTChar
               ([], (TL.LitString _ _):_) -> return C.CTString
+              ([], (TL.LitQName _ _):_) -> return C.CTQName
               _ -> __IMPOSSIBLE__
         updateCatchAll catchAll $ do
           x <- lookupLevel n <$> asks ccCxt
@@ -218,11 +223,7 @@ conAlts x br = forM (Map.toList br) $ \ (c, CC.WithArity n cc) -> do
 
 litAlts :: Map TL.Literal CC.CompiledClauses -> CC [C.TAlt]
 litAlts br = forM (Map.toList br) $ \ (l, cc) ->
-  let mkAlt = case l of
-        TL.LitChar _ c -> C.TAChar c
-        TL.LitString _ s -> C.TAString s
-        _ -> __IMPOSSIBLE__
-   in branch mkAlt cc
+    branch (C.TALit l ) cc
 
 branch :: (C.TTerm -> C.TAlt) -> CC.CompiledClauses -> CC C.TAlt
 branch alt cc = do
