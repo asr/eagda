@@ -158,7 +158,6 @@ checkPatternLinearity ps = unlessNull (duplicates xs) $ \ ys -> do
       A.DefP _ _ args        -> concatMap (vars . namedArg) args
         -- Projection pattern, @args@ should be empty unless we have
         -- indexed records.
-      A.ImplicitP _          -> __IMPOSSIBLE__
       A.PatternSynP _ _ args -> concatMap (vars . namedArg) args
 
 -- | Compute the type of the record constructor (with bogus target type)
@@ -1861,7 +1860,6 @@ instance ToAbstract (A.Pattern' C.Expr) (A.Pattern' A.Expr) where
     toAbstract (A.DotP i e)           = A.DotP i <$> insideDotPattern (toAbstract e)
     toAbstract (A.AbsurdP i)          = return $ A.AbsurdP i
     toAbstract (A.LitP l)             = return $ A.LitP l
-    toAbstract (A.ImplicitP i)        = return $ A.ImplicitP i
     toAbstract (A.PatternSynP i x as) = A.PatternSynP i x <$> mapM toAbstract as
 
 resolvePatternIdentifier ::
@@ -1934,7 +1932,7 @@ instance ToAbstract C.Pattern (A.Pattern' C.Expr) where
         p <- toAbstract p
         return $ A.AsP info x p
         where
-            info = PatSource r $ \_ -> p0
+            info = PatRange r
       -}
     -- we have to do dot patterns at the end
     toAbstract p0@(C.DotP r e) = return $ A.DotP info e
