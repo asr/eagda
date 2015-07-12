@@ -1490,15 +1490,21 @@ ATPPragma
   : '{-#' 'ATP' string PragmaQNames '#-}'
     {% let s = snd $3 in
        case s of
-         "axiom"      -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                  ATPAxiom $4
-         "definition" -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                  ATPDefinition $4
-         "hint"       -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                  ATPHint $4
-         "prove"      -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                  ATPConjecture $4
-         _            -> parseError $ "Invalid role: " ++ s ++ "."
+         "axiom"       -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                   ATPAxiom $4
+         "axioms"      -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                   ATPAxiom $4
+         "definition"  -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                   ATPDefinition $4
+         "definitions" -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                   ATPDefinition $4
+         "hint"        -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                   ATPHint $4
+         "hints"       -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                   ATPHint $4
+         "prove"       -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                   ATPConjecture $4
+         _             -> parseError $ "Invalid role: " ++ s ++ "."
     }
 
 {--------------------------------------------------------------------------
