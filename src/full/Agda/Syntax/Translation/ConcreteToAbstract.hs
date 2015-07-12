@@ -1671,6 +1671,17 @@ instance ToAbstract C.Pragma [A.Pragma] where
               A.Def aq -> return aq
               _        -> fail "Bad ATP-pragma. The role <hint> must be used with functions"
 
+    toAbstract (C.ATPPragma _ ATPSort qs) = do
+      aqs <- mapM helper qs
+      return [ A.ATPPragma ATPSort aqs ]
+        where
+          helper :: C.QName -> ScopeM A.QName
+          helper q = do
+            e <- toAbstract $ OldQName q Nothing
+            case e of
+              A.Def aq -> return aq
+              _        -> fail "Bad ATP-pragma. The role <sort> must be used with data-types"
+
 instance ToAbstract C.Clause A.Clause where
     toAbstract (C.Clause top _ C.Ellipsis{} _ _ _) = genericError "bad '...'" -- TODO: error message
     toAbstract (C.Clause top catchall lhs@(C.LHS p wps eqs with) rhs wh wcs) = withLocalVars $ do

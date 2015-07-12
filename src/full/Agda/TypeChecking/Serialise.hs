@@ -1314,12 +1314,14 @@ instance EmbPrj ATPRole where
   icod_ ATPConjecture = icode0 1
   icod_ ATPDefinition = icode0 2
   icod_ ATPHint       = icode0 3
+  icod_ ATPSort       = icode0 4
 
   value = vcase valu where
     valu []  = valu0 ATPAxiom
     valu [1] = valu0 ATPConjecture
     valu [2] = valu0 ATPDefinition
     valu [3] = valu0 ATPHint
+    valu [4] = valu0 ATPSort
     valu _   = malformed
 
 instance EmbPrj CompiledRepresentation where
@@ -1330,14 +1332,14 @@ instance EmbPrj CompiledRepresentation where
 instance EmbPrj Defn where
   icod_ (Axiom       a b)                       = icode2 0 a b
   icod_ (Function    a b c d e f g h i j k l m n o) = icode15 1 a b c d e f g h i j k l m n o
-  icod_ (Datatype    a b c d e f g h i j)       = icode10 2 a b c d e f g h i j
+  icod_ (Datatype    a b c d e f g h i j k)     = icode11 2 a b c d e f g h i j k
   icod_ (Record      a b c d e f g h i j k l)   = icode12 3 a b c d e f g h i j k l
   icod_ (Constructor a b c d e f)               = icode6 4 a b c d e f
   icod_ (Primitive   a b c d)                   = icode4 5 a b c d
   value = vcase valu where
     valu [0, a, b]                               = valu2 Axiom a b
     valu [1, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o] = valu15 Function a b c d e f g h i j k l m n o
-    valu [2, a, b, c, d, e, f, g, h, i, j]       = valu10 Datatype a b c d e f g h i j
+    valu [2, a, b, c, d, e, f, g, h, i, j, k]    = valu11 Datatype a b c d e f g h i j k
     valu [3, a, b, c, d, e, f, g, h, i, j, k, l] = valu12 Record  a b c d e f g h i j k l
     valu [4, a, b, c, d, e, f]                   = valu6 Constructor a b c d e f
     valu [5, a, b, c, d]                         = valu4 Primitive   a b c d

@@ -194,6 +194,12 @@ addATPPragma role q qs = do
 
                    _ -> __IMPOSSIBLE__
 
+      ATPSort -> case def of
+                   def@Defn{ theDef = datatype@Datatype{} } ->
+                     def{ theDef = datatype{ dataATPRole = Just role }}
+
+                   _ -> __IMPOSSIBLE__
+
 unionSignatures :: [Signature] -> Signature
 unionSignatures ss = foldr unionSignature emptySignature ss
   where
@@ -585,6 +591,7 @@ getATPRole qname = do
   defn <- theDef <$> getConstInfo qname
   case defn of
     Axiom{ axATPRole = r }        -> return r
+    Datatype{ dataATPRole = r }   -> return r
     Function{ funATPRole = r }    -> return r
     Constructor{ conATPRole = r } -> return r
     _                             -> __IMPOSSIBLE__

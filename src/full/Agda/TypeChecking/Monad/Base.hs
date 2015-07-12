@@ -1222,6 +1222,7 @@ data Defn = Axiom
             , dataSort           :: Sort
             , dataMutual         :: [QName]        -- ^ Mutually recursive functions, @data@s and @record@s.  Does not include this data type.
             , dataAbstr          :: IsAbstract
+            , dataATPRole        :: Maybe ATPRole  -- ^ ATP sort?
             }
           | Record
             { recPars           :: Nat                  -- ^ Number of parameters.
@@ -2473,7 +2474,7 @@ instance KillRange Defn where
       Axiom role hints -> killRange2 Axiom role hints
       Function cls comp inv mut isAbs delayed proj static smash copy term extlam with cop role ->
         killRange13 Function cls comp inv mut isAbs delayed proj static smash copy term extlam with cop role
-      Datatype a b c d e f g h i j   -> killRange10 Datatype a b c d e f g h i j
+      Datatype a b c d e f g h i j k -> killRange11 Datatype a b c d e f g h i j k
       Record a b c d e f g h i j k l -> killRange12 Record a b c d e f g h i j k l
       Constructor a b c d e f        -> killRange6 Constructor a b c d e f
       Primitive a b c d              -> killRange4 Primitive a b c d

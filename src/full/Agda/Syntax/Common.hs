@@ -672,6 +672,7 @@ data ATPRole = ATPAxiom
              | ATPConjecture
              | ATPDefinition
              | ATPHint
+             | ATPSort
                deriving (Eq, Typeable)
 
 instance Show ATPRole where
@@ -679,6 +680,7 @@ instance Show ATPRole where
   show ATPConjecture = "prove"
   show ATPDefinition = "definition"
   show ATPHint       = "hint"
+  show ATPSort       = "sort"
 
 instance KillRange ATPRole where
   killRange = id

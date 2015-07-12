@@ -607,3 +607,4 @@ instance Pretty ATPRole where
   pretty ATPConjecture = text "prove"
   pretty ATPDefinition = text "definition"
   pretty ATPHint       = text "hint"
+  pretty ATPSort       = text "hint"

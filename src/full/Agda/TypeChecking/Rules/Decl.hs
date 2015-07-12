@@ -578,6 +578,20 @@ checkPragma r p =
 
                  _  -> typeError $ GenericError "ATP directive with the role <hint> only works on functions"
 
+        A.ATPPragma ATPSort qs -> do
+          mapM_ helper qs
+           where
+             helper :: QName -> TCM ()
+             helper q = do
+               def <- getConstInfo q
+               case theDef def of
+                 Datatype{} -> do
+                   reportSLn "tc.pragma.atp" 10 $
+                              "Processing the data-type " ++ show q ++ " as an ATP sort"
+                   addATPPragma ATPSort q []
+
+                 _  -> typeError $ GenericError "ATP directive with the role <sort> only works on data-types"
+
         A.BuiltinPragma x e -> bindBuiltin x e
         A.BuiltinNoDefPragma b x -> bindBuiltinNoDef b x
         A.RewritePragma q   -> addRewriteRule q

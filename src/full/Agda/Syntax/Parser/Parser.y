@@ -1504,6 +1504,10 @@ ATPPragma
                                    ATPHint $4
          "prove"       -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
                                    ATPConjecture $4
+         "sort"        -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                   ATPSort $4
+         "sorts"       -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                   ATPSort $4
          _             -> parseError $ "Invalid role: " ++ s ++ "."
     }
 

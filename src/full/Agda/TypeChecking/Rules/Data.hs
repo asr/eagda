@@ -121,6 +121,7 @@ checkDataDef i name ps cs =
                   , dataSort       = s
                   , dataAbstr      = Info.defAbstract i
                   , dataMutual     = []
+                  , dataATPRole    = Nothing
                   }
 
             escapeContext (size tel) $ do
