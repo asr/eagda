@@ -1314,6 +1314,7 @@ instance EmbPrj ATPRole where
   icod_ ATPConjecture = icode0 1
   icod_ ATPDefinition = icode0 2
   icod_ ATPHint       = icode0 3
+
   value = vcase valu where
     valu []  = valu0 ATPAxiom
     valu [1] = valu0 ATPConjecture

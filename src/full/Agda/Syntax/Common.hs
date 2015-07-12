@@ -675,10 +675,10 @@ data ATPRole = ATPAxiom
                deriving (Eq, Typeable)
 
 instance Show ATPRole where
-    show ATPAxiom      = "axiom"
-    show ATPConjecture = "prove"
-    show ATPDefinition = "definition"
-    show ATPHint       = "hint"
+  show ATPAxiom      = "axiom"
+  show ATPConjecture = "prove"
+  show ATPDefinition = "definition"
+  show ATPHint       = "hint"
 
 instance KillRange ATPRole where
   killRange = id

@@ -153,47 +153,47 @@ markStatic q = modifySignature $ updateDefinition q $ mark
 -- | Add the information of an ATP-pragma to the signature.
 addATPPragma :: ATPRole -> QName -> [QName] -> TCM ()
 addATPPragma role q qs = do
-    sig <- getSignature
+  sig <- getSignature
 
-    unless (HMap.member q (sigDefinitions sig))
-           (typeError $ GenericError "An ATP-pragma must appear in the same module where its argument is defined")
+  unless (HMap.member q (sigDefinitions sig))
+         (typeError $ GenericError "An ATP-pragma must appear in the same module where its argument is defined")
 
-    whenJustM (getATPRole q)
-              (\_ -> typeError $ GenericError $ show q ++ " has already an ATP role")
+  whenJustM (getATPRole q)
+            (\_ -> typeError $ GenericError $ show q ++ " has already an ATP role")
 
-    modifySignature $ updateDefinition q addATP
-    where
-      addATP :: Definition -> Definition
-      addATP def = case role of
-        ATPDefinition -> case def of
-                           def@Defn{ theDef = fun@Function{} } ->
-                             def{ theDef = fun{ funATPRole = Just role }}
+  modifySignature $ updateDefinition q addATP
+  where
+    addATP :: Definition -> Definition
+    addATP def = case role of
+      ATPDefinition -> case def of
+                         def@Defn{ theDef = fun@Function{} } ->
+                           def{ theDef = fun{ funATPRole = Just role }}
 
-                           _ ->  __IMPOSSIBLE__
+                         _ ->  __IMPOSSIBLE__
 
-        ATPHint -> case def of
-                     def@Defn{ theDef = fun@Function{} } ->
-                       def{ theDef = fun{ funATPRole = Just role }}
+      ATPHint -> case def of
+                   def@Defn{ theDef = fun@Function{} } ->
+                     def{ theDef = fun{ funATPRole = Just role }}
 
-                     _ -> __IMPOSSIBLE__
+                   _ -> __IMPOSSIBLE__
 
-        ATPAxiom -> case def of
-                      def@Defn{ theDef = ax@Axiom{} } ->
-                        def{ theDef = ax{ axATPRole = Just role }}
+      ATPAxiom -> case def of
+                    def@Defn{ theDef = ax@Axiom{} } ->
+                      def{ theDef = ax{ axATPRole = Just role }}
 
-                      def@Defn{ theDef = con@Constructor{} } ->
-                        def{ theDef = con{ conATPRole = Just role }}
+                    def@Defn{ theDef = con@Constructor{} } ->
+                      def{ theDef = con{ conATPRole = Just role }}
 
-                      _ -> __IMPOSSIBLE__
+                    _ -> __IMPOSSIBLE__
 
-        ATPConjecture  -> case def of
-                            def@Defn{ theDef = ax@Axiom{} } ->
-                              def{ theDef = ax{ axATPRole = Just role
-                                              , axATPHints = qs
-                                              }
-                                 }
+      ATPConjecture  -> case def of
+                          def@Defn{ theDef = ax@Axiom{} } ->
+                            def{ theDef = ax{ axATPRole = Just role
+                                            , axATPHints = qs
+                                            }
+                               }
 
-                            _ -> __IMPOSSIBLE__
+                          _ -> __IMPOSSIBLE__
 
 unionSignatures :: [Signature] -> Signature
 unionSignatures ss = foldr unionSignature emptySignature ss
