@@ -165,18 +165,6 @@ addATPPragma role q qs = do
   where
     addATP :: Definition -> Definition
     addATP def = case role of
-      ATPDefinition -> case def of
-                         def@Defn{ theDef = fun@Function{} } ->
-                           def{ theDef = fun{ funATPRole = Just role }}
-
-                         _ ->  __IMPOSSIBLE__
-
-      ATPHint -> case def of
-                   def@Defn{ theDef = fun@Function{} } ->
-                     def{ theDef = fun{ funATPRole = Just role }}
-
-                   _ -> __IMPOSSIBLE__
-
       ATPAxiom -> case def of
                     def@Defn{ theDef = ax@Axiom{} } ->
                       def{ theDef = ax{ axATPRole = Just role }}
@@ -194,6 +182,17 @@ addATPPragma role q qs = do
                                }
 
                           _ -> __IMPOSSIBLE__
+      ATPDefinition -> case def of
+                         def@Defn{ theDef = fun@Function{} } ->
+                           def{ theDef = fun{ funATPRole = Just role }}
+
+                         _ ->  __IMPOSSIBLE__
+
+      ATPHint -> case def of
+                   def@Defn{ theDef = fun@Function{} } ->
+                     def{ theDef = fun{ funATPRole = Just role }}
+
+                   _ -> __IMPOSSIBLE__
 
 unionSignatures :: [Signature] -> Signature
 unionSignatures ss = foldr unionSignature emptySignature ss

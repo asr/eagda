@@ -1657,8 +1657,8 @@ instance ToAbstract C.Pragma [A.Pragma] where
           helper q = do
             e <- toAbstract $ OldQName q Nothing
             case e of
-              A.Def aqs -> return aqs
-              _         -> fail "Bad ATP-pragma. The role <definition> must be used with functions"
+              A.Def aq -> return aq
+              _        -> fail "Bad ATP-pragma. The role <definition> must be used with functions"
 
     toAbstract (C.ATPPragma _ ATPHint qs) = do
       aqs <- mapM helper qs
