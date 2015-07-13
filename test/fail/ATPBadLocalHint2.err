@@ -1,5 +1,4 @@
-ATPBadLocalHint2.agda:10,1-22
-Panic: Bad ATP-pragma. A local hint is equal to the conjecture in
-which it is used
+ATPBadLocalHint2.agda:12,1-30
+Bad ATP-pragma. A conjecture cannot have duplicate local hints
 when scope checking the declaration
-  {-# ATP prove p p #-}
+  {-# ATP prove foo bar bar #-}

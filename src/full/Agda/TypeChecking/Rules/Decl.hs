@@ -517,7 +517,8 @@ checkPragma r p =
 
         -- The ATP-pragma.
 
-        -- This error must be detected by Agda.Syntax.Translation.ConcreteToAbstract.
+        -- This error must be detected by
+        -- Syntax.Translation.ConcreteToAbstract.
         A.ATPPragma _ [] -> __IMPOSSIBLE__
 
         A.ATPPragma ATPAxiom qs -> do
@@ -537,7 +538,9 @@ checkPragma r p =
                              "Processing the data constructor " ++ show q ++ " as an axiom"
                    addATPPragma ATPAxiom q []
 
-                 _  -> typeError $ GenericError "ATP directive with the role <axiom> works only on postulates or data constructors"
+                 _  -> typeError $ GenericError $ "ATP directive with " ++
+                         "the <" ++ show ATPAxiom ++ "> role " ++
+                         "only works on postulates or data constructors"
 
         A.ATPPragma ATPConjecture (q : qs) -> do
           def <- getConstInfo q
@@ -547,7 +550,9 @@ checkPragma r p =
                 "Processing the postulate " ++ show q ++ " as an ATP conjecture"
               addATPPragma ATPConjecture q qs
 
-            _   -> typeError $ GenericError "ATP directive with the role <prove> only works on postulates"
+            _   -> typeError $ GenericError $ "ATP directive with " ++
+                     "the <" ++ show ATPConjecture ++ "> role " ++
+                     "only works on postulates"
 
         A.ATPPragma ATPDefinition qs -> do
           mapM_ helper qs
@@ -561,8 +566,9 @@ checkPragma r p =
                               "Processing the function " ++ show q ++ " as an ATP declaration"
                    addATPPragma ATPDefinition q []
 
-                 _  -> typeError $ GenericError "ATP directive with the role <definition> only works on functions"
-
+                 _  -> typeError $ GenericError $ "ATP directive with " ++
+                         "the <" ++ show ATPDefinition ++ "> role " ++
+                         "only works on functions"
 
         A.ATPPragma ATPHint qs -> do
           mapM_ helper qs
@@ -576,7 +582,9 @@ checkPragma r p =
                               "Processing the function " ++ show q ++ " as an ATP general hint"
                    addATPPragma ATPHint q []
 
-                 _  -> typeError $ GenericError "ATP directive with the role <hint> only works on functions"
+                 _  -> typeError $ GenericError $ "ATP directive with " ++
+                         "the <" ++ show ATPHint ++ "> role " ++
+                         "only works on functions"
 
         A.ATPPragma ATPSort qs -> do
           mapM_ helper qs
@@ -590,7 +598,9 @@ checkPragma r p =
                               "Processing the data-type " ++ show q ++ " as an ATP sort"
                    addATPPragma ATPSort q []
 
-                 _  -> typeError $ GenericError "ATP directive with the role <sort> only works on data-types"
+                 _  -> typeError $ GenericError $ "ATP directive with " ++
+                         "the <" ++ show ATPSort ++ "> role " ++
+                         "only works on data-types"
 
         A.BuiltinPragma x e -> bindBuiltin x e
         A.BuiltinNoDefPragma b x -> bindBuiltinNoDef b x

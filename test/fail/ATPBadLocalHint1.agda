@@ -1,22 +1,12 @@
--- In an ATP pragma only postulates, functions or data constructors
--- can be used as <local hints>.
+-- An ATP local hint cannot be equal to the conjecture in which it is
+-- used.
 
--- This error is detected by Agda.Syntax.Translation.ConcreteToAbstract.
+-- This error is detected by Syntax.Translation.ConcreteToAbstract.
 
 module ATPBadLocalHint1 where
 
 postulate
-  D    : Set
-  _≡_  : D → D → Set
-  zero : D
-  succ : D → D
+  D : Set
+  p : D
 
-data N : D → Set where
-  zN :               N zero
-  sN : ∀ {n} → N n → N (succ n)
-
-refl : ∀ n → N n → n ≡ n
-refl n Nn = prf
-  where
-    postulate prf : n ≡ n
-    {-# ATP prove prf Nn #-}
+{-# ATP prove p p #-}

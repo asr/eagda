@@ -1599,8 +1599,9 @@ instance ToAbstract C.Pragma [A.Pragma] where
     toAbstract C.CatchallPragma{}         = __IMPOSSIBLE__
 
     -- The ATP-pragma.
-    toAbstract (C.ATPPragma _ _ []) =
-      fail "Bad ATP-pragma. Missing argument"
+    toAbstract (C.ATPPragma _ role []) =
+      genericError $ "Bad ATP-pragma. " ++
+        "Missing argument for the <" ++ show role ++ "> role"
 
     toAbstract (C.ATPPragma _ ATPAxiom qs) = do
       aqs <- mapM helper qs
@@ -1619,35 +1620,42 @@ instance ToAbstract C.Pragma [A.Pragma] where
 
     toAbstract (C.ATPPragma _ ATPConjecture (q : qs)) = do
       when (q `elem` qs)
-           (fail "Bad ATP-pragma. A local hint is equal to the conjecture in which it is used")
+           (genericError $ "Bad ATP-pragma. " ++
+             "A local hint is equal to the conjecture in which it is used")
       when (qs /= nub qs)
-           (fail "Bad ATP-pragma. A conjecture cannot have duplicate local hints")
+           (genericError $ "Bad ATP-pragma. " ++
+             "A conjecture cannot have duplicate local hints")
 
       e  <- toAbstract $ OldQName q Nothing
       es <- mapM toAbstract (map (\x -> OldQName x Nothing) qs)
       case e of
         A.Def postulate -> do
-               -- The only accepted local hints are postulates,
-               -- functions or data constructors.
-               let aHints :: [A.Expr] -> Maybe [A.QName]
-                   aHints [] = Just []
-                   aHints (A.Def h : hs) =
-                     case aHints hs of
-                       Nothing -> Nothing
-                       Just aqs -> Just (h : aqs)
-                   -- TODO: Is it correct to use only the first
-                   -- ambiguous name?
-                   aHints (A.Con (AmbQ (h : _)) : hs) =
-                     case aHints hs of
-                       Nothing -> Nothing
-                       Just aqs -> Just (h : aqs)
-                   aHints _  = Nothing
+          -- The only accepted local hints are postulates, functions
+          -- or data constructors.
+          let aHints :: [A.Expr] -> Maybe [A.QName]
+              aHints [] = Just []
+              aHints (A.Def h : hs) =
+                case aHints hs of
+                  Nothing -> Nothing
+                  Just aqs -> Just (h : aqs)
+              -- TODO: Is it correct to use only the first ambiguous
+              -- name?
+              aHints (A.Con (AmbQ (h : _)) : hs) =
+                case aHints hs of
+                  Nothing -> Nothing
+                  Just aqs -> Just (h : aqs)
+              aHints _  = Nothing
 
-               case aHints es of
-                 Nothing -> fail "Bad ATP-pragma. The local hints can be only with postulates, functions or data constructors"
-                 Just ahs -> return [ A.ATPPragma ATPConjecture (postulate : ahs) ]
+          case aHints es of
+            Nothing ->
+              genericError $ "Bad ATP-pragma. " ++
+                "A local hint can be only a postulate, " ++
+                "function or data constructor"
+            Just ahs -> return [ A.ATPPragma ATPConjecture (postulate : ahs) ]
 
-        _  -> fail "Bad ATP-pragma. The role <prove> must be used with postulates"
+        _ -> genericError $ "Bad ATP-pragma. " ++
+               "The <" ++ show ATPConjecture ++ "> role must be used " ++
+               "with postulates"
 
     toAbstract (C.ATPPragma _ ATPDefinition qs) = do
       aqs <- mapM helper qs
@@ -1658,7 +1666,10 @@ instance ToAbstract C.Pragma [A.Pragma] where
             e <- toAbstract $ OldQName q Nothing
             case e of
               A.Def aq -> return aq
-              _        -> fail "Bad ATP-pragma. The role <definition> must be used with functions"
+              _        ->
+                genericError $ "Bad ATP-pragma. " ++
+                  "The <" ++ show ATPDefinition ++ "> role must be used " ++
+                  "with functions"
 
     toAbstract (C.ATPPragma _ ATPHint qs) = do
       aqs <- mapM helper qs
@@ -1669,7 +1680,10 @@ instance ToAbstract C.Pragma [A.Pragma] where
             e <- toAbstract $ OldQName q Nothing
             case e of
               A.Def aq -> return aq
-              _        -> fail "Bad ATP-pragma. The role <hint> must be used with functions"
+              _        ->
+                genericError $ "Bad ATP-pragma. " ++
+                  "The <" ++ show ATPHint ++ "> role must be used " ++
+                  "with functions"
 
     toAbstract (C.ATPPragma _ ATPSort qs) = do
       aqs <- mapM helper qs
@@ -1680,7 +1694,10 @@ instance ToAbstract C.Pragma [A.Pragma] where
             e <- toAbstract $ OldQName q Nothing
             case e of
               A.Def aq -> return aq
-              _        -> fail "Bad ATP-pragma. The role <sort> must be used with data-types"
+              _        ->
+                genericError $ "Bad ATP-pragma. " ++
+                  "The <" ++ show ATPSort ++ "> role must be used " ++
+                  "with data-types"
 
 instance ToAbstract C.Clause A.Clause where
     toAbstract (C.Clause top _ C.Ellipsis{} _ _ _) = genericError "bad '...'" -- TODO: error message

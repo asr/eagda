@@ -1,5 +1,3 @@
-ATPBadDefinition2.agda:15,1-26
-Panic: Bad ATP-pragma. The role <definition> must be used with
-functions
-when scope checking the declaration
-  {-# ATP definition zN #-}
+ATPBadDefinition2.agda:10,1-28
+ATP directive with the <definition> role only works on functions
+when checking the pragma ATP definition Bool

@@ -1,4 +1,4 @@
 ATPMissingArgument.agda:7,1-18
-Panic: Bad ATP-pragma. Missing argument
+Bad ATP-pragma. Missing argument for the <axiom> role
 when scope checking the declaration
   {-# ATP axiom #-}

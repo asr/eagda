@@ -1,7 +1,6 @@
--- The ATP pragma with the role <axiom> must be used with postulates or
--- data constructors.
+-- An ATP axiom must be used with postulates or data constructors.
 
--- This error is detected by Agda.TypeChecking.Rules.Decl.
+-- This error is detected by TypeChecking.Rules.Decl.
 
 module ATPBadAxiom where
 

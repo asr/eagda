@@ -1,0 +1,3 @@
+ATPBadSort2.agda:10,1-21
+ATP directive with the <sort> role only works on data-types
+when checking the pragma ATP hint foo

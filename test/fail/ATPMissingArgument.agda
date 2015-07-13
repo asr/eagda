@@ -1,6 +1,6 @@
--- The ATP pragmas must to have at least an argument
+-- The ATP roles must to have at least an argument
 
--- This error is detected by Agda.TypeChecking.Rules.Decl.
+-- This error is detected by Syntax.Translation.ConcreteToAbstract.
 
 module ATPMissingArgument where
 

@@ -1,5 +1,7 @@
--- The ATP pragma must appear in the same module where its argument is
+-- An ATP-pragma must appear in the same module where its argument is
 -- defined.
+
+-- This error is detected by TypeChecking.Monad.Signature.
 
 module ATPImports where
 

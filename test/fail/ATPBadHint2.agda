@@ -1,13 +1,10 @@
--- The ATP pragma with the role <hint> must be used with functions.
+-- An ATP hint must be used with functions.
 
--- This error is detected by Agda.TypeChecking.Rules.Decl.
+-- This error is detected by TypeChecking.Rules.Decl.
 
 module ATPBadHint2 where
 
-data _∨_ (A B : Set) : Set where
-  inj₁ : A → A ∨ B
-  inj₂ : B → A ∨ B
+data Bool : Set where
+  false true : Bool
 
-postulate
-  ∨-comm : {A B : Set} → A ∨ B → B ∨ A
-{-# ATP hint ∨-comm #-}
+{-# ATP hint Bool #-}

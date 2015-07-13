@@ -1,10 +1,10 @@
--- An ATP conjecture must be used with postulates.
+-- An ATP sort must be used with data-types.
 
 -- This error is detected by Syntax.Translation.ConcreteToAbstract.
 
-module ATPBadConjecture1 where
+module ATPBadSort1 where
 
 data Bool : Set where
   false true : Bool
 
-{-# ATP prove false #-}
+{-# ATP sort false #-}

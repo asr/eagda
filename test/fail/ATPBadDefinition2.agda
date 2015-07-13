@@ -1,15 +1,10 @@
--- The ATP pragma with the role <definition> must be used with functions.
+-- An ATP definition must be used with functions.
 
--- This error is detected by Agda.TypeChecking.Rules.Decl.
+-- This error is detected by TypeChecking.Rules.Decl.
 
 module ATPBadDefinition2 where
 
-postulate
-  D    : Set
-  zero : D
-  succ : D → D
+data Bool : Set where
+  false true : Bool
 
-data N : D → Set where
-  zN :               N zero
-  sN : ∀ {n} → N n → N (succ n)
-{-# ATP definition zN #-}
+{-# ATP definition Bool #-}

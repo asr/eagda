@@ -1,5 +1,5 @@
-ATPBadLocalHint1.agda:22,5-29
-Panic: Bad ATP-pragma. The local hints can be only with postulates,
-functions or data constructors
+ATPBadLocalHint1.agda:12,1-22
+Bad ATP-pragma. A local hint is equal to the conjecture in which it
+is used
 when scope checking the declaration
-  {-# ATP prove prf Nn #-}
+  {-# ATP prove p p #-}

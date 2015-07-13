@@ -1,5 +1,5 @@
-ATPBadLocalHint3.agda:11,1-30
-Panic: Bad ATP-pragma. A conjecture cannot have duplicate local
-hints
+ATPBadLocalHint3.agda:22,5-29
+Bad ATP-pragma. A local hint can be only a postulate, function or
+data constructor
 when scope checking the declaration
-  {-# ATP prove foo bar bar #-}
+  {-# ATP prove prf Nn #-}

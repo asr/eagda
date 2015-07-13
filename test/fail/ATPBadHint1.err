@@ -1,4 +1,4 @@
-ATPBadHint1.agda:15,1-20
-Panic: Bad ATP-pragma. The role <hint> must be used with functions
+ATPBadHint1.agda:10,1-23
+Bad ATP-pragma. The <hint> role must be used with functions
 when scope checking the declaration
-  {-# ATP hint zN #-}
+  {-# ATP hint false #-}
