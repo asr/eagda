@@ -1166,10 +1166,10 @@ data Projection = Projection
 
 data Defn = Axiom
             -- ^ Postulate.
-            { axATPRole :: Maybe ATPRole
-              -- ^ ATP axiom or conjecture?
-            , axATPHints :: [QName]
-              -- ^ ATP hints for a conjecture.
+            { axTPTPRole :: Maybe TPTPRole
+              -- ^ TPTP axiom or conjecture?
+            , axTPTPHints    :: [QName]
+              -- ^ TPTP hints for a TPTP conjecture.
             }
           | Function
             { funClauses        :: [Clause]
@@ -1208,8 +1208,8 @@ data Defn = Axiom
               --   name of the parent function.
             , funCopatternLHS   :: Bool
               -- ^ Is this a function defined by copatterns?
-            , funATPRole        :: Maybe ATPRole
-              -- ^ ATP definition or hint?
+            , funTPTPRole       :: Maybe TPTPRole
+              -- ^ TPTP definition or hint?
             }
           | Datatype
             { dataPars           :: Nat            -- ^ Number of parameters.
@@ -1222,7 +1222,7 @@ data Defn = Axiom
             , dataSort           :: Sort
             , dataMutual         :: [QName]        -- ^ Mutually recursive functions, @data@s and @record@s.  Does not include this data type.
             , dataAbstr          :: IsAbstract
-            , dataATPRole        :: Maybe ATPRole  -- ^ ATP sort?
+            , dataTPTPRole       :: Maybe TPTPRole  -- ^ TPTP sort?
             }
           | Record
             { recPars           :: Nat                  -- ^ Number of parameters.
@@ -1244,12 +1244,12 @@ data Defn = Axiom
             , recAbstr          :: IsAbstract
             }
           | Constructor
-            { conPars   :: Nat         -- ^ Number of parameters.
-            , conSrcCon :: ConHead     -- ^ Name of (original) constructor and fields. (This might be in a module instance.)
-            , conData   :: QName       -- ^ Name of datatype or record type.
-            , conAbstr  :: IsAbstract
-            , conInd    :: Induction   -- ^ Inductive or coinductive?
-            , conATPRole :: Maybe ATPRole -- ^ ATP axiom?
+            { conPars     :: Nat         -- ^ Number of parameters.
+            , conSrcCon   :: ConHead     -- ^ Name of (original) constructor and fields. (This might be in a module instance.)
+            , conData     :: QName       -- ^ Name of datatype or record type.
+            , conAbstr    :: IsAbstract
+            , conInd      :: Induction   -- ^ Inductive or coinductive?
+            , conTPTPRole :: Maybe TPTPRole  -- ^ TPTP axiom?
             }
           | Primitive
             { primAbstr :: IsAbstract
@@ -1280,7 +1280,7 @@ emptyFunction = Function
   , funExtLam      = Nothing
   , funWith        = Nothing
   , funCopatternLHS = False
-  , funATPRole     = Nothing
+  , funTPTPRole     = Nothing
   }
 
 isCopatternLHS :: [Clause] -> Bool

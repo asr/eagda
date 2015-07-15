@@ -94,12 +94,12 @@ bindBuiltinSharp e =
               }
     addConstant sharp $
       sharpDefn { theDef = Constructor
-                    { conPars   = 2
-                    , conSrcCon = ConHead sharp CoInductive [] -- flat is added as field later
-                    , conData   = defName infDefn
-                    , conAbstr  = ConcreteDef
-                    , conInd    = CoInductive
-                    , conATPRole = Nothing
+                    { conPars     = 2
+                    , conSrcCon   = ConHead sharp CoInductive [] -- flat is added as field later
+                    , conData     = defName infDefn
+                    , conAbstr    = ConcreteDef
+                    , conInd      = CoInductive
+                    , conTPTPRole = Nothing
                     }
                 }
     return sharpE
@@ -167,7 +167,7 @@ bindBuiltinFlat e =
                    , funExtLam     = Nothing
                    , funWith       = Nothing
                    , funCopatternLHS = isCopatternLHS [clause]
-                   , funATPRole    = Nothing
+                   , funTPTPRole     = Nothing
                    }
                 }
 

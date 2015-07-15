@@ -1603,9 +1603,9 @@ instance ToAbstract C.Pragma [A.Pragma] where
       genericError $ "Bad ATP-pragma. " ++
         "Missing argument for the <" ++ show role ++ "> role"
 
-    toAbstract (C.ATPPragma _ ATPAxiom qs) = do
+    toAbstract (C.ATPPragma _ TPTPAxiom qs) = do
       aqs <- mapM helper qs
-      return [ A.ATPPragma ATPAxiom aqs ]
+      return [ A.ATPPragma TPTPAxiom aqs ]
         where
           helper :: C.QName -> ScopeM A.QName
           helper q = do
@@ -1618,7 +1618,7 @@ instance ToAbstract C.Pragma [A.Pragma] where
 
               _                    -> __IMPOSSIBLE__
 
-    toAbstract (C.ATPPragma _ ATPConjecture (q : qs)) = do
+    toAbstract (C.ATPPragma _ TPTPConjecture (q : qs)) = do
       when (q `elem` qs)
            (genericError $ "Bad ATP-pragma. " ++
              "A local hint is equal to the conjecture in which it is used")
@@ -1651,15 +1651,15 @@ instance ToAbstract C.Pragma [A.Pragma] where
               genericError $ "Bad ATP-pragma. " ++
                 "A local hint can be only a postulate, " ++
                 "function or data constructor"
-            Just ahs -> return [ A.ATPPragma ATPConjecture (postulate : ahs) ]
+            Just ahs -> return [ A.ATPPragma TPTPConjecture (postulate : ahs) ]
 
         _ -> genericError $ "Bad ATP-pragma. " ++
-               "The <" ++ show ATPConjecture ++ "> role must be used " ++
+               "The <" ++ show TPTPConjecture ++ "> role must be used " ++
                "with postulates"
 
-    toAbstract (C.ATPPragma _ ATPDefinition qs) = do
+    toAbstract (C.ATPPragma _ TPTPDefinition qs) = do
       aqs <- mapM helper qs
-      return [ A.ATPPragma ATPDefinition aqs ]
+      return [ A.ATPPragma TPTPDefinition aqs ]
         where
           helper :: C.QName -> ScopeM A.QName
           helper q = do
@@ -1668,12 +1668,12 @@ instance ToAbstract C.Pragma [A.Pragma] where
               A.Def aq -> return aq
               _        ->
                 genericError $ "Bad ATP-pragma. " ++
-                  "The <" ++ show ATPDefinition ++ "> role must be used " ++
+                  "The <" ++ show TPTPDefinition ++ "> role must be used " ++
                   "with functions"
 
-    toAbstract (C.ATPPragma _ ATPHint qs) = do
+    toAbstract (C.ATPPragma _ TPTPHint qs) = do
       aqs <- mapM helper qs
-      return [ A.ATPPragma ATPHint aqs ]
+      return [ A.ATPPragma TPTPHint aqs ]
         where
           helper :: C.QName -> ScopeM A.QName
           helper q = do
@@ -1682,12 +1682,12 @@ instance ToAbstract C.Pragma [A.Pragma] where
               A.Def aq -> return aq
               _        ->
                 genericError $ "Bad ATP-pragma. " ++
-                  "The <" ++ show ATPHint ++ "> role must be used " ++
+                  "The <" ++ show TPTPHint ++ "> role must be used " ++
                   "with functions"
 
-    toAbstract (C.ATPPragma _ ATPSort qs) = do
+    toAbstract (C.ATPPragma _ TPTPSort qs) = do
       aqs <- mapM helper qs
-      return [ A.ATPPragma ATPSort aqs ]
+      return [ A.ATPPragma TPTPSort aqs ]
         where
           helper :: C.QName -> ScopeM A.QName
           helper q = do
@@ -1696,7 +1696,7 @@ instance ToAbstract C.Pragma [A.Pragma] where
               A.Def aq -> return aq
               _        ->
                 genericError $ "Bad ATP-pragma. " ++
-                  "The <" ++ show ATPSort ++ "> role must be used " ++
+                  "The <" ++ show TPTPSort ++ "> role must be used " ++
                   "with data-types"
 
 instance ToAbstract C.Clause A.Clause where

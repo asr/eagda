@@ -521,7 +521,7 @@ checkPragma r p =
         -- Syntax.Translation.ConcreteToAbstract.
         A.ATPPragma _ [] -> __IMPOSSIBLE__
 
-        A.ATPPragma ATPAxiom qs -> do
+        A.ATPPragma TPTPAxiom qs -> do
           mapM_ helper qs
            where
              helper :: QName -> TCM ()
@@ -530,31 +530,31 @@ checkPragma r p =
                case theDef def of
                  Axiom{} -> do
                    reportSLn "tc.pragma.atp" 10 $
-                             "Processing the postulate " ++ show q ++ " as an axiom"
-                   addATPPragma ATPAxiom q []
+                     "Processing the postulate " ++ show q ++ " as an axiom"
+                   addATPPragma TPTPAxiom q []
 
                  Constructor{} -> do
                    reportSLn "tc.pragma.atp" 10 $
-                             "Processing the data constructor " ++ show q ++ " as an axiom"
-                   addATPPragma ATPAxiom q []
+                     "Processing the data constructor " ++ show q ++ " as an axiom"
+                   addATPPragma TPTPAxiom q []
 
                  _  -> typeError $ GenericError $ "ATP directive with " ++
-                         "the <" ++ show ATPAxiom ++ "> role " ++
+                         "the <" ++ show TPTPAxiom ++ "> role " ++
                          "only works on postulates or data constructors"
 
-        A.ATPPragma ATPConjecture (q : qs) -> do
+        A.ATPPragma TPTPConjecture (q : qs) -> do
           def <- getConstInfo q
           case theDef def of
             Axiom{} -> do
               reportSLn "tc.pragma.atp" 10 $
-                "Processing the postulate " ++ show q ++ " as an ATP conjecture"
-              addATPPragma ATPConjecture q qs
+                "Processing the postulate " ++ show q ++ " as a conjecture"
+              addATPPragma TPTPConjecture q qs
 
             _   -> typeError $ GenericError $ "ATP directive with " ++
-                     "the <" ++ show ATPConjecture ++ "> role " ++
+                     "the <" ++ show TPTPConjecture ++ "> role " ++
                      "only works on postulates"
 
-        A.ATPPragma ATPDefinition qs -> do
+        A.ATPPragma TPTPDefinition qs -> do
           mapM_ helper qs
            where
              helper :: QName -> TCM ()
@@ -563,14 +563,14 @@ checkPragma r p =
                case theDef def of
                  Function{} -> do
                    reportSLn "tc.pragma.atp" 10 $
-                              "Processing the function " ++ show q ++ " as an ATP declaration"
-                   addATPPragma ATPDefinition q []
+                     "Processing the function " ++ show q ++ " as a definition"
+                   addATPPragma TPTPDefinition q []
 
                  _  -> typeError $ GenericError $ "ATP directive with " ++
-                         "the <" ++ show ATPDefinition ++ "> role " ++
+                         "the <" ++ show TPTPDefinition ++ "> role " ++
                          "only works on functions"
 
-        A.ATPPragma ATPHint qs -> do
+        A.ATPPragma TPTPHint qs -> do
           mapM_ helper qs
            where
              helper :: QName -> TCM ()
@@ -579,14 +579,14 @@ checkPragma r p =
                case theDef def of
                  Function{} -> do
                    reportSLn "tc.pragma.atp" 10 $
-                              "Processing the function " ++ show q ++ " as an ATP general hint"
-                   addATPPragma ATPHint q []
+                     "Processing the function " ++ show q ++ " as a general hint"
+                   addATPPragma TPTPHint q []
 
                  _  -> typeError $ GenericError $ "ATP directive with " ++
-                         "the <" ++ show ATPHint ++ "> role " ++
+                         "the <" ++ show TPTPHint ++ "> role " ++
                          "only works on functions"
 
-        A.ATPPragma ATPSort qs -> do
+        A.ATPPragma TPTPSort qs -> do
           mapM_ helper qs
            where
              helper :: QName -> TCM ()
@@ -595,11 +595,11 @@ checkPragma r p =
                case theDef def of
                  Datatype{} -> do
                    reportSLn "tc.pragma.atp" 10 $
-                              "Processing the data-type " ++ show q ++ " as an ATP sort"
-                   addATPPragma ATPSort q []
+                     "Processing the data-type " ++ show q ++ " as a sort"
+                   addATPPragma TPTPSort q []
 
                  _  -> typeError $ GenericError $ "ATP directive with " ++
-                         "the <" ++ show ATPSort ++ "> role " ++
+                         "the <" ++ show TPTPSort ++ "> role " ++
                          "only works on data-types"
 
         A.BuiltinPragma x e -> bindBuiltin x e

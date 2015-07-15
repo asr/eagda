@@ -602,9 +602,9 @@ instance Pretty ImportedName where
     pretty (ImportedName x)     = pretty x
     pretty (ImportedModule x)   = text "module" <+> pretty x
 
-instance Pretty ATPRole where
-  pretty ATPAxiom      = text "axiom"
-  pretty ATPConjecture = text "prove"
-  pretty ATPDefinition = text "definition"
-  pretty ATPHint       = text "hint"
-  pretty ATPSort       = text "sort"
+instance Pretty TPTPRole where
+  pretty TPTPAxiom      = text "axiom"
+  pretty TPTPConjecture = text "prove"
+  pretty TPTPDefinition = text "definition"
+  pretty TPTPHint       = text "hint"
+  pretty TPTPSort       = text "sort"

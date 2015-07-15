@@ -151,54 +151,55 @@ markStatic q = modifySignature $ updateDefinition q $ mark
     mark def = def
 
 -- | Add the information of an ATP-pragma to the signature.
-addATPPragma :: ATPRole -> QName -> [QName] -> TCM ()
+addATPPragma :: TPTPRole -> QName -> [QName] -> TCM ()
 addATPPragma role q qs = do
   sig <- getSignature
 
   unless (HMap.member q (sigDefinitions sig))
          (typeError $ GenericError "An ATP-pragma must appear in the same module where its argument is defined")
 
-  whenJustM (getATPRole q)
-            (\_ -> typeError $ GenericError $ show q ++ " has already an ATP role")
+  whenJustM (getTPTPRole q)
+            (\_ -> typeError $ GenericError $ show q ++ " has already a TPTP role")
 
   modifySignature $ updateDefinition q addATP
   where
     addATP :: Definition -> Definition
     addATP def = case role of
-      ATPAxiom -> case def of
-                    def@Defn{ theDef = ax@Axiom{} } ->
-                      def{ theDef = ax{ axATPRole = Just role }}
+      TPTPAxiom -> case def of
+                     def@Defn{ theDef = ax@Axiom{} } ->
+                       def{ theDef = ax{ axTPTPRole = Just role }}
 
-                    def@Defn{ theDef = con@Constructor{} } ->
-                      def{ theDef = con{ conATPRole = Just role }}
+                     def@Defn{ theDef = con@Constructor{} } ->
+                       def{ theDef = con{ conTPTPRole = Just role }}
 
-                    _ -> __IMPOSSIBLE__
+                     _ -> __IMPOSSIBLE__
 
-      ATPConjecture  -> case def of
+      TPTPConjecture -> case def of
                           def@Defn{ theDef = ax@Axiom{} } ->
-                            def{ theDef = ax{ axATPRole = Just role
-                                            , axATPHints = qs
+                            def{ theDef = ax{ axTPTPRole  = Just role
+                                            , axTPTPHints = qs
                                             }
                                }
 
                           _ -> __IMPOSSIBLE__
-      ATPDefinition -> case def of
-                         def@Defn{ theDef = fun@Function{} } ->
-                           def{ theDef = fun{ funATPRole = Just role }}
 
-                         _ ->  __IMPOSSIBLE__
+      TPTPDefinition -> case def of
+                          def@Defn{ theDef = fun@Function{} } ->
+                            def{ theDef = fun{ funTPTPRole = Just role }}
 
-      ATPHint -> case def of
-                   def@Defn{ theDef = fun@Function{} } ->
-                     def{ theDef = fun{ funATPRole = Just role }}
+                          _ ->  __IMPOSSIBLE__
 
-                   _ -> __IMPOSSIBLE__
+      TPTPHint -> case def of
+                    def@Defn{ theDef = fun@Function{} } ->
+                      def{ theDef = fun{ funTPTPRole = Just role }}
 
-      ATPSort -> case def of
-                   def@Defn{ theDef = datatype@Datatype{} } ->
-                     def{ theDef = datatype{ dataATPRole = Just role }}
+                    _ -> __IMPOSSIBLE__
 
-                   _ -> __IMPOSSIBLE__
+      TPTPSort -> case def of
+                    def@Defn{ theDef = datatype@Datatype{} } ->
+                      def{ theDef = datatype{ dataTPTPRole = Just role }}
+
+                    _ -> __IMPOSSIBLE__
 
 unionSignatures :: [Signature] -> Signature
 unionSignatures ss = foldr unionSignature emptySignature ss
@@ -392,7 +393,7 @@ applySection new ptel old ts rd rm = do
                         , funExtLam         = extlam
                         , funWith           = with
                         , funCopatternLHS   = isCopatternLHS [cl]
-                        , funATPRole        = Nothing
+                        , funTPTPRole       = Nothing
                         }
                   reportSLn "tc.mod.apply" 80 $ "new def for " ++ show x ++ "\n  " ++ show newDef
                   return newDef
@@ -586,15 +587,15 @@ setMutual d m = modifySignature $ updateDefinition d $ updateTheDef $ \ def ->
     _          -> __IMPOSSIBLE__
 
 -- | Look up the ATP role of a definition.
-getATPRole :: QName -> TCM (Maybe ATPRole)
-getATPRole qname = do
+getTPTPRole :: QName -> TCM (Maybe TPTPRole)
+getTPTPRole qname = do
   defn <- theDef <$> getConstInfo qname
   case defn of
-    Axiom{ axATPRole = r }        -> return r
-    Datatype{ dataATPRole = r }   -> return r
-    Function{ funATPRole = r }    -> return r
-    Constructor{ conATPRole = r } -> return r
-    _                             -> __IMPOSSIBLE__
+    Axiom{ axTPTPRole = r }        -> return r
+    Datatype{ dataTPTPRole = r }   -> return r
+    Function{ funTPTPRole = r }    -> return r
+    Constructor{ conTPTPRole = r } -> return r
+    _                              -> __IMPOSSIBLE__
 
 -- | Check whether two definitions are mutually recursive.
 mutuallyRecursive :: QName -> QName -> TCM Bool

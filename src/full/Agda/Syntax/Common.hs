@@ -667,22 +667,22 @@ type RString = Ranged RawName
 
 -- ASR TODO (09 June 2015). Move to the end. We wrote the data type
 -- here for avoiding conflicts when merging master.
--- | The role of an ATP-pragma.
-data ATPRole = ATPAxiom
-             | ATPConjecture
-             | ATPDefinition
-             | ATPHint
-             | ATPSort
-               deriving (Eq, Typeable)
+-- | The TPTP role used in an ATP-pragma.
+data TPTPRole = TPTPAxiom
+              | TPTPConjecture
+              | TPTPDefinition
+              | TPTPHint
+              | TPTPSort
+              deriving (Eq, Typeable)
 
-instance Show ATPRole where
-  show ATPAxiom      = "axiom"
-  show ATPConjecture = "prove"
-  show ATPDefinition = "definition"
-  show ATPHint       = "hint"
-  show ATPSort       = "sort"
+instance Show TPTPRole where
+  show TPTPAxiom      = "axiom"
+  show TPTPConjecture = "prove"
+  show TPTPDefinition = "definition"
+  show TPTPHint       = "hint"
+  show TPTPSort       = "sort"
 
-instance KillRange ATPRole where
+instance KillRange TPTPRole where
   killRange = id
 
 -- | Functions can be defined in both infix and prefix style. See

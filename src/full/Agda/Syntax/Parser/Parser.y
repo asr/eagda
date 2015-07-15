@@ -1491,23 +1491,23 @@ ATPPragma
     {% let s = snd $3 in
        case s of
          "axiom"       -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                   ATPAxiom $4
+                                   TPTPAxiom $4
          "axioms"      -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                   ATPAxiom $4
+                                   TPTPAxiom $4
          "definition"  -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                   ATPDefinition $4
+                                   TPTPDefinition $4
          "definitions" -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                   ATPDefinition $4
+                                   TPTPDefinition $4
          "hint"        -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                   ATPHint $4
+                                   TPTPHint $4
          "hints"       -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                   ATPHint $4
+                                   TPTPHint $4
          "prove"       -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                   ATPConjecture $4
+                                   TPTPConjecture $4
          "sort"        -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                   ATPSort $4
+                                   TPTPSort $4
          "sorts"       -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                   ATPSort $4
+                                   TPTPSort $4
          _             -> parseError $ "Invalid role: " ++ s ++ "."
     }
 

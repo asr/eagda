@@ -145,7 +145,7 @@ checkAlias t' ai delayed i name e = do
                       , funExtLam         = Nothing
                       , funWith           = Nothing
                       , funCopatternLHS   = False
-                      , funATPRole        = Nothing
+                      , funTPTPRole       = Nothing
                       }
   reportSDoc "tc.def.alias" 20 $ text "checkAlias: leaving"
 
@@ -265,7 +265,7 @@ checkFunDef' t ai delayed extlam with i name cs =
              , funExtLam         = extlam
              , funWith           = with
              , funCopatternLHS   = isCopatternLHS cs
-             , funATPRole        = Nothing
+             , funTPTPRole        = Nothing
              }
 
         -- Andreas 2012-02-13: postpone polarity computation until after positivity check

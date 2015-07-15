@@ -1309,19 +1309,19 @@ instance EmbPrj Occurrence where
 -- here for avoiding conflicts when merging master.
 --
 -- Based on EmbPrj Occurence instance.
-instance EmbPrj ATPRole where
-  icod_ ATPAxiom      = icode0'
-  icod_ ATPConjecture = icode0 1
-  icod_ ATPDefinition = icode0 2
-  icod_ ATPHint       = icode0 3
-  icod_ ATPSort       = icode0 4
+instance EmbPrj TPTPRole where
+  icod_ TPTPAxiom      = icode0'
+  icod_ TPTPConjecture = icode0 1
+  icod_ TPTPDefinition = icode0 2
+  icod_ TPTPHint       = icode0 3
+  icod_ TPTPSort       = icode0 4
 
   value = vcase valu where
-    valu []  = valu0 ATPAxiom
-    valu [1] = valu0 ATPConjecture
-    valu [2] = valu0 ATPDefinition
-    valu [3] = valu0 ATPHint
-    valu [4] = valu0 ATPSort
+    valu []  = valu0 TPTPAxiom
+    valu [1] = valu0 TPTPConjecture
+    valu [2] = valu0 TPTPDefinition
+    valu [3] = valu0 TPTPHint
+    valu [4] = valu0 TPTPSort
     valu _   = malformed
 
 instance EmbPrj CompiledRepresentation where

@@ -463,7 +463,7 @@ checkAbsurdLambda i h e t = do
               , funExtLam         = Nothing
               , funWith           = Nothing
               , funCopatternLHS   = False
-              , funATPRole        = Nothing
+              , funTPTPRole        = Nothing
               }
           -- Andreas 2012-01-30: since aux is lifted to toplevel
           -- it needs to be applied to the current telescope (issue 557)

@@ -170,7 +170,7 @@ data Pragma
   = OptionsPragma [String]
   -- ASR TODO (20 November 2014). Move to the end. We wrote it here
   -- for avoiding conflicts when merging master.
-  | ATPPragma ATPRole [QName]
+  | ATPPragma TPTPRole [QName]
   | BuiltinPragma String Expr
   | BuiltinNoDefPragma String QName
     -- ^ Builtins that do not come with a definition,

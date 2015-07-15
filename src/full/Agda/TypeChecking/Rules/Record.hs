@@ -161,12 +161,12 @@ checkRecDef i name ind con ps contel fields =
       --   creation
       addConstant conName $
         defaultDefn defaultArgInfo conName contype $
-             Constructor { conPars   = 0
-                         , conSrcCon = con
-                         , conData   = name
-                         , conAbstr  = Info.defAbstract conInfo
-                         , conInd    = conInduction
-                         , conATPRole = Nothing
+             Constructor { conPars     = 0
+                         , conSrcCon   = con
+                         , conData     = name
+                         , conAbstr    = Info.defAbstract conInfo
+                         , conInd      = conInduction
+                         , conTPTPRole = Nothing
                          }
       -- Declare the constructor as eligible for instance search
       when (Info.defInstance i == InstanceDef) $ do
@@ -449,7 +449,7 @@ checkRecordProjections m r con tel ftel fs = do
                        , funExtLam         = Nothing
                        , funWith           = Nothing
                        , funCopatternLHS   = isCopatternLHS [clause]
-                       , funATPRole        = Nothing
+                       , funTPTPRole       = Nothing
                        })
               { defArgOccurrences = [StrictPos] }
           computePolarity projname
