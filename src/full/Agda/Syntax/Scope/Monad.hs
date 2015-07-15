@@ -41,8 +41,8 @@ import qualified Agda.Utils.AssocList as AssocList
 import Agda.Utils.List
 import Agda.Utils.Maybe
 import Agda.Utils.Null (unlessNull)
-import Agda.Utils.Size
 import Agda.Utils.Pretty
+import Agda.Utils.Size
 import Agda.Utils.Tuple
 
 #include "undefined.h"
@@ -255,8 +255,8 @@ resolveName' kinds names x = do
       ds  -> typeError $ AmbiguousName x (map (anameName . fst) ds)
   where
   updateConcreteName :: AbstractName -> C.Name -> AbstractName
-  updateConcreteName d@(AbsName { anameName = an@(A.QName { qnameName = qn }) }) x =
-    d { anameName = an { qnameName = qn { nameConcrete = x } } }
+  updateConcreteName d@(AbsName { anameName = A.QName qm qn }) x =
+    d { anameName = A.QName (setRange (getRange x) qm) (qn { nameConcrete = x }) }
 
 -- | Look up a module in the scope.
 resolveModule :: C.QName -> ScopeM AbstractModule
