@@ -95,8 +95,8 @@ instance IsFlexiblePattern (I.Pattern' a) where
     case p of
       I.DotP{}  -> return DotFlex
       I.ConP _ i ps
-        | Just True  <- conPRecord i -> return ImplicitFlex  -- expanded from ImplicitP
-        | Just False <- conPRecord i -> maybeFlexiblePattern ps
+        | Just ConPImplicit <- conPRecord i -> return ImplicitFlex  -- expanded from ImplicitP
+        | Just _            <- conPRecord i -> maybeFlexiblePattern ps
         | otherwise -> mzero
       I.VarP{}  -> mzero
       I.LitP{}  -> mzero
@@ -294,6 +294,7 @@ noShadowingOfConstructors mkCall problem =
   noShadowing (A.WildP     {}) t = return ()
   noShadowing (A.AbsurdP   {}) t = return ()
   noShadowing (A.ConP      {}) t = return ()  -- only happens for eta expanded record patterns
+  noShadowing (A.RecP      {}) t = return ()  -- record pattern
   noShadowing (A.DefP      {}) t = return ()  -- projection pattern
   noShadowing (A.AsP       {}) t = __IMPOSSIBLE__
   noShadowing (A.DotP      {}) t = __IMPOSSIBLE__
@@ -385,6 +386,7 @@ bindLHSVars (p : ps) (ExtendTel a tel) ret =
           -- ^ TODO guilhem
       bindLHSVars (qs ++ ps) (ftel `abstract` absApp (raise (size ftel) tel) eta) ret
     A.ConP{}        -> __IMPOSSIBLE__
+    A.RecP{}        -> __IMPOSSIBLE__
     A.DefP{}        -> __IMPOSSIBLE__
     A.AsP{}         -> __IMPOSSIBLE__
     A.DotP{}        -> __IMPOSSIBLE__
@@ -583,7 +585,7 @@ checkLHS f st@(LHSState problem sigma dpi asb) = do
     trySplitConstructor p0 xs (Arg info LitFocus{}) p1 = __IMPOSSIBLE__
     trySplitConstructor p0 xs (Arg info
              (Focus { focusCon      = c
-                    , focusImplicit = impl
+                    , focusPatOrigin= porigin
                     , focusConArgs  = qs
                     , focusRange    = r
                     , focusOutPat   = iph
@@ -594,7 +596,7 @@ checkLHS f st@(LHSState problem sigma dpi asb) = do
                     , focusType     = a
                     }
              )) p1 = do
-      traceCall (CheckPattern (A.ConP (ConPatInfo impl $ PatRange r) (A.AmbQ [c]) qs)
+      traceCall (CheckPattern (A.ConP (ConPatInfo porigin $ PatRange r) (A.AmbQ [c]) qs)
                                        (problemTel p0)
                                        (El Prop $ Def d $ map Apply $ vs ++ ws)) $ do
 
@@ -715,7 +717,7 @@ checkLHS f st@(LHSState problem sigma dpi asb) = do
           let storedPatternType = raise (1 + size delta2) typeOfSplitVar
           -- Also remember if we are a record pattern and from an implicit pattern.
           isRec <- isRecord d
-          let cpi = ConPatternInfo (isRec $> impl) (Just storedPatternType)
+          let cpi = ConPatternInfo (isRec $> porigin) (Just storedPatternType)
 
           -- Plug the hole in the out pattern with c ys
           let ysp = map (argFromDom . fmap (namedVarP . fst)) $ telToList gamma

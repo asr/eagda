@@ -479,10 +479,9 @@ namedVarP x = Named named $ VarP x
 --   The scope used for the type is given by any outer scope
 --   plus the clause's telescope ('clauseTel').
 data ConPatternInfo = ConPatternInfo
-  { conPRecord :: Maybe Bool
+  { conPRecord :: Maybe ConPOrigin
     -- ^ @Nothing@ if data constructor.
-    --   @Just@ if record constructor, then @True@ if pattern
-    --   was expanded from an implicit pattern.
+    --   @Just@ if record constructor.
   , conPType   :: Maybe (Arg Type)
     -- ^ The type of the whole constructor pattern.
     --   Should be present (@Just@) if constructor pattern is
@@ -759,12 +758,9 @@ arity t = case ignoreSharing $ unEl t of
   Pi  _ b -> 1 + arity (unAbs b)
   _       -> 0
 
--- | Suggest a name for the first argument of a function of the given type.
-argName :: Type -> String
-argName = argN . ignoreSharing . unEl
-    where
-        argN (Pi _ b)  = "." ++ argNameToString (absName b)
-        argN _    = __IMPOSSIBLE__
+-- | Make a name that is not in scope.
+notInScopeName :: ArgName -> ArgName
+notInScopeName = stringToArgName . ("." ++) . argNameToString
 
 -- | Pick the better name suggestion, i.e., the one that is not just underscore.
 class Suggest a b where

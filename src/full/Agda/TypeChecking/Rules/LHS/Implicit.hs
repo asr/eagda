@@ -67,12 +67,15 @@ expandImplicitPattern' a p
        -- Andreas, 2012-06-10: only expand guarded records,
        -- otherwise we might run into an infinite loop
        def <- getRecordDef d
-       -- Andreas, 2013-03-21: only expand records that have a constructor:
-       if not (recNamedCon def) then return Nothing else do
+       -- Andreas, 2015-07-20 Since we have record patterns now, we can expand
+       -- even records that do not have a constructor.
+       -- -- Andreas, 2013-03-21: only expand records that have a constructor:
+       -- if not (recNamedCon def) then return Nothing else do
+       do
          -- generate one implicit pattern for each field
          qs <- forM (recFields def) $ \ f -> flip Arg implicitP <$> reify (argInfo f)
          -- generate the pattern (c _ _ ... _)
-         let q  = A.ConP (ConPatInfo True patNoRange) (A.AmbQ [recCon def]) qs
+         let q  = A.ConP (ConPatInfo ConPImplicit patNoRange) (A.AmbQ [recCon def]) qs
          -- equip it with the name/arginfo of the original implicit pattern
              p' = updateNamedArg (const q) p   -- WAS: ((q <$) <$> p)  -- Andreas, 2013-03-21 forbiddingly cryptic
          return $ Just p'

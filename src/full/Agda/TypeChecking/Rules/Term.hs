@@ -1,6 +1,7 @@
 {-# LANGUAGE CPP                   #-}
 {-# LANGUAGE FlexibleInstances     #-}
 {-# LANGUAGE NamedFieldPuns        #-}
+{-# LANGUAGE NondecreasingIndentation #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PatternGuards         #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
@@ -278,6 +279,8 @@ checkLambda :: I.Arg A.TypedBinding -> A.Expr -> Type -> TCM Term
 checkLambda (Arg _ (A.TLet _ lbs)) body target =
   checkLetBindings lbs (checkExpr body target)
 checkLambda (Arg info (A.TBind _ xs typ)) body target = do
+  reportSLn "tc.term.lambda" 60 $ "checkLambda   xs = " ++ show xs
+
   let numbinds = length xs
   TelV tel btyp <- telViewUpTo numbinds target
   if size tel < numbinds || numbinds /= 1
@@ -300,6 +303,7 @@ checkLambda (Arg info (A.TBind _ xs typ)) body target = do
       -- is inconclusive we need to block the resulting term so we create a
       -- fresh problem for the check.
       let tel = telFromList $ bindsWithHidingToTel xs argsT
+      reportSLn "tc.term.lambda" 60 $ "dontUseTargetType tel = " ++ show tel
       -- DONT USE tel for addContext, as it loses NameIds.
       -- WRONG: t1 <- addContext tel $ workOnTypes newTypeMeta_
       t1 <- addContext (xs, argsT) $ workOnTypes newTypeMeta_
@@ -320,6 +324,8 @@ checkLambda (Arg info (A.TBind _ xs typ)) body target = do
 
     useTargetType tel@(ExtendTel arg (Abs y EmptyTel)) btyp = do
         verboseS "tc.term.lambda" 5 $ tick "lambda-with-target-type"
+        reportSLn "tc.term.lambda" 60 $ "useTargetType y  = " ++ show y
+
         -- merge in the hiding info of the TBind
         info <- return $ mapHiding (mappend h) info
         unless (getHiding arg == getHiding info) $ typeError $ WrongHidingInLambda target
@@ -337,10 +343,11 @@ checkLambda (Arg info (A.TBind _ xs typ)) body target = do
         -- compare the argument types first, so we spawn a new problem for that
         -- check.
         (pid, argT) <- newProblem $ isTypeEqualTo typ a
-        v <- add y (Dom (setRelevance r' info) argT) $ checkExpr body btyp
+        v <- add (notInScopeName y) (Dom (setRelevance r' info) argT) $ checkExpr body btyp
         blockTermOnProblem target (Lam info $ Abs (nameToArgName x) v) pid
       where
         [WithHiding h x] = xs
+        -- Andreas, Issue 630: take name from function type if lambda name is "_"
         add y dom | isNoName x = addContext (y, dom)
                   | otherwise  = addContext (x, dom)
     useTargetType _ _ = __IMPOSSIBLE__
@@ -535,8 +542,9 @@ checkRecordExpression mfs e t = do
     [ text "checking record expression"
     , prettyA e
     ]
-  t <- reduce t
+  ifBlockedType t (\ _ t -> guessRecordType t) {-else-} $ \ t -> do
   case ignoreSharing $ unEl t of
+    -- Case: We know the type of the record already.
     Def r es  -> do
       let ~(Just vs) = allApplyElims es
       reportSDoc "tc.term.rec" 20 $ text $ "  r   = " ++ show r
@@ -549,39 +557,47 @@ checkRecordExpression mfs e t = do
         text =<< show <$> getRecordConstructor r
 
       def <- getRecordDef r
-      let axs  = recordFieldNames def
+      let -- Field names with ArgInfo.
+          axs  = recordFieldNames def
           exs  = filter notHidden axs
+          -- Just field names.
           xs   = map unArg axs
-          ftel = recTel def
+          -- Record constructor.
           con  = killRange $ recConHead def
       reportSDoc "tc.term.rec" 20 $ vcat
         [ text $ "  xs  = " ++ show xs
-        , text   "  ftel= " <> prettyTCM ftel
+        , text   "  ftel= " <> prettyTCM (recTel def)
         , text $ "  con = " ++ show con
         ]
-      scope  <- getScope
+      -- Compute the list of given fields, decorated with the ArgInfo from the record def.
       fs <- expandModuleAssigns mfs (map unArg exs)
       let arg x e =
             case [ a | a <- axs, unArg a == x ] of
               [a] -> unnamed e <$ a
               _   -> defaultNamedArg e -- we only end up here if the field names are bad
-      let meta x = A.Underscore $ A.MetaInfo (getRange e) scope Nothing (show x)
-          missingExplicits = [ (unArg a, [unnamed . meta <$> a])
+          givenFields = [ (x, Just $ arg x e) | FieldAssignment x e <- fs ]
+      -- Compute a list of metas for the missing visible fields.
+      scope <- getScope
+      let re = getRange e
+          meta x = A.Underscore $ A.MetaInfo re scope Nothing (show x)
+          missingExplicits = [ (unArg a, Just $ unnamed . meta <$> a)
                              | a <- exs
                              , unArg a `notElem` map (view nameFieldA) fs ]
       -- In es omitted explicit fields are replaced by underscores
       -- (from missingExplicits). Omitted implicit or instance fields
       -- are still left out and inserted later by checkArguments_.
-      es   <- concat <$> orderFields r [] xs ([ (x, [arg x e]) | FieldAssignment x e <- fs ] ++
-                                              missingExplicits)
-      let tel = ftel `apply` vs
-      args <- checkArguments_ ExpandLast (getRange e)
-                es -- (zipWith (\ax e -> fmap (const (unnamed e)) ax) axs es)
-                tel
+      es   <- catMaybes <$> do
+        -- Default value @Nothing@ will only be used for missing hidden fields.
+        -- These can be ignored as they will be inserted by @checkArguments_@.
+        orderFields r Nothing xs $ givenFields ++ missingExplicits
+      args <- checkArguments_ ExpandLast re es $ recTel def `apply` vs
       -- Don't need to block here!
       reportSDoc "tc.term.rec" 20 $ text $ "finished record expression"
       return $ Con con args
-    MetaV _ _ -> do
+    _         -> typeError $ ShouldBeRecordType t
+
+  where
+    guessRecordType t = do
       let fields = [ x | Left (FieldAssignment x _) <- mfs ]
       rs <- findPossibleRecords fields
       case rs of
@@ -621,7 +637,6 @@ checkRecordExpression mfs e t = do
             , nest 2 $ prettyA e <+> text ":" <+> prettyTCM t
             ]
           postponeTypeCheckingProblem_ $ CheckExpr e t
-    _         -> typeError $ ShouldBeRecordType t
 
 
 -- | @checkRecordUpdate ei recexpr fs e t@
@@ -723,13 +738,13 @@ checkExpr e t0 =
 
         -- Insert hidden lambda if all of the following conditions are met:
             -- type is a hidden function type, {x : A} -> B or {{x : A} -> B
-        _   | Pi (Dom info _) _ <- ignoreSharing $ unEl t
+        _   | Pi (Dom info _) b <- ignoreSharing $ unEl t
             , let h = getHiding info
             , notVisible h
             -- expression is not a matching hidden lambda or question mark
             , not (hiddenLambdaOrHole h e)
             -> do
-                x <- freshName rx (argName t)
+                x <- freshName rx $ notInScopeName $ absName b
                 info <- reify info
                 reportSLn "tc.term.expr.impl" 15 $ "Inserting implicit lambda"
                 checkExpr (A.Lam (A.ExprRange re) (domainFree info x) e) t

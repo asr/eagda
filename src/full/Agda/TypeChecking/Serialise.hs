@@ -832,9 +832,13 @@ instance EmbPrj A.Expr where
 
       i = ExprRange noRange
 
+instance EmbPrj ConPatInfo where
+  icod_ (ConPatInfo a _) = icod_ a
+  value a = flip ConPatInfo patNoRange <$> value a
+
 instance EmbPrj A.Pattern where
   icod_ (A.VarP a)            = icode1 0 a
-  icod_ (A.ConP _ a b)        = icode2 1 a b
+  icod_ (A.ConP a b c)        = icode3 1 a b c
   icod_ (A.DefP _ a b)        = icode2 2 a b
   icod_ (A.WildP _)           = icode0 3
   icod_ (A.AsP _ a b)         = icode2 4 a b
@@ -842,11 +846,12 @@ instance EmbPrj A.Pattern where
   icod_ (A.AbsurdP _)         = icode0 6
   icod_ (A.LitP a)            = icode1 7 a
   icod_ (A.PatternSynP _ a b) = icode2 9 a b
+  icod_ (A.RecP _ a)          = icode1 10 a
 
   value = vcase valu
     where
      valu [0, a]    = valu1 A.VarP a
-     valu [1, a, b] = valu2 (A.ConP (ConPatInfo False i)) a b
+     valu [1, a, b, c] = valu3 A.ConP a b c
      valu [2, a, b] = valu2 (A.DefP i) a b
      valu [3]       = valu0 (A.WildP i)
      valu [4, a, b] = valu2 (A.AsP i) a b
@@ -854,9 +859,10 @@ instance EmbPrj A.Pattern where
      valu [6]       = valu0 (A.AbsurdP i)
      valu [7, a]    = valu1 (A.LitP) a
      valu [9, a, b] = valu2 (A.PatternSynP i) a b
+     valu [10, a]   = valu1 (A.RecP i) a
      valu _         = malformed
 
-     i = patNoRange
+     i  = patNoRange
 
 instance EmbPrj A.LamBinding where
   icod_ (A.DomainFree i e) = icode2 0 i e
@@ -1427,6 +1433,15 @@ instance EmbPrj I.ConPatternInfo where
   icod_ (ConPatternInfo a b) = icode2' a b
   value = vcase valu where valu [a, b] = valu2 ConPatternInfo a b
                            valu _      = malformed
+
+instance EmbPrj ConPOrigin where
+  icod_ ConPImplicit = return 0
+  icod_ ConPCon      = return 1
+  icod_ ConPRec      = return 2
+  value 0 = return ConPImplicit
+  value 1 = return ConPCon
+  value 2 = return ConPRec
+  value _ = malformed
 
 instance EmbPrj I.Pattern where
   icod_ (VarP a    ) = icode1' a

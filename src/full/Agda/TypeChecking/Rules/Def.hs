@@ -15,6 +15,7 @@ import Data.Maybe
 import Data.Traversable
 
 import Agda.Syntax.Common
+import Agda.Syntax.Concrete (exprFieldA)
 import Agda.Syntax.Position
 import qualified Agda.Syntax.Abstract as A
 import Agda.Syntax.Internal as I
@@ -424,7 +425,7 @@ checkClause t c@(A.Clause (A.SpineLHS i x aps withPats) rhs0 wh catchall) = do
                        -- Transform 'rewrite' clause into a 'with' clause,
                          -- going back to abstract syntax.
 
-                         let cinfo      = ConPatInfo False patNoRange
+                         let cinfo      = ConPatInfo ConPCon patNoRange
                              underscore = A.Underscore Info.emptyMetaInfo
 
                          -- Andreas, 2015-02-09 Issue 1421: kill ranges
@@ -694,5 +695,6 @@ containsAbsurdPattern p = case p of
     A.LitP _      -> False
     A.AsP _ _ p   -> containsAbsurdPattern p
     A.ConP _ _ ps -> any (containsAbsurdPattern . namedArg) ps
+    A.RecP _ fs   -> any (containsAbsurdPattern . (^. exprFieldA)) fs
     A.DefP _ _ _  -> False  -- projection pattern
     A.PatternSynP _ _ _ -> __IMPOSSIBLE__ -- False

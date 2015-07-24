@@ -69,7 +69,7 @@ checkStrictlyPositive qset = disableDestructiveUpdate $ do
   reportSLn "tc.pos.graph" 5 $ "Positivity graph: N=" ++ show (size $ Graph.nodes g) ++
                                " E=" ++ show (length $ Graph.edges g)
   reportSDoc "tc.pos.graph" 10 $ vcat
-    [ text "positivity graph for" <+> prettyTCM qs
+    [ text "positivity graph for" <+> (fsep $ map prettyTCM qs)
     , nest 2 $ prettyTCM g
     ]
   reportSLn "tc.pos.graph" 5 $
@@ -113,10 +113,11 @@ checkStrictlyPositive qset = disableDestructiveUpdate $ do
             how msg p =
               fsep $ [prettyTCM q] ++ pwords "is" ++
                 case filter (p . occ) $
-                     Graph.allTrails (DefNode q) (DefNode q) g of
+                     -- Graph.allTrails (DefNode q) (DefNode q) g of -- exponential, see Issue 1612
+                     Graph.allPaths (p . occ) (DefNode q) (DefNode q) g of
                   Edge _ how : _ -> pwords (msg ++ ", because it occurs") ++
                                     [prettyTCM how]
-                  _              -> pwords msg
+                  _              -> pwords $ msg ++ "."
 
                   -- For an example of code that exercises the latter,
                   -- uninformative clause above, see
@@ -228,7 +229,7 @@ data OccursWhere
   | InDefOf QName OccursWhere    -- ^ in the definition of a constant
   | Here
   | Unknown                      -- ^ an unknown position (treated as negative)
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 (>*<) :: OccursWhere -> OccursWhere -> OccursWhere
 Here            >*< o  = o
@@ -252,14 +253,12 @@ instance PrettyTCM OccursWhere where
       nth 2 = pwords "third"
       nth n = pwords $ show (n + 1) ++ "th"
 
-      uniq (x:y:xs)
-        | x == y  = uniq (x:xs)
-      uniq (x:xs) = x : uniq xs
-      uniq []     = []
+      -- remove consecutive duplicates
+      uniq = map head . group
 
       prettyOs [] = __IMPOSSIBLE__
       prettyOs [o] = prettyO o <> text "."
-      prettyOs (o:os) = prettyO o <> text ", which occurs" <+> prettyOs os
+      prettyOs (o:os) = prettyO o <> text ", which occurs" $$ prettyOs os
 
       prettyO o = case o of
         Here           -> empty
@@ -573,7 +572,7 @@ instance PrettyTCM n => PrettyTCM (WithNode n Edge) where
 
 -- | Edge labels for the positivity graph.
 data Edge = Edge Occurrence OccursWhere
-  deriving (Show)
+  deriving (Eq, Ord, Show)
 
 instance Null Edge where
   null (Edge o _) = null o
@@ -600,6 +599,14 @@ instance SemiRing Edge where
   oplus (Edge GuardPos _)    e@(Edge GuardPos _)  = e
 
   otimes (Edge o1 w1) (Edge o2 w2) = Edge (otimes o1 o2) (w1 >*< w2)
+
+-- | As 'OccursWhere' does not have an 'oplus' we cannot do something meaningful
+--   for the @OccursWhere@ here.
+--
+--   E.g. @ostar (Edge JustNeg w) = Edge Mixed (w `oplus` (w >*< w))@
+--   would probably more sense, if we could do it.
+instance StarSemiRing Edge where
+  ostar (Edge o w) = Edge (ostar o) w
 
 buildOccurrenceGraph :: Set QName -> TCM (Graph Node Edge)
 buildOccurrenceGraph qs = Graph.unionsWith oplus <$> mapM defGraph (Set.toList qs)
