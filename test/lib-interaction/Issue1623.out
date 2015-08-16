@@ -1,0 +1,10 @@
+Agda2> (agda2-status-action "")
+(agda2-info-action "*Type-checking*" "" nil)
+(agda2-highlight-clear)
+(agda2-status-action "")
+(agda2-info-action "*All Goals*" "?0 : Relation.Binary.IsStrictTotalOrder .Relation.Binary.Core.Dummy._≡_ (Relation.Binary.StrictTotalOrder._<_ strictTotalOrder) " nil)
+((last . 1) . (agda2-goals-action '(0)))
+Agda2> (agda2-status-action "")
+(agda2-info-action "*Auto*" "" nil)
+((last . 1) . (agda2-goals-action '(0)))
+Agda2> 
