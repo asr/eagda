@@ -196,6 +196,9 @@ addATPPragma role q qs = do
                     _ -> __IMPOSSIBLE__
 
       TPTPType -> case def of
+                    def@Defn{ theDef = ax@Axiom{} } ->
+                      def{ theDef = ax{ axTPTPRole = Just role }}
+
                     def@Defn{ theDef = datatype@Datatype{} } ->
                       def{ theDef = datatype{ dataTPTPRole = Just role }}
 

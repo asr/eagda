@@ -593,6 +593,11 @@ checkPragma r p =
              helper q = do
                def <- getConstInfo q
                case theDef def of
+                 Axiom{} -> do
+                   reportSLn "tc.pragma.atp" 10 $
+                     "Processing the postulate " ++ show q ++ " as a TPTP type"
+                   addATPPragma TPTPType q []
+
                  Datatype{} -> do
                    reportSLn "tc.pragma.atp" 10 $
                      "Processing the data-type " ++ show q ++ " as a TPTP type"
