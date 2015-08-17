@@ -530,12 +530,12 @@ checkPragma r p =
                case theDef def of
                  Axiom{} -> do
                    reportSLn "tc.pragma.atp" 10 $
-                     "Processing the postulate " ++ show q ++ " as an axiom"
+                     "Processing the postulate " ++ show q ++ " as a TPTP axiom"
                    addATPPragma TPTPAxiom q []
 
                  Constructor{} -> do
                    reportSLn "tc.pragma.atp" 10 $
-                     "Processing the data constructor " ++ show q ++ " as an axiom"
+                     "Processing the data constructor " ++ show q ++ " as a TPTP axiom"
                    addATPPragma TPTPAxiom q []
 
                  _  -> typeError $ GenericError $ "ATP directive with " ++
@@ -547,7 +547,7 @@ checkPragma r p =
           case theDef def of
             Axiom{} -> do
               reportSLn "tc.pragma.atp" 10 $
-                "Processing the postulate " ++ show q ++ " as a conjecture"
+                "Processing the postulate " ++ show q ++ " as a TPTP conjecture"
               addATPPragma TPTPConjecture q qs
 
             _   -> typeError $ GenericError $ "ATP directive with " ++
@@ -563,7 +563,7 @@ checkPragma r p =
                case theDef def of
                  Function{} -> do
                    reportSLn "tc.pragma.atp" 10 $
-                     "Processing the function " ++ show q ++ " as a definition"
+                     "Processing the function " ++ show q ++ " as a TPTP definition"
                    addATPPragma TPTPDefinition q []
 
                  _  -> typeError $ GenericError $ "ATP directive with " ++
@@ -579,14 +579,14 @@ checkPragma r p =
                case theDef def of
                  Function{} -> do
                    reportSLn "tc.pragma.atp" 10 $
-                     "Processing the function " ++ show q ++ " as a general hint"
+                     "Processing the function " ++ show q ++ " as a TPTP general hint"
                    addATPPragma TPTPHint q []
 
                  _  -> typeError $ GenericError $ "ATP directive with " ++
                          "the <" ++ show TPTPHint ++ "> role " ++
                          "only works on functions"
 
-        A.ATPPragma TPTPSort qs -> do
+        A.ATPPragma TPTPType qs -> do
           mapM_ helper qs
            where
              helper :: QName -> TCM ()
@@ -595,11 +595,11 @@ checkPragma r p =
                case theDef def of
                  Datatype{} -> do
                    reportSLn "tc.pragma.atp" 10 $
-                     "Processing the data-type " ++ show q ++ " as a sort"
-                   addATPPragma TPTPSort q []
+                     "Processing the data-type " ++ show q ++ " as a TPTP type"
+                   addATPPragma TPTPType q []
 
                  _  -> typeError $ GenericError $ "ATP directive with " ++
-                         "the <" ++ show TPTPSort ++ "> role " ++
+                         "the <" ++ show TPTPType ++ "> role " ++
                          "only works on data-types"
 
         A.BuiltinPragma x e -> bindBuiltin x e

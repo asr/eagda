@@ -608,4 +608,4 @@ instance Pretty TPTPRole where
   pretty TPTPConjecture = text "prove"
   pretty TPTPDefinition = text "definition"
   pretty TPTPHint       = text "hint"
-  pretty TPTPSort       = text "sort"
+  pretty TPTPType       = text "type"

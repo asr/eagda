@@ -1507,10 +1507,10 @@ ATPPragma
                                    TPTPHint $4
          "prove"       -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
                                    TPTPConjecture $4
-         "sort"        -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                   TPTPSort $4
-         "sorts"       -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                   TPTPSort $4
+         "type"        -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                   TPTPType $4
+         "types"       -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                   TPTPType $4
          _             -> parseError $ "Invalid role: " ++ s ++ "."
     }
 

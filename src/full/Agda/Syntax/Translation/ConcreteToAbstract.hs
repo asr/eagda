@@ -1687,9 +1687,9 @@ instance ToAbstract C.Pragma [A.Pragma] where
                   "The <" ++ show TPTPHint ++ "> role must be used " ++
                   "with functions"
 
-    toAbstract (C.ATPPragma _ TPTPSort qs) = do
+    toAbstract (C.ATPPragma _ TPTPType qs) = do
       aqs <- mapM helper qs
-      return [ A.ATPPragma TPTPSort aqs ]
+      return [ A.ATPPragma TPTPType aqs ]
         where
           helper :: C.QName -> ScopeM A.QName
           helper q = do
@@ -1698,7 +1698,7 @@ instance ToAbstract C.Pragma [A.Pragma] where
               A.Def aq -> return aq
               _        ->
                 genericError $ "Bad ATP-pragma. " ++
-                  "The <" ++ show TPTPSort ++ "> role must be used " ++
+                  "The <" ++ show TPTPType ++ "> role must be used " ++
                   "with data-types"
 
 instance ToAbstract C.Clause A.Clause where

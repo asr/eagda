@@ -195,7 +195,7 @@ addATPPragma role q qs = do
 
                     _ -> __IMPOSSIBLE__
 
-      TPTPSort -> case def of
+      TPTPType -> case def of
                     def@Defn{ theDef = datatype@Datatype{} } ->
                       def{ theDef = datatype{ dataTPTPRole = Just role }}
 

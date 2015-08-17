@@ -1329,14 +1329,14 @@ instance EmbPrj TPTPRole where
   icod_ TPTPConjecture = icode0 1
   icod_ TPTPDefinition = icode0 2
   icod_ TPTPHint       = icode0 3
-  icod_ TPTPSort       = icode0 4
+  icod_ TPTPType       = icode0 4
 
   value = vcase valu where
     valu []  = valu0 TPTPAxiom
     valu [1] = valu0 TPTPConjecture
     valu [2] = valu0 TPTPDefinition
     valu [3] = valu0 TPTPHint
-    valu [4] = valu0 TPTPSort
+    valu [4] = valu0 TPTPType
     valu _   = malformed
 
 instance EmbPrj CompiledRepresentation where
