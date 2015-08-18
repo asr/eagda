@@ -1,0 +1,4 @@
+ATPBadType2.agda:10,1-21
+ATP directive with the <type> role only works on data-types or
+postulates
+when checking the pragma ATP type foo

@@ -1699,7 +1699,7 @@ instance ToAbstract C.Pragma [A.Pragma] where
               _        ->
                 genericError $ "Bad ATP-pragma. " ++
                   "The <" ++ show TPTPType ++ "> role must be used " ++
-                  "with data-types"
+                  "with data-types or postulates"
 
 instance ToAbstract C.Clause A.Clause where
     toAbstract (C.Clause top _ C.Ellipsis{} _ _ _) = genericError "bad '...'" -- TODO: error message

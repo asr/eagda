@@ -1,10 +1,10 @@
--- An ATP sort must be used with data-types.
+-- An ATP type must be used with data-types or postulates.
 
 -- This error is detected by Syntax.Translation.ConcreteToAbstract.
 
-module ATPBadSort1 where
+module ATPBadType1 where
 
 data Bool : Set where
   false true : Bool
 
-{-# ATP sort false #-}
+{-# ATP type false #-}

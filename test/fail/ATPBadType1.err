@@ -1,0 +1,5 @@
+ATPBadType1.agda:10,1-23
+Bad ATP-pragma. The <type> role must be used with data-types or
+postulates
+when scope checking the declaration
+  {-# ATP type false #-}

@@ -1,4 +1,0 @@
-ATPBadSort1.agda:10,1-23
-Bad ATP-pragma. The <sort> role must be used with data-types
-when scope checking the declaration
-  {-# ATP sort false #-}

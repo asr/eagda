@@ -605,7 +605,7 @@ checkPragma r p =
 
                  _  -> typeError $ GenericError $ "ATP directive with " ++
                          "the <" ++ show TPTPType ++ "> role " ++
-                         "only works on data-types"
+                         "only works on data-types or postulates"
 
         A.BuiltinPragma x e -> bindBuiltin x e
         A.BuiltinNoDefPragma b x -> bindBuiltinNoDef b x
