@@ -539,7 +539,7 @@ checkPragma r p =
                    addATPPragma TPTPAxiom q []
 
                  _  -> typeError $ GenericError $ "ATP directive with " ++
-                         "the <" ++ show TPTPAxiom ++ "> role " ++
+                         "the <" ++ prettyShow TPTPAxiom ++ "> role " ++
                          "only works on postulates or data constructors"
 
         A.ATPPragma TPTPConjecture (q : qs) -> do
@@ -551,7 +551,7 @@ checkPragma r p =
               addATPPragma TPTPConjecture q qs
 
             _   -> typeError $ GenericError $ "ATP directive with " ++
-                     "the <" ++ show TPTPConjecture ++ "> role " ++
+                     "the <" ++ prettyShow TPTPConjecture ++ "> role " ++
                      "only works on postulates"
 
         A.ATPPragma TPTPDefinition qs -> do
@@ -567,7 +567,7 @@ checkPragma r p =
                    addATPPragma TPTPDefinition q []
 
                  _  -> typeError $ GenericError $ "ATP directive with " ++
-                         "the <" ++ show TPTPDefinition ++ "> role " ++
+                         "the <" ++ prettyShow TPTPDefinition ++ "> role " ++
                          "only works on functions"
 
         A.ATPPragma TPTPHint qs -> do
@@ -583,7 +583,7 @@ checkPragma r p =
                    addATPPragma TPTPHint q []
 
                  _  -> typeError $ GenericError $ "ATP directive with " ++
-                         "the <" ++ show TPTPHint ++ "> role " ++
+                         "the <" ++ prettyShow TPTPHint ++ "> role " ++
                          "only works on functions"
 
         A.ATPPragma TPTPType qs -> do
@@ -604,7 +604,7 @@ checkPragma r p =
                    addATPPragma TPTPType q []
 
                  _  -> typeError $ GenericError $ "ATP directive with " ++
-                         "the <" ++ show TPTPType ++ "> role " ++
+                         "the <" ++ prettyShow TPTPType ++ "> role " ++
                          "only works on data-types or postulates"
 
         A.BuiltinPragma x e -> bindBuiltin x e

@@ -1603,7 +1603,7 @@ instance ToAbstract C.Pragma [A.Pragma] where
     -- The ATP-pragma.
     toAbstract (C.ATPPragma _ role []) =
       genericError $ "Bad ATP-pragma. " ++
-        "Missing argument for the <" ++ show role ++ "> role"
+        "Missing argument for the <" ++ prettyShow role ++ "> role"
 
     toAbstract (C.ATPPragma _ TPTPAxiom qs) = do
       aqs <- mapM helper qs
@@ -1656,7 +1656,7 @@ instance ToAbstract C.Pragma [A.Pragma] where
             Just ahs -> return [ A.ATPPragma TPTPConjecture (postulate : ahs) ]
 
         _ -> genericError $ "Bad ATP-pragma. " ++
-               "The <" ++ show TPTPConjecture ++ "> role must be used " ++
+               "The <" ++ prettyShow TPTPConjecture ++ "> role must be used " ++
                "with postulates"
 
     toAbstract (C.ATPPragma _ TPTPDefinition qs) = do
@@ -1670,7 +1670,7 @@ instance ToAbstract C.Pragma [A.Pragma] where
               A.Def aq -> return aq
               _        ->
                 genericError $ "Bad ATP-pragma. " ++
-                  "The <" ++ show TPTPDefinition ++ "> role must be used " ++
+                  "The <" ++ prettyShow TPTPDefinition ++ "> role must be used " ++
                   "with functions"
 
     toAbstract (C.ATPPragma _ TPTPHint qs) = do
@@ -1684,7 +1684,7 @@ instance ToAbstract C.Pragma [A.Pragma] where
               A.Def aq -> return aq
               _        ->
                 genericError $ "Bad ATP-pragma. " ++
-                  "The <" ++ show TPTPHint ++ "> role must be used " ++
+                  "The <" ++ prettyShow TPTPHint ++ "> role must be used " ++
                   "with functions"
 
     toAbstract (C.ATPPragma _ TPTPType qs) = do
@@ -1698,7 +1698,7 @@ instance ToAbstract C.Pragma [A.Pragma] where
               A.Def aq -> return aq
               _        ->
                 genericError $ "Bad ATP-pragma. " ++
-                  "The <" ++ show TPTPType ++ "> role must be used " ++
+                  "The <" ++ prettyShow TPTPType ++ "> role must be used " ++
                   "with data-types or postulates"
 
 instance ToAbstract C.Clause A.Clause where

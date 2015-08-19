@@ -684,14 +684,7 @@ data TPTPRole = TPTPAxiom
               | TPTPDefinition
               | TPTPHint
               | TPTPType
-              deriving (Eq, Typeable)
-
-instance Show TPTPRole where
-  show TPTPAxiom      = "axiom"
-  show TPTPConjecture = "prove"
-  show TPTPDefinition = "definition"
-  show TPTPHint       = "hint"
-  show TPTPType       = "type"
+              deriving (Eq, Show, Typeable)
 
 instance KillRange TPTPRole where
   killRange = id
