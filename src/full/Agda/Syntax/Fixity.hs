@@ -75,6 +75,12 @@ namesToNotation q n = NewNotation
   }
   where Fixity' f syn = A.nameFixity n
 
+-- | Replace 'noFixity' by 'defaultFixity'.
+useDefaultFixity :: NewNotation -> NewNotation
+useDefaultFixity n
+  | notaFixity n == noFixity = n { notaFixity = defaultFixity }
+  | otherwise                = n
+
 -- | Return the 'IdPart's of a notation, the first part qualified,
 --   the other parts unqualified.
 --   This allows for qualified use of operators, e.g.,
@@ -227,6 +233,9 @@ instance Ord Fixity where
 
 noFixity :: Fixity
 noFixity = Fixity noRange Unrelated NonAssoc
+
+defaultFixity :: Fixity
+defaultFixity = Fixity noRange (Related 20) NonAssoc
 
 -- * Precendence
 
