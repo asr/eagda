@@ -5,14 +5,18 @@
 
 module Agda.TypeChecking.Monad.Signature where
 
-import Control.Arrow (second)
-import Control.Applicative
+import Prelude hiding (null)
+
+import Control.Arrow (first, second, (***))
+import Control.Applicative hiding (empty)
 import Control.Monad.State
 import Control.Monad.Reader
 
-import Data.List
+import Data.List hiding (null)
+import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Maybe
+import Data.Monoid
 
 import Agda.Syntax.Abstract.Name
 import Agda.Syntax.Abstract (Ren)
@@ -37,15 +41,17 @@ import {-# SOURCE #-} Agda.TypeChecking.CompiledClause.Compile
 import {-# SOURCE #-} Agda.TypeChecking.Polarity
 import {-# SOURCE #-} Agda.TypeChecking.ProjectionLike
 
+import Agda.Utils.Except ( Error )
 import Agda.Utils.Functor
-import Agda.Utils.Maybe
-import Agda.Utils.Monad
-import Agda.Utils.Size
-import Agda.Utils.Permutation
-import Agda.Utils.Pretty
 import Agda.Utils.Lens
 import Agda.Utils.List
-import Agda.Utils.Except ( Error )
+import Agda.Utils.Map as Map
+import Agda.Utils.Maybe
+import Agda.Utils.Monad
+import Agda.Utils.Null
+import Agda.Utils.Permutation
+import Agda.Utils.Pretty
+import Agda.Utils.Size
 import qualified Agda.Utils.HashMap as HMap
 
 #include "undefined.h"
@@ -207,7 +213,10 @@ addATPPragma role q qs = do
 unionSignatures :: [Signature] -> Signature
 unionSignatures ss = foldr unionSignature emptySignature ss
   where
-    unionSignature (Sig a b) (Sig c d) = Sig (Map.union a c) (HMap.union b d)
+    unionSignature (Sig a b c) (Sig a' b' c') =
+      Sig (Map.union a a')
+          (HMap.union b b')              -- definitions are unique (in at most one module)
+          (HMap.unionWith mappend c c')  -- rewrite rules are accumulated
 
 -- | Add a section to the signature.
 addSection :: ModuleName -> Nat -> TCM ()
@@ -339,12 +348,11 @@ applySection new ptel old ts rd rm = do
             t   = defType d `apply` ts'
             pol = defPolarity d `apply` ts'
             occ = defArgOccurrences d `apply` ts'
-            rew = defRewriteRules d `apply` ts'
             inst = defInstance d
             abstr = defAbstract d
             -- the name is set by the addConstant function
             nd :: QName -> TCM Definition
-            nd y = Defn (defArgInfo d) y t pol occ [] (-1) noCompiledRep rew inst <$> def  -- TODO: mutual block?
+            nd y = Defn (defArgInfo d) y t pol occ [] (-1) noCompiledRep inst <$> def  -- TODO: mutual block?
             oldDef = theDef d
             isCon  = case oldDef of { Constructor{} -> True ; _ -> False }
             mutual = case oldDef of { Function{funMutual = m} -> m              ; _ -> [] }
@@ -500,10 +508,21 @@ class (Functor m, Applicative m, Monad m) => HasConstInfo m where
   -- | Lookup the definition of a name. The result is a closed thing, all free
   --   variables have been abstracted over.
   getConstInfo :: QName -> m Definition
+  -- | Lookup the rewrite rules with the given head symbol.
+  getRewriteRulesFor :: QName -> m RewriteRules
 
 {-# SPECIALIZE getConstInfo :: QName -> TCM Definition #-}
 
+defaultGetRewriteRulesFor :: (Monad m) => m TCState -> QName -> m RewriteRules
+defaultGetRewriteRulesFor getTCState q = do
+  st <- getTCState
+  let sig = st^.stSignature
+      imp = st^.stImports
+      look s = HMap.lookup q $ sigRewriteRules s
+  return $ mconcat $ catMaybes [look sig, look imp]
+
 instance HasConstInfo (TCMT IO) where
+  getRewriteRulesFor = defaultGetRewriteRulesFor get
   getConstInfo q = join $ pureTCM $ \st env ->
     let defs  = sigDefinitions $ st^.stSignature
         idefs = sigDefinitions $ st^.stImports
@@ -528,16 +547,13 @@ instance HasConstInfo (TCMT IO) where
             _             -> q
 
           dropLastModule q@QName{ qnameModule = m } =
-            q{ qnameModule = mnameFromList $ init' $ mnameToList m }
-
-          init' [] = {-'-} __IMPOSSIBLE__
-          init' xs = init xs
+            q{ qnameModule = mnameFromList $ ifNull (mnameToList m) __IMPOSSIBLE__ init }
 
 instance (HasConstInfo m, Error err) => HasConstInfo (ExceptionT err m) where
   getConstInfo = lift . getConstInfo
+  getRewriteRulesFor = lift . getRewriteRulesFor
 
 {-# INLINE getConInfo #-}
-{-# SPECIALIZE getConstInfo :: QName -> TCM Definition #-}
 getConInfo :: MonadTCM tcm => ConHead -> tcm Definition
 getConInfo = liftTCM . getConstInfo . conName
 
@@ -789,6 +805,14 @@ isProperProjection d = caseMaybe (isProjection_ d) False $ \ isP ->
 -- | Number of dropped initial arguments of a projection(-like) function.
 projectionArgs :: Defn -> Int
 projectionArgs = maybe 0 (max 0 . pred . projIndex) . isProjection_
+
+-- | Check whether a definition uses copatterns.
+usesCopatterns :: QName -> TCM Bool
+usesCopatterns q = do
+  d <- theDef <$> getConstInfo q
+  return $ case d of
+    Function{ funCopatternLHS = b } -> b
+    _ -> False
 
 -- | Apply a function @f@ to its first argument, producing the proper
 --   postfix projection if @f@ is a projection.

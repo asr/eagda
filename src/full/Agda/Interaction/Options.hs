@@ -138,6 +138,7 @@ data PragmaOptions = PragmaOptions
   , optPatternMatching           :: Bool  -- ^ Is pattern matching allowed in the current file?
   , optExactSplit                :: Bool
   , optEta                       :: Bool
+  , optRewriting                 :: Bool  -- ^ Can rewrite rules be added and used?
   }
   deriving (Show,Eq)
 
@@ -215,10 +216,11 @@ defaultPragmaOptions = PragmaOptions
   , optGuardingTypeConstructors  = False
   , optUniversePolymorphism      = True
   , optWithoutK                  = False
-  , optCopatterns                = False
+  , optCopatterns                = True
   , optPatternMatching           = True
   , optExactSplit                = False
   , optEta                       = True
+  , optRewriting                 = False
   }
 
 -- | The default termination depth.
@@ -286,7 +288,7 @@ checkOpts opts
 
   interactive = [optInteractive, optGHCiInteraction]
 
--- Check for unsafe pramas. Gives a list of used unsafe flags.
+-- | Check for unsafe pramas. Gives a list of used unsafe flags.
 
 unsafePragmaOptions :: PragmaOptions -> [String]
 unsafePragmaOptions opts =
@@ -299,9 +301,10 @@ unsafePragmaOptions opts =
   [ "--injective-type-constructors"              | optInjectiveTypeConstructors opts ] ++
   [ "--guardedness-preserving-type-constructors" | optGuardingTypeConstructors opts  ] ++
   [ "--experimental-irrelevance"                 | optExperimentalIrrelevance opts   ] ++
-  [ "--copatterns"                               | optCopatterns opts   ]
+  [ "--rewriting"                                | optRewriting opts                 ] ++
+  []
 
--- The default pragma options should be considered safe
+-- | The default pragma options should be considered safe.
 
 defaultPragmaOptionsSafe :: IO Bool
 defaultPragmaOptionsSafe
@@ -414,6 +417,9 @@ withoutKFlag o = return $ o { optWithoutK = True }
 copatternsFlag :: Flag PragmaOptions
 copatternsFlag o = return $ o { optCopatterns = True }
 
+noCopatternsFlag :: Flag PragmaOptions
+noCopatternsFlag o = return $ o { optCopatterns = False }
+
 noPatternMatchingFlag :: Flag PragmaOptions
 noPatternMatchingFlag o = return $ o { optPatternMatching = False }
 
@@ -422,6 +428,9 @@ exactSplitFlag o = return $ o { optExactSplit = True }
 
 noExactSplitFlag :: Flag PragmaOptions
 noExactSplitFlag o = return $ o { optExactSplit = False }
+
+rewritingFlag :: Flag PragmaOptions
+rewritingFlag o = return $ o { optRewriting = True }
 
 interactiveFlag :: Flag CommandLineOptions
 interactiveFlag  o = return $ o { optInteractive    = True
@@ -630,7 +639,9 @@ pragmaOptions =
     , Option []     ["without-K"] (NoArg withoutKFlag)
                     "disable the K rule in pattern matching"
     , Option []     ["copatterns"] (NoArg copatternsFlag)
-                    "enable definitions by copattern matching"
+                    "enable definitions by copattern matching (default)"
+    , Option []     ["no-copatterns"] (NoArg noCopatternsFlag)
+                    "disable definitions by copattern matching"
     , Option []     ["no-pattern-matching"] (NoArg noPatternMatchingFlag)
                     "disable pattern matching completely"
     , Option []     ["exact-split"] (NoArg exactSplitFlag)
@@ -639,6 +650,8 @@ pragmaOptions =
                     "do not require all clauses in a definition by pattern matching to hold as definitional equalities (ignore those marked as CATCHALL)"
     , Option []     ["no-eta"] (NoArg noEtaFlag)
                     "disable eta rules for records"
+    , Option []     ["rewriting"] (NoArg rewritingFlag)
+                    "enable declaration and use of REWRITE rules"
     ]
 
 -- | Used for printing usage info.

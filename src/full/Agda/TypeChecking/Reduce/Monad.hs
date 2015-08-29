@@ -17,11 +17,15 @@ module Agda.TypeChecking.Reduce.Monad
   , askR, applyWhenVerboseS
   ) where
 
-import Control.Applicative
+import Prelude hiding (null)
+
+import Control.Arrow ((***), first, second)
+import Control.Applicative hiding (empty)
 import Control.Monad.Reader
 
 import qualified Data.Map as Map
 import Data.Maybe
+import Data.Monoid
 
 import Debug.Trace
 import System.IO.Unsafe
@@ -39,6 +43,7 @@ import Agda.Interaction.Options
 import qualified Agda.Utils.HashMap as HMap
 import Agda.Utils.Lens
 import Agda.Utils.Monad
+import Agda.Utils.Null
 import Agda.Utils.Pretty
 
 #include "undefined.h"
@@ -161,6 +166,7 @@ traceSLn :: HasOptions m => VerboseKey -> Int -> String -> m a -> m a
 traceSLn k n s = applyWhenVerboseS k n (trace s)
 
 instance HasConstInfo ReduceM where
+  getRewriteRulesFor = defaultGetRewriteRulesFor (gets id)
   getConstInfo q = ReduceM $ \(ReduceEnv env st) ->
     let defs  = sigDefinitions $ st^.stSignature
         idefs = sigDefinitions $ st^.stImports
@@ -182,7 +188,4 @@ instance HasConstInfo ReduceM where
             _                 -> q
 
           dropLastModule q@QName{ qnameModule = m } =
-            q{ qnameModule = mnameFromList $ init' $ mnameToList m }
-
-          init' [] = {-'-} __IMPOSSIBLE__
-          init' xs = init xs
+            q{ qnameModule = mnameFromList $ ifNull (mnameToList m) __IMPOSSIBLE__ init }
