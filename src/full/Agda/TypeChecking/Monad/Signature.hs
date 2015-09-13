@@ -243,9 +243,11 @@ addDisplayForms x = do
     add args top x vs0 = do
       def <- getConstInfo x
       let cs = defClauses def
+          isCopy = defCopy def
       case cs of
         [ Clause{ namedClausePats = pats, clauseBody = b } ]
-          | all (isVar . namedArg) pats
+          | isCopy
+          , all (isVar . namedArg) pats
           , Just (m, Def y es) <- strip (b `apply` vs0)
           , Just vs <- mapM isApplyElim es -> do
               let ps = raise 1 $ map unArg vs
@@ -255,7 +257,8 @@ addDisplayForms x = do
               addDisplayForm y df
               add args top y vs
         _ -> do
-              let reason = case cs of
+          let reason = if not isCopy then "not a copy" else
+                  case cs of
                     []    -> "no clauses"
                     _:_:_ -> "many clauses"
                     [ Clause{ clauseBody = b } ] -> case strip b of
@@ -265,8 +268,9 @@ addDisplayForms x = do
                         | m > length args -> "too many args"
                         | otherwise       -> "args=" ++ show args ++ " es=" ++ show es
                       Just (m, v) -> "not a def body"
-              reportSLn "tc.display.section" 30 $ "no display form from " ++ show x ++ " because " ++ reason
-              return ()
+          reportSLn "tc.display.section" 30 $
+            "no display form from " ++ show x ++ " because " ++ reason
+
     strip (Body v)   = return (0, unSpine v)
     strip  NoBody    = Nothing
     strip (Bind b)   = do
@@ -332,16 +336,20 @@ applySection new ptel old ts rd rm = do
             "new type = " ++ prettyShow t
           addConstant y =<< nd y
           makeProjection y
+          -- Issue1238: the copied def should be an 'instance' if the original
+          -- def is one. Skip constructors since the original constructor will
+          -- still work as an instance.
+          unless isCon $ whenJust inst $ \ c -> addNamedInstance y c
           -- Set display form for the old name if it's not a constructor.
 {- BREAKS fail/Issue478
           -- Andreas, 2012-10-20 and if we are not an anonymous module
           -- unless (isAnonymousModuleName new || isCon || size ptel > 0) $ do
 -}
-          -- Issue1238: the copied def should be an 'instance' if the original
-          -- def is one. Skip constructors since the original constructor will
-          -- still work as an instance.
-          unless isCon $ whenJust inst $ \ c -> addNamedInstance y c
-          unless (isCon || size ptel > 0) $ do
+          -- BREAKS fail/Issue1643a
+          -- -- Andreas, 2015-09-09 Issue 1643:
+          -- -- Do not add a display form for a bare module alias.
+          -- when (not isCon && size ptel == 0 && not (null ts)) $ do
+          when (not isCon && size ptel == 0) $ do
             addDisplayForms y
           where
             ts' = take np ts
