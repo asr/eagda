@@ -110,6 +110,7 @@ data CommandLineOptions = Options
   , optEpicFlags        :: [String]
   , optSafe             :: Bool
   , optSharing          :: Bool
+  , optCaching          :: Bool
   }
   deriving Show
 
@@ -195,6 +196,7 @@ defaultOptions = Options
   , optEpicFlags        = []
   , optSafe             = False
   , optSharing          = False
+  , optCaching          = False
   }
 
 defaultPragmaOptions :: PragmaOptions
@@ -331,6 +333,9 @@ safeFlag o = return $ o { optSafe = True }
 
 sharingFlag :: Bool -> Flag CommandLineOptions
 sharingFlag b o = return $ o { optSharing = b }
+
+cachingFlag :: Bool -> Flag CommandLineOptions
+cachingFlag b o = return $ o { optCaching = b }
 
 proofIrrelevanceFlag :: Flag PragmaOptions
 proofIrrelevanceFlag o = return $ o { optProofIrrelevance = True }
@@ -589,6 +594,10 @@ standardOptions =
                     "enable sharing and call-by-need evaluation (experimental) (default: OFF)"
     , Option []     ["no-sharing"] (NoArg $ sharingFlag False)
                     "disable sharing and call-by-need evaluation"
+    , Option []     ["caching"] (NoArg $ cachingFlag True)
+                    "enable caching of typechecking (experimental) (default: OFF)"
+    , Option []     ["no-caching"] (NoArg $ cachingFlag False)
+                    "disable caching of typechecking"
     ] ++ map (fmap lift) pragmaOptions
   where
   lift :: Flag PragmaOptions -> Flag CommandLineOptions
