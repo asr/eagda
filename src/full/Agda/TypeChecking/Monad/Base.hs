@@ -1300,6 +1300,13 @@ emptyFunction = Function
   , funTPTPRole     = Nothing
   }
 
+-- | Checking whether we are dealing with a function yet to be defined.
+isEmptyFunction :: Defn -> Bool
+isEmptyFunction def =
+  case def of
+    Function { funClauses = [] } -> True
+    _ -> False
+
 isCopatternLHS :: [Clause] -> Bool
 isCopatternLHS = List.any (List.any (isJust . A.isProjP) . clausePats)
 
