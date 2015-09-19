@@ -988,6 +988,9 @@ instance NFData Declaration where
 
 instance NFData Pragma where
   rnf (OptionsPragma _ a)               = rnf a
+  -- ASR TODO (19 September 2015). Move to the end. We wrote it here
+  -- for avoiding conflicts when merging master.
+  rnf (ATPPragma _ a b)                 = rnf a `seq` rnf b
   rnf (BuiltinPragma _ a b)             = rnf a `seq` rnf b
   rnf (RewritePragma _ a)               = rnf a
   rnf (CompiledDataPragma _ a b c)      = rnf a `seq` rnf b `seq` rnf c

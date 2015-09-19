@@ -727,6 +727,9 @@ data TPTPRole = TPTPAxiom
 instance KillRange TPTPRole where
   killRange = id
 
+instance NFData TPTPRole where
+  rnf role = ()
+
 -- | Functions can be defined in both infix and prefix style. See
 --   'Agda.Syntax.Concrete.LHS'.
 data IsInfix = InfixDef | PrefixDef
