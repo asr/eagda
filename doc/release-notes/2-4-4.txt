@@ -116,38 +116,15 @@ Pragmas and options
     not work properly if the type of f computes to an implicit function space
     after pattern matching.
 
-* New pragma {-# NO_ETA R #-}
+* Removed pragma {-# ETA R #-}
 
-  The pragma {-# NO_ETA R #-} disables eta rules for the record type R.
+  The pragma {-# ETA R #-} is replaced by the eta-equality directive
+  inside record declarations.
 
-  record Σ (A : Set) (B : A -> Set) : Set where
-    inductive
-    constructor _,_
-    field
-      fst : A
-      snd : B fst
-  open Σ
+* New option --no-eta-equality.
 
-  {-# NO_ETA Σ #-}
-
-  -- fail : ∀ {A : Set}{B : A -> Set} → (x : Σ A B) → x ≡ (fst x , snd x)
-  -- fail x = refl
-  --
-  -- x != fst x , snd x of type Σ .A .B
-  -- when checking that the expression refl has type x ≡ (fst x , snd x)
-
-
-  The effect can be reverted with the {-# ETA R #-} pragma.
-
-  {-# ETA Σ #-}
-
-  works : ∀ {A : Set}{B : A -> Set} → (x : Σ A B) → x ≡ (fst x , snd x)
-  works x = refl
-
-* New option --no-eta.
-
-  The --no-eta flag disables eta rules for declared record types.
-  It has the same effect as {-# NO_ETA R #-} after each declaration of
+  The --no-eta-equality flag disables eta rules for declared record types.
+  It has the same effect as no-eta-equality inside each declaration of
   a record type R.
 
   If used with the OPTIONS pragma it will not affect records defined
@@ -240,18 +217,20 @@ Reflection
 
 * Reflection-based macros
 
-  Macros are functions of type Term → .. → Term that are defined in a 'macro'
-  block. A macro application 'f u v' for a macro f desugars to
-  'unquote (f (quoteTerm u) (quoteTerm v))'.
+  Macros are functions of type t1 → t2 → .. → Term that are defined in a 'macro'
+  block. Macro application is guided by the type of the macro, where Term
+  arguments desugar into the 'quoteTerm' syntax and Name arguments into the
+  'quote' syntax. Arguments of any other type are preserved as-is.
+
+  For example, the macro application 'f u v w' where the macro
+  f has the type 'Term → Name → Bool → Term' desugars into
+    'unquote (f (quoteTerm u) (quote v) w)'
 
   Limitations:
 
     - Macros cannot be recursive. This can be worked around by defining the
       recursive function outside the macro block and have the macro call the
       recursive function.
-
-    - Macros cannot have non-reflected arguments. This will hopefully be
-      allowed in the future.
 
   Silly example:
 
@@ -616,6 +595,24 @@ Other changes
   For example, the types [Nat], [List Nat], and [x ≡ x] (where x : Nat) are
   all recognized by Agda as satisfying K.
 
+* New record directives eta-equality/no-eta-equality
+
+  The keywords eta-equality/no-eta-equality enable/disable eta rules
+  for the (inductive) record type being declared.
+
+  record Σ (A : Set) (B : A -> Set) : Set where
+    no-eta-equality
+    constructor _,_
+    field
+      fst : A
+      snd : B fst
+  open Σ
+
+  -- fail : ∀ {A : Set}{B : A -> Set} → (x : Σ A B) → x ≡ (fst x , snd x)
+  -- fail x = refl
+  --
+  -- x != fst x , snd x of type Σ .A .B
+  -- when checking that the expression refl has type x ≡ (fst x , snd x)
 
 
 Goal and error display
@@ -643,6 +640,33 @@ Type checking
 
 Compiler backends
 =================
+
+* GHC Haskell backend (MAlonzo)
+
+  - Builtin natural numbers
+
+    Builtin natural numbers are now properly represented as Haskell
+    Integers, and the builtin functions on natural numbers are compiled to
+    their corresponding Haskell functions.
+
+    Note that pattern matching on an Integer is slower than on a unary
+    natural number, so code that does a lot of unary manipulations and
+    doesn't use builtin arithmetic will most likely become slower. If you
+    find that this is the case, it is recommended to use a different, but
+    isomorphic type to the builtin natural numbers.
+
+  - Pragmas
+
+    Since builtin naturals are compiled to Integer you can no longer
+    give a {-# COMPILED_DATA #-} pragma for Nat. The same goes for
+    builtin booleans which are now hard-wired to Haskell booleans.
+
+  - Optimisations
+
+    Pattern matches with a single alternative is compiled to a lazy
+    match (using 'let' instead of 'case'). This means that matching on
+    'refl' will not force the proof, and programs using well-founded
+    recursion will be lazy in the accessibility proof.
 
 * UHC compiler backend
 
@@ -757,3 +781,18 @@ LaTeX-backend
     http://www.ctan.org/tex-archive/fonts/xits/
 
   This font is more complete with respect to Unicode.
+
+
+agda-ghc-names
+--------------
+
+* New tool: THe command
+
+    agda-ghc-names fixprof <compile-dir> <ProgName>.prof
+
+  converts *.prof files obtained from profiling runs of MAlonzo-compiled
+  code to *.agdaIdents.prof, with the original Agda identifiers replacing
+  the MAlonzo-generated Haskell identifiers.
+
+  For usage and more details, see src/agda-ghc-names/README.txt.
+

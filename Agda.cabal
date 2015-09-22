@@ -179,6 +179,11 @@ library
                     Agda.Compiler.MAlonzo.Pretty
                     Agda.Compiler.MAlonzo.Primitives
                     Agda.Compiler.ToTreeless
+                    Agda.Compiler.Treeless.Erase
+                    Agda.Compiler.Treeless.NPlusK
+                    Agda.Compiler.Treeless.NPlusKToPrims
+                    Agda.Compiler.Treeless.Simplify
+                    Agda.Compiler.Treeless.Subst
                     Agda.Compiler.UHC.AuxAST
                     Agda.Compiler.UHC.AuxASTUtil
                     Agda.Compiler.UHC.Bridge
@@ -399,6 +404,7 @@ library
                     Agda.Utils.Map
                     Agda.Utils.Maybe
                     Agda.Utils.Maybe.Strict
+                    Agda.Utils.Memo
                     Agda.Utils.Monad
                     Agda.Utils.Null
                     Agda.Utils.Parser.MemoisedCPS
@@ -491,6 +497,23 @@ executable agda-mode
     , directory >= 1.2.0.1 && < 1.3
     , filepath >= 1.3.0.1 && < 1.5
     , process >= 1.1.0.2 && < 1.3
+
+executable agda-ghc-names
+  hs-source-dirs:   src/agda-ghc-names
+  main-is:          agda-ghc-names.hs
+  other-modules:    ExtractNames
+                    , Find
+                    , FixProf
+                    , ResolveHsNames
+  build-depends:
+    base >= 4.6.0.1 && < 4.9
+    , binary >= 0.7.2.1 && < 0.8
+    , containers >= 0.5.0.0 && < 0.6
+    , filemanip >= 0.3.6.3 && < 0.4
+    , haskell-src-exts >= 1.16.0.1 && < 1.17
+    , mtl >= 2.1.1 && <= 2.1.3.1 || >= 2.2.1 && < 2.3
+    , filepath >= 1.3.0.1 && < 1.5
+
 
 -- Cabal testsuite integration has some serious bugs, but we
 -- can still make it work. See also:
