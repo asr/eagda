@@ -41,8 +41,7 @@ simplifyTTerm :: TTerm -> TCM TTerm
 simplifyTTerm t = do
   modAux <- getBuiltinName builtinNatModSucAux
   divAux <- getBuiltinName builtinNatDivSucAux
-  return $ if isNothing modAux && isNothing divAux then t else
-    runS $ simplify FunctionKit{ modAux = modAux, divAux = divAux } t
+  return $ runS $ simplify FunctionKit{ modAux = modAux, divAux = divAux } t
 
 simplify :: FunctionKit -> TTerm -> S TTerm
 simplify FunctionKit{..} = simpl
@@ -81,7 +80,6 @@ simplify FunctionKit{..} = simpl
         bs <- traverse simplAlt bs
         tCase x t d bs
 
-      TPi a b        -> TPi <$> simplTy a <*> underLam (simplTy b)
       TUnit          -> pure t
       TSort          -> pure t
       TErased        -> pure t
@@ -91,11 +89,9 @@ simplify FunctionKit{..} = simpl
     simplAlt (TALit l b)   = TALit l   <$> simpl b
     simplAlt (TAPlus k b)  = TAPlus k  <$> underLam (simpl b)
 
-    simplTy (TType t) = TType <$> simpl t
-
     tCase :: Int -> CaseType -> TTerm -> [TAlt] -> S TTerm
     tCase x t d bs
-      | isError d =
+      | isUnreachable d =
         case reverse bs' of
           [] -> pure d
           TALit _ b   : as  -> pure $ tCase' x t b (reverse as)
@@ -106,14 +102,14 @@ simplify FunctionKit{..} = simpl
           TACon c a b : _   -> pure $ tCase' x t d bs'
       | otherwise = pure $ TCase x t d bs'
       where
-        bs' = filter (not . isErrorAlt) bs
+        bs' = filter (not . isUnreachableAlt) bs
 
         tCase' x t d [] = d
         tCase' x t d bs = TCase x t d bs
 
-isErrorAlt :: TAlt -> Bool
-isErrorAlt = isError . aBody
+isUnreachableAlt :: TAlt -> Bool
+isUnreachableAlt = isUnreachable . aBody
 
-isError :: TTerm -> Bool
-isError TError{} = True
-isError _ = False
+isUnreachable :: TTerm -> Bool
+isUnreachable (TError (TUnreachable{})) = True
+isUnreachable _ = False

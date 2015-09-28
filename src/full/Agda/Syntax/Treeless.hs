@@ -1,15 +1,5 @@
-{-# LANGUAGE BangPatterns               #-}
-{-# LANGUAGE CPP                        #-}
-{-# LANGUAGE DeriveDataTypeable         #-}
-{-# LANGUAGE DeriveFoldable             #-}
-{-# LANGUAGE DeriveFunctor              #-}
-{-# LANGUAGE DeriveTraversable          #-}
-{-# LANGUAGE FlexibleInstances          #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE MultiParamTypeClasses      #-}
-{-# LANGUAGE StandaloneDeriving         #-}
-{-# LANGUAGE TemplateHaskell            #-}
-{-# LANGUAGE PatternGuards              #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE PatternGuards #-}
 
 -- | The treeless syntax is intended to be used as input for the compiler backends.
 -- It is more low-level than Internal syntax and is not used for type checking.
@@ -22,73 +12,16 @@ module Agda.Syntax.Treeless
     , module Agda.Syntax.Treeless
     ) where
 
-import Prelude hiding (foldr, mapM, null)
+import Prelude
 
 import Data.Map (Map)
-
--- base-4.7 defines the Num instance for Sum
-#if !(MIN_VERSION_base(4,7,0))
-import Data.Orphans             ()
-#endif
-
 import Data.Typeable (Typeable)
 
 import Agda.Syntax.Position
 import Agda.Syntax.Literal
 import Agda.Syntax.Abstract.Name
 
-
 type Args = [TTerm]
-
-data TModule
-  = TModule
-  { mName :: ModuleName
-  , mDataRec :: Map QName DataRecDef
-  -- ^ Data and record types
-  , mFuns :: Map QName FunDef
-  }
-  deriving (Typeable, Show)
-
-data TType = TType { unEl :: TTerm }
-  deriving (Typeable, Show, Eq, Ord)
-
-data Def a
-  = Def
-    { name :: QName
-    , ty :: TType
-    , theDef :: a
-    }
-  deriving (Typeable, Show)
-
-type DataRecDef = Def DataRecDef'
-data DataRecDef'
-  = Record
-    { drdCon :: ConDef
-    }
-  | Datatype
-    { drdCons :: [ConDef]
-    }
-  deriving (Typeable, Show)
-
-type ConDef = Def ConDef'
-data ConDef'
-  = Con
-    { cdName :: QName
-    }
-  deriving (Typeable, Show)
-
-type FunDef = Def FunDef'
-data FunDef'
-  = Fun
-    { fdBody :: TTerm
-    }
-  | Axiom
-  | Primitive
-    { fdPrimName :: String
-    }
-  | ForeignImport
-  deriving (Typeable, Show)
-
 
 -- this currently assumes that TApp is translated in a lazy/cbn fashion.
 -- The AST should also support strict translation.
@@ -108,8 +41,8 @@ data TTerm = TVar Int
            -- It is also perfectly valid to just inline the bound term in the body.
            | TCase Int CaseType TTerm [TAlt]
            -- ^ Case scrutinee (always variable), case type, default value, alternatives
-           | TPi TType TType
-           -- ^ TODO: get rid of this?
+           -- The order of alternatives is significant if there is any TAPlus alternative;
+           -- alternatives are matched top to bottom in that case.
            | TUnit -- used for levels right now
            | TSort
            | TErased
@@ -117,7 +50,9 @@ data TTerm = TVar Int
            -- ^ A runtime error, something bad has happened.
   deriving (Typeable, Show, Eq, Ord)
 
-data TPrim = PAdd | PSub | PDiv | PMod | PGreaterOrEqual | PIfThenElse
+-- | Compiler-related primitives. This are NOT the same thing as primitives
+-- in Agda's surface or internal syntax!
+data TPrim = PAdd | PSub | PDiv | PMod | PGeq | PIf
   deriving (Typeable, Show, Eq, Ord)
 
 mkTApp :: TTerm -> Args -> TTerm
@@ -170,5 +105,9 @@ data TAlt
   deriving (Typeable, Show, Eq, Ord)
 
 data TError
-  = TPatternMatchFailure QName -- function name
+  = TUnreachable QName {- def name where it happend -}
+  -- ^ Code which is unreachable. E.g. absurd branches or missing case defaults.
+  -- Runtime behaviour of unreachable code is undefined, but preferably
+  -- the program will exit with an error message. The compiler is free
+  -- to assume that this code is unreachable and to remove it.
   deriving (Typeable, Show, Eq, Ord)
