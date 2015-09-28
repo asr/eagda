@@ -84,7 +84,7 @@ instance NamesIn Definition where
 
 instance NamesIn Defn where
   namesIn def = case def of
-    Axiom -> Set.empty
+    Axiom{} -> Set.empty
     Function    { funClauses = cl, funCompiled = cc }              -> namesIn (cl, cc)
     Datatype    { dataClause = cl, dataCons = cs, dataSort = s }   -> namesIn (cl, cs, s)
     Record      { recClause = cl, recConHead = c, recFields = fs } -> namesIn (cl, c, fs)
