@@ -27,13 +27,13 @@ import Data.Sequence (Seq, (<|), (><))
 import qualified Data.Sequence as Seq
 import Data.Traversable
 import Data.Typeable (Typeable)
+import Data.Void
 
 import Agda.Syntax.Concrete (FieldAssignment'(..), exprFieldA)
 import qualified Agda.Syntax.Concrete as C
 import Agda.Syntax.Concrete.Pretty ()
 import Agda.Syntax.Info
-import Agda.Syntax.Common hiding (Arg, Dom, NamedArg, ArgInfo)
-import qualified Agda.Syntax.Common as Common
+import Agda.Syntax.Common
 import Agda.Syntax.Position
 import Agda.Syntax.Abstract.Name
 import Agda.Syntax.Abstract.Name as A (QNamed)
@@ -46,18 +46,7 @@ import Agda.Utils.Lens
 #include "undefined.h"
 import Agda.Utils.Impossible
 
-type Color      = Expr
-type Arg a      = Common.Arg Color a
-type Dom a      = Common.Dom Color a
-type NamedArg a = Common.NamedArg Color a
-type ArgInfo    = Common.ArgInfo Color
-type Args       = [NamedArg Expr]
-
-instance Ord Color where
-  Var x <= Var y = x <= y
-  Def x <= Def y = x <= y
-  -- TODO guilhem:
-  _ <= _         = __IMPOSSIBLE__
+type Args = [NamedArg Expr]
 
 -- | Expressions after scope checking (operators parsed, names resolved).
 data Expr
@@ -137,7 +126,7 @@ data Declaration
   | RecDef     DefInfo QName (Maybe (Ranged Induction)) (Maybe Bool) (Maybe QName) [LamBinding] Expr [Declaration]
       -- ^ The 'Expr' gives the constructor type telescope, @(x1 : A1)..(xn : An) -> Prop@,
       --   and the optional name is the constructor's name.
-  | PatternSynDef QName [Arg Name] Pattern
+  | PatternSynDef QName [Arg Name] (Pattern' Void)
       -- ^ Only for highlighting purposes
   | UnquoteDecl MutualInfo DefInfo QName Expr
   | UnquoteDef  DefInfo QName Expr
@@ -351,8 +340,8 @@ lhsCoreApp (LHSProj d ps1 h ps2) ps' = LHSProj d ps1 h $ ps2 ++ ps'
 -- | Add projection and applicative patterns to the right.
 lhsCoreAddSpine :: LHSCore' e -> [NamedArg (Pattern' e)] -> LHSCore' e
 lhsCoreAddSpine core ps = case ps2 of
-    (Common.Arg info (Named n (DefP i d ps0)) : ps2') ->
-       LHSProj d ps0 (Common.Arg info $ Named n $ lhsCoreApp core ps1) []
+    (Arg info (Named n (DefP i d ps0)) : ps2') ->
+       LHSProj d ps0 (Arg info $ Named n $ lhsCoreApp core ps1) []
          `lhsCoreAddSpine` ps2'
     [] -> lhsCoreApp core ps
     _ -> __IMPOSSIBLE__
@@ -411,7 +400,7 @@ instance IsProjP (Pattern' e) where
   isProjP (DefP _ d []) = Just d
   isProjP _             = Nothing
 
-instance IsProjP a => IsProjP (Common.Arg c a) where
+instance IsProjP a => IsProjP (Arg a) where
   isProjP = isProjP . unArg
 
 instance IsProjP a => IsProjP (Named n a) where
@@ -662,6 +651,7 @@ instanceUniverseBiT' [] [t| (Declaration, LetBinding)     |]
 instanceUniverseBiT' [] [t| (Declaration, LamBinding)     |]
 instanceUniverseBiT' [] [t| (Declaration, TypedBinding)   |]
 instanceUniverseBiT' [] [t| (Declaration, Pattern)        |]
+instanceUniverseBiT' [] [t| (Declaration, Pattern' Void)  |]
 instanceUniverseBiT' [] [t| (Declaration, Declaration)    |]
 instanceUniverseBiT' [] [t| (Declaration, ModuleName)     |]
 instanceUniverseBiT' [] [t| (Declaration, ModuleInfo)     |]
@@ -845,7 +835,7 @@ patternToExpr (LitP l)            = Lit l
 patternToExpr (PatternSynP _ _ _) = __IMPOSSIBLE__
 patternToExpr (RecP _ as)         = Rec exprNoRange $ map (Left . fmap patternToExpr) as
 
-type PatternSynDefn = ([Arg Name], Pattern)
+type PatternSynDefn = ([Arg Name], Pattern' Void)
 type PatternSynDefns = Map QName PatternSynDefn
 
 lambdaLiftExpr :: [Name] -> Expr -> Expr
@@ -873,7 +863,7 @@ instance SubstExpr a => SubstExpr [a] where
 instance SubstExpr a => SubstExpr (Arg a) where
   substExpr = fmap . substExpr
 
-instance SubstExpr a => SubstExpr (Common.Named name a) where
+instance SubstExpr a => SubstExpr (Named name a) where
   substExpr = fmap . substExpr
 
 instance (SubstExpr a, SubstExpr b) => SubstExpr (a, b) where

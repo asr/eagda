@@ -9,11 +9,12 @@ module Agda.TypeChecking.Patterns.Abstract where
 
 import Data.List
 import Data.Traversable hiding (mapM, sequence)
+import Data.Void
 
 import qualified Agda.Syntax.Abstract as A
 import Agda.Syntax.Abstract.Views
 import Agda.Syntax.Concrete (FieldAssignment')
-import Agda.Syntax.Common as Common
+import Agda.Syntax.Common
 import Agda.Syntax.Info as A
 import Agda.Syntax.Internal as I
 import Agda.Syntax.Literal
@@ -29,7 +30,7 @@ import Agda.Utils.Impossible
 
 -- | Expand literal integer pattern into suc/zero constructor patterns.
 --
-expandLitPattern :: A.NamedArg A.Pattern -> TCM (A.NamedArg A.Pattern)
+expandLitPattern :: NamedArg A.Pattern -> TCM (NamedArg A.Pattern)
 expandLitPattern p = traverse (traverse expand) p
   where
     expand p = case asView p of
@@ -62,7 +63,7 @@ instance ExpandPatternSynonyms a => ExpandPatternSynonyms (Maybe a) where
 instance ExpandPatternSynonyms a => ExpandPatternSynonyms [a] where
   expandPatternSynonyms = traverse expandPatternSynonyms
 
-instance ExpandPatternSynonyms a => ExpandPatternSynonyms (Common.Arg c a) where
+instance ExpandPatternSynonyms a => ExpandPatternSynonyms (Arg a) where
   expandPatternSynonyms = traverse expandPatternSynonyms
 
 instance ExpandPatternSynonyms a => ExpandPatternSynonyms (Named n a) where
@@ -90,9 +91,9 @@ instance ExpandPatternSynonyms A.Pattern where
       instPatternSyn p =<< expandPatternSynonyms as
 
       where
-        instPatternSyn :: A.PatternSynDefn -> [A.NamedArg A.Pattern] -> TCM A.Pattern
+        instPatternSyn :: A.PatternSynDefn -> [NamedArg A.Pattern] -> TCM A.Pattern
         instPatternSyn (ns, p) as = do
-          p <- expandPatternSynonyms p
+          p <- expandPatternSynonyms (vacuous p)
           case A.insertImplicitPatSynArgs (A.WildP . PatRange) (getRange x) ns as of
             Nothing       -> typeError $ BadArgumentsToPatternSynonym x
             Just (_, _:_) -> typeError $ TooFewArgumentsToPatternSynonym x

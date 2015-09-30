@@ -45,8 +45,7 @@ import qualified System.Console.Haskeline as Haskeline
 import Agda.Benchmarking (Benchmark, Phase)
 
 import Agda.Syntax.Concrete (TopLevelModuleName)
-import Agda.Syntax.Common hiding (Arg, Dom, NamedArg, ArgInfo)
-import qualified Agda.Syntax.Common as Common
+import Agda.Syntax.Common
 import qualified Agda.Syntax.Concrete as C
 import qualified Agda.Syntax.Concrete.Definitions as D
 import qualified Agda.Syntax.Abstract as A
@@ -852,7 +851,7 @@ data MetaInstantiation
 
 data TypeCheckingProblem
   = CheckExpr A.Expr Type
-  | CheckArgs ExpandHidden Range [I.NamedArg A.Expr] Type Type (Args -> Type -> TCM Term)
+  | CheckArgs ExpandHidden Range [NamedArg A.Expr] Type Type (Args -> Type -> TCM Term)
   | CheckLambda (Arg ([WithHiding Name], Maybe Type)) A.Expr Type
     -- ^ @(λ (xs : t₀) → e) : t@
     --   This is not an instance of 'CheckExpr' as the domain type
@@ -944,9 +943,6 @@ getMetaSig m = clSignature $ getMetaInfo m
 
 getMetaRelevance :: MetaVariable -> Relevance
 getMetaRelevance = envRelevance . getMetaEnv
-
-getMetaColors :: MetaVariable -> [Color]
-getMetaColors = envColors . getMetaEnv
 
 ---------------------------------------------------------------------------
 -- ** Interaction meta variables
@@ -1045,9 +1041,6 @@ defaultDisplayForm c = []
 
 defRelevance :: Definition -> Relevance
 defRelevance = argInfoRelevance . defArgInfo
-
-defColors :: Definition -> [Color]
-defColors = argInfoColors . defArgInfo
 
 -- | Non-linear (non-constructor) first-order pattern.
 data NLPat
@@ -1155,6 +1148,12 @@ data CompiledRepresentation = CompiledRep
 noCompiledRep :: CompiledRepresentation
 noCompiledRep = CompiledRep Nothing Nothing Nothing Nothing Nothing
 
+-- | Additional information for extended lambdas.
+data ExtLamInfo = ExtLamInfo
+  { extLamNumHidden :: Int  -- Number of hidden args to be dropped when printing.
+  , extLamNumNonHid :: Int  -- Number of visible args to be dropped when printing.
+  } deriving (Typeable, Eq, Ord, Show)
+
 -- | Additional information for projection 'Function's.
 data Projection = Projection
   { projProper    :: Maybe QName
@@ -1177,7 +1176,7 @@ data Projection = Projection
     --   (Invariant: the number of abstractions equals 'projIndex'.)
     --   In case of a projection-like function, just the function symbol
     --   is returned as 'Def':  @t = \ pars -> f@.
-  , projArgInfo   :: I.ArgInfo
+  , projArgInfo   :: ArgInfo
     -- ^ The info of the principal (record) argument.
   } deriving (Typeable, Show)
 
@@ -1227,7 +1226,7 @@ data Defn = Axiom
                                    -- instantiation?
             , funTerminates     :: Maybe Bool
               -- ^ Has this function been termination checked?  Did it pass?
-            , funExtLam         :: Maybe (Int,Int)
+            , funExtLam         :: Maybe ExtLamInfo
               -- ^ Is this function generated from an extended lambda?
               --   If yes, then return the number of hidden and non-hidden lambda-lifted arguments
             , funWith           :: Maybe QName
@@ -1383,8 +1382,8 @@ notReduced x = MaybeRed NotReduced x
 
 reduced :: Blocked (Arg Term) -> MaybeReduced (Arg Term)
 reduced b = case fmap ignoreSharing <$> b of
-  NotBlocked _ (Common.Arg _ (MetaV x _)) -> MaybeRed (Reduced $ Blocked x ()) v
-  _                                       -> MaybeRed (Reduced $ () <$ b)      v
+  NotBlocked _ (Arg _ (MetaV x _)) -> MaybeRed (Reduced $ Blocked x ()) v
+  _                                -> MaybeRed (Reduced $ () <$ b)      v
   where
     v = ignoreBlocking b
 
@@ -1687,7 +1686,6 @@ data TCEnv =
                 -- ^ Are we checking an irrelevant argument? (=@Irrelevant@)
                 -- Then top-level irrelevant declarations are enabled.
                 -- Other value: @Relevant@, then only relevant decls. are avail.
-          , envColors              :: [Color]
           , envDisplayFormsEnabled :: Bool
                 -- ^ Sometimes we want to disable display forms.
           , envReifyInteractionPoints :: Bool
@@ -1768,7 +1766,6 @@ initEnv = TCEnv { envContext             = []
   -- can only look into abstract things in an abstract
   -- definition (which sets 'AbstractMode').
                 , envRelevance           = Relevant
-                , envColors              = []
                 , envDisplayFormsEnabled = True
                 , envReifyInteractionPoints = True
                 , envEtaContractImplicit    = True
@@ -1928,7 +1925,7 @@ instance Error SplitError where
   strMsg = GenericSplitError
 
 data UnquoteError
-  = BadVisibility String (I.Arg I.Term)
+  = BadVisibility String (Arg I.Term)
   | ConInsteadOfDef QName String String
   | DefInsteadOfCon QName String String
   | NotAConstructor String I.Term       -- ^ @NotAConstructor kind term@
@@ -1981,7 +1978,7 @@ data TypeError
             -- ^ Expected a non-hidden function and found a hidden lambda.
         | WrongHidingInApplication Type
             -- ^ A function is applied to a hidden argument where a non-hidden was expected.
-        | WrongNamedArgument (I.NamedArg A.Expr)
+        | WrongNamedArgument (NamedArg A.Expr)
             -- ^ A function is applied to a hidden named argument it does not have.
         | WrongIrrelevanceInLambda Type
             -- ^ Expected a relevant function and found an irrelevant lambda.
@@ -1991,14 +1988,12 @@ data TypeError
             -- ^ The given hiding does not correspond to the expected hiding.
         | RelevanceMismatch Relevance Relevance
             -- ^ The given relevance does not correspond to the expected relevane.
-        | ColorMismatch [Color] [Color]
-            -- ^ The given color does not correspond to the expected color.
         | NotInductive Term
           -- ^ The term does not correspond to an inductive data type.
         | UninstantiatedDotPattern A.Expr
         | IlltypedPattern A.Pattern Type
         | IllformedProjectionPattern A.Pattern
-        | CannotEliminateWithPattern (A.NamedArg A.Pattern) Type
+        | CannotEliminateWithPattern (NamedArg A.Pattern) Type
         | TooManyArgumentsInLHS Type
         | WrongNumberOfConstructorArguments QName Nat Nat
         | ShouldBeEmpty Type [Pattern]
@@ -2008,7 +2003,7 @@ data TypeError
             -- ^ The given type should have been a pi.
         | ShouldBeRecordType Type
         | ShouldBeRecordPattern Pattern
-        | NotAProjectionPattern (A.NamedArg A.Pattern)
+        | NotAProjectionPattern (NamedArg A.Pattern)
         | NotAProperTerm
         | SetOmegaNotValidType
         | InvalidTypeSort Sort
@@ -2029,8 +2024,6 @@ data TypeError
             -- ^ The two function types have different relevance.
         | UnequalHiding Term Term
             -- ^ The two function types have different hiding.
-        | UnequalColors Term Term
-            -- ^ The two function types have different color.
         | UnequalSorts Sort Sort
         | UnequalBecauseOfUniverseConflict Comparison Term Term
         | HeterogeneousEquality Term Type Term Type
@@ -2537,7 +2530,11 @@ instance KillRange RewriteRule where
 instance KillRange CompiledRepresentation where
   killRange = id
 
+
 instance KillRange EtaEquality where
+  killRange = id
+
+instance KillRange ExtLamInfo where
   killRange = id
 
 instance KillRange Defn where

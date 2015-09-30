@@ -39,8 +39,7 @@ import Agda.Syntax.Parser.Lexer
 import Agda.Syntax.Parser.Tokens
 import Agda.Syntax.Concrete as C
 import Agda.Syntax.Concrete.Pretty ()
-import Agda.Syntax.Common hiding (Arg, Dom, NamedArg)
-import qualified Agda.Syntax.Common as Common
+import Agda.Syntax.Common
 import Agda.Syntax.Fixity
 import Agda.Syntax.Notation
 import Agda.Syntax.Literal
@@ -1115,7 +1114,7 @@ Infix : 'infix'  Int SpaceBIds  { Infix (Fixity (getRange ($1,$3)) (Related $2) 
 -- Field declarations.
 Fields :: { [Declaration] }
 Fields : 'field' ArgTypeSignatures
-            { let toField (Common.Arg info (TypeSig _ x t)) = Field x (Common.Arg info t) in map toField $2 }
+            { let toField (Arg info (TypeSig _ x t)) = Field x (Arg info t) in map toField $2 }
 --REM            { let toField (h, TypeSig x t) = Field h x t in map toField $2 }
 
 -- Mutually recursive declarations.
@@ -1681,12 +1680,12 @@ forallPi bs e = Pi (map addType bs) e
 
 -- | Build a telescoping let (let Ds)
 tLet :: Range -> [Declaration] -> TypedBindings
-tLet r = TypedBindings r . Common.Arg defaultArgInfo . TLet r
+tLet r = TypedBindings r . Arg defaultArgInfo . TLet r
 
 -- | Converts lambda bindings to typed bindings.
 addType :: LamBinding -> TypedBindings
 addType (DomainFull b)   = b
-addType (DomainFree info x) = TypedBindings r $ Common.Arg info $ TBind r [pure x] $ Underscore r Nothing
+addType (DomainFree info x) = TypedBindings r $ Arg info $ TBind r [pure x] $ Underscore r Nothing
   where r = getRange x
 
 mergeImportDirectives :: [ImportDirective] -> Parser ImportDirective
@@ -1860,7 +1859,7 @@ patternSynArgs = mapM pSynArg
     pSynArg (Right (DomainFree a x))
       | getHiding a `notElem` [Hidden, NotHidden] = parseError $ show (getHiding a) ++ " arguments not allowed to pattern synonyms"
       | getRelevance a /= Relevant                = parseError "Arguments to pattern synonyms must be relevant"
-      | otherwise                                 = return $ Common.Arg a (boundName x)
+      | otherwise                                 = return $ Arg a (boundName x)
 
 parsePanic s = parseError $ "Internal parser error: " ++ s ++ ". Please report this as a bug."
 
@@ -1871,7 +1870,7 @@ data RHSOrTypeSigs
  | TypeSigsRHS Expr
  deriving Show
 
-patternToNames :: Pattern -> Parser [(C.ArgInfo, Name)]
+patternToNames :: Pattern -> Parser [(ArgInfo, Name)]
 patternToNames p =
   case p of
     IdentP (QName i)         -> return [(defaultArgInfo, i)]

@@ -42,6 +42,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import qualified Data.Map as Map
 import Data.Maybe
+import Data.Void
 
 import Agda.Syntax.Concrete as C hiding (topLevelModuleName)
 import Agda.Syntax.Concrete.Generic
@@ -51,8 +52,7 @@ import Agda.Syntax.Abstract.Pretty
 import qualified Agda.Syntax.Internal as I
 import Agda.Syntax.Position
 import Agda.Syntax.Literal
-import Agda.Syntax.Common hiding (Arg, Dom, NamedArg, ArgInfo)
-import qualified Agda.Syntax.Common as Common
+import Agda.Syntax.Common
 import Agda.Syntax.Info
 import Agda.Syntax.Concrete.Definitions as C
 import Agda.Syntax.Fixity
@@ -163,21 +163,22 @@ checkPatternLinearity ps = unlessNull (duplicates xs) $ \ ys -> do
       A.PatternSynP _ _ args -> concatMap (vars . namedArg) args
       A.RecP _ fs            -> concatMap (vars . (^. exprFieldA)) fs
 
--- | Make sure that each variable occurs only once.
-hasDotPattern :: A.Pattern' e -> Bool
-hasDotPattern = dot
+-- | Make sure that there are no dot patterns (called on pattern synonyms).
+noDotPattern :: String -> A.Pattern' e -> ScopeM (A.Pattern' Void)
+noDotPattern err = dot
   where
+    dot :: A.Pattern' e -> ScopeM (A.Pattern' Void)
     dot p = case p of
-      A.VarP{}               -> False
-      A.ConP _ _ args        -> any (dot . namedArg) args
-      A.WildP{}              -> False
-      A.AsP _ _ p            -> dot p
-      A.DotP{}               -> True
-      A.AbsurdP{}            -> False
-      A.LitP{}               -> False
-      A.DefP _ _ args        -> any (dot . namedArg) args
-      A.PatternSynP _ _ args -> any (dot . namedArg) args
-      A.RecP _ fs            -> any (dot . (^. exprFieldA)) fs
+      A.VarP x               -> pure $ A.VarP x
+      A.ConP i c args        -> A.ConP i c <$> (traverse $ traverse $ traverse dot) args
+      A.WildP i              -> pure $ A.WildP i
+      A.AsP i x p            -> A.AsP i x <$> dot p
+      A.DotP{}               -> typeError $ GenericError err
+      A.AbsurdP i            -> pure $ A.AbsurdP i
+      A.LitP l               -> pure $ A.LitP l
+      A.DefP i f args        -> A.DefP i f <$> (traverse $ traverse $ traverse dot) args
+      A.PatternSynP i c args -> A.PatternSynP i c <$> (traverse $ traverse $ traverse dot) args
+      A.RecP i fs            -> A.RecP i <$> (traverse $ traverse dot) fs
 
 -- | Compute the type of the record constructor (with bogus target type)
 recordConstructorType :: [NiceDeclaration] -> C.Expr
@@ -198,8 +199,8 @@ recordConstructorType fields = build fs
     build (NiceModuleMacro r p x modapp open dir@ImportDirective{ publicOpen = True } : fs) =
       build (NiceModuleMacro r p x modapp open dir{ publicOpen = False } : fs)
 
-    build (NiceField r f _ _ x (Common.Arg info e) : fs) =
-        C.Pi [C.TypedBindings r $ Common.Arg info (C.TBind r [pure $ mkBoundName x f] e)] $ build fs
+    build (NiceField r f _ _ x (Arg info e) : fs) =
+        C.Pi [C.TypedBindings r $ Arg info (C.TBind r [pure $ mkBoundName x f] e)] $ build fs
       where r = getRange x
     build (d : fs)                     = C.Let (getRange d) [notSoNiceDeclaration d] $
                                            build fs
@@ -545,19 +546,19 @@ instance ToAbstract OldModuleName A.ModuleName where
 -- Expressions ------------------------------------------------------------
 
 -- | Peel off 'C.HiddenArg' and represent it as an 'NamedArg'.
-mkNamedArg :: C.Expr -> C.NamedArg C.Expr
-mkNamedArg (C.HiddenArg   _ e) = Common.Arg (setHiding Hidden defaultArgInfo) e
-mkNamedArg (C.InstanceArg _ e) = Common.Arg (setHiding Instance defaultArgInfo) e
-mkNamedArg e                   = Common.Arg defaultArgInfo $ unnamed e
+mkNamedArg :: C.Expr -> NamedArg C.Expr
+mkNamedArg (C.HiddenArg   _ e) = Arg (setHiding Hidden defaultArgInfo) e
+mkNamedArg (C.InstanceArg _ e) = Arg (setHiding Instance defaultArgInfo) e
+mkNamedArg e                   = Arg defaultArgInfo $ unnamed e
 
 -- | Peel off 'C.HiddenArg' and represent it as an 'Arg', throwing away any name.
-mkArg' :: C.ArgInfo -> C.Expr -> C.Arg C.Expr
-mkArg' info (C.HiddenArg   _ e) = Common.Arg (setHiding Hidden info) $ namedThing e
-mkArg' info (C.InstanceArg _ e) = Common.Arg (setHiding Instance info) $ namedThing e
-mkArg' info e                   = Common.Arg (setHiding NotHidden info) e
+mkArg' :: ArgInfo -> C.Expr -> Arg C.Expr
+mkArg' info (C.HiddenArg   _ e) = Arg (setHiding Hidden info) $ namedThing e
+mkArg' info (C.InstanceArg _ e) = Arg (setHiding Instance info) $ namedThing e
+mkArg' info e                   = Arg (setHiding NotHidden info) e
 
 -- | By default, arguments are @Relevant@.
-mkArg :: C.Expr -> C.Arg C.Expr
+mkArg :: C.Expr -> Arg C.Expr
 mkArg e = mkArg' defaultArgInfo e
 
 
@@ -712,9 +713,8 @@ instance ToAbstract C.Expr A.Expr where
 
   -- Relevant and irrelevant non-dependent function type
       C.Fun r e1 e2 -> do
-        Common.Arg info (e0, dotted) <- traverse (toAbstractDot FunctionSpaceDomainCtx) $ mkArg e1
-        info <- toAbstract info
-        let e1 = Common.Arg ((if dotted then setRelevance Irrelevant else id) info) e0
+        Arg info (e0, dotted) <- traverse (toAbstractDot FunctionSpaceDomainCtx) $ mkArg e1
+        let e1 = Arg ((if dotted then setRelevance Irrelevant else id) info) e0
         e2 <- toAbstractCtx TopCtx e2
         return $ A.Fun (ExprRange r) e1 e2
 
@@ -797,13 +797,13 @@ instance ToAbstract c a => ToAbstract (FieldAssignment' c) (FieldAssignment' a) 
   toAbstract = traverse toAbstract
 
 instance ToAbstract C.LamBinding A.LamBinding where
-  toAbstract (C.DomainFree info x) = A.DomainFree <$> toAbstract info <*> toAbstract (NewName x)
+  toAbstract (C.DomainFree info x) = A.DomainFree info <$> toAbstract (NewName x)
   toAbstract (C.DomainFull tb)     = A.DomainFull <$> toAbstract tb
 
 makeDomainFull :: C.LamBinding -> C.TypedBindings
 makeDomainFull (C.DomainFull b)      = b
 makeDomainFull (C.DomainFree info x) =
-  C.TypedBindings r $ Common.Arg info $ C.TBind r [pure x] $ C.Underscore r Nothing
+  C.TypedBindings r $ Arg info $ C.TBind r [pure x] $ C.Underscore r Nothing
   where r = getRange x
 
 instance ToAbstract C.TypedBindings A.TypedBindings where
@@ -1043,7 +1043,6 @@ instance ToAbstract LetDef [A.LetBinding] where
                     (x', e) <- letToAbstract cl
                     t <- toAbstract t
                     x <- toAbstract (NewName $ mkBoundName x fx)
-                    info <- toAbstract info
                     -- There are sometimes two instances of the
                     -- let-bound variable, one declaration and one
                     -- definition. The first list element below is
@@ -1131,11 +1130,11 @@ instance ToAbstract LetDef [A.LetBinding] where
             letToAbstract _ = notAValidLetBinding d
 
             -- Named patterns not allowed in let definitions
-            lambda e (Common.Arg info (Named Nothing (A.VarP x))) =
+            lambda e (Arg info (Named Nothing (A.VarP x))) =
                     return $ A.Lam i (A.DomainFree info x) e
                 where
                     i = ExprRange (fuseRange x e)
-            lambda e (Common.Arg info (Named Nothing (A.WildP i))) =
+            lambda e (Arg info (Named Nothing (A.WildP i))) =
                 do  x <- freshNoName (getRange i)
                     return $ A.Lam i' (A.DomainFree info x) e
                 where
@@ -1405,10 +1404,10 @@ instance ToAbstract NiceDeclaration A.Declaration where
       y <- freshAbstractQName fx n
       bindName PublicAccess PatternSynName n y
       defn@(as, p) <- withLocalVars $ do
-         p  <- toAbstract =<< toAbstract =<< parsePatternSyn p
+         p  <- toAbstract =<< parsePatternSyn p
          checkPatternLinearity [p]
-         when (hasDotPattern p) $
-          typeError $ GenericError "Dot patterns are not allowed in pattern synonyms. Use '_' instead."
+         let err = "Dot patterns are not allowed in pattern synonyms. Use '_' instead."
+         p <- noDotPattern err p
          as <- (traverse . mapM) (unVarName <=< resolveName . C.QName) as
          as <- (map . fmap) unBlind <$> toAbstract ((map . fmap) Blind as)
          return (as, p)
@@ -1422,7 +1421,6 @@ instance ToAbstract NiceDeclaration A.Declaration where
       toAbstractNiceAxiom funSig isMacro (C.Axiom r f p i info x t) = do
         t' <- toAbstractCtx TopCtx t
         y  <- freshAbstractQName f x
-        info <- toAbstract info
         let kind | isMacro == MacroDef = MacroName
                  | otherwise           = DefName
         bindName p kind x y
@@ -1461,7 +1459,6 @@ instance ToAbstract ConstrDecl A.Declaration where
         -- The abstract name is the qualified one
         -- Bind it twice, once unqualified and once qualified
         y <- bindConstructorName m x f a p record
-        info <- toAbstract info
         printScope "con" 15 "bound constructor"
         return $ A.Axiom NoFunSig (mkDefInfoInstance x f p ConcreteDef i NotMacroDef r) info y t'
       _ -> typeError . GenericDocError $
@@ -1865,9 +1862,9 @@ instance ToAbstract C.LHSCore (A.LHSCore' C.Expr) where
 instance ToAbstract c a => ToAbstract (WithHiding c) (WithHiding a) where
   toAbstract (WithHiding h a) = WithHiding h <$> toAbstractHiding h a
 
-instance ToAbstract c a => ToAbstract (C.Arg c) (A.Arg a) where
-    toAbstract (Common.Arg info e) =
-        Common.Arg <$> toAbstract info <*> toAbstractHiding info e
+instance ToAbstract c a => ToAbstract (Arg c) (Arg a) where
+    toAbstract (Arg info e) =
+        Arg info <$> toAbstractHiding info e
 
 instance ToAbstract c a => ToAbstract (Named name c) (Named name a) where
     toAbstract (Named n e) = Named n <$> toAbstract e
@@ -1881,13 +1878,6 @@ instance ToAbstract (A.LHSCore' C.Expr) (A.LHSCore' A.Expr) where
     toAbstract (A.LHSHead f ps)             = A.LHSHead f <$> mapM toAbstract ps
     toAbstract (A.LHSProj d ps lhscore ps') = A.LHSProj d <$> mapM toAbstract ps
       <*> mapM toAbstract lhscore <*> mapM toAbstract ps'
-
-instance ToAbstract c a => ToAbstract (A.NamedArg c) (A.NamedArg a) where
-    toAbstract (Common.Arg info c) = liftM2 Common.Arg (return info) (toAbstract c)
-
-instance ToAbstract C.ArgInfo A.ArgInfo where
-    toAbstract info = do cs <- mapM toAbstract $ argInfoColors info
-                         return $ info { argInfoColors = cs }
 
 -- Patterns are done in two phases. First everything but the dot patterns, and
 -- then the dot patterns. This is because dot patterns can refer to variables
@@ -1938,7 +1928,7 @@ instance ToAbstract C.Pattern (A.Pattern' C.Expr) where
       genericError "quote must be applied to an identifier"
 
     toAbstract p0@(AppP p q) = do
-        (p', q') <- toAbstract (p,q)
+        (p', q') <- toAbstract (p, q)
         case p' of
             ConP i x as        -> return $ ConP (i {patInfo = info}) x (as ++ [q'])
             DefP _ x as        -> return $ DefP info x (as ++ [q'])
@@ -1995,7 +1985,7 @@ toAbstractOpArg ctx (SyntaxBindingLambda r bs e) = toAbstractLam r bs e ctx
 -- | Turn an operator application into abstract syntax. Make sure to
 -- record the right precedences for the various arguments.
 toAbstractOpApp :: C.QName -> Set A.Name ->
-                   [C.NamedArg (MaybePlaceholder (OpApp C.Expr))] ->
+                   [NamedArg (MaybePlaceholder (OpApp C.Expr))] ->
                    ScopeM A.Expr
 toAbstractOpApp op ns es = do
     -- Replace placeholders with bound variables.
@@ -2017,12 +2007,12 @@ toAbstractOpApp op ns es = do
     return $ foldr (A.Lam (ExprRange (getRange body))) body binders
   where
     -- Build an application in the abstract syntax, with correct Range.
-    app e arg = A.App (ExprRange (fuseRange e arg)) e (setArgColors [] arg)
+    app e arg = A.App (ExprRange (fuseRange e arg)) e arg
 
     -- Translate an argument.
     toAbsOpArg :: Precedence ->
-                  C.NamedArg (Either A.Expr (OpApp C.Expr)) ->
-                  ScopeM (C.NamedArg A.Expr)
+                  NamedArg (Either A.Expr (OpApp C.Expr)) ->
+                  ScopeM (NamedArg A.Expr)
     toAbsOpArg cxt =
       traverse $ traverse $ either return (toAbstractOpArg cxt)
 
@@ -2053,19 +2043,19 @@ toAbstractOpApp op ns es = do
     right _ _     _  = __IMPOSSIBLE__
 
     replacePlaceholders ::
-      [C.NamedArg (MaybePlaceholder (OpApp e))] ->
-      ScopeM ([A.LamBinding], [C.NamedArg (Either A.Expr (OpApp e))])
+      [NamedArg (MaybePlaceholder (OpApp e))] ->
+      ScopeM ([A.LamBinding], [NamedArg (Either A.Expr (OpApp e))])
     replacePlaceholders []       = return ([], [])
     replacePlaceholders (a : as) = case namedArg a of
       NoPlaceholder x -> mapSnd (set (Right x) a :) <$>
                            replacePlaceholders as
       Placeholder p   -> do
         x <- freshName noRange "section"
-        i <- toAbstract (argInfo a)
+        let i = argInfo a
         (ls, ns) <- replacePlaceholders as
         return ( A.DomainFree i x : ls
                , set (Left (Var x)) a : ns
                )
       where
-      set :: a -> C.NamedArg b -> C.NamedArg a
+      set :: a -> NamedArg b -> NamedArg a
       set x arg = fmap (fmap (const x)) arg
