@@ -46,7 +46,8 @@ setPragmaOptions opts = do
   clo <- commandLineOptions
   let unsafe = unsafePragmaOptions opts
   when (optSafe clo && not (null unsafe)) $ typeError (SafeFlagPragma unsafe)
-  case checkOpts (clo { optPragmaOptions = opts }) of
+  ok <- liftIO $ runOptM $ checkOpts (clo { optPragmaOptions = opts })
+  case ok of
     Left err   -> __IMPOSSIBLE__
     Right opts -> do
       stPragmaOptions .= optPragmaOptions opts
@@ -62,18 +63,21 @@ setPragmaOptions opts = do
 --
 -- An empty list of relative include directories (@'Left' []@) is
 -- interpreted as @["."]@.
-
 setCommandLineOptions :: CommandLineOptions -> TCM ()
-setCommandLineOptions opts =
-  case checkOpts opts of
+setCommandLineOptions = setCommandLineOptions' CurrentDir
+
+setCommandLineOptions' :: RelativeTo -> CommandLineOptions -> TCM ()
+setCommandLineOptions' relativeTo opts = do
+  z <- liftIO $ runOptM $ checkOpts opts
+  case z of
     Left err   -> __IMPOSSIBLE__
     Right opts -> do
       incs <- case optIncludeDirs opts of
         Right absolutePathes -> return absolutePathes
         Left  relativePathes -> do
-          -- setIncludeDirs makes pathes (relative to CurrentDir) absolute
+          -- setIncludeDirs makes paths (relative to relativeTo) absolute
           -- and possible adds the current directory (if no pathes given)
-          setIncludeDirs relativePathes CurrentDir
+          setIncludeDirs relativePathes relativeTo
           getIncludeDirs
       modify $ Lens.setCommandLineOptions opts{ optIncludeDirs = Right incs }
              . Lens.setPragmaOptions (optPragmaOptions opts)
@@ -96,9 +100,10 @@ instance MonadIO m => HasOptions (TCMT m) where
 setOptionsFromPragma :: OptionsPragma -> TCM ()
 setOptionsFromPragma ps = do
     opts <- commandLineOptions
-    case parsePragmaOptions ps opts of
-        Left err    -> typeError $ GenericError err
-        Right opts' -> setPragmaOptions opts'
+    z    <- liftIO $ runOptM (parsePragmaOptions ps opts)
+    case z of
+      Left err    -> typeError $ GenericError err
+      Right opts' -> setPragmaOptions opts'
 
 -- | Disable display forms.
 enableDisplayForms :: TCM a -> TCM a

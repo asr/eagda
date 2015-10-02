@@ -114,7 +114,7 @@ clauseToSplitClause :: Clause -> SplitClause
 clauseToSplitClause cl = SClause
   { scTel    = clauseTel  cl
   , scPerm   = clausePerm cl
-  , scPats   = namedClausePats cl
+  , scPats   = unnumberPatVars $ namedClausePats cl
   , scSubst  = idS  -- Andreas, 2014-07-15  TODO: Is this ok?
   , scTarget = clauseType cl
   }
@@ -740,7 +740,7 @@ splitResult f sc@(SClause tel perm ps _ target) = do
           , text $ "and have fields       fs = " ++ show fs
           ]
         fvs <- freeVarsToApply f
-        let es = patternsToElims perm ps
+        let es = patternsToElims $ numberPatVars perm ps
         let self  = defaultArg $ Def f (map Apply fvs) `applyE` es
             pargs = vs ++ [self]
         reportSDoc "tc.cover" 20 $ sep

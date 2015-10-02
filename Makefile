@@ -161,16 +161,17 @@ latex-html-test :
 
 .PHONY : std-lib
 std-lib :
-	if [ ! -d $@ ]; then \
-	   git clone https://github.com/agda/agda-stdlib.git \
-	             --single-branch $@; \
-	fi
+	git submodule update --init std-lib
 
 .PHONY : up-to-date-std-lib
-up-to-date-std-lib : std-lib
-	@(cd std-lib && \
-	  git fetch && git checkout master && git merge origin/master && \
-	  make setup)
+up-to-date-std-lib :
+	git submodule update --init std-lib
+	@(cd std-lib && make setup)
+
+.PHONY : fast-forward-std-lib
+fast-forward-std-lib :
+	git submodule update --init --remote std-lib
+	@(cd std-lib && make setup)
 
 .PHONY : library-test
 library-test : # up-to-date-std-lib
@@ -178,14 +179,14 @@ library-test : # up-to-date-std-lib
 	@echo "========================== Standard library =========================="
 	@echo "======================================================================"
 	(cd std-lib && runhaskell GenerateEverything.hs && \
-          time $(AGDA_BIN) --ignore-interfaces -v profile:$(PROFVERB) \
+          time $(AGDA_BIN) --ignore-interfaces --no-default-libraries -v profile:$(PROFVERB) \
                            -i. -isrc README.agda \
                            +RTS -s -H1G -M1.5G)
 
 .PHONY : continue-library-test
 continue-library-test :
 	@(cd std-lib && \
-          time $(AGDA_BIN) -v profile:$(PROFVERB) -i. -isrc README.agda +RTS -s -H1G -M1.5G)
+          time $(AGDA_BIN) -v profile:$(PROFVERB) --no-default-libraries -i. -isrc README.agda +RTS -s -H1G -M1.5G)
 
 .PHONY : lib-succeed
 lib-succeed :

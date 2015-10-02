@@ -9,6 +9,7 @@
 {-# LANGUAGE MultiParamTypeClasses      #-}
 {-# LANGUAGE StandaloneDeriving         #-}
 {-# LANGUAGE TemplateHaskell            #-}
+{-# LANGUAGE TupleSections              #-}
 #if __GLASGOW_HASKELL__ <= 708
 {-# LANGUAGE OverlappingInstances #-}
 #endif
@@ -335,7 +336,7 @@ instance Monoid Blocked_ where
 -- See Issue 1573.
 #if !MIN_VERSION_transformers(0,4,1)
 instance Error Blocked_ where
-  noMsg = __IMPOSSIBLE__
+  noMsg = mempty
 #endif
 
 -- | When trying to reduce @f es@, on match failed on one
@@ -379,7 +380,7 @@ stuckOn e r =
 -- | A clause is a list of patterns and the clause body should @Bind@.
 --
 --  The telescope contains the types of the pattern variables and the
---  permutation is how to get from the order the variables occur in
+--  de Bruijn indices say how to get from the order the variables occur in
 --  the patterns to the order they occur in the telescope. The body
 --  binds the variables in the order they appear in the patterns.
 --
@@ -393,9 +394,7 @@ data Clause = Clause
     { clauseRange     :: Range
     , clauseTel       :: Telescope
       -- ^ @Δ@: The types of the pattern variables.
-    , clausePerm      :: Permutation
-      -- ^ @π@ with @Γ ⊢ renamingR π : Δ@, which means @Δ ⊢ renaming π : Γ@.
-    , namedClausePats :: [NamedArg Pattern]
+    , namedClausePats :: [NamedArg DeBruijnPattern]
       -- ^ @let Γ = patternVars namedClausePats@
     , clauseBody      :: ClauseBody
       -- ^ @λΓ.v@
@@ -408,7 +407,7 @@ data Clause = Clause
     }
   deriving (Typeable, Show)
 
-clausePats :: Clause -> [Arg Pattern]
+clausePats :: Clause -> [Arg DeBruijnPattern]
 clausePats = map (fmap namedThing) . namedClausePats
 
 data ClauseBodyF a = Body a
@@ -467,6 +466,9 @@ namedVarP :: PatVarName -> Named (Ranged PatVarName) Pattern
 namedVarP x = Named named $ VarP x
   where named = if isUnderscore x then Nothing else Just $ unranged x
 
+namedDBVarP :: Int -> PatVarName -> Named (Ranged PatVarName) DeBruijnPattern
+namedDBVarP m = (fmap . fmap) (m,) . namedVarP
+
 -- | The @ConPatternInfo@ states whether the constructor belongs to
 --   a record type (@Just@) or data type (@Nothing@).
 --   In the former case, the @Bool@ says whether the record pattern
@@ -493,7 +495,7 @@ noConPatternInfo = ConPatternInfo Nothing Nothing
 
 -- | Extract pattern variables in left-to-right order.
 --   A 'DotP' is also treated as variable (see docu for 'Clause').
-patternVars :: Arg Pattern -> [Arg (Either PatVarName Term)]
+patternVars :: Arg (Pattern' a) -> [Arg (Either a Term)]
 patternVars (Arg i (VarP x)     ) = [Arg i $ Left x]
 patternVars (Arg i (DotP t)     ) = [Arg i $ Right t]
 patternVars (Arg i (ConP _ _ ps)) = List.concat $ map (patternVars . fmap namedThing) ps
@@ -501,7 +503,7 @@ patternVars (Arg i (LitP l)     ) = []
 patternVars (Arg i ProjP{}      ) = []
 
 -- | Does the pattern perform a match that could fail?
-properlyMatching :: Pattern -> Bool
+properlyMatching :: Pattern' a -> Bool
 properlyMatching VarP{} = False
 properlyMatching DotP{} = False
 properlyMatching LitP{} = True
@@ -509,7 +511,7 @@ properlyMatching (ConP _ ci ps) = isNothing (conPRecord ci) || -- not a record c
   List.any (properlyMatching . namedArg) ps  -- or one of subpatterns is a proper m
 properlyMatching ProjP{} = True
 
-instance IsProjP Pattern where
+instance IsProjP (Pattern' a) where
   isProjP (ProjP d) = Just d
   isProjP _         = Nothing
 
@@ -569,6 +571,7 @@ data Substitution' a
   deriving (Show, Functor, Foldable, Traversable)
 
 type Substitution = Substitution' Term
+type PatternSubstitution = Substitution' DeBruijnPattern
 
 infixr 4 :#
 
@@ -854,6 +857,10 @@ dropProjElims = filter (isNothing . isProjElim)
 argsFromElims :: Elims -> Args
 argsFromElims = map argFromElim . dropProjElims
 
+-- | Drop 'Proj' constructors. (Safe)
+allProjElims :: Elims -> Maybe [QName]
+allProjElims = mapM isProjElim
+
 {- NOTE: Elim' already contains Arg.
 
 -- | Commute functors 'Arg' and 'Elim\''.
@@ -885,8 +892,8 @@ instance Null ClauseBody where
 -- | A 'null' clause is one with no patterns and no rhs.
 --   Should not exist in practice.
 instance Null Clause where
-  empty = Clause empty empty empty empty empty empty False
-  null (Clause r tel perm pats body t catchall)
+  empty = Clause empty empty empty empty empty False
+  null (Clause r tel pats body t catchall)
     =  null tel
     && null pats
     && null body
@@ -1046,17 +1053,17 @@ instance KillRange Substitution where
 instance KillRange ConPatternInfo where
   killRange (ConPatternInfo mr mt) = killRange1 (ConPatternInfo mr) mt
 
-instance KillRange Pattern where
+instance KillRange a => KillRange (Pattern' a) where
   killRange p =
     case p of
-      VarP{}           -> p
+      VarP x           -> killRange1 VarP x
       DotP v           -> killRange1 DotP v
       ConP con info ps -> killRange3 ConP con info ps
       LitP l           -> killRange1 LitP l
       ProjP q          -> killRange1 ProjP q
 
 instance KillRange Clause where
-  killRange (Clause r tel perm ps body t catchall) = killRange7 Clause r tel perm ps body t catchall
+  killRange (Clause r tel ps body t catchall) = killRange6 Clause r tel ps body t catchall
 
 instance KillRange a => KillRange (ClauseBodyF a) where
   killRange = fmap killRange

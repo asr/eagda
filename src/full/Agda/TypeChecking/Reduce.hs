@@ -23,11 +23,12 @@ import Data.Hashable
 import Agda.Syntax.Position
 import Agda.Syntax.Common
 import Agda.Syntax.Internal
+import Agda.Syntax.Internal.Pattern
 import Agda.Syntax.Scope.Base (Scope)
 import Agda.Syntax.Literal
 
 import Agda.TypeChecking.Monad hiding ( underAbstraction_, enterClosure, isInstantiatedMeta
-                                      , reportSDoc, reportSLn, getConstInfo
+                                      , getConstInfo
                                       , lookupMeta )
 import qualified Agda.TypeChecking.Monad as TCM
 import Agda.TypeChecking.Monad.Builtin hiding (getPrimitive, constructorForm)
@@ -170,7 +171,8 @@ instance Instantiate a => Instantiate (Closure a) where
         return $ cl { clValue = x }
 
 instance Instantiate Telescope where
-  instantiate' tel = return tel
+  instantiate' EmptyTel = return EmptyTel
+  instantiate' (ExtendTel a tel) = ExtendTel <$> instantiate' a <*> instantiate' tel
 
 instance Instantiate Constraint where
   instantiate' (ValueCmp cmp t u v) = do
@@ -491,16 +493,16 @@ reduceHead' v = do -- ignoreAbstractMode $ do
 
   -- first, possibly rewrite literal v to constructor form
   v <- constructorForm v
-  reportSDoc "tc.inj.reduce" 30 $ text "reduceHead" <+> prettyTCM v
+  traceSDoc "tc.inj.reduce" 30 (text "reduceHead" <+> prettyTCM v) $ do
   case ignoreSharing v of
     Def f es -> do
 
       abstractMode <- envAbstractMode <$> ask
       isAbstract <- treatAbstractly f
-      reportSLn "tc.inj.reduce" 50 $
+      traceSLn "tc.inj.reduce" 50 (
         "reduceHead: we are in " ++ show abstractMode++ "; " ++ show f ++
         " is treated " ++ if isAbstract then "abstractly" else "concretely"
-
+        ) $ do
       let v0  = Def f []
           red = unfoldDefinitionE False reduceHead' v0 f es
       def <- theDef <$> getConstInfo f
@@ -511,7 +513,7 @@ reduceHead' v = do -- ignoreAbstractMode $ do
         -- type checker loop here on non-terminating functions.
         -- see test/fail/TerminationInfiniteRecord
         Function{ funClauses = [ _ ], funDelayed = NotDelayed, funTerminates = Just True } -> do
-          reportSLn "tc.inj.reduce" 50 $ "reduceHead: head " ++ show f ++ " is Function"
+          traceSLn "tc.inj.reduce" 50 ("reduceHead: head " ++ show f ++ " is Function") $ do
           red
         Datatype{ dataClause = Just _ } -> red
         Record{ recClause = Just _ }    -> red
@@ -551,7 +553,7 @@ appDefE' v cls es = goCls cls $ map ignoreReduced es
   where
     goCls :: [Clause] -> [Elim] -> ReduceM (Reduced (Blocked Term) Term)
     goCls cl es = do
-      reportSLn "tc.reduce'" 95 $ "Reduce.goCls tries reduction, #clauses = " ++ show (length cl)
+      traceSLn "tc.reduce'" 95 ("Reduce.goCls tries reduction, #clauses = " ++ show (length cl)) $ do
       case cl of
         -- Andreas, 2013-10-26  In case of an incomplete match,
         -- we just do not reduce.  This allows adding single function
@@ -565,7 +567,7 @@ appDefE' v cls es = goCls cls $ map ignoreReduced es
           -- if clause is underapplied, skip to next clause
           if length es < n then goCls cls es else do
             let (es0, es1) = splitAt n es
-            (m, es0) <- matchCopatterns pats es0
+            (m, es0) <- matchCopatterns (unnumberPatVars pats) es0
             es <- return $ es0 ++ es1
             case m of
               No         -> goCls cls es
@@ -603,7 +605,8 @@ instance Reduce a => Reduce (Closure a) where
         return $ cl { clValue = x }
 
 instance Reduce Telescope where
-  reduce' tel = return tel
+  reduce' EmptyTel          = return EmptyTel
+  reduce' (ExtendTel a tel) = ExtendTel <$> reduce' a <*> reduce' tel
 
 instance Reduce Constraint where
   reduce' (ValueCmp cmp t u v) = do
@@ -643,9 +646,9 @@ instance Simplify Term where
       Def f vs   -> do
         let keepGoing v = (,notBlocked v) <$> getSimplification  -- Andrea(s), 2014-12-05 OK?
         (simpl, v) <- unfoldDefinition' False keepGoing (Def f []) f vs
-        reportSDoc "tc.simplify'" 20 $
+        traceSDoc "tc.simplify'" 20 (
           text ("simplify': unfolding definition returns " ++ show simpl)
-            <+> prettyTCM (ignoreBlocking v)
+            <+> prettyTCM (ignoreBlocking v)) $ do
         case simpl of
           YesSimplification -> simplifyBlocked' v -- Dangerous, but if @simpl@ then @v /= Def f vs@
           NoSimplification  -> Def f <$> simplify' vs
@@ -898,12 +901,18 @@ instance Normalise Constraint where
 instance Normalise Bool where
   normalise' = return
 
+instance Normalise Int where
+  normalise' = return
+
+instance Normalise Char where
+  normalise' = return
+
 instance Normalise ConPatternInfo where
   normalise' (ConPatternInfo mr mt) = ConPatternInfo mr <$> normalise' mt
 
-instance Normalise Pattern where
+instance Normalise a => Normalise (Pattern' a) where
   normalise' p = case p of
-    VarP _       -> return p
+    VarP x       -> VarP <$> normalise' x
     LitP _       -> return p
     ConP c mt ps -> ConP c <$> normalise' mt <*> normalise' ps
     DotP v       -> DotP <$> normalise' v
@@ -1002,11 +1011,14 @@ instance InstantiateFull Substitution where
 instance InstantiateFull Bool where
     instantiateFull' = return
 
+instance InstantiateFull Int where
+    instantiateFull' = return
+
 instance InstantiateFull ConPatternInfo where
   instantiateFull' (ConPatternInfo mr mt) = ConPatternInfo mr <$> instantiateFull' mt
 
-instance InstantiateFull Pattern where
-    instantiateFull' v@VarP{}       = return v
+instance InstantiateFull a => InstantiateFull (Pattern' a) where
+    instantiateFull' (VarP x)       = VarP <$> instantiateFull' x
     instantiateFull' (DotP t)       = DotP <$> instantiateFull' t
     instantiateFull' (ConP n mt ps) = ConP n <$> instantiateFull' mt <*> instantiateFull' ps
     instantiateFull' l@LitP{}       = return l
@@ -1170,9 +1182,8 @@ instance InstantiateFull CompiledClauses where
   instantiateFull' (Case n bs) = Case n <$> instantiateFull' bs
 
 instance InstantiateFull Clause where
-    instantiateFull' (Clause r tel perm ps b t catchall) =
+    instantiateFull' (Clause r tel ps b t catchall) =
        Clause r <$> instantiateFull' tel
-       <*> return perm
        <*> instantiateFull' ps
        <*> instantiateFull' b
        <*> instantiateFull' t

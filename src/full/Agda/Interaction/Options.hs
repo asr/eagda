@@ -4,11 +4,11 @@ module Agda.Interaction.Options
     ( CommandLineOptions(..)
     , PragmaOptions(..)
     , OptionsPragma
-    , Flag
+    , Flag, OptM, runOptM
     , Verbosity
     , IncludeDirs
     , checkOpts
-    , parseStandardOptions
+    , parseStandardOptions, parseStandardOptions'
     , parsePragmaOptions
     , parsePluginOptions
     , defaultOptions
@@ -29,13 +29,16 @@ module Agda.Interaction.Options
     , getOptSimple
     ) where
 
-import Control.Monad            ( when )
+import Control.Applicative
+import Control.Monad            ( (>=>), when )
+import Control.Monad.Trans
 
 -- base-4.7 defines the Functor instances for OptDescr and ArgDescr
 #if !(MIN_VERSION_base(4,7,0))
 import Data.Orphans             ()
 #endif
 
+import Data.Either
 import Data.Maybe
 import Data.List                ( isSuffixOf , intercalate )
 import System.Console.GetOpt    ( getOpt', usageInfo, ArgOrder(ReturnInOrder)
@@ -47,6 +50,14 @@ import Text.EditDistance
 
 import Agda.Termination.CutOff  ( CutOff(..) )
 
+import Agda.Interaction.Library
+
+import Agda.Utils.Except
+  ( ExceptT
+  , MonadError(catchError, throwError)
+  , runExceptT
+  )
+
 import Agda.Utils.TestHelpers   ( runTests )
 import Agda.Utils.QuickCheck    ( quickCheck' )
 import Agda.Utils.FileName      ( absolute, AbsolutePath, filePath )
@@ -55,8 +66,6 @@ import Agda.Utils.List          ( groupOn, wordsBy )
 import Agda.Utils.String        ( indent )
 import Agda.Utils.Trie          ( Trie )
 import qualified Agda.Utils.Trie as Trie
-
-import Agda.Utils.Except ( MonadError(catchError, throwError) )
 
 -- Paths_Agda.hs is in $(BUILD_DIR)/build/autogen/.
 import Paths_Agda ( getDataFileName )
@@ -79,6 +88,8 @@ data CommandLineOptions = Options
   { optProgramName      :: String
   , optInputFile        :: Maybe FilePath
   , optIncludeDirs      :: IncludeDirs
+  , optExplicitLibs     :: Bool
+  -- ^ Don't use ~/.agda/defaults or look for .agda-lib file if there are explicit --library flags.
   , optShowVersion      :: Bool
   , optShowHelp         :: Bool
   , optInteractive      :: Bool
@@ -166,6 +177,7 @@ defaultOptions = Options
   { optProgramName      = "agda"
   , optInputFile        = Nothing
   , optIncludeDirs      = Left []
+  , optExplicitLibs     = False
   , optShowVersion      = False
   , optShowHelp         = False
   , optInteractive      = False
@@ -240,49 +252,53 @@ defaultLaTeXDir = "latex"
 defaultHTMLDir :: String
 defaultHTMLDir = "html"
 
-prop_defaultOptions :: Bool
-prop_defaultOptions = case checkOpts defaultOptions of
-  Left  _ -> False
-  Right _ -> True
+prop_defaultOptions :: IO Bool
+prop_defaultOptions =
+  either (const False) (const True) <$> runOptM (checkOpts defaultOptions)
+
+type OptM = ExceptT String IO
+
+runOptM :: OptM a -> IO (Either String a)
+runOptM = runExceptT
 
 {- | @f :: Flag opts@  is an action on the option record that results from
      parsing an option.  @f opts@ produces either an error message or an
      updated options record
 -}
-type Flag opts = opts -> Either String opts
+type Flag opts = opts -> OptM opts
 
 -- | Checks that the given options are consistent.
 
 checkOpts :: Flag CommandLineOptions
 checkOpts opts
-  | not (atMostOne [optAllowUnsolved . p, \x -> optCompile x]) = Left
+  | not (atMostOne [optAllowUnsolved . p, \x -> optCompile x]) = throwError
       "Unsolved meta variables are not allowed when compiling.\n"
-  | optCompileNoMain opts && (not (optCompile opts || optUHCCompile opts)) = Left
+  | optCompileNoMain opts && (not (optCompile opts || optUHCCompile opts)) = throwError
       "--no-main only allowed in combination with --compile.\n"
   | not (atMostOne [optGHCiInteraction, isJust . optInputFile]) =
-      Left "Choose at most one: input file or --interaction.\n"
+      throwError "Choose at most one: input file or --interaction.\n"
   | not (atMostOne $ interactive ++ [\x -> optCompile x, optEpicCompile, optJSCompile]) =
-      Left "Choose at most one: compilers/--interactive/--interaction.\n"
+      throwError "Choose at most one: compilers/--interactive/--interaction.\n"
   | not (atMostOne $ interactive ++ [optGenerateHTML]) =
-      Left "Choose at most one: --html/--interactive/--interaction.\n"
+      throwError "Choose at most one: --html/--interactive/--interaction.\n"
   | not (atMostOne $ interactive ++ [isJust . optDependencyGraph]) =
-      Left "Choose at most one: --dependency-graph/--interactive/--interaction.\n"
+      throwError "Choose at most one: --dependency-graph/--interactive/--interaction.\n"
   | not (atMostOne [ optUniversePolymorphism . p
                    , not . optUniverseCheck . p
                    ]) =
-      Left "Cannot have both universe polymorphism and type in type.\n"
+      throwError "Cannot have both universe polymorphism and type in type.\n"
   | not (atMostOne $ interactive ++ [optGenerateLaTeX]) =
-      Left "Choose at most one: --latex/--interactive/--interaction.\n"
+      throwError "Choose at most one: --latex/--interactive/--interaction.\n"
   | (not . null . optEpicFlags $ opts)
       && not (optEpicCompile opts) =
-      Left "Cannot set Epic flags without using the Epic backend.\n"
+      throwError "Cannot set Epic flags without using the Epic backend.\n"
   | (isJust $ optUHCBin opts)
       && not (optUHCCompile opts) =
-      Left "Cannot set uhc binary without using UHC backend.\n"
+      throwError "Cannot set uhc binary without using UHC backend.\n"
   | (optUHCTextualCore opts)
       && not (optUHCCompile opts) =
-      Left "Cannot set --uhc-textual-core without using UHC backend.\n"
-  | otherwise = Right opts
+      throwError "Cannot set --uhc-textual-core without using UHC backend.\n"
+  | otherwise = return opts
   where
   atMostOne bs = length (filter ($ opts) bs) <= 1
 
@@ -505,6 +521,19 @@ includeFlag :: FilePath -> Flag CommandLineOptions
 includeFlag d o = return $ o { optIncludeDirs = Left (d : ds) }
   where ds = either id (const []) $ optIncludeDirs o
 
+libraryFlag :: String -> Flag CommandLineOptions
+libraryFlag s = setLibraryIncludes [s] >=> setExplicitLibs
+
+setExplicitLibs :: Flag CommandLineOptions
+setExplicitLibs o = return $ o { optExplicitLibs = True }
+
+setLibraryIncludes :: [String] -> Flag CommandLineOptions
+setLibraryIncludes libs o = do
+    installed <- getInstalledLibraries
+    paths     <- libraryIncludePaths installed libs
+    return o { optIncludeDirs  = Left (paths ++ ds) }
+  where ds = either id (const []) $ optIncludeDirs o
+
 verboseFlag :: String -> Flag PragmaOptions
 verboseFlag s o =
     do  (k,n) <- parseVerbose s
@@ -524,7 +553,7 @@ terminationDepthFlag s o =
        return $ o { optTerminationDepth = CutOff $ k-1 }
     where usage = throwError "argument to termination-depth should be >= 1"
 
-integerArgument :: String -> String -> Either String Int
+integerArgument :: String -> String -> OptM Int
 integerArgument flag s =
     readM s `catchError` \_ ->
         throwError $ "option '" ++ flag ++ "' requires an integer argument"
@@ -586,6 +615,10 @@ standardOptions =
                     "ignore interface files (re-type check everything)"
     , Option ['i']  ["include-path"] (ReqArg includeFlag "DIR")
                     "look for imports in DIR"
+    , Option ['l']  ["library"] (ReqArg libraryFlag "LIB")
+                    "use library LIB"
+    , Option []     ["no-default-libraries"] (NoArg setExplicitLibs)
+                    "don't use default libraries"
     , Option []     ["no-forcing"] (NoArg noForcingFlag)
                     "disable the forcing optimisation"
     , Option []     ["safe"] (NoArg safeFlag)
@@ -716,10 +749,20 @@ getOptSimple argv opts fileArg = \ defaults ->
       sugs as  = "any of " ++ intercalate " " as
 
 -- | Parse the standard options.
-parseStandardOptions :: [String] -> Either String CommandLineOptions
-parseStandardOptions argv =
-  checkOpts =<<
-    getOptSimple argv standardOptions inputFlag defaultOptions
+parseStandardOptions :: [String] -> OptM CommandLineOptions
+parseStandardOptions argv = parseStandardOptions' argv defaultOptions
+
+parseStandardOptions' :: [String] -> Flag CommandLineOptions
+parseStandardOptions' argv opts = do
+  opts <- getOptSimple (stripRTS argv) standardOptions inputFlag opts
+  opts <- addDefaultLibraries opts
+  checkOpts opts
+
+addDefaultLibraries :: Flag CommandLineOptions
+addDefaultLibraries o | optExplicitLibs o = pure o
+addDefaultLibraries o = do
+  libs <- getDefaultLibraries
+  setLibraryIncludes libs o
 
 -- | Parse options from an options pragma.
 parsePragmaOptions
@@ -727,7 +770,7 @@ parsePragmaOptions
      -- ^ Pragma options.
   -> CommandLineOptions
      -- ^ Command-line options which should be updated.
-  -> Either String PragmaOptions
+  -> OptM PragmaOptions
 parsePragmaOptions argv opts = do
   ps <- getOptSimple argv pragmaOptions
           (\s _ -> throwError $ "Bad option in pragma: " ++ s)
@@ -768,6 +811,15 @@ usage options pluginInfos progName =
                 inheritedOptions pls =
                     "\n    Inherits options from: " ++ unwords pls
 
+-- Remove +RTS .. -RTS from arguments
+stripRTS :: [String] -> [String]
+stripRTS [] = []
+stripRTS (arg : argv)
+  | is "+RTS" arg = stripRTS $ drop 1 $ dropWhile (not . is "-RTS") argv
+  | otherwise     = arg : stripRTS argv
+  where
+    is x arg = [x] == take 1 (words arg)
+
 ------------------------------------------------------------------------
 -- Some paths
 
@@ -785,6 +837,6 @@ defaultLibDir = do
 
 tests :: IO Bool
 tests = runTests "Agda.Interaction.Options"
-  [ quickCheck' prop_defaultOptions
+  [ prop_defaultOptions
   , defaultPragmaOptionsSafe
   ]
