@@ -188,14 +188,12 @@ library
                     Agda.Compiler.Treeless.Pretty
                     Agda.Compiler.Treeless.Simplify
                     Agda.Compiler.Treeless.Subst
-                    Agda.Compiler.UHC.AuxAST
                     Agda.Compiler.UHC.Bridge
                     Agda.Compiler.UHC.Compiler
                     Agda.Compiler.UHC.CompileState
                     Agda.Compiler.UHC.FromAgda
                     Agda.Compiler.UHC.MagicTypes
                     Agda.Compiler.UHC.ModuleInfo
-                    Agda.Compiler.UHC.Naming
                     Agda.Compiler.UHC.Pragmas.Base
                     Agda.Compiler.UHC.Pragmas.Parse
                     Agda.Compiler.UHC.Primitives

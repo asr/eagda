@@ -34,8 +34,10 @@ ghc:
 # make compiler-test
 # make benchmark-without-logs
 #
-# N.B. that the ghc-7.8.4-transformers-0.3.0.0 test uses a different set up
-# (see below).
+# Other tests: These tests use a different set up.
+#
+# ghc-7.8.4-transformers-0.3.0.0
+# cpp
 
 # Travis runs the builds on this order.
 env:
@@ -43,6 +45,7 @@ env:
   - TEST=require-stdlib
   - TEST=latex-html-test
   - TEST=ghc-7.8.4-transformers-0.3.0.0
+  - TEST=cpp
 
 install:
   # Asking for the shell.
@@ -160,7 +163,7 @@ install:
 
 ##############################################################################
 # Testing compilation with transformers 0.3.0.0 which is shipped with
-# GHC 7.8.* [Issue 1156]
+# GHC 7.8.* [Issues 1156 and 1539]
 
 # N.B. that this test is not include in the Makefile tests.
 
@@ -173,8 +176,30 @@ install:
        cat $HOME/.cabal/config &&
        cabal install alex --constraint=transformers==0.3.0.0 &&
        cabal install happy --constraint=transformers==0.3.0.0 &&
-       cabal install --avoid-reinstalls --only-dependencies --constraint=transformers==0.3.0.0 &&
-       cabal configure -v2 --builddir=$BUILD_DIR --constraint=transformers==0.3.0.0 &&
+       cabal install --enable-tests --avoid-reinstalls --only-dependencies --constraint=transformers==0.3.0.0 &&
+       cabal configure -v2 --builddir=$BUILD_DIR --enable-tests --constraint=transformers==0.3.0.0 &&
+       cabal build -v2 --builddir=$BUILD_DIR;
+    fi
+
+##############################################################################
+# Testing compilation with cpp instead of cpphs [Issue 1647]
+
+# N.B. We will run this test only with the higher GHC version
+# available in Travis.
+
+# N.B. that this test is not include in the Makefile tests.
+
+# We use the `--avoid-reinstalls` flag with GHC 7.8.4 for avoiding to
+# break previously installed packages [Issue 1520].
+
+  - if [ $TEST = "cpp" -a $GHC_VERSION_TRAVIS = 7.8.4 ]; then
+       cabal install cabal-install &&
+       export PATH=$HOME/.cabal/bin:$PATH &&
+       cat $HOME/.cabal/config &&
+       cabal install alex &&
+       cabal install happy &&
+       cabal install --enable-tests --avoid-reinstalls --only-dependencies &&
+       cabal configure -v2 --enable-tests --builddir=$BUILD_DIR -f -cpphs &&
        cabal build -v2 --builddir=$BUILD_DIR;
     fi
 
@@ -227,6 +252,8 @@ matrix:
   exclude:
     - ghc: 7.6.3
       env: TEST=ghc-7.8.4-transformers-0.3.0.0
+    - ghc: 7.6.3
+      env: TEST=cpp
 
   # Builds are loooong, we want to send an email as fast as possible.
   fast_finish: true
