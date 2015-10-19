@@ -33,6 +33,10 @@ import Control.Monad.State
 import Debug.Trace
 import System.IO.Unsafe
 
+#if __GLASGOW_HASKELL__ <= 708
+import Data.Foldable ( foldMap )
+#endif
+
 import Data.Maybe
 import Data.Functor
 import Data.Traversable hiding (for)
@@ -59,6 +63,7 @@ import Agda.Utils.Functor
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.Null
+import Agda.Utils.Singleton
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -183,7 +188,7 @@ instance Match a b => Match (Elim' a) (Elim' b) where
    case (p, v) of
      (Apply p, Apply v) -> match k p v
      (Proj x , Proj y ) -> if x == y then return () else
-                             traceSDocNLM "rewriting" 100 (sep
+                             traceSDocNLM "rewriting" 80 (sep
                                [ text "mismatch between projections " <+> prettyTCM x
                                , text " and " <+> prettyTCM y ]) mzero
      (Apply{}, Proj{} ) -> __IMPOSSIBLE__
@@ -195,28 +200,32 @@ instance Match a b => Match (Dom a) (Dom b) where
 instance Match a b => Match (Type' a) (Type' b) where
   match k p v = match k (unEl p) (unEl v)
 
-instance (Match a b, Subst t b, Free b, PrettyTCM a, PrettyTCM b) => Match (Abs a) (Abs b) where
+instance (Match a b, Subst t1 a, Subst t2 b, PrettyTCM a, PrettyTCM b) => Match (Abs a) (Abs b) where
   match k (Abs _ p) (Abs _ v) = match (k+1) p v
   match k (Abs _ p) (NoAbs _ v) = match (k+1) p (raise 1 v)
-  match k (NoAbs _ p) (Abs _ v) = if (0 `freeIn` v) then no else match k p (raise (-1) v)
-    where
-      no = traceSDocNLM "rewriting" 100 (sep
-        [ text "mismatch between" <+> prettyTCM p
-        , text " and " <+> prettyTCM v ]) mzero
+  match k (NoAbs _ p) (Abs _ v) = match (k+1) (raise 1 p) v
   match k (NoAbs _ p) (NoAbs _ v) = match k p v
 
 instance Match NLPat Term where
   match k p v = do
+    traceSDocNLM "rewriting" 100 (sep
+      [ text "matching" <+> prettyTCM p
+      , text "with" <+> prettyTCM v]) $ do
     let yes = return ()
-        no  =
-          traceSDocNLM "rewriting" 100 (sep
+        no =
+          traceSDocNLM "rewriting" 80 (sep
             [ text "mismatch between" <+> prettyTCM p
             , text " and " <+> prettyTCM v]) mzero
     case p of
       PWild  -> yes
-      PVar i -> if null (allFreeVars v `IntSet.intersection` IntSet.fromList [0..(k-1)])
+      PVar i ->
+        let boundVarOccs :: FreeVars
+            boundVarOccs = runFree (\var@(i,_) -> if i < k then singleton var else empty) IgnoreNot v
+        in if null (rigidVars boundVarOccs)
+           then if null (flexibleVars boundVarOccs)
                 then tellSub i (raise (-k) v)
-                else no
+                else matchingBlocked $ foldMap (foldMap $ \m -> Blocked m ()) $ flexibleVars boundVarOccs
+           else no
       PDef f ps -> do
         v <- liftRed $ constructorForm v
         case ignoreSharing v of
@@ -239,9 +248,11 @@ instance Match NLPat Term where
         match k p' body
       PPi pa pb  -> case ignoreSharing v of
         Pi a b -> match k pa a >> match k pb b
+        MetaV m es -> matchingBlocked $ Blocked m ()
         _ -> no
       PBoundVar i ps -> case ignoreSharing v of
         Var i' es | i == i' -> matchArgs k ps es
+        MetaV m es -> matchingBlocked $ Blocked m ()
         _ -> no
       PTerm u -> tellEq k u v
     where
@@ -263,7 +274,7 @@ checkPostponedEquations sub eqs = andM $ for eqs $
 -- main function
 nonLinMatch :: (Match a b) => a -> b -> ReduceM (Either Blocked_ Substitution)
 nonLinMatch p v = do
-  let no msg b = traceSDoc "rewriting" 100 (sep
+  let no msg b = traceSDoc "rewriting" 80 (sep
                    [ text "matching failed during" <+> text msg
                    , text "blocking: " <+> text (show b) ]) $ return (Left b)
   caseEitherM (runNLM $ match 0 p v) (no "matching") $ \ (s, eqs) -> do
@@ -279,7 +290,7 @@ equal u v = do
   (u, v) <- etaContract =<< normalise' (u, v)
   let ok = u == v
   if ok then return True else
-    traceSDoc "rewriting" 100 (sep
+    traceSDoc "rewriting" 80 (sep
       [ text "mismatch between " <+> prettyTCM u
       , text " and " <+> prettyTCM v
       ]) $ return False

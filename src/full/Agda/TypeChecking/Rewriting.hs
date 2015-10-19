@@ -254,6 +254,10 @@ addRewriteRules :: QName -> RewriteRules -> TCM ()
 addRewriteRules f rews = do
   reportSDoc "rewriting" 10 $ text "rewrite rule ok, adding it to the definition of " <+> prettyTCM f
   modifySignature $ addRewriteRulesFor f rews
+  modifySignature $ updateDefinition f $ updateTheDef setNotInjective
+    where
+      setNotInjective def@Function{} = def { funInv = NotInjective }
+      setNotInjective def            = def
   --rules <- getRewriteRulesFor f
   --reportSDoc "rewriting" 20 $ vcat
   --  [ text "rewrite rules for " <+> prettyTCM f <+> text ":"
@@ -264,7 +268,7 @@ addRewriteRules f rews = do
 --   tries to rewrite @v : t@ with @rew@, returning the reduct if successful.
 rewriteWith :: Maybe Type -> Term -> RewriteRule -> ReduceM (Either (Blocked Term) Term)
 rewriteWith mt v rew@(RewriteRule q gamma lhs rhs b) = do
-  Red.traceSDoc "rewriting" 95 (sep
+  Red.traceSDoc "rewriting" 75 (sep
     [ text "attempting to rewrite term " <+> prettyTCM v
     , text " with rule " <+> prettyTCM rew
     ]) $ do
@@ -273,7 +277,7 @@ rewriteWith mt v rew@(RewriteRule q gamma lhs rhs b) = do
       Left block -> return $ Left $ const v <$> block
       Right sub  -> do
         let v' = applySubst sub rhs
-        Red.traceSDoc "rewriting" 90 (sep
+        Red.traceSDoc "rewriting" 70 (sep
           [ text "rewrote " <+> prettyTCM v
           , text " to " <+> prettyTCM v'
           ]) $ return $ Right v'
