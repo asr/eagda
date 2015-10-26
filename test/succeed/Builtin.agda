@@ -58,15 +58,15 @@ primitive
   primIntegerPlus     : Int -> Int -> Int
   primIntegerMinus    : Int -> Int -> Int
   primIntegerTimes    : Int -> Int -> Int
-  primIntegerDiv      : Int -> Int -> Int
-  primIntegerMod      : Int -> Int -> Int
+  -- primIntegerDiv      : Int -> Int -> Int
+  -- primIntegerMod      : Int -> Int -> Int
   primIntegerEquality : Int -> Int -> Bool
   primIntegerLess     : Int -> Int -> Bool
   primNatToInteger    : Nat -> Int
   primShowInteger     : Int -> String
 
     -- Floating point functions
-  primIntegerToFloat : Int -> Float
+  primNatToFloat     : Nat   -> Float
   primFloatPlus      : Float -> Float -> Float
   primFloatMinus     : Float -> Float -> Float
   primFloatTimes     : Float -> Float -> Float

@@ -583,8 +583,8 @@ primitiveFunctions = Map.fromList
   [ "primIntegerPlus"     |-> mkPrimFun2 ((+)        :: Op Integer)
   , "primIntegerMinus"    |-> mkPrimFun2 ((-)        :: Op Integer)
   , "primIntegerTimes"    |-> mkPrimFun2 ((*)        :: Op Integer)
-  , "primIntegerDiv"      |-> mkPrimFun2 (div        :: Op Integer)    -- partial
-  , "primIntegerMod"      |-> mkPrimFun2 (mod        :: Op Integer)    -- partial
+  -- , "primIntegerDiv"      |-> mkPrimFun2 (div        :: Op Integer)    -- partial
+  -- , "primIntegerMod"      |-> mkPrimFun2 (mod        :: Op Integer)    -- partial
   , "primIntegerEquality" |-> mkPrimFun2 ((==)       :: Rel Integer)
   , "primIntegerLess"     |-> mkPrimFun2 ((<)        :: Rel Integer)
   , "primIntegerAbs"      |-> mkPrimFun1 (Nat . abs  :: Integer -> Nat)
@@ -610,20 +610,20 @@ primitiveFunctions = Map.fromList
   , "primLevelMax"        |-> mkPrimLevelMax
 
   -- Floating point functions
-  , "primIntegerToFloat"  |-> mkPrimFun1 (fromIntegral :: Integer -> Double)
+  , "primNatToFloat"      |-> mkPrimFun1 (fromIntegral :: Nat -> Double)
   , "primFloatPlus"       |-> mkPrimFun2 ((+)          :: Op Double)
   , "primFloatMinus"      |-> mkPrimFun2 ((-)          :: Op Double)
   , "primFloatTimes"      |-> mkPrimFun2 ((*)          :: Op Double)
   , "primFloatDiv"        |-> mkPrimFun2 ((/)          :: Op Double)
-  , "primFloatEquality"   |-> mkPrimFun2 ((==)         :: Rel Double)
-  , "primFloatLess"       |-> mkPrimFun2 ((<)          :: Rel Double)
+  , "primFloatEquality"   |-> mkPrimFun2 (floatEq      :: Rel Double)
+  , "primFloatLess"       |-> mkPrimFun2 (floatLt      :: Rel Double)
   , "primRound"           |-> mkPrimFun1 (round        :: Double -> Integer)
   , "primFloor"           |-> mkPrimFun1 (floor        :: Double -> Integer)
   , "primCeiling"         |-> mkPrimFun1 (ceiling      :: Double -> Integer)
   , "primExp"             |-> mkPrimFun1 (exp          :: Fun Double)
-  , "primLog"             |-> mkPrimFun1 (log          :: Fun Double)    -- partial
+  , "primLog"             |-> mkPrimFun1 (log          :: Fun Double)
   , "primSin"             |-> mkPrimFun1 (sin          :: Fun Double)
-  , "primShowFloat"       |-> mkPrimFun1 (Str . show   :: Double -> Str)
+  , "primShowFloat"       |-> mkPrimFun1 (Str . floatShow :: Double -> Str)
 
   -- Character functions
   , "primCharEquality"    |-> mkPrimFun2 ((==) :: Rel Char)
@@ -638,7 +638,7 @@ primitiveFunctions = Map.fromList
   , "primToUpper"         |-> mkPrimFun1 toUpper
   , "primToLower"         |-> mkPrimFun1 toLower
   , "primCharToNat"       |-> mkPrimFun1 (fromIntegral . fromEnum :: Char -> Nat)
-  , "primNatToChar"       |-> mkPrimFun1 (toEnum . fromIntegral   :: Nat -> Char)
+  , "primNatToChar"       |-> mkPrimFun1 (toEnum . fromIntegral . (`mod` 0x110000)  :: Nat -> Char)
   , "primShowChar"        |-> mkPrimFun1 (Str . show . pretty . LitChar noRange)
 
   -- String functions
@@ -662,6 +662,23 @@ primitiveFunctions = Map.fromList
   ]
   where
     (|->) = (,)
+
+floatEq :: Double -> Double -> Bool
+floatEq x y | isNaN x && isNaN y = True
+            | otherwise          = x == y
+
+floatLt :: Double -> Double -> Bool
+floatLt x y
+  | isNegInf y = False
+  | isNegInf x = True
+  | isNaN x    = True
+  | otherwise  = x < y
+  where
+    isNegInf z = z < 0 && isInfinite z
+
+floatShow :: Double -> String
+floatShow x | isNegativeZero x = "0.0"
+            | otherwise        = show x
 
 lookupPrimitiveFunction :: String -> TCM PrimitiveImpl
 lookupPrimitiveFunction x =
