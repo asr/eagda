@@ -4,9 +4,6 @@
 Built-ins
 *********
 
-.. note::
-   This page is incomplete.
-
 The Agda type checker knows about, and has special treatment for, a number of
 different concepts. The most prominent is natural numbers, which has a special
 representation as Haskell integers and support for fast arithmetic. The surface
@@ -114,31 +111,29 @@ properties
 Integers
 --------
 
-.. warning::
-   **The built-in integers will likely change in future versions of Agda.** The
-   current version is not satisfactory since it is completely opaque to the
-   type checker. This means that, unlike for natural numbers, you cannot prove
-   properties about the primitive functions on integers.
+Built-in integers are bound with the ``INTEGER`` built-in to a data type with
+two constructors: one for positive and one for negative numbers. The built-ins
+for the constructors are ``INTEGERPOS`` and ``INTEGERNEGSUC``.
 
-Built-in integers are bound using the ``INTEGER`` built-in as follows::
+::
 
-  postulate Int : Set
-  {-# BUILTIN INTEGER Int #-}
+  data Int : Set where
+    pos    : Nat → Int
+    negsuc : Nat → Int
+  {-# BUILTIN INTEGER       Int    #-}
+  {-# BUILTIN INTEGERPOS    pos    #-}
+  {-# BUILTIN INTEGERNEGSUC negsuc #-}
 
-It supports the following primitive operations (given suitable bindings for
-`Nat <Natural numbers_>`_, `Bool <Booleans_>`_ and `String <Strings_>`_) with
-the obvious implementations::
+Here ``negsuc n`` represents the integer ``-n - 1``. Unlike for natural
+numbers, there is no special representation of integers at compile-time since
+the overhead of using the data type compared to Haskell integers is not that
+big.
+
+Built-in integers support the following primitive operation (given a suitable
+binding for `String <Strings_>`_)::
 
   primitive
-    primNatToInteger    : Nat → Int
-    primIntegerMinus    : Int → Int → Int
-    primIntegerPlus     : Int → Int → Int
-    primIntegerTimes    : Int → Int → Int
-    primIntegerEquality : Int → Int → Bool
-    primIntegerLess     : Int → Int → Bool
-    primIntegerAbs      : Int → Nat
-    primNatToInteger    : Nat → Int
-    primShowInteger     : Int → String
+    primShowInteger : Int → String
 
 .. _built-in-float:
 
@@ -278,6 +273,8 @@ available on strings (given suitable bindings for `Bool <Booleans_>`_, `Char
   primStringEquality : String → String → Bool
   primShowString     : String → String
 
+String literals can be :ref:`overloaded <overloaded-strings>`.
+
 Equality
 --------
 
@@ -321,15 +318,73 @@ replace them by ``primTrustMe``::
 Universe levels
 ---------------
 
+ :ref:`Universe levels <universe-levels>` are also declared using ``BUILTIN``
+ pragmas. This is done in the auto-imported ``Agda.Primitive`` module, however,
+ so it need never be done by a library. For reference these are the bindings::
+
+  postulate
+    Level : Set
+    lzero : Level
+    lsuc  : Level → Level
+    _⊔_   : Level → Level → Level
+  {-# BUILTIN LEVEL     Level #-}
+  {-# BUILTIN LEVELZERO lzero #-}
+  {-# BUILTIN LEVELSUC  lsuc  #-}
+  {-# BUILTIN LEVELMAX  _⊔_   #-}
+
 Sized types
 -----------
 
+The built-ins for :ref:`sized types <sized-types>` are different from other
+built-ins in that the names are defined by the ``BUILTIN`` pragma. Hence, to
+bind the size primitives it is enough to write::
+
+  {-# BUILTIN SIZEUNIV SizeUniv #-}  --  SizeUniv : SizeUniv
+  {-# BUILTIN SIZE     Size     #-}  --  Size     : SizeUniv
+  {-# BUILTIN SIZELT   Size<_   #-}  --  Size<_   : ..Size → SizeUniv
+  {-# BUILTIN SIZESUC  ↑_       #-}  --  ↑_       : Size → Size
+  {-# BUILTIN SIZEINF   ω       #-}  --  ω        : Size
+  {-# BUILTIN SIZEMAX  _⊔ˢ_     #-}  --  _⊔ˢ_     : Size → Size → Size
+
 Coinduction
 -----------
+
+The following built-ins are used for coinductive definitions::
+
+  postulate
+    ∞  : ∀ {a} (A : Set a) → Set a
+    ♯_ : ∀ {a} {A : Set a} → A → ∞ A
+    ♭  : ∀ {a} {A : Set a} → ∞ A → A
+  {-# BUILTIN INFINITY ∞  #-}
+  {-# BUILTIN SHARP    ♯_ #-}
+  {-# BUILTIN FLAT     ♭  #-}
+
+See :ref:`coinduction` for more information.
+
+IO
+--
+
+The sole purpose of binding the built-in ``IO`` type is to let Agda check that
+the ``main`` function has the right type (see :ref:`compilers`).
+
+::
+
+  postulate IO : Set → Set
+  {-# BUILTIN IO IO #-}
 
 Reflection
 ----------
 
 The reflection machinery has built-in types for representing Agda programs. See
-:doc:`reflection` for a detailed description of these types.
+:doc:`reflection` for a detailed description.
+
+Rewriting
+---------
+
+The experimental and totally unsafe :doc:`rewriting machinery <rewriting>` (not
+to be confused with the :ref:`rewrite construct <with-rewrite>`) has a built-in
+``REWRITE`` for the rewriting relation::
+
+  postulate _↦_ : ∀ {a} {A : Set a} → A → A → Set a
+  {-# BUILTIN REWRITE _↦_ #-}
 

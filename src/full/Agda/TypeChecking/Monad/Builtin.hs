@@ -28,7 +28,7 @@ class (Functor m, Applicative m, Monad m) => HasBuiltins m where
 
 litType :: Literal -> TCM Type
 litType l = case l of
-  LitInt _ n    -> do
+  LitNat _ n    -> do
     _ <- primZero
     when_ (n > 0) $ primSuc
     el <$> primNat
@@ -87,9 +87,9 @@ constructorForm v = constructorForm' primZero primSuc v
 constructorForm' :: Applicative m => m Term -> m Term -> Term -> m Term
 constructorForm' pZero pSuc v =
   case ignoreSharing v of
-    Lit (LitInt r n)
+    Lit (LitNat r n)
       | n == 0    -> pZero
-      | n > 0     -> (`apply` [defaultArg $ Lit $ LitInt r $ n - 1]) <$> pSuc
+      | n > 0     -> (`apply` [defaultArg $ Lit $ LitNat r $ n - 1]) <$> pSuc
       | otherwise -> pure v
     _ -> pure v
 
@@ -97,7 +97,8 @@ constructorForm' pZero pSuc v =
 -- * The names of built-in things
 ---------------------------------------------------------------------------
 
-primInteger, primFloat, primChar, primString, primBool, primTrue, primFalse,
+primInteger, primIntegerPos, primIntegerNegSuc,
+    primFloat, primChar, primString, primBool, primTrue, primFalse,
     primList, primNil, primCons, primIO, primNat, primSuc, primZero,
     primNatPlus, primNatMinus, primNatTimes, primNatDivSucAux, primNatModSucAux,
     primNatEquality, primNatLess,
@@ -106,7 +107,7 @@ primInteger, primFloat, primChar, primString, primBool, primTrue, primFalse,
     primEquality, primRefl,
     primRewrite, -- Name of rewrite relation
     primLevel, primLevelZero, primLevelSuc, primLevelMax,
-    primIrrAxiom, primFromNat, primFromNeg,
+    primFromNat, primFromNeg, primFromString,
     -- builtins for reflection:
     primQName, primArgInfo, primArgArgInfo, primArg, primArgArg, primAbs, primAbsAbs, primAgdaTerm, primAgdaTermVar,
     primAgdaTermLam, primAgdaTermExtLam, primAgdaTermDef, primAgdaTermCon, primAgdaTermPi,
@@ -126,6 +127,8 @@ primInteger, primFloat, primChar, primString, primBool, primTrue, primFalse,
     :: TCM Term
 
 primInteger      = getBuiltin builtinInteger
+primIntegerPos   = getBuiltin builtinIntegerPos
+primIntegerNegSuc = getBuiltin builtinIntegerNegSuc
 primFloat        = getBuiltin builtinFloat
 primChar         = getBuiltin builtinChar
 primString       = getBuiltin builtinString
@@ -162,9 +165,9 @@ primLevel        = getBuiltin builtinLevel
 primLevelZero    = getBuiltin builtinLevelZero
 primLevelSuc     = getBuiltin builtinLevelSuc
 primLevelMax     = getBuiltin builtinLevelMax
-primIrrAxiom     = getBuiltin builtinIrrAxiom
 primFromNat      = getBuiltin builtinFromNat
 primFromNeg      = getBuiltin builtinFromNeg
+primFromString   = getBuiltin builtinFromString
 primQName        = getBuiltin builtinQName
 primArg          = getBuiltin builtinArg
 primArgArg       = getBuiltin builtinArgArg
@@ -229,15 +232,16 @@ primAgdaDefinition                = getBuiltin builtinAgdaDefinition
 
 builtinNat, builtinSuc, builtinZero, builtinNatPlus, builtinNatMinus,
   builtinNatTimes, builtinNatDivSucAux, builtinNatModSucAux, builtinNatEquals,
-  builtinNatLess, builtinInteger, builtinFloat, builtinChar, builtinString,
+  builtinNatLess, builtinInteger, builtinIntegerPos, builtinIntegerNegSuc,
+  builtinFloat, builtinChar, builtinString,
   builtinBool, builtinTrue, builtinFalse,
   builtinList, builtinNil, builtinCons, builtinIO,
   builtinSizeUniv, builtinSize, builtinSizeLt,
   builtinSizeSuc, builtinSizeInf, builtinSizeMax,
   builtinInf, builtinSharp, builtinFlat,
   builtinEquality, builtinRefl, builtinRewrite, builtinLevelMax,
-  builtinLevel, builtinLevelZero, builtinLevelSuc, builtinIrrAxiom,
-  builtinFromNat, builtinFromNeg,
+  builtinLevel, builtinLevelZero, builtinLevelSuc,
+  builtinFromNat, builtinFromNeg, builtinFromString,
   builtinQName, builtinAgdaSort, builtinAgdaSortSet, builtinAgdaSortLit,
   builtinAgdaSortUnsupported, builtinAgdaType, builtinAgdaTypeEl,
   builtinHiding, builtinHidden, builtinInstance, builtinVisible,
@@ -271,6 +275,8 @@ builtinNatModSucAux                  = "NATMODSUCAUX"
 builtinNatEquals                     = "NATEQUALS"
 builtinNatLess                       = "NATLESS"
 builtinInteger                       = "INTEGER"
+builtinIntegerPos                    = "INTEGERPOS"
+builtinIntegerNegSuc                 = "INTEGERNEGSUC"
 builtinFloat                         = "FLOAT"
 builtinChar                          = "CHAR"
 builtinString                        = "STRING"
@@ -297,9 +303,9 @@ builtinLevelMax                      = "LEVELMAX"
 builtinLevel                         = "LEVEL"
 builtinLevelZero                     = "LEVELZERO"
 builtinLevelSuc                      = "LEVELSUC"
-builtinIrrAxiom                      = "IRRAXIOM"
 builtinFromNat                       = "FROMNAT"
 builtinFromNeg                       = "FROMNEG"
+builtinFromString                    = "FROMSTRING"
 builtinQName                         = "QNAME"
 builtinAgdaSort                      = "AGDASORT"
 builtinAgdaSortSet                   = "AGDASORTSET"

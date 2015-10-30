@@ -443,30 +443,25 @@ compilePrim s =
     T.PMod -> fakeExp "(Prelude.mod :: Integer -> Integer -> Integer)"
     T.PSub -> fakeExp "((Prelude.-) :: Integer -> Integer -> Integer)"
     T.PAdd -> fakeExp "((Prelude.+) :: Integer -> Integer -> Integer)"
+    T.PGeq -> fakeExp "((Prelude.>=) :: Integer -> Integer -> Bool)"
     -- primitives only used by NPlusKToPrims transformation, which MAlonzo doesn't use
-    T.PGeq -> __IMPOSSIBLE__
     T.PIf  -> __IMPOSSIBLE__
 
 alt :: T.TAlt -> CC HS.Alt
 alt a = do
   case a of
-    (T.TACon {}) -> do
+    T.TACon {} -> do
       intros (T.aArity a) $ \xs -> do
         hConNm <- lift $ conhqn $ T.aCon a
         mkAlt (HS.PApp hConNm $ map HS.PVar xs)
-    (T.TAPlus { T.aSucs = k, T.aBody = b }) ->
-        -- Turn  n + k -> b
-        -- into  n' | n' >= k -> let n = n' - k in b
-      freshNames 1 $ \[n'] ->
-      intros     1 $ \[n] -> do
-        b <- term b
-        let qn' = HS.Var (HS.UnQual n')
-            ik  = hsTypedInt k
-            g = [HS.Qualifier $ hsPrimOpApp ">=" qn' ik]
-            body = hsLet n (hsPrimOpApp "-" qn' ik) b
-        return $ HS.Alt dummy (HS.PVar n') (HS.GuardedRhss [HS.GuardedRhs dummy g body]) (HS.BDecls [])
-    (T.TALit { T.aLit = (LitQName _ q) }) -> mkAlt (litqnamepat q)
-    (T.TALit {}) -> mkAlt (HS.PLit HS.Signless $ hslit $ T.aLit a)
+    T.TAGuard g b -> do
+      g <- term g
+      b <- term b
+      return $ HS.Alt dummy HS.PWildCard
+                      (HS.GuardedRhss [HS.GuardedRhs dummy [HS.Qualifier g] b])
+                      (HS.BDecls [])
+    T.TALit { T.aLit = (LitQName _ q) } -> mkAlt (litqnamepat q)
+    T.TALit {} -> mkAlt (HS.PLit HS.Signless $ hslit $ T.aLit a)
   where
     mkAlt :: HS.Pat -> CC HS.Alt
     mkAlt pat = do
@@ -475,7 +470,7 @@ alt a = do
 
 literal :: Literal -> TCM HS.Exp
 literal l = case l of
-  LitInt    _ _   -> return $ typed "Integer"
+  LitNat    _ _   -> return $ typed "Integer"
   LitFloat  _ _   -> return $ typed "Double"
   LitQName  _ x   -> return $ litqname x
   _               -> return $ l'
@@ -483,7 +478,7 @@ literal l = case l of
         typed = HS.ExpTypeSig dummy l' . HS.TyCon . rtmQual
 
 hslit :: Literal -> HS.Literal
-hslit l = case l of LitInt    _ x -> HS.Int    x
+hslit l = case l of LitNat    _ x -> HS.Int    x
                     LitFloat  _ x -> HS.Frac   (toRational x)
                     LitString _ x -> HS.String x
                     LitChar   _ x -> HS.Char   x

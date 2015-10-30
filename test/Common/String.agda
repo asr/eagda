@@ -10,7 +10,6 @@ postulate
   String : Set
 
 {-# BUILTIN STRING String #-}
-{-# COMPILED_TYPE String String #-}
 
 primitive
   primStringAppend   : String → String → String
@@ -30,8 +29,8 @@ _+S+_ = primStringAppend
 fromList : List Char -> String
 fromList = primStringFromList
 
-fromString : String -> List Char
-fromString = primStringToList
+stringToList : String -> List Char
+stringToList = primStringToList
 
 charToStr : Char → String
 charToStr c = primStringFromList (c ∷ [])
@@ -39,7 +38,9 @@ charToStr c = primStringFromList (c ∷ [])
 private
   primitive
     primShowInteger  : Integer -> String
-    primNatToInteger : Nat -> Integer
+
+intToString : Integer → String
+intToString = primShowInteger
 
 natToString : Nat -> String
-natToString n = primShowInteger (primNatToInteger n)
+natToString n = intToString (pos n)
