@@ -23,13 +23,14 @@ import Agda.TypeChecking.Records (getRecordConstructor)
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.CompiledClause
 
-import Agda.Compiler.Treeless.NPlusK
+import Agda.Compiler.Treeless.Builtin
 import Agda.Compiler.Treeless.Simplify
 import Agda.Compiler.Treeless.Erase
 import Agda.Compiler.Treeless.Pretty
 
 import Agda.Syntax.Common
 import Agda.TypeChecking.Monad as TCM
+import Agda.TypeChecking.Reduce
 
 import Agda.Utils.Functor
 import qualified Agda.Utils.HashMap as HMap
@@ -46,12 +47,13 @@ prettyPure = return . P.pretty
 
 -- | Converts compiled clauses to treeless syntax.
 ccToTreeless :: QName -> CC.CompiledClauses -> TCM C.TTerm
-ccToTreeless _ cc = do
+ccToTreeless q cc = do
+  reportSDoc "treeless.opt" 20 $ text "-- compiling" <+> prettyTCM q
   reportSDoc "treeless.convert" 30 $ text "-- compiled clauses:" $$ nest 2 (prettyPure cc)
-  body <- casetree cc `runReaderT` initCCEnv
+  body <- casetreeTop cc `runReaderT` initCCEnv
   reportSDoc "treeless.opt.converted" 30 $ text "-- converted body:" $$ nest 2 (prettyPure body)
-  body <- introduceNPlusK body
-  reportSDoc "treeless.opt.n+k" 30 $ text "-- after n+k translation:" $$ nest 2 (prettyPure body)
+  body <- translateBuiltins body
+  reportSDoc "treeless.opt.n+k" 30 $ text "-- after builtin translation:" $$ nest 2 (prettyPure body)
   body <- simplifyTTerm body
   reportSDoc "treeless.opt.simpl" 30 $ text "-- after simplification"  $$ nest 2 (prettyPure body)
   body <- eraseTerms body
@@ -96,11 +98,18 @@ lookupLevel :: Int -- ^ case tree de bruijn level
 lookupLevel l xs = fromMaybe __IMPOSSIBLE__ $ xs !!! (length xs - 1 - l)
 
 -- | Compile a case tree into nested case and record expressions.
+casetreeTop :: CC.CompiledClauses -> CC C.TTerm
+casetreeTop cc = do
+  let a = commonArity cc
+  lift $ reportSLn "treeless.convert.arity" 40 $ "-- common arity: " ++ show a
+  lambdasUpTo a $ casetree cc
+
 casetree :: CC.CompiledClauses -> CC C.TTerm
 casetree cc = do
   case cc of
     CC.Fail -> return C.tUnreachable
     CC.Done xs v -> lambdasUpTo (length xs) $ do
+        v <- lift $ putAllowedReductions [ProjectionReductions, StaticReductions] $ normalise v
         substTerm v
     CC.Case n (CC.Branches True conBrs _ _) -> lambdasUpTo n $ do
       mkRecord =<< traverse casetree (CC.content <$> conBrs)
@@ -129,6 +138,24 @@ casetree cc = do
             br1 <- conAlts n conBrs
             br2 <- litAlts n litBrs
             return (br1 ++ br2)
+
+commonArity :: CC.CompiledClauses -> Int
+commonArity cc =
+  case arities 0 cc of
+    [] -> 0
+    as -> minimum as
+  where
+    arities cxt (Case x (Branches False cons lits def)) =
+      concatMap (wArities cxt') (Map.elems cons) ++
+      concatMap (wArities cxt' . WithArity 0) (Map.elems lits) ++
+      concat [ arities cxt' c | Just c <- [def] ] -- ??
+      where cxt' = max (x + 1) cxt
+    arities cxt (Case _ (Branches True _ _ _)) = [cxt]
+    arities cxt (Done xs _) = [max cxt (length xs)]
+    arities _   Fail        = []
+
+
+    wArities cxt (WithArity k c) = map (\ x -> x - k + 1) $ arities (cxt - 1 + k) c
 
 updateCatchAll :: Maybe CC.CompiledClauses -> (CC C.TTerm -> CC C.TTerm)
 updateCatchAll Nothing cont = cont

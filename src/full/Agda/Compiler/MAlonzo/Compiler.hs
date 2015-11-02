@@ -235,7 +235,7 @@ definition kit Defn{defName = q, defType = ty, defCompiledRep = compiled, theDef
 
       Datatype{ dataPars = np, dataIxs = ni, dataClause = cl, dataCons = cs }
         | Just (HsType ty) <- compiledHaskell compiled -> do
-        ccscov <- ifM (isPrimNat q) (return []) $ do
+        ccscov <- ifM (noCheckCover q) (return []) $ do
             ccs <- List.concat <$> mapM checkConstructorType cs
             cov <- checkCover q ty np cs
             return $ ccs ++ cov
@@ -431,7 +431,7 @@ term tm0 = case tm0 of
   T.TPrim p  -> return $ compilePrim p
   T.TUnit    -> return HS.unit_con
   T.TSort    -> return HS.unit_con
-  T.TErased  -> return HS.unit_con
+  T.TErased  -> return $ hsVarUQ $ HS.Ident "undefined"
   T.TError e -> return $ case e of
     T.TUnreachable ->  rtmUnreachableError
   where apps =  foldM (\ h a -> HS.App h <$> term a)
@@ -444,7 +444,8 @@ compilePrim s =
     T.PSub -> fakeExp "((Prelude.-) :: Integer -> Integer -> Integer)"
     T.PAdd -> fakeExp "((Prelude.+) :: Integer -> Integer -> Integer)"
     T.PGeq -> fakeExp "((Prelude.>=) :: Integer -> Integer -> Bool)"
-    -- primitives only used by NPlusKToPrims transformation, which MAlonzo doesn't use
+    T.PLt  -> fakeExp "((Prelude.<) :: Integer -> Integer -> Bool)"
+    -- primitives only used by GuardsToPrims transformation, which MAlonzo doesn't use
     T.PIf  -> __IMPOSSIBLE__
 
 alt :: T.TAlt -> CC HS.Alt

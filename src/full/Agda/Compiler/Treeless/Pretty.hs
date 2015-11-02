@@ -55,6 +55,7 @@ opName PSub = "-"
 opName PDiv = "div"
 opName PMod = "mod"
 opName PGeq = ">="
+opName PLt  = "<"
 opName PIf  = "if_then_else_"
 
 isInfix :: TPrim -> Maybe (Int, Int, Int)
@@ -63,6 +64,7 @@ isInfix op =
     PAdd -> l 6
     PSub -> l 6
     PGeq -> non 4
+    PLt  -> non 4
     _    -> Nothing
   where
     l n   = Just (n, n, n + 1)
@@ -95,14 +97,14 @@ pTerm t = case t of
     paren 9 $ (\a bs -> sep [a, nest 2 $ fsep bs])
               <$> pTerm' 9 f
               <*> mapM (pTerm' 10) es
-  TLam _ -> withNames n $ \xs -> bindNames xs $
+  TLam _ -> paren 0 $ withNames n $ \xs -> bindNames xs $
     (\b -> sep [ text ("λ " ++ unwords xs ++ " →")
                , nest 2 b ]) <$> pTerm' 0 b
     where
       (n, b) = lamV t
       lamV (TLam b) = first succ $ lamV b
       lamV t        = (0, t)
-  TLet{} -> withNames (length es) $ \ xs ->
+  TLet{} -> paren 0 $ withNames (length es) $ \ xs ->
     (\ (binds, b) -> sep [ text "let" <+> vcat [ sep [ text x <+> text "="
                                                      , nest 2 e ] | (x, e) <- binds ]
                               <+> text "in", b ])
@@ -117,7 +119,7 @@ pTerm t = case t of
         e <- pTerm' 0 e
         first ((x, e) :) <$> bindName x (pLets bs b)
 
-  TCase x _ def alts ->
+  TCase x _ def alts -> paren 0 $
     (\ sc alts def ->
       sep [ text "case" <+> sc <+> text "of"
           , nest 2 $ vcat (alts ++ [ text "_ →" <+> def ]) ]

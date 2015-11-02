@@ -55,17 +55,19 @@ eraseTerms = runE . erase
     erase t = case tAppView t of
 
       TCon c : vs -> do
-        (rs, _) <- getFunInfo c
+        (rs, h) <- getFunInfo c
         when (length rs < length vs) __IMPOSSIBLE__
-        TApp (TCon c) <$> zipWithM eraseRel rs vs
+        case h of
+          Erasable -> pure TErased
+          Empty    -> pure TErased
+          _        -> TApp (TCon c) <$> zipWithM eraseRel rs vs
 
       TDef f : vs -> do
         (rs, h) <- getFunInfo f
-        let fullyApplied = length rs == length vs
-            dontErase    = TApp (TDef f) <$> zipWithM eraseRel (rs ++ repeat Relevant) vs
         case h of
-          Erasable | fullyApplied -> pure TErased   -- TODO: can we erase underapplied things?
-          _ -> dontErase
+          Erasable -> pure TErased
+          Empty    -> pure TErased
+          _        -> TApp (TDef f) <$> zipWithM eraseRel (rs ++ repeat Relevant) vs
 
       _ -> case t of
         TVar{}         -> pure t
@@ -74,7 +76,7 @@ eraseTerms = runE . erase
         TLit{}         -> pure t
         TCon{}         -> pure t
         TApp f es      -> TApp <$> erase f <*> mapM erase es
-        TLam b         -> TLam <$> erase b
+        TLam b         -> tLam <$> erase b
         TLet e b       -> do
           b <- erase b
           if freeIn 0 b then TLet <$> erase e <*> pure b
@@ -89,6 +91,9 @@ eraseTerms = runE . erase
         TSort          -> pure t
         TErased        -> pure t
         TError{}       -> pure t
+
+    tLam TErased = TErased
+    tLam t       = TLam t
 
     eraseRel r t | erasableR r = pure TErased
                  | otherwise   = erase t
@@ -122,7 +127,7 @@ getFunInfo q = memo (funMap . key q) $ getInfo q
       (rs, t) <- lift $ do
         (tel, t) <- typeWithoutParams q
         return (map getRelevance tel, t)
-      h <- getTypeInfo t
+      h <- if isAbsurdLambdaName q then pure Erasable else getTypeInfo t
       lift $ reportSLn "treeless.opt.erase.info" 50 $ "type info for " ++ show q ++ ": " ++ show rs ++ " -> " ++ show h
       return (rs, h)
 
