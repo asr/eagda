@@ -14,6 +14,7 @@ import Test.Tasty.Silver
 import Test.Tasty.Silver.Filter
 import qualified Data.Text as T
 import Data.Text.Encoding
+import Data.Monoid
 import System.IO.Temp
 import System.FilePath
 import System.Exit
@@ -126,15 +127,15 @@ specialTests MAlonzo = do
   return $ Just $ testGroup "special" [t]
   where extraArgs = ["-i" ++ testDir, "-itest/", "--no-main"]
         testDir = "test" </> "Compiler" </> "special"
-        cont args compDir = do
+        cont args compDir out err = do
             args' <- args
-            (ret, sout, _) <- PT.readProcessWithExitCode "runghc"
+            (ret, sout, _serr) <- PT.readProcessWithExitCode "runghc"
                     (args' ++ [ "-i" ++ compDir
                      , testDir </> "ExportTest.hs"
                      ])
                     T.empty
             -- ignore stderr, as there may be some GHC warnings in it
-            return $ ExecutedProg (ret, sout, T.empty)
+            return $ ExecutedProg (ret, out <> sout, err)
 specialTests UHC = return Nothing
 
 withSetup :: (Compiler -> (IO (IO AgdaArgs -> TestTree)) -> IO TestTree) -- setup function
@@ -178,16 +179,16 @@ withGhcLibs pkgDirs mkTree =
           return (tempDir, pkgDb)
           )
         installPkg :: FilePath -> FilePath -> FilePath -> IO ()
-        installPkg tempDir pkgDb pkgDir = do
+        installPkg tempDir _pkgDb pkgDir = do
           pwd <- getCurrentDirectory
           withTempDirectory pwd "pkg-build" $ \builddir -> (do
             callProcess1 pkgDir "runhaskell" ["Setup.hs", "configure", "--builddir=" ++ builddir
-                                             , "--prefix=" ++ tempDir, "--package-db=" ++ pkgDb]
+                                             , "--prefix=" ++ tempDir, "--user"] -- , "--package-db=" ++ pkgDb]
             callProcess1 pkgDir "runhaskell" ["Setup.hs", "build", "--builddir=" ++ builddir]
             callProcess1 pkgDir "runhaskell" ["Setup.hs", "install", "--builddir=" ++ builddir]
             )
         mkArgs :: (FilePath, FilePath) -> AgdaArgs
-        mkArgs (_, pkgDb) = ["-no-user-package-db",   "-package-db=" ++ pkgDb]
+        mkArgs (_, _pkgDb) = [] -- ["-no-user-package-db", "-package-db=" ++ pkgDb]
 
         callProcess1 :: FilePath -> FilePath -> [String] -> IO ()
 #if MIN_VERSION_process(1,2,3)
@@ -216,14 +217,14 @@ agdaRunProgGoldenTest :: FilePath -- ^ path to the agda executable.
     -> TestOptions
     -> Maybe TestTree
 agdaRunProgGoldenTest agdaBin dir comp extraArgs inp opts =
-      agdaRunProgGoldenTest1 agdaBin dir comp extraArgs inp opts (\compDir -> do
+      agdaRunProgGoldenTest1 agdaBin dir comp extraArgs inp opts (\compDir out err -> do
         if executeProg opts then do
           -- read input file, if it exists
           inp' <- maybe T.empty decodeUtf8 <$> readFileMaybe inpFile
           -- now run the new program
           let exec = getExecForComp comp compDir inpFile
-          res' <- PT.readProcessWithExitCode exec [] inp'
-          return $ ExecutedProg res'
+          (ret, out', err') <- PT.readProcessWithExitCode exec [] inp'
+          return $ ExecutedProg (ret, out <> out', err <> err')
         else
           return $ CompileSucceeded
         )
@@ -235,7 +236,7 @@ agdaRunProgGoldenTest1 :: FilePath -- ^ path to the agda executable.
     -> IO AgdaArgs     -- ^ extra Agda arguments
     -> FilePath -- ^ relative path to agda input file.
     -> TestOptions
-    -> (FilePath -> IO ExecResult) -- continuation if compile succeeds, gets the compilation dir
+    -> (FilePath -> T.Text -> T.Text -> IO ExecResult) -- continuation if compile succeeds, gets the compilation dir
     -> Maybe TestTree
 agdaRunProgGoldenTest1 agdaBin dir comp extraArgs inp opts cont
   | (Just cOpts) <- lookup comp (forCompilers opts) =
@@ -249,12 +250,12 @@ agdaRunProgGoldenTest1 agdaBin dir comp extraArgs inp opts cont
           extraArgs' <- extraArgs
           envArgs <- getEnvAgdaArgs
           -- compile file
-          let defArgs = ["--ignore-interfaces", "--compile-dir", compDir] ++ extraArgs' ++ envArgs ++ (extraAgdaArgs cOpts) ++ [inp]
+          let defArgs = ["--ignore-interfaces", "--compile-dir", compDir, "-v0"] ++ extraArgs' ++ envArgs ++ (extraAgdaArgs cOpts) ++ [inp]
           args <- (++ defArgs) <$> argsForComp comp
-          res@(ret, _, _) <- PT.readProcessWithExitCode agdaBin args T.empty
+          res@(ret, out, err) <- PT.readProcessWithExitCode agdaBin args T.empty
 
           case ret of
-            ExitSuccess -> cont compDir
+            ExitSuccess -> cont compDir out err
             ExitFailure _ -> return $ CompileFailed res
           )
 

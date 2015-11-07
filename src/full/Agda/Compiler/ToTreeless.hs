@@ -1,12 +1,14 @@
 {-# LANGUAGE CPP                 #-}
 {-# LANGUAGE DoAndIfThenElse     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE PatternGuards       #-}
 
 module Agda.Compiler.ToTreeless
   ( ccToTreeless
   , closedTermToTreeless
   ) where
 
+import Control.Applicative
 import Control.Monad.Reader
 import Data.Maybe
 import Data.Map (Map)
@@ -17,7 +19,7 @@ import Agda.Syntax.Common
 import Agda.Syntax.Internal (QName)
 import qualified Agda.Syntax.Treeless as C
 import qualified Agda.Syntax.Internal as I
-import qualified Agda.Syntax.Literal as TL
+import Agda.Syntax.Literal
 import qualified Agda.TypeChecking.CompiledClause as CC
 import Agda.TypeChecking.Records (getRecordConstructor)
 import Agda.TypeChecking.Pretty
@@ -26,11 +28,13 @@ import Agda.TypeChecking.CompiledClause
 import Agda.Compiler.Treeless.Builtin
 import Agda.Compiler.Treeless.Simplify
 import Agda.Compiler.Treeless.Erase
+import Agda.Compiler.Treeless.Uncase
 import Agda.Compiler.Treeless.Pretty
 
 import Agda.Syntax.Common
 import Agda.TypeChecking.Monad as TCM
 import Agda.TypeChecking.Reduce
+import Agda.TypeChecking.Substitute
 
 import Agda.Utils.Functor
 import qualified Agda.Utils.HashMap as HMap
@@ -46,24 +50,34 @@ prettyPure :: P.Pretty a => a -> TCM Doc
 prettyPure = return . P.pretty
 
 -- | Converts compiled clauses to treeless syntax.
-ccToTreeless :: QName -> CC.CompiledClauses -> TCM C.TTerm
-ccToTreeless q cc = do
+ccToTreeless :: QName -> CC.CompiledClauses -> TCM (Maybe C.TTerm)
+ccToTreeless q cc = ifM (alwaysInline q) (pure Nothing) $ Just <$> do
   reportSDoc "treeless.opt" 20 $ text "-- compiling" <+> prettyTCM q
   reportSDoc "treeless.convert" 30 $ text "-- compiled clauses:" $$ nest 2 (prettyPure cc)
-  body <- casetreeTop cc `runReaderT` initCCEnv
+  body <- casetreeTop cc
   reportSDoc "treeless.opt.converted" 30 $ text "-- converted body:" $$ nest 2 (prettyPure body)
-  body <- translateBuiltins body
-  reportSDoc "treeless.opt.n+k" 30 $ text "-- after builtin translation:" $$ nest 2 (prettyPure body)
   body <- simplifyTTerm body
-  reportSDoc "treeless.opt.simpl" 30 $ text "-- after simplification"  $$ nest 2 (prettyPure body)
+  reportSDoc "treeless.opt.simpl" 35 $ text "-- after first simplification"  $$ nest 2 (prettyPure body)
+  body <- translateBuiltins body
+  reportSDoc "treeless.opt.builtin" 30 $ text "-- after builtin translation:" $$ nest 2 (prettyPure body)
+  body <- simplifyTTerm body
+  reportSDoc "treeless.opt.simpl" 30 $ text "-- after second simplification"  $$ nest 2 (prettyPure body)
   body <- eraseTerms body
   reportSDoc "treeless.opt.erase" 30 $ text "-- after erasure"  $$ nest 2 (prettyPure body)
+  body <- caseToSeq body
+  reportSDoc "treeless.opt.uncase" 30 $ text "-- after uncase"  $$ nest 2 (prettyPure body)
   return body
 
 closedTermToTreeless :: I.Term -> TCM C.TTerm
 closedTermToTreeless t = do
   substTerm t `runReaderT` initCCEnv
 
+alwaysInline :: QName -> TCM Bool
+alwaysInline q = do
+  def <- theDef <$> getConstInfo q
+  pure $ case def of  -- always inline with functions and pattern lambdas
+    Function{} -> isJust (funExtLam def) || isJust (funWith def)
+    _ -> False
 
 -- | Initial environment for expression generation.
 initCCEnv :: CCEnv
@@ -98,8 +112,8 @@ lookupLevel :: Int -- ^ case tree de bruijn level
 lookupLevel l xs = fromMaybe __IMPOSSIBLE__ $ xs !!! (length xs - 1 - l)
 
 -- | Compile a case tree into nested case and record expressions.
-casetreeTop :: CC.CompiledClauses -> CC C.TTerm
-casetreeTop cc = do
+casetreeTop :: CC.CompiledClauses -> TCM C.TTerm
+casetreeTop cc = flip runReaderT initCCEnv $ do
   let a = commonArity cc
   lift $ reportSLn "treeless.convert.arity" 40 $ "-- common arity: " ++ show a
   lambdasUpTo a $ casetree cc
@@ -109,7 +123,7 @@ casetree cc = do
   case cc of
     CC.Fail -> return C.tUnreachable
     CC.Done xs v -> lambdasUpTo (length xs) $ do
-        v <- lift $ putAllowedReductions [ProjectionReductions, StaticReductions] $ normalise v
+        v <- lift $ putAllowedReductions [ProjectionReductions, CopatternReductions, StaticReductions] $ normalise v
         substTerm v
     CC.Case n (CC.Branches True conBrs _ _) -> lambdasUpTo n $ do
       mkRecord =<< traverse casetree (CC.content <$> conBrs)
@@ -124,9 +138,9 @@ casetree cc = do
                 c' <- lift (canonicalName c)
                 dtNm <- conData . theDef <$> lift (getConstInfo c')
                 return $ C.CTData dtNm
-              ([], (TL.LitChar _ _):_)  -> return C.CTChar
-              ([], (TL.LitString _ _):_) -> return C.CTString
-              ([], (TL.LitQName _ _):_) -> return C.CTQName
+              ([], (LitChar _ _):_)  -> return C.CTChar
+              ([], (LitString _ _):_) -> return C.CTString
+              ([], (LitQName _ _):_) -> return C.CTQName
               _ -> __IMPOSSIBLE__
         updateCatchAll catchAll $ do
           x <- lookupLevel n <$> asks ccCxt
@@ -196,7 +210,7 @@ conAlts x br = forM (Map.toList br) $ \ (c, CC.WithArity n cc) -> do
   replaceVar x n $ do
     branch (C.TACon c' n) cc
 
-litAlts :: Int -> Map TL.Literal CC.CompiledClauses -> CC [C.TAlt]
+litAlts :: Int -> Map Literal CC.CompiledClauses -> CC [C.TAlt]
 litAlts x br = forM (Map.toList br) $ \ (l, cc) ->
   -- Issue1624: we need to drop the case scrutinee from the environment here!
   replaceVar x 0 $ do
@@ -259,7 +273,7 @@ substTerm term = case I.ignoreSharing $ I.unSpine term of
     I.Level _ -> return C.TUnit -- TODO can we really do this here?
     I.Def q es -> do
       let args = fromMaybe __IMPOSSIBLE__ $ I.allApplyElims es
-      C.mkTApp (C.TDef q) <$> substArgs args
+      maybeInlineDef q args
     I.Con c args -> do
         c' <- lift $ canonicalName $ I.conName c
         C.mkTApp (C.TCon c') <$> substArgs args
@@ -268,6 +282,20 @@ substTerm term = case I.ignoreSharing $ I.unSpine term of
     I.Sort _  -> return C.TSort
     I.MetaV _ _ -> __IMPOSSIBLE__
     I.DontCare _ -> __IMPOSSIBLE__ -- when does this happen?
+
+maybeInlineDef :: I.QName -> I.Args -> CC C.TTerm
+maybeInlineDef q vs =
+  ifM (lift $ alwaysInline q) doinline $ do
+    def <- lift $ theDef <$> getConstInfo q
+    case def of
+      Function{ funStatic = True } -> doinline
+      _                            -> noinline
+  where
+    noinline = C.mkTApp (C.TDef q) <$> substArgs vs
+    doinline = C.mkTApp <$> inline q <*> substArgs vs
+    inline q = lift $ do
+      Just cc <- defCompiled <$> getConstInfo q
+      casetreeTop cc
 
 substArgs :: [Arg I.Term] -> CC [C.TTerm]
 substArgs = traverse

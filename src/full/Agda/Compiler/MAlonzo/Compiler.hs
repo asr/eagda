@@ -82,8 +82,10 @@ compilerMain modIsMain mainI =
   -- so use localTCState.
   localTCState $ do
 
-    -- Compute the output directory.
-    opts <- commandLineOptions
+    -- Compute the output directory. Note: using commandLineOptions would make
+    -- the current pragma options persistent when we setCommandLineOptions
+    -- below.
+    opts <- gets $ stPersistentOptions . stPersistentState
     compileDir <- case optCompileDir opts of
       Just dir -> return dir
       Nothing  -> do
@@ -123,9 +125,13 @@ compile i = do
 imports :: TCM [HS.ImportDecl]
 imports = (++) <$> hsImps <*> imps where
   hsImps :: TCM [HS.ImportDecl]
-  hsImps = (List.map decl . Set.toList .
+  hsImps = ((unqualRTE :) . List.map decl . Set.toList .
             Set.insert mazRTE . Set.map HS.ModuleName) <$>
              getHaskellImports
+
+  unqualRTE :: HS.ImportDecl
+  unqualRTE = HS.ImportDecl dummy mazRTE False False False Nothing Nothing $ Just $
+              (False, [HS.IVar HS.NoNamespace $ HS.Ident mazCoerceName])
 
   imps :: TCM [HS.ImportDecl]
   imps = List.map decl . uniq <$>
@@ -181,7 +187,7 @@ definition kit Defn{defName = q, defType = ty, defCompiledRep = compiled, theDef
     , nest 2 $ text (show d)
     ]
   checkTypeOfMain q ty $ do
-    (infodecl q :) <$> case d of
+    infodecl q <$> case d of
 
       _ | Just (HsDefn ty hs) <- compiledHaskell compiled ->
         return $ fbWithType ty (fakeExp hs)
@@ -268,8 +274,7 @@ definition kit Defn{defName = q, defType = ty, defCompiledRep = compiled, theDef
         return ([tsig,def] ++ ccls)
 
   functionViaTreeless :: QName -> CompiledClauses -> TCM [HS.Decl]
-  functionViaTreeless q cc = do
-    treeless <- ccToTreeless q cc
+  functionViaTreeless q cc = caseMaybeM (ccToTreeless q cc) (pure []) $ \ treeless -> do
     e <- closedTerm treeless
     let (ps, b) =
           case stripTopCoerce e of
@@ -414,7 +419,7 @@ term tm0 = case tm0 of
 
   T.TCase sc ct def alts -> do
     sc' <- term (T.TVar sc)
-    alts' <- traverse alt alts
+    alts' <- traverse (alt sc) alts
     def' <- term def
     let defAlt = HS.Alt dummy HS.PWildCard (HS.UnGuardedRhs def') (HS.BDecls [])
 
@@ -445,11 +450,12 @@ compilePrim s =
     T.PAdd -> fakeExp "((Prelude.+) :: Integer -> Integer -> Integer)"
     T.PGeq -> fakeExp "((Prelude.>=) :: Integer -> Integer -> Bool)"
     T.PLt  -> fakeExp "((Prelude.<) :: Integer -> Integer -> Bool)"
+    T.PSeq -> HS.Var (hsName "seq")
     -- primitives only used by GuardsToPrims transformation, which MAlonzo doesn't use
     T.PIf  -> __IMPOSSIBLE__
 
-alt :: T.TAlt -> CC HS.Alt
-alt a = do
+alt :: Int -> T.TAlt -> CC HS.Alt
+alt sc a = do
   case a of
     T.TACon {} -> do
       intros (T.aArity a) $ \xs -> do
@@ -462,6 +468,16 @@ alt a = do
                       (HS.GuardedRhss [HS.GuardedRhs dummy [HS.Qualifier g] b])
                       (HS.BDecls [])
     T.TALit { T.aLit = (LitQName _ q) } -> mkAlt (litqnamepat q)
+    T.TALit { T.aLit = (LitString _ s) , T.aBody = b } -> do
+      b <- term b
+      sc <- term (T.TVar sc)
+      let guard =
+            HS.Var (HS.UnQual (HS.Ident "(==)")) `HS.App`
+              sc`HS.App`
+              litString s
+      return $ HS.Alt dummy HS.PWildCard
+                      (HS.GuardedRhss [HS.GuardedRhs dummy [HS.Qualifier guard] b])
+                      (HS.BDecls [])
     T.TALit {} -> mkAlt (HS.PLit HS.Signless $ hslit $ T.aLit a)
   where
     mkAlt :: HS.Pat -> CC HS.Alt
@@ -474,6 +490,7 @@ literal l = case l of
   LitNat    _ _   -> return $ typed "Integer"
   LitFloat  _ _   -> return $ typed "Double"
   LitQName  _ x   -> return $ litqname x
+  LitString _ s   -> return $ litString s
   _               -> return $ l'
   where l'    = HS.Lit $ hslit l
         typed = HS.ExpTypeSig dummy l' . HS.TyCon . rtmQual
@@ -481,9 +498,14 @@ literal l = case l of
 hslit :: Literal -> HS.Literal
 hslit l = case l of LitNat    _ x -> HS.Int    x
                     LitFloat  _ x -> HS.Frac   (toRational x)
-                    LitString _ x -> HS.String x
                     LitChar   _ x -> HS.Char   x
                     LitQName  _ x -> __IMPOSSIBLE__
+                    LitString _ _ -> __IMPOSSIBLE__
+
+litString :: String -> HS.Exp
+litString s =
+  HS.Var (HS.Qual (HS.ModuleName "Data.Text") (HS.Ident "pack")) `HS.App`
+    (HS.Lit $ HS.String s)
 
 litqname :: QName -> HS.Exp
 litqname x =
@@ -538,8 +560,9 @@ tvaldecl q ind ntv npar cds cl =
     (Inductive, [HS.RecDecl _ [_]]) -> HS.NewType
     _                               -> HS.DataType
 
-infodecl :: QName -> HS.Decl
-infodecl q = fakeD (unqhname "name" q) $ show $ prettyShow q
+infodecl :: QName -> [HS.Decl] -> [HS.Decl]
+infodecl _ [] = []
+infodecl q ds = fakeD (unqhname "name" q) (show $ prettyShow q) : ds
 
 --------------------------------------------------
 -- Inserting unsafeCoerce
@@ -615,9 +638,9 @@ rteModule = ok $ parse $ unlines
   , "import Unsafe.Coerce"
   , ""
   , "-- Special version of coerce that plays well with rules."
-  , "{-# INLINE [1] mazCoerce #-}"
-  , "mazCoerce = Unsafe.Coerce.unsafeCoerce"
-  , "{-# RULES \"coerce-id\" forall (x :: a) . mazCoerce x = x #-}"
+  , "{-# INLINE [1] " ++ mazCoerceName ++ " #-}"
+  , mazCoerceName ++ " = Unsafe.Coerce.unsafeCoerce"
+  , "{-# RULES \"coerce-id\" forall (x :: a) . " ++ mazCoerceName ++ " x = x #-}"
   , ""
   , "-- Builtin QNames, the third field is for the type."
   , "data QName a b = QName { nameId, moduleId :: Integer, qnameType :: a, qnameDefinition :: b, qnameString :: String}"
