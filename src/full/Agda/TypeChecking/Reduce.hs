@@ -403,12 +403,14 @@ unfoldDefinition' unfoldDelayed keepGoing v0 f es =
       retSimpl $ notBlocked $ Con (c `withRangeOf` f) [] `applyE` es
     Primitive{primAbstr = ConcreteDef, primName = x, primClauses = cls} -> do
       pf <- fromMaybe __IMPOSSIBLE__ <$> getPrimitive' x
-      reducePrimitive x v0 f es pf dontUnfold
-                      cls (defCompiled info)
+      if FunctionReductions `elem` allowed
+        then reducePrimitive x v0 f es pf dontUnfold
+                             cls (defCompiled info)
+        else retSimpl $ notBlocked v
     _  -> do
       if FunctionReductions `elem` allowed ||
          (isJust (isProjection_ def) && ProjectionReductions `elem` allowed) || -- includes projection-like
-         (isStaticFun def && StaticReductions `elem` allowed) ||
+         (isInlineFun def && InlineReductions `elem` allowed) ||
          (copatterns && CopatternReductions `elem` allowed)
         then
           reduceNormalE keepGoing v0 f (map notReduced es)

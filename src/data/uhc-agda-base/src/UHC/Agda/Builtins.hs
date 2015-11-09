@@ -98,16 +98,19 @@ primShowInteger :: Integer -> String
 primShowInteger = show
 
 primIntegerDiv :: Integer -> Integer -> Integer
-primIntegerDiv = div
+primIntegerDiv = quot
 
 primIntegerMod :: Integer -> Integer -> Integer
-primIntegerMod = mod
+primIntegerMod = rem
 
 primIntegerMinus :: Integer -> Integer -> Integer
 primIntegerMinus = (-)
 
 primIntegerPlus :: Integer -> Integer -> Integer
 primIntegerPlus = (+)
+
+primIntegerTimes :: Integer -> Integer -> Integer
+primIntegerTimes = (*)
 
 primIntegerGreaterOrEqual :: Integer -> Integer -> Bool
 primIntegerGreaterOrEqual = (>=)

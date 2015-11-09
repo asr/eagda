@@ -207,6 +207,13 @@ Pragmas and options
   behaviour, you should put the {-# REWRITE r #-} pragma outside of the module
   (i.e. unindent it).
 
+* New pragma {-# INLINE f #-} causes f to be inlined during compilation.
+
+* The STATIC pragma is now taken into account during compilation.
+
+  Calls to a function marked STATIC are normalised before compilation. The
+  typical use case for this is to mark the interpreter of an embedded language
+  as STATIC.
 
 Language
 ========

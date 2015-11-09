@@ -1,0 +1,39 @@
+EXECUTED_PROGRAM
+
+ret > ExitSuccess
+out > CompareNat.compare =
+out >   λ a b →
+out >     let c = a < b in
+out >     case c of
+out >       Common.Bool.Bool.true →
+out >         CompareNat.Comparison.less (CompareNat._<_.diff (b - (1 + a)) _)
+out >       Common.Bool.Bool.false →
+out >         let d = b < a in
+out >         case d of
+out >           Common.Bool.Bool.true →
+out >             CompareNat.Comparison.greater (CompareNat._<_.diff (a - b - 1) _)
+out >           Common.Bool.Bool.false → CompareNat.Comparison.equal _
+out >           _ → error "TUnreachable"
+out >       _ → error "TUnreachable"
+out > CompareNat.compare-lots =
+out >   λ a b →
+out >     let c = a < b in
+out >     case c of
+out >       Common.Bool.Bool.true → "less-less"
+out >       Common.Bool.Bool.false →
+out >         let d = b < a in
+out >         case d of
+out >           Common.Bool.Bool.true → "greater-greater"
+out >           Common.Bool.Bool.false → "equal-equal"
+out >           _ → error "TUnreachable"
+out >       _ → error "TUnreachable"
+out > CompareNat.main =
+out >   Common.IO.then
+out >     () () _ _ (Common.IO.putStrLn (CompareNat.compare-lots 1500 2000))
+out >     (Common.IO.then
+out >        () () _ _ (Common.IO.putStrLn (CompareNat.compare-lots 2000 1500))
+out >        (Common.IO.putStrLn (CompareNat.compare-lots 2000 2000)))
+out > less-less
+out > greater-greater
+out > equal-equal
+out >

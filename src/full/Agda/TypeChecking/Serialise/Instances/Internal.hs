@@ -244,14 +244,14 @@ instance EmbPrj EtaEquality where
 
 instance EmbPrj Defn where
   icod_ (Axiom       a b)                       = icode2 0 a b
-  icod_ (Function    a b c d e f g h i j k l m n o) = icode15 1 a b c d e f g h i j k l m n o
+  icod_ (Function    a b _ c d e f g h i j k l m n o p) = icode16 1 a b c d e f g h i j k l m n o p
   icod_ (Datatype    a b c d e f g h i j k)     = icode11 2 a b c d e f g h i j k
   icod_ (Record      a b c d e f g h i j k l)   = icode12 3 a b c d e f g h i j k l
   icod_ (Constructor a b c d e f)               = icode6 4 a b c d e f
   icod_ (Primitive   a b c d)                   = icode4 5 a b c d
   value = vcase valu where
     valu [0, a, b]                               = valu2 Axiom a b
-    valu [1, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o] = valu15 Function a b c d e f g h i j k l m n o
+    valu [1, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p] = valu16 (\ a b -> Function a b Nothing) a b c d e f g h i j k l m n o p
     valu [2, a, b, c, d, e, f, g, h, i, j, k]    = valu11 Datatype a b c d e f g h i j k
     valu [3, a, b, c, d, e, f, g, h, i, j, k, l] = valu12 Record  a b c d e f g h i j k l
     valu [4, a, b, c, d, e, f]                   = valu6 Constructor a b c d e f

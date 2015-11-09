@@ -135,6 +135,7 @@ checkAlias t' ai delayed i name e = do
                           , clauseCatchall  = False
                           } ]
                       , funCompiled       = Just $ Done [] v
+                      , funTreeless       = Nothing
                       , funDelayed        = delayed
                       , funInv            = NotInjective
                       , funAbstr          = Info.defAbstract i
@@ -142,6 +143,7 @@ checkAlias t' ai delayed i name e = do
                       , funProjection     = Nothing
                       , funSmashable      = True
                       , funStatic         = False
+                      , funInline         = False
                       , funCopy           = False
                       , funTerminates     = Nothing
                       , funExtLam         = Nothing
@@ -255,6 +257,7 @@ checkFunDef' t ai delayed extlam with i name cs =
              Function
              { funClauses        = cs
              , funCompiled       = Just cc
+             , funTreeless       = Nothing
              , funDelayed        = delayed
              , funInv            = inv
              , funAbstr          = Info.defAbstract i
@@ -262,6 +265,7 @@ checkFunDef' t ai delayed extlam with i name cs =
              , funProjection     = Nothing
              , funSmashable      = True
              , funStatic         = False
+             , funInline         = False
              , funCopy           = False
              , funTerminates     = Nothing
              , funExtLam         = extlam
@@ -655,7 +659,7 @@ checkWithFunction (WithFunction f aux t delta1 delta2 vs as b qs perm' perm fina
 
   -- Construct the body for the with function
   cs <- return $ map (A.lhsToSpine) cs
-  cs <- buildWithFunction aux t qs finalPerm (size delta1) (size as) cs
+  cs <- buildWithFunction f aux t qs finalPerm (size delta1) (size as) cs
   cs <- return $ map (A.spineToLhs) cs
 
   -- Check the with function

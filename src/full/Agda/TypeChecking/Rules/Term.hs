@@ -458,6 +458,7 @@ checkAbsurdLambda i h e t = do
                     }
                   ]
               , funCompiled       = Just Fail
+              , funTreeless       = Nothing
               , funDelayed        = NotDelayed
               , funInv            = NotInjective
               , funAbstr          = ConcreteDef
@@ -465,6 +466,7 @@ checkAbsurdLambda i h e t = do
               , funProjection     = Nothing
               , funSmashable      = False -- there is no body anyway, smashing doesn't make sense
               , funStatic         = False
+              , funInline         = False
               , funCopy           = False
               , funTerminates     = Just True
               , funExtLam         = Nothing

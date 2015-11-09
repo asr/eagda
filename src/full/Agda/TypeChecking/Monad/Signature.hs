@@ -23,6 +23,7 @@ import Agda.Syntax.Abstract (Ren)
 import Agda.Syntax.Common
 import Agda.Syntax.Internal as I
 import Agda.Syntax.Position
+import Agda.Syntax.Treeless (Compiled(..), TTerm)
 
 import qualified Agda.Compiler.JS.Parser as JS
 import qualified Agda.Compiler.UHC.Pragmas.Base as CR
@@ -164,6 +165,13 @@ markStatic q = modifySignature $ updateDefinition q $ mark
   where
     mark def@Defn{theDef = fun@Function{}} =
       def{theDef = fun{funStatic = True}}
+    mark def = def
+
+markInline :: QName -> TCM ()
+markInline q = modifySignature $ updateDefinition q $ mark
+  where
+    mark def@Defn{theDef = fun@Function{}} =
+      def{theDef = fun{funInline = True}}
     mark def = def
 
 -- | Add the information of an ATP-pragma to the signature.
@@ -444,12 +452,14 @@ applySection' new ptel old ts rd rm = do
                   let newDef = Function
                         { funClauses        = [cl]
                         , funCompiled       = Just $ cc
+                        , funTreeless       = Nothing
                         , funDelayed        = NotDelayed
                         , funInv            = NotInjective
                         , funMutual         = mutual
                         , funAbstr          = ConcreteDef -- OR: abstr -- ?!
                         , funProjection     = proj
                         , funStatic         = False
+                        , funInline         = False
                         , funSmashable      = True
                         , funCopy           = True
                         , funTerminates     = Just True
@@ -636,6 +646,33 @@ setArgOccurrences d os = modifyArgOccurrences d $ const os
 modifyArgOccurrences :: QName -> ([Occurrence] -> [Occurrence]) -> TCM ()
 modifyArgOccurrences d f =
   modifySignature $ updateDefinition d $ updateDefArgOccurrences f
+
+setTreeless :: QName -> TTerm -> TCM ()
+setTreeless q t = modifyGlobalDefinition q $ setTT
+  where
+    setTT def@Defn{theDef = fun@Function{}} =
+      def{theDef = fun{funTreeless = Just (Compiled t [])}}
+    setTT def = __IMPOSSIBLE__
+
+setCompiledArgUse :: QName -> [Bool] -> TCM ()
+setCompiledArgUse q use = modifyGlobalDefinition q $ setTT
+  where
+    setTT def@Defn{theDef = fun@Function{}} =
+      def{theDef = fun{funTreeless = for (funTreeless fun) $ \ c -> c { cArgUsage = use }}}
+    setTT def = __IMPOSSIBLE__
+
+getCompiled :: QName -> TCM (Maybe Compiled)
+getCompiled q = do
+  def <- theDef <$> getConstInfo q
+  return $ case def of
+    Function{ funTreeless = t } -> t
+    _                           -> Nothing
+
+getTreeless :: QName -> TCM (Maybe TTerm)
+getTreeless q = fmap cTreeless <$> getCompiled q
+
+getCompiledArgUse :: QName -> TCM [Bool]
+getCompiledArgUse q = maybe [] cArgUsage <$> getCompiled q
 
 -- | Get the mutually recursive identifiers.
 getMutual :: QName -> TCM [QName]
@@ -846,6 +883,11 @@ isProjection_ def =
 isStaticFun :: Defn -> Bool
 isStaticFun Function{ funStatic = b } = b
 isStaticFun _ = False
+
+-- | Is it a function marked INLINE?
+isInlineFun :: Defn -> Bool
+isInlineFun Function{ funInline = b } = b
+isInlineFun _ = False
 
 -- | Returns @True@ if we are dealing with a proper projection,
 --   i.e., not a projection-like function nor a record field value

@@ -4,12 +4,13 @@
 {-# LANGUAGE PatternGuards       #-}
 
 module Agda.Compiler.ToTreeless
-  ( ccToTreeless
+  ( toTreeless
   , closedTermToTreeless
   ) where
 
 import Control.Applicative
 import Control.Monad.Reader
+import Control.Monad.State
 import Data.Maybe
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -30,6 +31,7 @@ import Agda.Compiler.Treeless.Simplify
 import Agda.Compiler.Treeless.Erase
 import Agda.Compiler.Treeless.Uncase
 import Agda.Compiler.Treeless.Pretty
+import Agda.Compiler.Treeless.Unused
 
 import Agda.Syntax.Common
 import Agda.TypeChecking.Monad as TCM
@@ -50,22 +52,42 @@ prettyPure :: P.Pretty a => a -> TCM Doc
 prettyPure = return . P.pretty
 
 -- | Converts compiled clauses to treeless syntax.
-ccToTreeless :: QName -> CC.CompiledClauses -> TCM (Maybe C.TTerm)
-ccToTreeless q cc = ifM (alwaysInline q) (pure Nothing) $ Just <$> do
-  reportSDoc "treeless.opt" 20 $ text "-- compiling" <+> prettyTCM q
-  reportSDoc "treeless.convert" 30 $ text "-- compiled clauses:" $$ nest 2 (prettyPure cc)
+toTreeless :: QName -> TCM (Maybe C.TTerm)
+toTreeless q = ifM (alwaysInline q) (pure Nothing) $ Just <$> toTreeless' q
+
+toTreeless' :: QName -> TCM C.TTerm
+toTreeless' q =
+  flip fromMaybeM (getTreeless q) $ do
+    Just cc <- defCompiled <$> getConstInfo q
+    setTreeless q (C.TDef q)  -- so recursive inlining doesn't loop
+    ccToTreeless q cc
+
+ccToTreeless :: QName -> CC.CompiledClauses -> TCM C.TTerm
+ccToTreeless q cc = do
+  let pbody b = pbody' "" b
+      pbody' suf b = sep [ text (show q ++ suf) <+> text "=", nest 2 $ prettyPure b ]
+  v <- ifM (alwaysInline q) (return 20) (return 0)
+  reportSDoc "treeless.convert" (30 + v) $ text "-- compiled clauses of" <+> prettyTCM q $$ nest 2 (prettyPure cc)
   body <- casetreeTop cc
-  reportSDoc "treeless.opt.converted" 30 $ text "-- converted body:" $$ nest 2 (prettyPure body)
+  reportSDoc "treeless.opt.converted" (30 + v) $ text "-- converted" $$ pbody body
   body <- simplifyTTerm body
-  reportSDoc "treeless.opt.simpl" 35 $ text "-- after first simplification"  $$ nest 2 (prettyPure body)
+  reportSDoc "treeless.opt.simpl" (35 + v) $ text "-- after first simplification"  $$ pbody body
   body <- translateBuiltins body
-  reportSDoc "treeless.opt.builtin" 30 $ text "-- after builtin translation:" $$ nest 2 (prettyPure body)
+  reportSDoc "treeless.opt.builtin" (30 + v) $ text "-- after builtin translation" $$ pbody body
   body <- simplifyTTerm body
-  reportSDoc "treeless.opt.simpl" 30 $ text "-- after second simplification"  $$ nest 2 (prettyPure body)
-  body <- eraseTerms body
-  reportSDoc "treeless.opt.erase" 30 $ text "-- after erasure"  $$ nest 2 (prettyPure body)
+  reportSDoc "treeless.opt.simpl" (30 + v) $ text "-- after second simplification"  $$ pbody body
+  body <- eraseTerms q body
+  reportSDoc "treeless.opt.erase" (30 + v) $ text "-- after erasure"  $$ pbody body
   body <- caseToSeq body
-  reportSDoc "treeless.opt.uncase" 30 $ text "-- after uncase"  $$ nest 2 (prettyPure body)
+  reportSDoc "treeless.opt.uncase" (30 + v) $ text "-- after uncase"  $$ pbody body
+  used <- usedArguments q body
+  when (any not used) $
+    reportSDoc "treeless.opt.unused" (30 + v) $
+      text "-- used args:" <+> hsep [ if u then text [x] else text "_" | (x, u) <- zip ['a'..] used ] $$
+      pbody' "[stripped]" (stripUnusedArguments used body)
+  reportSDoc "treeless.opt.final" (20 + v) $ pbody body
+  setTreeless q body
+  setCompiledArgUse q used
   return body
 
 closedTermToTreeless :: I.Term -> TCM C.TTerm
@@ -123,7 +145,7 @@ casetree cc = do
   case cc of
     CC.Fail -> return C.tUnreachable
     CC.Done xs v -> lambdasUpTo (length xs) $ do
-        v <- lift $ putAllowedReductions [ProjectionReductions, CopatternReductions, StaticReductions] $ normalise v
+        v <- lift $ putAllowedReductions [ProjectionReductions, CopatternReductions] $ normalise v
         substTerm v
     CC.Case n (CC.Branches True conBrs _ _) -> lambdasUpTo n $ do
       mkRecord =<< traverse casetree (CC.content <$> conBrs)
@@ -260,7 +282,8 @@ recConFromProj q = do
 --   introduced by the catch-all machinery, so we need to lookup casetree de bruijn
 --   indices in the environment as well.
 substTerm :: I.Term -> CC C.TTerm
-substTerm term = case I.ignoreSharing $ I.unSpine term of
+substTerm term = normaliseStatic term >>= \ term ->
+  case I.ignoreSharing $ I.unSpine term of
     I.Var ind es -> do
       ind' <- lookupIndex ind <$> asks ccCxt
       let args = fromMaybe __IMPOSSIBLE__ $ I.allApplyElims es
@@ -283,23 +306,34 @@ substTerm term = case I.ignoreSharing $ I.unSpine term of
     I.MetaV _ _ -> __IMPOSSIBLE__
     I.DontCare _ -> __IMPOSSIBLE__ -- when does this happen?
 
+normaliseStatic :: I.Term -> CC I.Term
+normaliseStatic v@(I.Def f es) = lift $ do
+  static <- isStaticFun . theDef <$> getConstInfo f
+  if static then normalise v else pure v
+normaliseStatic v = pure v
+
 maybeInlineDef :: I.QName -> I.Args -> CC C.TTerm
 maybeInlineDef q vs =
   ifM (lift $ alwaysInline q) doinline $ do
-    def <- lift $ theDef <$> getConstInfo q
-    case def of
-      Function{ funStatic = True } -> doinline
-      _                            -> noinline
+    def <- lift $ getConstInfo q
+    case theDef def of
+      Function{ funInline = inline }
+        | inline    -> doinline
+        | otherwise -> do
+        _ <- lift $ toTreeless' q
+        used <- lift $ getCompiledArgUse q
+        let substUsed False _   = pure C.TErased
+            substUsed True  arg = substArg arg
+        C.mkTApp (C.TDef q) <$> sequence [ substUsed u arg | (arg, u) <- zip vs $ used ++ repeat True ]
+      _ -> C.mkTApp (C.TDef q) <$> substArgs vs
   where
-    noinline = C.mkTApp (C.TDef q) <$> substArgs vs
     doinline = C.mkTApp <$> inline q <*> substArgs vs
-    inline q = lift $ do
-      Just cc <- defCompiled <$> getConstInfo q
-      casetreeTop cc
+    inline q = lift $ toTreeless' q
 
 substArgs :: [Arg I.Term] -> CC [C.TTerm]
-substArgs = traverse
-  (\x -> if isIrrelevant x
-            then return C.TErased
-            else substTerm (unArg x)
-  )
+substArgs = traverse substArg
+
+substArg :: Arg I.Term -> CC C.TTerm
+substArg x | isIrrelevant x = return C.TErased
+           | otherwise      = substTerm (unArg x)
+

@@ -2,11 +2,13 @@
 module CompilingCoinduction where
 
 open import Common.Coinduction
-open import Common.List
 open import Common.Char
 open import Common.String
-open import Common.Unit
 
+data Unit : Set where
+  unit : Unit
+
+{-# COMPILED_DATA Unit () () #-}
 
 postulate
   IO : Set → Set

@@ -52,20 +52,24 @@ instance Pretty TTerm where
 opName :: TPrim -> String
 opName PAdd = "+"
 opName PSub = "-"
+opName PMul = "*"
 opName PDiv = "div"
 opName PMod = "mod"
 opName PGeq = ">="
 opName PLt  = "<"
+opName PEq  = "=="
 opName PIf  = "if_then_else_"
 opName PSeq = "seq"
 
 isInfix :: TPrim -> Maybe (Int, Int, Int)
 isInfix op =
   case op of
+    PMul -> l 7
     PAdd -> l 6
     PSub -> l 6
     PGeq -> non 4
     PLt  -> non 4
+    PEq  -> non 4
     _    -> Nothing
   where
     l n   = Just (n, n, n + 1)

@@ -52,6 +52,7 @@ import qualified Agda.Syntax.Abstract as A
 import Agda.Syntax.Abstract (AllNames)
 import Agda.Syntax.Internal as I
 import Agda.Syntax.Internal.Pattern ()
+import Agda.Syntax.Treeless (Compiled)
 import Agda.Syntax.Fixity
 import Agda.Syntax.Position
 import Agda.Syntax.Scope.Base
@@ -1203,6 +1204,8 @@ data Defn = Axiom
               -- ^ 'Nothing' while function is still type-checked.
               --   @Just cc@ after type and coverage checking and
               --   translation to case trees.
+            , funTreeless       :: Maybe Compiled
+              -- ^ Intermediate representation for compiler backends.
             , funInv            :: FunctionInverse
             , funMutual         :: [QName]
               -- ^ Mutually recursive functions, @data@s and @record@s.
@@ -1219,6 +1222,8 @@ data Defn = Axiom
               --   checker.
             , funStatic         :: Bool
               -- ^ Should calls to this function be normalised at compile-time?
+            , funInline         :: Bool
+              -- ^ Should calls to this function be inlined by the compiler?
             , funSmashable      :: Bool
               -- ^ Are we allowed to smash this function?
             , funCopy           :: Bool
@@ -1297,12 +1302,14 @@ emptyFunction :: Defn
 emptyFunction = Function
   { funClauses     = []
   , funCompiled    = Nothing
+  , funTreeless    = Nothing
   , funInv         = NotInjective
   , funMutual      = []
   , funAbstr       = ConcreteDef
   , funDelayed     = NotDelayed
   , funProjection  = Nothing
   , funStatic      = False
+  , funInline      = False
   , funSmashable   = True
   , funCopy        = False
   , funTerminates  = Nothing
@@ -1390,7 +1397,7 @@ reduced b = case fmap ignoreSharing <$> b of
 -- | Controlling 'reduce'.
 data AllowedReduction
   = ProjectionReductions     -- ^ (Projection and) projection-like functions may be reduced.
-  | StaticReductions         -- ^ Functions marked STATIC may be reduced.
+  | InlineReductions         -- ^ Functions marked INLINE may be reduced.
   | CopatternReductions      -- ^ Copattern definitions may be reduced.
   | FunctionReductions       -- ^ Functions which are not projections may be reduced.
   | LevelReductions          -- ^ Reduce @'Level'@ terms.
@@ -2543,8 +2550,8 @@ instance KillRange Defn where
   killRange def =
     case def of
       Axiom role hints -> killRange2 Axiom role hints
-      Function cls comp inv mut isAbs delayed proj static smash copy term extlam with cop role ->
-        killRange13 Function cls comp inv mut isAbs delayed proj static smash copy term extlam with cop role
+      Function cls comp tt inv mut isAbs delayed proj static inline smash copy term extlam with cop rol ->
+        killRange16 Function cls comp tt inv mut isAbs delayed proj static inline smash copy term extlam with cop rol
       Datatype a b c d e f g h i j k -> killRange11 Datatype a b c d e f g h i j k
       Record a b c d e f g h i j k l -> killRange12 Record a b c d e f g h i j k l
       Constructor a b c d e f        -> killRange6 Constructor a b c d e f

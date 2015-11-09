@@ -21,6 +21,11 @@ import Agda.Syntax.Position
 import Agda.Syntax.Literal
 import Agda.Syntax.Abstract.Name
 
+data Compiled = Compiled
+  { cTreeless :: TTerm
+  , cArgUsage :: [Bool] }
+  deriving (Typeable, Show, Eq, Ord)
+
 type Args = [TTerm]
 
 -- this currently assumes that TApp is translated in a lazy/cbn fashion.
@@ -53,7 +58,7 @@ data TTerm = TVar Int
 
 -- | Compiler-related primitives. This are NOT the same thing as primitives
 -- in Agda's surface or internal syntax!
-data TPrim = PAdd | PSub | PDiv | PMod | PGeq | PLt | PIf | PSeq
+data TPrim = PAdd | PSub | PMul | PDiv | PMod | PGeq | PLt | PEq | PIf | PSeq
   deriving (Typeable, Show, Eq, Ord)
 
 mkTApp :: TTerm -> Args -> TTerm
@@ -138,3 +143,7 @@ instance Unreachable TTerm where
   isUnreachable (TError TUnreachable{}) = True
   isUnreachable (TLet _ b) = isUnreachable b
   isUnreachable _ = False
+
+instance KillRange Compiled where
+  killRange c = c -- bogus, but not used anyway
+

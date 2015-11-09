@@ -46,7 +46,9 @@ data BuiltinKit = BuiltinKit
   , isPos    :: QName -> Bool
   , isNegSuc :: QName -> Bool
   , isPlus   :: QName -> Bool
+  , isTimes  :: QName -> Bool
   , isLess   :: QName -> Bool
+  , isEqual  :: QName -> Bool
   }
 
 builtinKit :: TCM BuiltinKit
@@ -56,7 +58,9 @@ builtinKit =
              <*> is con builtinIntegerPos
              <*> is con builtinIntegerNegSuc
              <*> is def builtinNatPlus
+             <*> is def builtinNatTimes
              <*> is def builtinNatLess
+             <*> is def builtinNatEquals
   where
     con (I.Con c _) = pure $ I.conName c
     con _           = Nothing
@@ -81,9 +85,12 @@ transform BuiltinKit{..} = tr
              | isNegSuc c -> TLam $ tNegPlusK 1 (TVar 0)
 
       TDef f | isPlus f   -> TPrim PAdd
+             | isTimes f  -> TPrim PMul
              | isLess f   -> TPrim PLt
+             | isEqual f  -> TPrim PEq
         -- Note: Don't do this for builtinNatMinus! PSub is integer minus and
-        --       builtin minus is monus.
+        --       builtin minus is monus. The simplifier will do it if it can see
+        --       that it won't underflow.
 
       TApp (TCon s) [e] | isSuc s ->
         case tr e of
@@ -147,8 +154,8 @@ transform BuiltinKit{..} = tr
 
 
             TACon c a b -> [TACon c a (tr b)]
-            TALit{}     -> [b]
-            TAGuard{}   -> __IMPOSSIBLE__
+            TALit l b   -> [TALit l (tr b)]
+            TAGuard g b -> [TAGuard (tr g) (tr b)]
 
       TVar{}    -> t
       TDef{}    -> t

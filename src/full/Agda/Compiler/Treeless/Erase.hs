@@ -49,9 +49,16 @@ type E = StateT ESt TCM
 runE :: E a -> TCM a
 runE m = evalStateT m (ESt Map.empty Map.empty)
 
-eraseTerms :: TTerm -> TCM TTerm
-eraseTerms = runE . erase
+eraseTerms :: QName -> TTerm -> TCM TTerm
+eraseTerms q = runE . eraseTop q
   where
+    eraseTop q t = do
+      (_, h) <- getFunInfo q
+      case h of
+        Erasable -> pure TErased
+        Empty    -> pure TErased
+        _        -> erase t
+
     erase t = case tAppView t of
 
       TCon c : vs -> do
@@ -81,11 +88,9 @@ eraseTerms = runE . erase
           e <- erase e
           if isErased e
             then case b of
-                   TCase 0 _ _ _ -> TLet TErased <$> erase b
+                   TCase 0 _ _ _ -> tLet TErased <$> erase b
                    _             -> erase $ subst 0 TErased b else do
-            b <- erase b
-            if freeIn 0 b then pure (TLet e b)
-                          else pure $ applySubst (compactS __IMPOSSIBLE__ [Nothing]) b
+            tLet e <$> erase b
         TCase x t d bs -> do
           d  <- erase d
           bs <- mapM eraseAlt bs
@@ -99,13 +104,17 @@ eraseTerms = runE . erase
     tLam TErased = TErased
     tLam t       = TLam t
 
-    tApp f []      = f
-    tApp TErased _ = TErased
-    tApp f es      = TApp f es
+    tLet e b
+      | freeIn 0 b = TLet e b
+      | otherwise  = strengthen __IMPOSSIBLE__ b
+
+    tApp f []                  = f
+    tApp TErased _             = TErased
+    tApp f _ | isUnreachable f = tUnreachable
+    tApp f es                  = TApp f es
 
     tCase x t d bs
       | isErased d && all (isErased . aBody) bs = pure TErased
-      | not $ isErased d = noerase
       | otherwise = case bs of
         [TACon c a b] -> do
           h <- snd <$> getFunInfo c

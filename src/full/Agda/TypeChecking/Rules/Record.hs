@@ -428,6 +428,7 @@ checkRecordProjections m r con tel ftel fs = do
             (defaultDefn ai projname (killRange finalt)
               Function { funClauses        = [clause]
                        , funCompiled       = Just cc
+                       , funTreeless       = Nothing
                        , funDelayed        = NotDelayed
                        , funInv            = NotInjective
                        , funAbstr          = ConcreteDef
@@ -435,6 +436,7 @@ checkRecordProjections m r con tel ftel fs = do
                        , funProjection     = Just projection
                        , funSmashable      = True
                        , funStatic         = False
+                       , funInline         = False
                        , funCopy           = False
                        , funTerminates     = Just True
                        , funExtLam         = Nothing
