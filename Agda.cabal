@@ -49,6 +49,7 @@ data-files:         Agda.css
                     uhc-agda-base/LICENSE
                     uhc-agda-base/uhc-agda-base.cabal
                     uhc-agda-base/src/UHC/Agda/*.hs
+                    MAlonzo/src/MAlonzo/*.hs
 
 source-repository head
   type:     git
@@ -410,6 +411,7 @@ library
                     Agda.Utils.HashMap
                     Agda.Utils.Impossible
                     Agda.Utils.IO.Binary
+                    Agda.Utils.IO.Directory
                     Agda.Utils.IO.UTF8
                     Agda.Utils.IORef
                     Agda.Utils.Lens
@@ -561,7 +563,7 @@ test-suite agda-tests
                     , regex-tdfa >= 1.2.0 && < 1.3
                     , regex-tdfa-text >= 1.0.0.3 && < 1.1
                     , tasty >= 0.10 && < 0.12
-                    , tasty-silver >= 3.1.7 && < 3.2
+                    , tasty-silver >= 3.1.8 && < 3.2
                     , temporary >= 1.2.0.3 && < 1.3
                     , text >= 0.11.3.1 && < 1.3
 

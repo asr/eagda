@@ -55,7 +55,7 @@ underLam :: S a -> S a
 underLam = underLams 1
 
 underLet :: TTerm -> S a -> S a
-underLet u = onRewrite (raiseS 1) . onSubst (\rho -> wkS 1 $ composeS rho (singletonS 0 u))
+underLet u = onRewrite (raiseS 1) . onSubst (\rho -> wkS 1 $ u :# rho)
 
 rewrite :: TTerm -> S TTerm
 rewrite t = do
@@ -89,8 +89,9 @@ simplify FunctionKit{..} = simpl
         pure $ if isAtomic v then v else t
 
       TApp (TDef f) [TLit (LitNat _ 0), m, n, m']
-        | m == m', Just f == divAux -> simpl $ tOp PDiv n (tPlusK 1 m)
-        | m == m', Just f == modAux -> simpl $ tOp PMod n (tPlusK 1 m)
+        -- div/mod are equivalent to quot/rem on natural numbers.
+        | m == m', Just f == divAux -> simpl $ tOp PQuot n (tPlusK 1 m)
+        | m == m', Just f == modAux -> simpl $ tOp PRem n (tPlusK 1 m)
 
       TApp (TPrim _) _ -> pure t  -- taken care of by rewrite'
 
@@ -110,19 +111,23 @@ simplify FunctionKit{..} = simpl
         let (lets, u) = letView v
         case u of                          -- TODO: also for literals
           _ | Just (c, as) <- conView u -> simpl $ matchCon lets c as d bs
-          TCase y t1 d1 bs1 -> simpl $ mkLets lets $ TCase y t1 d1 $
+          TCase y t1 d1 bs1 -> simpl $ mkLets lets $ TCase y t1 (distrDef case1 d1) $
                                        map (distrCase case1) bs1
             where
-              -- Γ x Δ -> Γ x Δ Θ y, where x maps to y and Θ are the lets
+              -- Γ x Δ -> Γ _ Δ Θ y, where x maps to y and Θ are the lets
               n     = length lets
               rho   = liftS (x + n + 1) (raiseS 1)    `composeS`
                       singletonS (x + n + 1) (TVar 0) `composeS`
                       raiseS (n + 1)
               case1 = applySubst rho (TCase x t d bs)
 
+              distrDef v d | isUnreachable d = tUnreachable
+                           | otherwise       = tLet d v
+
               distrCase v (TACon c a b) = TACon c a $ TLet b $ raiseFrom 1 a v
               distrCase v (TALit l b)   = TALit l   $ TLet b v
               distrCase v (TAGuard g b) = TAGuard g $ TLet b v
+
           _ -> do
             d  <- simpl d
             bs <- traverse (simplAlt x) bs
@@ -178,17 +183,20 @@ simplify FunctionKit{..} = simpl
         Just (op2, j, v) <- constArithView v,
         op1 == op2, k == j,
         elem op1 [PAdd, PSub] = tOp PEq u v
+    simplPrim' (TApp (TPrim PMul) [u, v])
+      | Just 0 <- intView u = tInt 0
+      | Just 0 <- intView v = tInt 0
     simplPrim' (TApp (TPrim op) [u, v])
       | Just u <- negView u,
         Just v <- negView v,
-        elem op [PMul, PDiv] = tOp op u v
+        elem op [PMul, PQuot] = tOp op u v
       | Just u <- negView u,
-        elem op [PMul, PDiv] = simplArith $ tOp PSub (tInt 0) (tOp op u v)
+        elem op [PMul, PQuot] = simplArith $ tOp PSub (tInt 0) (tOp op u v)
       | Just v <- negView v,
-        elem op [PMul, PDiv] = simplArith $ tOp PSub (tInt 0) (tOp op u v)
-    simplPrim' (TApp (TPrim PMod) [u, v])
-      | Just u <- negView u  = simplArith $ tOp PSub (tInt 0) (tOp PMod u (unNeg v))
-      | Just v <- negView v  = tOp PMod u v
+        elem op [PMul, PQuot] = simplArith $ tOp PSub (tInt 0) (tOp op u v)
+    simplPrim' (TApp (TPrim PRem) [u, v])
+      | Just u <- negView u  = simplArith $ tOp PSub (tInt 0) (tOp PRem u (unNeg v))
+      | Just v <- negView v  = tOp PRem u v
     simplPrim' (TApp f@(TPrim op) [u, v]) = simplArith $ TApp f [simplPrim' u, simplPrim' v]
     simplPrim' u = u
 
