@@ -179,7 +179,7 @@ addATPPragma :: TPTPRole -> QName -> [QName] -> TCM ()
 addATPPragma role q qs = do
   sig <- getSignature
 
-  unless (HMap.member q (sigDefinitions sig))
+  unless (HMap.member q $ sig ^. sigDefinitions)
          (typeError $ GenericError "An ATP-pragma must appear in the same module where its argument is defined")
 
   whenJustM (getTPTPRole q)
