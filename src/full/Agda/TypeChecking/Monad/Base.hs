@@ -967,11 +967,26 @@ type InteractionPoints = Map InteractionId InteractionPoint
 ---------------------------------------------------------------------------
 
 data Signature = Sig
-      { sigSections    :: Sections
-      , sigDefinitions :: Definitions
-      , sigRewriteRules:: RewriteRuleMap  -- ^ The rewrite rules defined in this file.
+      { _sigSections    :: Sections
+      , _sigDefinitions :: Definitions
+      , _sigRewriteRules:: RewriteRuleMap  -- ^ The rewrite rules defined in this file.
       }
   deriving (Typeable, Show)
+
+sigSections :: Lens' Sections Signature
+sigSections f s =
+  f (_sigSections s) <&>
+  \x -> s {_sigSections = x}
+
+sigDefinitions :: Lens' Definitions Signature
+sigDefinitions f s =
+  f (_sigDefinitions s) <&>
+  \x -> s {_sigDefinitions = x}
+
+sigRewriteRules :: Lens' RewriteRuleMap Signature
+sigRewriteRules f s =
+  f (_sigRewriteRules s) <&>
+  \x -> s {_sigRewriteRules = x}
 
 type Sections    = Map ModuleName Section
 type Definitions = HashMap QName Definition
@@ -979,15 +994,24 @@ type RewriteRuleMap = HashMap QName RewriteRules
 type DisplayForms = HashMap QName [Open DisplayForm]
 
 data Section = Section
-      { secTelescope :: Telescope
-      , secFreeVars  :: Nat         -- ^ This is the number of parameters when
-                                    --   we're inside the section and 0
-                                    --   outside. It's used to know how much of
-                                    --   the context to apply function from the
-                                    --   section to when translating from
-                                    --   abstract to internal syntax.
+      { _secTelescope :: Telescope
+      , _secFreeVars  :: Nat
+        -- ^ This is the number of parameters when we're inside the section and
+        --   0 outside. It's used to know how much of the context to apply
+        --   function from the section to when translating from abstract to
+        --   internal syntax.
       }
   deriving (Typeable, Show)
+
+secTelescope :: Lens' Telescope Section
+secTelescope f s =
+  f (_secTelescope s) <&>
+  \x -> s {_secTelescope = x}
+
+secFreeVars :: Lens' Nat Section
+secFreeVars f s =
+  f (_secFreeVars s) <&>
+  \x -> s {_secFreeVars = x}
 
 emptySignature :: Signature
 emptySignature = Sig Map.empty HMap.empty HMap.empty
@@ -1045,7 +1069,7 @@ defRelevance = argInfoRelevance . defArgInfo
 
 -- | Non-linear (non-constructor) first-order pattern.
 data NLPat
-  = PVar {-# UNPACK #-} !Int
+  = PVar CtxId !Int
     -- ^ Matches anything (modulo non-linearity).
   | PWild
     -- ^ Matches anything (e.g. irrelevant terms).
@@ -1062,7 +1086,7 @@ data NLPat
   deriving (Typeable, Show)
 type PElims = [Elim' NLPat]
 
-type RewriteRules = [Open RewriteRule]
+type RewriteRules = [RewriteRule]
 
 -- | Rewrite rules can be added independently from function clauses.
 data RewriteRule = RewriteRule
@@ -2523,8 +2547,11 @@ instance KillRange Definition where
     killRange10 Defn ai name t pols occs displ mut compiled inst def
     -- TODO clarify: Keep the range in the defName field?
 
+instance KillRange CtxId where
+  killRange (CtxId x) = killRange1 CtxId x
+
 instance KillRange NLPat where
-  killRange (PVar x)   = killRange1 PVar x
+  killRange (PVar x y) = killRange1 PVar x y
   killRange (PWild)    = PWild
   killRange (PDef x y) = killRange2 PDef x y
   killRange (PLam x y) = killRange2 PLam x y

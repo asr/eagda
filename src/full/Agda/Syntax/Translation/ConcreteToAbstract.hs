@@ -1,12 +1,12 @@
-{-# LANGUAGE CPP #-}
-{-# LANGUAGE DoAndIfThenElse #-}
-{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE CPP                    #-}
+{-# LANGUAGE DoAndIfThenElse        #-}
+{-# LANGUAGE FlexibleInstances      #-}
 {-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE PatternGuards #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE MultiParamTypeClasses  #-}
+{-# LANGUAGE PatternGuards          #-}
+{-# LANGUAGE ScopedTypeVariables    #-}
+{-# LANGUAGE TupleSections          #-}
+{-# LANGUAGE UndecidableInstances   #-}
 
 #if __GLASGOW_HASKELL__ <= 708
 {-# LANGUAGE OverlappingInstances #-}
@@ -883,7 +883,10 @@ telHasOpenStmsOrModuleMacros = any yesBinds
     yesBind (C.TLet _ ds) = any yes ds
     yes C.ModuleMacro{}   = True
     yes C.Open{}          = True
-    yes C.Import{}        = __IMPOSSIBLE__
+    yes C.Import{}        = True -- not __IMPOSSIBLE__, see Issue #1718
+      -- However, it does not matter what we return here, as this will
+      -- become an error later: "Not a valid let-declaration".
+      -- (Andreas, 2015-11-17)
     yes (C.Mutual   _ ds) = any yes ds
     yes (C.Abstract _ ds) = any yes ds
     yes (C.Private  _ ds) = any yes ds
@@ -1756,11 +1759,21 @@ instance ToAbstract C.Clause A.Clause where
             NoWhere        -> (Nothing, [])
             AnyWhere ds    -> (Nothing, ds)
             SomeWhere m ds -> (Just m, ds)
+
+      let isTerminationPragma :: C.Declaration -> Bool
+          isTerminationPragma (C.Pragma (TerminationCheckPragma _ _)) = True
+          isTerminationPragma _                                       = False
+
       if not (null eqs)
         then do
           rhs <- toAbstract =<< toAbstractCtx TopCtx (RightHandSide eqs with wcs' rhs whds)
           return $ A.Clause lhs' rhs [] catchall
         else do
+          -- ASR (16 November 2015) Issue 1137: We ban termination
+          -- pragmas inside `where` clause.
+          when (any isTerminationPragma whds) $
+               genericError "Termination pragmas are not allowed inside where clauses"
+
           -- the right hand side is checked inside the module of the local definitions
           (rhs, ds) <- whereToAbstract (getRange wh) whname whds $
                         toAbstractCtx TopCtx (RightHandSide eqs with wcs' rhs [])

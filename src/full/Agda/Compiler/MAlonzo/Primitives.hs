@@ -143,6 +143,7 @@ primBody s = maybe unimplemented (either (hsVarUQ . HS.Ident) id <$>) $
                                   , "if isNegInf x then True  else"
                                   , "if isNaN x    then True  else"
                                   , "x < y) :: Double -> Double -> Bool)" ])
+  , "primFloatSqrt"         |-> return "(sqrt :: Double -> Double)"
   , "primRound"             |-> return "(round :: Double -> Integer)"
   , "primFloor"             |-> return "(floor :: Double -> Integer)"
   , "primCeiling"           |-> return "(ceiling :: Double -> Integer)"
@@ -183,6 +184,10 @@ primBody s = maybe unimplemented (either (hsVarUQ . HS.Ident) id <$>) $
 
   , "primDataConstructors" |-> return "(error \"primDataConstructors: not implemented\")"
   , "primDataNumberOfParameters" |-> return "(error \"primDataNumberOfParameters: not implemented\")"
+
+  -- Seq
+  , "primForce"      |-> return "\\ _ _ _ _ x f -> f $! x"
+  , "primForceLemma" |-> return "erased"
 
   -- Trust me
   , ("primTrustMe"       , Right <$> do

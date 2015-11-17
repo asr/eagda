@@ -110,12 +110,11 @@ mergeInterface i = do
     addImportedThings sig bi (iHaskellImports i) (iHaskellImportsUHC i) (iPatternSyns i)
     reportSLn "import.iface.merge" 20 $
       "  Rebinding primitives " ++ show prim
-    prim <- Map.fromList <$> mapM rebind prim
-    stImportedBuiltins %= (`Map.union` prim)
+    mapM_ rebind prim
     where
         rebind (x, q) = do
             PrimImpl _ pf <- lookupPrimitiveFunction x
-            return (x, Prim $ pf { primFunName = q })
+            stImportedBuiltins %= Map.insert x (Prim pf{ primFunName = q })
 
 addImportedThings ::
   Signature -> BuiltinThings PrimFun ->
@@ -649,7 +648,7 @@ createInterface file mname =
       "Signature:\n" :
       [ show x ++ "\n  type: " ++ show (defType def)
                ++ "\n  def:  " ++ show cc ++ "\n"
-      | (x, def) <- HMap.toList $ sigDefinitions $ iSignature i,
+      | (x, def) <- HMap.toList $ iSignature i ^. sigDefinitions,
         Function{ funCompiled = cc } <- [theDef def]
       ]
     reportSLn "import.iface.create" 7 $ "Finished serialization."
