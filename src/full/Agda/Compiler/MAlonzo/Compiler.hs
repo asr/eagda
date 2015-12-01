@@ -32,6 +32,7 @@ import System.Directory (createDirectoryIfMissing)
 import System.FilePath hiding (normalise)
 
 import Agda.Compiler.CallCompiler
+import Agda.Compiler.Common
 import Agda.Compiler.MAlonzo.Misc
 import Agda.Compiler.MAlonzo.Pretty
 import Agda.Compiler.MAlonzo.Primitives
@@ -81,29 +82,10 @@ import Agda.Utils.Impossible
 
 compilerMain :: Bool -> Interface -> TCM ()
 compilerMain modIsMain mainI =
-  -- Preserve the state (the compiler modifies the state).
-  -- Andreas, 2014-03-23 But we might want to collect Benchmark info,
-  -- so use localTCState.
-  localTCState $ do
-
-    -- Compute the output directory. Note: using commandLineOptions would make
-    -- the current pragma options persistent when we setCommandLineOptions
-    -- below.
-    opts <- gets $ stPersistentOptions . stPersistentState
-    compileDir <- case optCompileDir opts of
-      Just dir -> return dir
-      Nothing  -> do
-        -- The default output directory is the project root.
-        let tm = toTopLevelModuleName $ iModuleName mainI
-        f <- findFile tm
-        return $ filePath $ C.projectRoot f tm
-    setCommandLineOptions $
-      opts { optCompileDir = Just compileDir }
-
-    ignoreAbstractMode $ do
-      mapM_ (compile . miInterface) =<< (Map.elems <$> getVisitedModules)
-      copyRTEModules
-      callGHC modIsMain mainI
+  inCompilerEnv mainI $ do
+    mapM_ (compile . miInterface) =<< (Map.elems <$> getVisitedModules)
+    copyRTEModules
+    callGHC modIsMain mainI
 
 compile :: Interface -> TCM ()
 compile i = do
@@ -401,15 +383,6 @@ checkCover q ty n cs = do
                                 Nothing (HS.UnGuardedRhs rhs) emptyBinds]
          ]
 
--- | Move somewhere else!
-conArityAndPars :: QName -> TCM (Nat, Nat)
-conArityAndPars q = do
-  def <- getConstInfo q
-  TelV tel _ <- telView $ defType def
-  let Constructor{ conPars = np } = theDef def
-      n = length (telToList tel)
-  return (n - np, np)
-
 closedTerm :: T.TTerm -> TCM HS.Exp
 closedTerm v = hsCast <$> term v `runReaderT` initCCEnv
 
@@ -666,13 +639,6 @@ writeModule (HS.Module l m ps w ex imp ds) = do
         , "Rank2Types"
         ]
 
-
-compileDir :: TCM FilePath
-compileDir = do
-  mdir <- optCompileDir <$> commandLineOptions
-  case mdir of
-    Just dir -> return dir
-    Nothing  -> __IMPOSSIBLE__
 
 outFile' :: (HS.Pretty a, TransformBi HS.ModuleName (Wrap a)) =>
             a -> TCM (FilePath, FilePath)
