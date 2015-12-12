@@ -328,220 +328,36 @@ data WithFunctionProblem
     , wfClauses    :: [A.Clause]           -- ^ The given clauses for the with function
     }
 
+-- | Create a clause body from a term.
+--
+--   As we have type checked the term in the clause telescope, but the final
+--   body should have bindings in the order of the pattern variables,
+--   we need to apply the permutation to the checked term.
+
+mkBody :: Permutation -> Term -> ClauseBody
+mkBody perm v = foldr (\ x t -> Bind $ Abs x t) b xs
+  where
+    b  = Body $ applySubst (renamingR perm) v
+    xs = [ stringToArgName $ "h" ++ show n | n <- [0 .. permRange perm - 1] ]
+
+
 -- | Type check a function clause.
-checkClause :: Type -> A.SpineClause -> TCM Clause
+
+checkClause
+  :: Type          -- ^ Type of function defined by this clause.
+  -> A.SpineClause -- ^ Clause.
+  -> TCM Clause    -- ^ Type-checked clause.
+
 checkClause t c@(A.Clause (A.SpineLHS i x aps withPats) rhs0 wh catchall) = do
+    reportSDoc "tc.with.top" 30 $ text "Checking clause" $$ prettyA c
     unless (null withPats) $
       typeError $ UnexpectedWithPatterns withPats
     traceCall (CheckClause t c) $ do
       aps <- expandPatternSynonyms aps
-      checkLeftHandSide (CheckPatternShadowing c) (Just x) aps t $ \ (LHSResult delta ps trhs perm) -> do
+      checkLeftHandSide (CheckPatternShadowing c) (Just x) aps t $ \ lhsResult@(LHSResult delta ps trhs perm) -> do
         -- Note that we might now be in irrelevant context,
         -- in case checkLeftHandSide walked over an irrelevant projection pattern.
-
-        -- As we will be type-checking the @rhs@ in @delta@, but the final
-        -- body should have bindings in the order of the pattern variables,
-        -- we need to apply the permutation to the checked rhs @v@.
-        let mkBody v  = foldr (\ x t -> Bind $ Abs x t) b xs
-             where b  = Body $ applySubst (renamingR perm) v
-                   xs = [ stringToArgName $ "h" ++ show n
-                          | n <- [0..permRange perm - 1] ]
-
-        -- introduce trailing implicits for checking the where decls
-        TelV htel t0 <- telViewUpTo' (-1) (not . visible) $ unArg trhs
-        let n = size htel
-            checkWhere' wh = addCtxTel htel . checkWhere (size delta + n) wh . escapeContext (size htel)
-        (body, with) <- checkWhere' wh $ let
-            -- for the body, we remove the implicits again
-            handleRHS rhs =
-                case rhs of
-                  A.RHS e
-                    | any (containsAbsurdPattern . namedArg) aps ->
-                      typeError $ AbsurdPatternRequiresNoRHS aps
-                    | otherwise -> do
-                      v <- checkExpr e $ unArg trhs
-                      return (mkBody v, NoWithFunction)
-                  A.AbsurdRHS
-                    | any (containsAbsurdPattern . namedArg) aps
-                                -> return (NoBody, NoWithFunction)
-                    | otherwise -> typeError $ NoRHSRequiresAbsurdPattern aps
-                  A.RewriteRHS [] rhs [] -> handleRHS rhs
-                  -- Andreas, 2014-01-17, Issue 1402:
-                  -- If the rewrites are discarded since lhs=rhs, then
-                  -- we can actually have where clauses.
-                  A.RewriteRHS [] rhs wh -> checkWhere' wh $ handleRHS rhs
-                  A.RewriteRHS ((qname,eq):qes) rhs wh -> do
-
-                       -- Action for skipping this rewrite.
-                       -- We do not want to create unsolved metas in case of
-                       -- a futile rewrite with a reflexive equation.
-                       -- Thus, we restore the state in this case,
-                       -- unless the rewrite expression contains questionmarks.
-                       st <- get
-                       let recurse = do
-                            st' <- get
-                            -- Comparing the whole stInteractionPoints maps is a bit
-                            -- wasteful, but we assume
-                            -- 1. rewriting with a reflexive equality to happen rarely,
-                            -- 2. especially with ?-holes in the rewrite expression
-                            -- 3. and a large overall number of ?s.
-                            let sameIP = (==) `on` (^.stInteractionPoints)
-                            when (sameIP st st') $ put st
-                            handleRHS $ A.RewriteRHS qes rhs wh
-
-                       -- Get value and type of rewrite-expression.
-
-                       (proof,t) <- inferExpr eq
-
-                       -- Get the names of builtins EQUALITY and REFL.
-
-                       equality <- primEqualityName
-                       Con reflCon [] <- ignoreSharing <$> primRefl
-
-                       -- Check that the type is actually an equality (lhs ≡ rhs)
-                       -- and extract lhs, rhs, and their type.
-
-                       t' <- reduce =<< instantiateFull t
-                       (rewriteType,rewriteFrom,rewriteTo) <- do
-                         case ignoreSharing $ unEl t' of
-                           Def equality'
-                             [ _level
-                             , Apply (Arg (ArgInfo Hidden    Relevant) rewriteType)
-                             , Apply (Arg (ArgInfo NotHidden Relevant) rewriteFrom)
-                             , Apply (Arg (ArgInfo NotHidden Relevant) rewriteTo)
-                             ] | equality' == equality ->
-                                 return (El (getSort t') rewriteType, rewriteFrom, rewriteTo)
-                           _ -> do
-                            err <- text "Cannot rewrite by equation of type" <+> prettyTCM t'
-                            typeError $ GenericDocError err
-
-                       -- Andreas, 2014-05-17  Issue 1110:
-                       -- Rewriting with a reflexive equation has no effect, but gives an
-                       -- incomprehensible error message about the generated
-                       -- with clause. Thus, we rather do simply nothing if
-                       -- rewriting with @a ≡ a@ is attempted.
-
-                       let isReflexive = tryConversion $ dontAssignMetas $
-                            equalTerm rewriteType rewriteFrom rewriteTo
-
-                       ifM isReflexive recurse $ {- else -} do
-
-                       -- Transform 'rewrite' clause into a 'with' clause,
-                         -- going back to abstract syntax.
-
-                         let cinfo      = ConPatInfo ConPCon patNoRange
-                             underscore = A.Underscore Info.emptyMetaInfo
-
-                         -- Andreas, 2015-02-09 Issue 1421: kill ranges
-                         -- as reify puts in ranges that may point to other files.
-                         (rewriteFromExpr,rewriteToExpr,rewriteTypeExpr, proofExpr) <- killRange <$> do
-                          disableDisplayForms $ withShowAllArguments $ reify
-                            (rewriteFrom,   rewriteTo,    rewriteType    , proof)
-                         let (inner, outer) -- the where clauses should go on the inner-most with
-                               | null qes  = ([], wh)
-                               | otherwise = (wh, [])
-                             -- Andreas, 2014-03-05 kill range of copied patterns
-                             -- since they really do not have a source location.
-                             newRhs = A.WithRHS qname [rewriteFromExpr, proofExpr]
-                                      [A.Clause (A.LHS i (A.LHSHead x (killRange aps)) pats)
-                                        -- Note: handleRHS (A.RewriteRHS _ eqs _ _)
-                                        -- is defined by induction on eqs.
-                                        (A.RewriteRHS qes (insertPatterns pats rhs) inner)
-                                        outer False]
-                             pats = [ A.DotP patNoRange underscore
-                                    , A.ConP cinfo (AmbQ [conName reflCon]) []]
-                         reportSDoc "tc.rewrite.top" 25 $ vcat
-                           [ text "rewrite"
-                           , text "  from  = " <+> prettyTCM rewriteFromExpr
-                           , text "  to    = " <+> prettyTCM rewriteToExpr
-                           , text "  typ   = " <+> prettyTCM rewriteType
-                           , text "  proof = " <+> prettyTCM proofExpr
-                           , text "  equ   = " <+> prettyTCM t'
-                           ]
-                         handleRHS newRhs
-
-                  A.WithRHS aux es cs -> do
-                    reportSDoc "tc.with.top" 15 $ vcat
-                      [ text "TC.Rules.Def.checkclause reached A.WithRHS"
-                      , sep $ prettyA aux : map (parens . prettyA) es
-                      ]
-                    reportSDoc "tc.with.top" 30 $
-                      prettyA c
-                    reportSDoc "tc.with.top" 20 $ do
-                      m  <- currentModule
-                      nfv <- getModuleFreeVars m
-                      sep [ text "with function module:" <+>
-                            prettyList (map prettyTCM $ mnameToList m)
-                          ,  text $ "free variables: " ++ show nfv
-                          ]
-
-                    -- Infer the types of the with expressions
-                    (vs0, as) <- unzip <$> mapM inferExprForWith es
-                    (vs, as)  <- normalise (vs0, as)
-
-                    -- Andreas, 2012-09-17: for printing delta,
-                    -- we should remove it from the context first
-                    reportSDoc "tc.with.top" 25 $ escapeContext (size delta) $ vcat
-                      [ text "delta  =" <+> prettyTCM delta
-                      ]
-                    reportSDoc "tc.with.top" 25 $ vcat
-                      [ text "vs     =" <+> prettyTCM vs
-                      , text "as     =" <+> prettyTCM as
-                      , text "perm   =" <+> text (show perm)
-                      ]
-
-                    -- Split the telescope into the part needed to type the with arguments
-                    -- and all the other stuff
-                    (delta1, delta2, perm', t', as, vs) <- return $
-                      splitTelForWith delta (unArg trhs) as vs
-                    let finalPerm = composeP perm' perm
-
-                    reportSLn "tc.with.top" 75 $ "delta  = " ++ show delta
-
-                    -- Andreas, 2012-09-17: for printing delta,
-                    -- we should remove it from the context first
-                    reportSDoc "tc.with.top" 25 $ escapeContext (size delta) $ vcat
-                      [ text "delta1 =" <+> prettyTCM delta1
-                      , text "delta2 =" <+> addCtxTel delta1 (prettyTCM delta2)
-                      ]
-                    reportSDoc "tc.with.top" 25 $ vcat
-                      [ text "perm'  =" <+> text (show perm')
-                      , text "fPerm  =" <+> text (show finalPerm)
-                      ]
-
-                    -- Create the body of the original function
-
-                    -- All the context variables
-                    us <- getContextArgs
-                    let n = size us
-                        m = size delta
-                        -- First the variables bound outside this definition
-                        (us0, us1') = genericSplitAt (n - m) us
-                        -- Then permute the rest and grab those needed to for the with arguments
-                        (us1, us2)  = genericSplitAt (size delta1) $ permute perm' us1'
-                        -- Now stuff the with arguments in between and finish with the remaining variables
-                        v    = Def aux $ map Apply $ us0 ++ us1 ++ (map defaultArg vs0) ++ us2
-
-                    -- Andreas, 2013-02-26 add with-name to signature for printing purposes
-                    addConstant aux =<< do
-                      useTerPragma $ Defn defaultArgInfo aux typeDontCare [] [] [] 0 noCompiledRep Nothing emptyFunction
-
-                    -- Andreas, 2013-02-26 separate msgs to see which goes wrong
-                    reportSDoc "tc.with.top" 20 $
-                      text "    with arguments" <+> do escapeContext (size delta) $ addContext delta1 $ addContext delta2 $ prettyList (map prettyTCM vs)
-                    reportSDoc "tc.with.top" 20 $
-                      text "             types" <+> do escapeContext (size delta) $ addContext delta1 $ prettyList (map prettyTCM as)
-                    reportSDoc "tc.with.top" 20 $
-                      text "with function call" <+> prettyTCM v
-                    reportSDoc "tc.with.top" 20 $
-                      text "           context" <+> (prettyTCM =<< getContextTelescope)
-                    reportSDoc "tc.with.top" 20 $
-                      text "             delta" <+> do escapeContext (size delta) $ prettyTCM delta
-                    reportSDoc "tc.with.top" 20 $
-                      text "              body" <+> (addCtxTel delta $ prettyTCM $ mkBody v)
-
-                    return (mkBody v, WithFunction x aux t delta1 delta2 vs as t' ps perm' perm finalPerm cs)
-            in handleRHS rhs0
+        (body, with) <- checkWhere (unArg trhs) wh $ checkRHS i x aps t lhsResult rhs0
         escapeContext (size delta) $ checkWithFunction with
 
         reportSDoc "tc.lhs.top" 10 $ escapeContext (size delta) $ vcat
@@ -564,6 +380,208 @@ checkClause t c@(A.Clause (A.SpineLHS i x aps withPats) rhs0 wh catchall) = do
                  , clauseCatchall  = catchall
                  }
 
+-- | Type check the @with@ and @rewrite@ lhss and/or the rhs.
+
+checkRHS
+  :: LHSInfo                 -- ^ Range of lhs.
+  -> QName                   -- ^ Name of function.
+  -> [NamedArg A.Pattern]    -- ^ Patterns in lhs.
+  -> Type                    -- ^ Type of function.
+  -> LHSResult               -- ^ Result of type-checking patterns
+  -> A.RHS                   -- ^ Rhs to check.
+  -> TCM (ClauseBody, WithFunctionProblem)
+
+checkRHS i x aps t (LHSResult delta ps trhs perm) rhs0 = handleRHS rhs0
+  where
+  absurdPat = any (containsAbsurdPattern . namedArg) aps
+  handleRHS rhs =
+    case rhs of
+
+      -- Case: ordinary RHS
+      A.RHS e -> do
+        when absurdPat $ typeError $ AbsurdPatternRequiresNoRHS aps
+        v <- checkExpr e $ unArg trhs
+        return (mkBody perm v, NoWithFunction)
+
+      -- Case: no RHS
+      A.AbsurdRHS -> do
+        unless absurdPat $ typeError $ NoRHSRequiresAbsurdPattern aps
+        return (NoBody, NoWithFunction)
+
+      -- Case: @rewrite@
+      A.RewriteRHS [] rhs [] -> handleRHS rhs
+      -- Andreas, 2014-01-17, Issue 1402:
+      -- If the rewrites are discarded since lhs=rhs, then
+      -- we can actually have where clauses.
+      A.RewriteRHS [] rhs wh -> checkWhere (unArg trhs) wh $ handleRHS rhs
+      A.RewriteRHS ((qname,eq):qes) rhs wh -> do
+
+        -- Action for skipping this rewrite.
+        -- We do not want to create unsolved metas in case of
+        -- a futile rewrite with a reflexive equation.
+        -- Thus, we restore the state in this case,
+        -- unless the rewrite expression contains questionmarks.
+        st <- get
+        let recurse = do
+             st' <- get
+             -- Comparing the whole stInteractionPoints maps is a bit
+             -- wasteful, but we assume
+             -- 1. rewriting with a reflexive equality to happen rarely,
+             -- 2. especially with ?-holes in the rewrite expression
+             -- 3. and a large overall number of ?s.
+             let sameIP = (==) `on` (^.stInteractionPoints)
+             when (sameIP st st') $ put st
+             handleRHS $ A.RewriteRHS qes rhs wh
+
+        -- Get value and type of rewrite-expression.
+
+        (proof,t) <- inferExpr eq
+
+        -- Get the names of builtins EQUALITY and REFL.
+
+        equality <- primEqualityName
+        Con reflCon [] <- ignoreSharing <$> primRefl
+
+        -- Check that the type is actually an equality (lhs ≡ rhs)
+        -- and extract lhs, rhs, and their type.
+
+        t' <- reduce =<< instantiateFull t
+        (rewriteType,rewriteFrom,rewriteTo) <- do
+          case ignoreSharing $ unEl t' of
+            Def equality'
+              [ _level
+              , Apply (Arg (ArgInfo Hidden    Relevant) rewriteType)
+              , Apply (Arg (ArgInfo NotHidden Relevant) rewriteFrom)
+              , Apply (Arg (ArgInfo NotHidden Relevant) rewriteTo)
+              ] | equality' == equality ->
+                  return (El (getSort t') rewriteType, rewriteFrom, rewriteTo)
+            _ -> do
+             err <- text "Cannot rewrite by equation of type" <+> prettyTCM t'
+             typeError $ GenericDocError err
+
+        -- Andreas, 2014-05-17  Issue 1110:
+        -- Rewriting with a reflexive equation has no effect, but gives an
+        -- incomprehensible error message about the generated
+        -- with clause. Thus, we rather do simply nothing if
+        -- rewriting with @a ≡ a@ is attempted.
+
+        let isReflexive = tryConversion $ dontAssignMetas $
+             equalTerm rewriteType rewriteFrom rewriteTo
+
+        ifM isReflexive recurse $ {- else -} do
+
+          -- Transform 'rewrite' clause into a 'with' clause,
+          -- going back to abstract syntax.
+
+          -- Andreas, 2015-02-09 Issue 1421: kill ranges
+          -- as reify puts in ranges that may point to other files.
+          (rewriteFromExpr,rewriteToExpr,rewriteTypeExpr, proofExpr) <- killRange <$> do
+           disableDisplayForms $ withShowAllArguments $ reify
+             (rewriteFrom,   rewriteTo,    rewriteType    , proof)
+          let (inner, outer) -- the where clauses should go on the inner-most with
+                | null qes  = ([], wh)
+                | otherwise = (wh, [])
+              -- Andreas, 2014-03-05 kill range of copied patterns
+              -- since they really do not have a source location.
+              newRhs = A.WithRHS qname [rewriteFromExpr, proofExpr]
+                       [A.Clause (A.LHS i (A.LHSHead x (killRange aps)) pats)
+                         -- Note: handleRHS (A.RewriteRHS _ eqs _ _)
+                         -- is defined by induction on eqs.
+                         (A.RewriteRHS qes (insertPatterns pats rhs) inner)
+                         outer False]
+              cinfo  = ConPatInfo ConPCon patNoRange
+              pats   = [ A.WildP patNoRange
+                       , A.ConP cinfo (AmbQ [conName reflCon]) []]
+          reportSDoc "tc.rewrite.top" 25 $ vcat
+            [ text "rewrite"
+            , text "  from  = " <+> prettyTCM rewriteFromExpr
+            , text "  to    = " <+> prettyTCM rewriteToExpr
+            , text "  typ   = " <+> prettyTCM rewriteType
+            , text "  proof = " <+> prettyTCM proofExpr
+            , text "  equ   = " <+> prettyTCM t'
+            ]
+          handleRHS newRhs
+
+      -- Case: @with@
+      A.WithRHS aux es cs -> do
+        reportSDoc "tc.with.top" 15 $ vcat
+          [ text "TC.Rules.Def.checkclause reached A.WithRHS"
+          , sep $ prettyA aux : map (parens . prettyA) es
+          ]
+        reportSDoc "tc.with.top" 20 $ do
+          nfv <- getCurrentModuleFreeVars
+          m   <- currentModule
+          sep [ text "with function module:" <+>
+                prettyList (map prettyTCM $ mnameToList m)
+              ,  text $ "free variables: " ++ show nfv
+              ]
+
+        -- Infer the types of the with expressions
+        (vs0, as) <- unzip <$> mapM inferExprForWith es
+        (vs, as)  <- normalise (vs0, as)
+
+        -- Andreas, 2012-09-17: for printing delta,
+        -- we should remove it from the context first
+        reportSDoc "tc.with.top" 25 $ escapeContext (size delta) $ vcat
+          [ text "delta  =" <+> prettyTCM delta
+          ]
+        reportSDoc "tc.with.top" 25 $ vcat
+          [ text "vs     =" <+> prettyTCM vs
+          , text "as     =" <+> prettyTCM as
+          , text "perm   =" <+> text (show perm)
+          ]
+
+        -- Split the telescope into the part needed to type the with arguments
+        -- and all the other stuff
+        (delta1, delta2, perm', t', as, vs) <- return $
+          splitTelForWith delta (unArg trhs) as vs
+        let finalPerm = composeP perm' perm
+
+        reportSLn "tc.with.top" 75 $ "delta  = " ++ show delta
+
+        -- Andreas, 2012-09-17: for printing delta,
+        -- we should remove it from the context first
+        reportSDoc "tc.with.top" 25 $ escapeContext (size delta) $ vcat
+          [ text "delta1 =" <+> prettyTCM delta1
+          , text "delta2 =" <+> addCtxTel delta1 (prettyTCM delta2)
+          ]
+        reportSDoc "tc.with.top" 25 $ vcat
+          [ text "perm'  =" <+> text (show perm')
+          , text "fPerm  =" <+> text (show finalPerm)
+          ]
+
+        -- Create the body of the original function
+
+        -- All the context variables
+        us <- getContextArgs
+        let n = size us
+            m = size delta
+            -- First the variables bound outside this definition
+            (us0, us1') = genericSplitAt (n - m) us
+            -- Then permute the rest and grab those needed to for the with arguments
+            (us1, us2)  = genericSplitAt (size delta1) $ permute perm' us1'
+            -- Now stuff the with arguments in between and finish with the remaining variables
+            v    = Def aux $ map Apply $ us0 ++ us1 ++ (map defaultArg vs0) ++ us2
+            body = mkBody perm v
+        -- Andreas, 2013-02-26 add with-name to signature for printing purposes
+        addConstant aux =<< do
+          useTerPragma $ Defn defaultArgInfo aux typeDontCare [] [] [] 0 noCompiledRep Nothing emptyFunction
+
+        -- Andreas, 2013-02-26 separate msgs to see which goes wrong
+        reportSDoc "tc.with.top" 20 $
+          text "    with arguments" <+> do escapeContext (size delta) $ addContext delta1 $ addContext delta2 $ prettyList (map prettyTCM vs)
+        reportSDoc "tc.with.top" 20 $
+          text "             types" <+> do escapeContext (size delta) $ addContext delta1 $ prettyList (map prettyTCM as)
+        reportSDoc "tc.with.top" 20 $
+          text "with function call" <+> prettyTCM v
+        reportSDoc "tc.with.top" 20 $
+          text "           context" <+> (prettyTCM =<< getContextTelescope)
+        reportSDoc "tc.with.top" 20 $
+          text "             delta" <+> do escapeContext (size delta) $ prettyTCM delta
+        reportSDoc "tc.with.top" 20 $
+          text "              body" <+> (addCtxTel delta $ prettyTCM body)
+
+        return (body, WithFunction x aux t delta1 delta2 vs as t' ps perm' perm finalPerm cs)
 
 checkWithFunction :: WithFunctionProblem -> TCM ()
 checkWithFunction NoWithFunction = return ()
@@ -664,25 +682,36 @@ checkWithFunction (WithFunction f aux t delta1 delta2 vs as b qs perm' perm fina
   where
     info = Info.mkDefInfo (nameConcrete $ qnameName aux) noFixity' PublicAccess ConcreteDef (getRange cs)
 
--- | Type check a where clause. The first argument is the number of variables
---   bound in the left hand side.
-checkWhere :: Nat -> [A.Declaration] -> TCM a -> TCM a
-checkWhere _ []                      ret = ret
-checkWhere n [A.ScopedDecl scope ds] ret = withScope_ scope $ checkWhere n ds ret
-checkWhere n [A.Section _ m tel ds]  ret = do
-  checkTelescope tel $ \ tel' -> do
-    reportSDoc "tc.def.where" 10 $
-      text "adding section:" <+> prettyTCM m <+> text (show (size tel')) <+> text (show n)
-    addSection m (size tel' + n)  -- the variables bound in the lhs
-                                  -- are also parameters
-    verboseS "tc.def.where" 10 $ do
-      dx   <- prettyTCM m
-      dtel <- mapM prettyAs tel
-      dtel' <- prettyTCM =<< lookupSection m
-      reportSLn "tc.def.where" 10 $ "checking where section " ++ show dx ++ " " ++ show dtel
-      reportSLn "tc.def.where" 10 $ "        actual tele: " ++ show dtel'
-    withCurrentModule m $ checkDecls ds >> ret
-checkWhere _ _ _ = __IMPOSSIBLE__
+-- | Type check a where clause.
+checkWhere
+  :: Type            -- ^ Type of rhs.
+  -> [A.Declaration] -- ^ Where-declarations to check.
+  -> TCM a           -- ^ Continutation.
+  -> TCM a
+checkWhere trhs ds ret0 = do
+  -- Temporarily add trailing hidden arguments to check where-declarartions.
+  TelV htel _ <- telViewUpTo' (-1) (not . visible) trhs
+  let
+    -- Remove htel after checking ds.
+    ret = escapeContext (size htel) $ ret0
+    loop ds = case ds of
+      [] -> ret
+      [A.ScopedDecl scope ds] -> withScope_ scope $ loop ds
+      [A.Section _ m tel ds]  -> do
+        checkTelescope tel $ \ tel' -> do
+          reportSDoc "tc.def.where" 10 $
+            text "adding section:" <+> prettyTCM m <+> text (show (size tel'))
+          addSection m
+          verboseS "tc.def.where" 10 $ do
+            dx   <- prettyTCM m
+            dtel <- mapM prettyAs tel
+            dtel' <- prettyTCM =<< lookupSection m
+            reportSLn "tc.def.where" 10 $ "checking where section " ++ show dx ++ " " ++ show dtel
+            reportSLn "tc.def.where" 10 $ "        actual tele: " ++ show dtel'
+          withCurrentModule m $ checkDecls ds >> ret
+      _ -> __IMPOSSIBLE__
+  -- Add htel to check ds.
+  addCtxTel htel $ loop ds
 
 -- | Check if a pattern contains an absurd pattern. For instance, @suc ()@
 containsAbsurdPattern :: A.Pattern -> Bool
