@@ -2159,6 +2159,7 @@ data TypeError
         | SafeFlagNonTerminating
         | SafeFlagTerminating
         | SafeFlagPrimTrustMe
+        | SafeFlagNoPositivityCheck
     -- Language option errors
         | NeedOptionCopatterns
         | NeedOptionRewriting

@@ -142,6 +142,7 @@ import Agda.Utils.Tuple
     'MEASURE'                 { TokKeyword KwMEASURE $$ }
     'NO_SMASHING'             { TokKeyword KwNO_SMASHING $$ }
     'NO_TERMINATION_CHECK'    { TokKeyword KwNO_TERMINATION_CHECK $$ }
+    'NO_POSITIVITY_CHECK'     { TokKeyword KwNO_POSITIVITY_CHECK $$ }
     'NON_TERMINATING'         { TokKeyword KwNON_TERMINATING $$ }
     'OPTIONS'                 { TokKeyword KwOPTIONS $$ }
     'REWRITE'                 { TokKeyword KwREWRITE $$ }
@@ -268,6 +269,7 @@ Token
     | 'MEASURE'                 { TokKeyword KwMEASURE $1 }
     | 'NO_SMASHING'             { TokKeyword KwNO_SMASHING $1 }
     | 'NO_TERMINATION_CHECK'    { TokKeyword KwNO_TERMINATION_CHECK $1 }
+    | 'NO_POSITIVITY_CHECK'     { TokKeyword KwNO_POSITIVITY_CHECK $1 }
     | 'NON_TERMINATING'         { TokKeyword KwNON_TERMINATING $1 }
     | 'OPTIONS'                 { TokKeyword KwOPTIONS $1 }
     | 'REWRITE'                 { TokKeyword KwREWRITE $1 }
@@ -1360,11 +1362,42 @@ DeclarationPragma
   | MeasurePragma            { $1 }
   | CatchallPragma           { $1 }
   | DisplayPragma            { $1 }
+  | NoPositivityCheckPragma  { $1 }
   | OptionsPragma            { $1 }
     -- Andreas, 2014-03-06
     -- OPTIONS pragma not allowed everywhere, but don't give parse error.
     -- Give better error during type checking instead.
   | ATPPragma                { $1 }
+
+-- For compatibility reasons the roles are not reserved words.
+
+-- ASR TODO (28 December 2015). Move to the end. We wrote this
+-- function here for avoiding conflicts when merging master.
+ATPPragma :: { Pragma }
+ATPPragma
+  : '{-#' 'ATP' string PragmaQNames '#-}'
+    {% let s = snd $3 in
+       case s of
+         "axiom"       -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                   TPTPAxiom $4
+         "axioms"      -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                   TPTPAxiom $4
+         "definition"  -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                   TPTPDefinition $4
+         "definitions" -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                   TPTPDefinition $4
+         "hint"        -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                   TPTPHint $4
+         "hints"       -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                   TPTPHint $4
+         "prove"       -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                   TPTPConjecture $4
+         "type"        -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                   TPTPType $4
+         "types"       -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
+                                   TPTPType $4
+         _             -> parseError $ "Invalid role: " ++ s ++ "."
+    }
 
 OptionsPragma :: { Pragma }
 OptionsPragma : '{-#' 'OPTIONS' PragmaStrings '#-}' { OptionsPragma (getRange ($1,$2,$4)) $3 }
@@ -1497,32 +1530,10 @@ ImportUHCPragma
 ImpossiblePragma :: { Pragma }
   : '{-#' 'IMPOSSIBLE' '#-}'  { ImpossiblePragma (getRange ($1,$2,$3)) }
 
--- For compatibility reasons the roles are not reserved words.
-ATPPragma :: { Pragma }
-ATPPragma
-  : '{-#' 'ATP' string PragmaQNames '#-}'
-    {% let s = snd $3 in
-       case s of
-         "axiom"       -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                   TPTPAxiom $4
-         "axioms"      -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                   TPTPAxiom $4
-         "definition"  -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                   TPTPDefinition $4
-         "definitions" -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                   TPTPDefinition $4
-         "hint"        -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                   TPTPHint $4
-         "hints"       -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                   TPTPHint $4
-         "prove"       -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                   TPTPConjecture $4
-         "type"        -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                   TPTPType $4
-         "types"       -> return $ ATPPragma (getRange ($1,$2,fst $3,$4,$5))
-                                   TPTPType $4
-         _             -> parseError $ "Invalid role: " ++ s ++ "."
-    }
+NoPositivityCheckPragma :: { Pragma }
+NoPositivityCheckPragma
+  : '{-#' 'NO_POSITIVITY_CHECK' '#-}'
+    { NoPositivityCheckPragma (getRange ($1,$2,$3)) }
 
 {--------------------------------------------------------------------------
     Sequences of declarations
