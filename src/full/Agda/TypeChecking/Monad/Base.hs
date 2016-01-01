@@ -2155,7 +2155,6 @@ data TypeError
     -- Safe flag errors
         | SafeFlagPostulate C.Name
         | SafeFlagPragma [String]
-        | SafeFlagNoTerminationCheck
         | SafeFlagNonTerminating
         | SafeFlagTerminating
         | SafeFlagPrimTrustMe

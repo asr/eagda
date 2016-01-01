@@ -566,10 +566,12 @@ niceDeclarations ds = do
 
           -- Record modules are, for performance reasons, not always
           -- placed in mutual blocks.
-          let prefix = case (d, ds0) of
+          let prefix :: [NiceDeclaration] -> [NiceDeclaration]
+              prefix = case (d, ds0) of
                 (NiceRecSig{}, [r@RecDef{}]) -> ([d, r] ++)
                 _                            ->
                   (NiceMutual (getRange (d : ds0)) tc (and pcs) (d : ds0) :)
+
           prefix <$> inferMutualBlocks ds1
       where
         untilAllDefined :: ([TerminationCheck], [PositivityCheck])
@@ -582,42 +584,55 @@ niceDeclarations ds = do
               []     -> __IMPOSSIBLE__ <$ (checkLoneSigs . Map.toList =<< use loneSigs)
               d : ds -> case declKind d of
                 LoneSig k x ->
-                  addLoneSig x k >> cons d (untilAllDefined ((terminationCheck k : tc), (positivityCheck k : pc)) ds)
+                  addLoneSig x k >> cons d (untilAllDefined (terminationCheck k : tc, positivityCheck k : pc) ds)
                 LoneDef k x ->
-                  removeLoneSig x >> cons d (untilAllDefined ((terminationCheck k : tc), (positivityCheck k : pc)) ds)
+                  removeLoneSig x >> cons d (untilAllDefined (terminationCheck k : tc, positivityCheck k : pc) ds)
                 OtherDecl   -> cons d (untilAllDefined (tc, pc) ds)
           where
-            -- ASR (26 December 2015): Type annotated version of the `cons` function.
+            -- ASR (26 December 2015): Type annotated version of the @cons@ function.
             -- cons d = fmap $
             --            (id :: (([TerminationCheck], [PositivityCheck]) -> ([TerminationCheck], [PositivityCheck])))
             --            *** (d :)
             --            *** (id :: [NiceDeclaration] -> [NiceDeclaration])
-            cons d = fmap (id *** (d : ) *** id)
+            cons d = fmap (id *** (d :) *** id)
 
     notMeasure TerminationMeasure{} = False
     notMeasure _ = True
 
     nice :: [Declaration] -> Nice [NiceDeclaration]
     nice [] = return []
+
     nice (Pragma (TerminationCheckPragma r NoTerminationCheck) : _) =
       throwError $ PragmaNoTerminationCheck r
+
     nice (Pragma (TerminationCheckPragma r tc) : ds@(Mutual{} : _)) | notMeasure tc = do
       ds <- nice ds
       case ds of
         NiceMutual r _ pc ds' : ds -> return $ NiceMutual r tc pc ds' : ds
-        _ -> __IMPOSSIBLE__
+        _                          -> __IMPOSSIBLE__
+
     nice (Pragma (TerminationCheckPragma r tc) : d@TypeSig{} : ds) =
       niceTypeSig tc d ds
+
     nice (Pragma (TerminationCheckPragma r tc) : d@FunClause{} : ds) | notMeasure tc =
       niceFunClause tc False d ds
-    nice (Pragma (CatchallPragma r) : d@FunClause{} : ds) =
-      niceFunClause TerminationCheck True d ds
+
     nice (Pragma (TerminationCheckPragma r tc) : ds@(UnquoteDecl{} : _)) | notMeasure tc = do
       NiceUnquoteDecl r f p a i _ x e : ds <- nice ds
       return $ NiceUnquoteDecl r f p a i tc x e : ds
 
+    nice (Pragma (TerminationCheckPragma r tc) : d@(Pragma (NoPositivityCheckPragma _)) : ds@(Mutual{} : _)) | notMeasure tc = do
+      ds <- nice (d : ds)
+      case ds of
+        NiceMutual r _ pc ds' : ds -> return $ NiceMutual r tc pc ds' : ds
+        _                          -> __IMPOSSIBLE__
+
+    nice (Pragma (CatchallPragma r) : d@FunClause{} : ds) =
+      niceFunClause TerminationCheck True d ds
+
     nice (d@TypeSig{} : Pragma (TerminationCheckPragma r (TerminationMeasure _ x)) : ds) =
       niceTypeSig (TerminationMeasure r x) d ds
+
     -- nice (Pragma (MeasurePragma r x) : d@FunClause{} : ds) =
     --   niceFunClause (TerminationMeasure r x) d ds
 
@@ -633,25 +648,24 @@ niceDeclarations ds = do
     nice (Pragma (NoPositivityCheckPragma _) : d@(DataSig _ Inductive _ _ _) : ds) =
       niceDataSig False d ds
 
+    nice (Pragma (NoPositivityCheckPragma _) : d@(Pragma (TerminationCheckPragma _ _)) : ds@(Mutual{} : _)) = do
+      ds <- nice (d : ds)
+      case ds of
+        NiceMutual r tc _ ds' : ds -> return $ NiceMutual r tc False ds' : ds
+        _                          -> __IMPOSSIBLE__
+
     nice (d:ds) = do
       case d of
-        TypeSig{} -> niceTypeSig TerminationCheck d ds
-        FunClause{} -> niceFunClause TerminationCheck False d ds
-        Field x t                     -> (++) <$> niceAxioms FieldBlock [ d ] <*> nice ds
-        DataSig r CoInductive x tel t -> throwError (Codata r)
-        Data r CoInductive x tel t cs -> throwError (Codata r)
+        TypeSig{}                     -> niceTypeSig TerminationCheck d ds
+        FunClause{}                   -> niceFunClause TerminationCheck False d ds
+        Field{}                       -> (++) <$> niceAxioms FieldBlock [ d ] <*> nice ds
+        DataSig r CoInductive _ _ _   -> throwError (Codata r)
+        Data r CoInductive _ _ _ _    -> throwError (Codata r)
         d@(DataSig _ Inductive _ _ _) -> niceDataSig True d ds
         d@(Data _ Inductive _ _ _ _)  -> niceDataDef True d ds
-        RecordSig r x tel t -> do
-          addLoneSig x (RecName $ parameters tel)
-          fx <- getFixity x
-          (NiceRecSig r fx PublicAccess x tel t True :) <$> nice ds
-        Record r x i e c tel t cs -> do
-          t <- defaultTypeSig (RecName $ parameters tel) x t
-          c <- traverse (\(cname, cinst) -> do fix <- getFixity cname; return (ThingWithFixity cname fix, cinst)) c
-          (++) <$> dataOrRec True (\x1 x2 x3 x4 -> RecDef x1 x2 x3 x4 i e c) NiceRecSig
-                             niceDeclarations r x tel t (Just cs)
-               <*> nice ds
+        d@RecordSig{}                 -> niceRecordSig True d ds
+        d@Record{}                    -> niceRecord True d ds
+
         Mutual r ds' ->
           (:) <$> (mkOldMutual r =<< nice ds') <*> nice ds
 
@@ -778,6 +792,24 @@ niceDeclarations ds = do
       (++) <$> dataOrRec pc DataDef NiceDataSig (niceAxioms DataBlock) r x tel (Just t) Nothing
            <*> nice ds
     niceDataSig _ _ _ = __IMPOSSIBLE__
+
+    niceRecord :: PositivityCheck -> Declaration -> [Declaration] ->
+                  Nice [NiceDeclaration]
+    niceRecord pc (Record r x i e c tel t cs) ds = do
+      t <- defaultTypeSig (RecName $ parameters tel) x t
+      c <- traverse (\(cname, cinst) -> do fix <- getFixity cname; return (ThingWithFixity cname fix, cinst)) c
+      (++) <$> dataOrRec pc (\x1 x2 x3 x4 -> RecDef x1 x2 x3 x4 i e c) NiceRecSig
+                 niceDeclarations r x tel t (Just cs)
+           <*> nice ds
+    niceRecord _ _ _ = __IMPOSSIBLE__
+
+    niceRecordSig :: PositivityCheck -> Declaration -> [Declaration] ->
+                     Nice [NiceDeclaration]
+    niceRecordSig pc (RecordSig r x tel t) ds = do
+      addLoneSig x (RecName $ parameters tel)
+      fx <- getFixity x
+      (NiceRecSig r fx PublicAccess x tel t pc :) <$> nice ds
+    niceRecordSig _ _ _ = __IMPOSSIBLE__
 
     -- We could add a default type signature here, but at the moment we can't
     -- infer the type of a record or datatype, so better to just fail here.
@@ -973,7 +1005,7 @@ niceDeclarations ds = do
         tc <- combineTermChecks r tcs
 
         let pc :: PositivityCheck
-            pc = and $ map positivityCheckOldMutual ds
+            pc = all positivityCheckOldMutual ds
 
         return $ NiceMutual r tc pc $ sigs ++ other
       where
