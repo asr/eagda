@@ -556,6 +556,7 @@ test-suite agda-tests
   other-modules:    Compiler.Tests
                     , Fail.Tests
                     , LaTeXAndHTML.Tests
+                    , LibSucceed.Tests
                     , Succeed.Tests
                     , Utils
   build-depends:      array >= 0.4.0.1 && < 0.6
@@ -576,4 +577,8 @@ test-suite agda-tests
   if flag(uhc)
     cpp-options:    -DUHC_BACKEND
 
-  ghc-options:      -threaded -Wall -Werror
+  ghc-options:      -threaded
+                    -Wall
+                    -fwarn-identities
+                    -fwarn-missing-local-sigs
+                    -Werror
