@@ -1127,6 +1127,11 @@ inferHead e = do
   case e of
     (A.Var x) -> do -- traceCall (InferVar x) $ do
       (u, a) <- getVarInfo x
+      reportSDoc "tc.term.var" 20 $ hsep
+        [ text "variable" , text (show x)
+        , text "(" , text (show u) , text ")"
+        , text "has type:" , text (show a)
+        ]
       when (unusableRelevance $ getRelevance a) $
         typeError $ VariableIsIrrelevant x
       return (apply u, unDom a)
