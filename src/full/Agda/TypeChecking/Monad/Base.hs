@@ -1204,10 +1204,9 @@ setEtaEquality e@Specified{} _ = e
 setEtaEquality _ b = Inferred b
 
 data Defn = Axiom
-            -- ^ Postulate.
-            { axTPTPRole :: Maybe TPTPRole
-              -- ^ TPTP axiom or conjecture?
-            , axTPTPHints    :: [QName]
+            { axTPTPRole  :: Maybe TPTPRole
+              -- ^ TPTP axiom or conjecture
+            , axTPTPHints :: [QName]
               -- ^ TPTP hints for a TPTP conjecture.
             }
           | Function
