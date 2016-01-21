@@ -16,6 +16,10 @@
 
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
+#if __GLASGOW_HASKELL__ >= 800
+{-# OPTIONS_GHC -Wno-monomorphism-restriction #-}
+#endif
+
 module Agda.TypeChecking.Substitute
   ( module Agda.TypeChecking.Substitute
   , Substitution'(..), Substitution
@@ -68,9 +72,13 @@ class Apply t where
   applyE t es  = apply  t $ map argFromElim es
     -- precondition: all @es@ are @Apply@s
 
--- | Apply to a single argument.
+-- | Apply to some default arguments.
+applys :: Apply t => t -> [Term] -> t
+applys t vs = apply t $ map defaultArg vs
+
+-- | Apply to a single default argument.
 apply1 :: Apply t => t -> Term -> t
-apply1 t u = apply t [ defaultArg u ]
+apply1 t u = applys t [ u ]
 
 instance Apply Term where
   applyE m [] = m
@@ -140,13 +148,30 @@ argToDontCare (Arg ai v)
   | Irrelevant <- getRelevance ai     = dontCare v
   | otherwise                         = v
 
-instance Apply Type where
-  apply = piApply
-  -- Maybe an @applyE@ instance would be useful here as well.
-  -- A record type could be applied to a projection name
-  -- to yield the field type.
-  -- However, this works only in the monad where we can
-  -- look up the fields of a record type.
+-- Andreas, 2016-01-19: In connection with debugging issue #1783,
+-- I consider the Apply instance for Type harmful, as piApply is not
+-- safe if the type is not sufficiently reduced.
+-- (piApply is not in the monad and hence cannot unfold type synonyms).
+--
+-- Without apply for types, one has to at least use piApply and be
+-- aware of doing something which has a precondition
+-- (type sufficiently reduced).
+--
+-- By grepping for piApply, one can quickly get an overview over
+-- potentially harmful uses.
+--
+-- In general, piApplyM is preferable over piApply since it is more robust
+-- and fails earlier than piApply, which may only fail at serialization time,
+-- when all thunks are forced.
+
+-- REMOVED:
+-- instance Apply Type where
+--   apply = piApply
+--   -- Maybe an @applyE@ instance would be useful here as well.
+--   -- A record type could be applied to a projection name
+--   -- to yield the field type.
+--   -- However, this works only in the monad where we can
+--   -- look up the fields of a record type.
 
 instance Apply Sort where
   applyE s [] = s
@@ -249,7 +274,7 @@ instance Apply Defn where
         }
     Record{ recPars = np, recConType = t, recClause = cl, recTel = tel
           {-, recArgOccurrences = occ-} } ->
-      d { recPars = np - size args, recConType = apply t args
+      d { recPars = np - size args, recConType = piApply t args
         , recClause = apply cl args, recTel = apply tel args
 --        , recArgOccurrences = List.drop (length args) occ
         }
@@ -274,15 +299,12 @@ instance Apply CompiledClauses where
   apply cc args = case cc of
     Fail     -> Fail
     Done hs t
-      | length hs >= len -> Done (List.drop len hs)
-                                 (applySubst
-                                    (parallelS $
-                                       [ var i | i <- [0..length hs - len - 1]] ++
-                                       map unArg args)
-                                    t)
+      | length hs >= len ->
+         let sub = parallelS $ map var [0..length hs - len - 1] ++ map unArg args
+         in  Done (List.drop len hs) $ applySubst sub t
       | otherwise -> __IMPOSSIBLE__
     Case n bs
-      | n >= len  -> Case (n - len) (apply bs args)
+      | unArg n >= len -> Case (n <&> \ m -> m - len) (apply bs args)
       | otherwise -> __IMPOSSIBLE__
     where
       len = length args
@@ -366,8 +388,12 @@ instance Abstract Permutation where
     where
       m = size tel
 
--- | The type must contain the right number of pis without have to perform any
--- reduction.
+-- | @(x:A)->B(x) `piApply` [u] = B(u)@
+--
+--   Precondition: The type must contain the right number of pis without
+--   having to perform any reduction.
+--
+--   @piApply@ is potentially unsafe, the monadic 'piApplyM' is preferable.
 piApply :: Type -> Args -> Type
 piApply t []                      = t
 piApply (El _ (Pi  _ b)) (a:args) = lazyAbsApp b (unArg a) `piApply` args
@@ -487,7 +513,7 @@ instance Abstract CompiledClauses where
   abstract tel Fail = Fail
   abstract tel (Done xs t) = Done (map (argFromDom . fmap fst) (telToList tel) ++ xs) t
   abstract tel (Case n bs) =
-    Case (n + fromIntegral (size tel)) (abstract tel bs)
+    Case (n <&> \ i -> i + fromIntegral (size tel)) (abstract tel bs)
 
 instance Abstract a => Abstract (WithArity a) where
   abstract tel (WithArity n a) = WithArity n $ abstract tel a

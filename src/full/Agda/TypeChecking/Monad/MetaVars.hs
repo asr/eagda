@@ -2,6 +2,10 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE TupleSections     #-}
 
+#if __GLASGOW_HASKELL__ >= 800
+{-# OPTIONS_GHC -Wno-monomorphism-restriction #-}
+#endif
+
 module Agda.TypeChecking.Monad.MetaVars where
 
 import Control.Applicative
@@ -24,6 +28,7 @@ import Agda.TypeChecking.Monad.Closure
 import Agda.TypeChecking.Monad.Options (reportSLn)
 import Agda.TypeChecking.Monad.Context
 import Agda.TypeChecking.Substitute
+import {-# SOURCE #-} Agda.TypeChecking.Telescope
 
 import Agda.Utils.Functor ((<.>))
 import Agda.Utils.Lens
@@ -86,7 +91,7 @@ getMetaTypeInContext m = do
   case j of
     HasType{ jMetaType = t } -> do
       vs <- getContextArgs
-      return $ piApply t $ permute (takeP (size vs) p) vs
+      piApplyM t $ permute (takeP (size vs) p) vs
     IsSort{}                 -> __IMPOSSIBLE__
 
 -- | Check whether all metas are instantiated.

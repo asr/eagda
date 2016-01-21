@@ -12,6 +12,10 @@
 {-# LANGUAGE FlexibleContexts #-}
 #endif
 
+#if __GLASGOW_HASKELL__ >= 800
+{-# OPTIONS_GHC -Wno-monomorphism-restriction #-}
+#endif
+
 module Agda.TypeChecking.Rules.Term where
 
 import Prelude hiding (null)
@@ -1233,7 +1237,7 @@ checkConstructorApplication org t c args = do
            let ctype' = ctype `piApply` ps
            reportSDoc "tc.term.con" 20 $ nest 2 $ text "ctype' =" <+> prettyTCM ctype'
            -- get the parameter names
-           TelV ptel _ <- telViewUpTo n ctype
+           let TelV ptel _ = telView'UpTo n ctype
            let pnames = map (fst . unDom) $ telToList ptel
            -- drop the parameter arguments
                args' = dropArgs pnames args

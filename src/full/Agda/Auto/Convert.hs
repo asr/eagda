@@ -4,6 +4,10 @@
 {-# LANGUAGE FlexibleContexts #-}
 #endif
 
+#if __GLASGOW_HASKELL__ >= 800
+{-# OPTIONS_GHC -Wno-monomorphism-restriction #-}
+#endif
+
 module Agda.Auto.Convert where
 
 import Control.Applicative hiding (getConst, Const(..))
@@ -29,7 +33,7 @@ import Agda.TypeChecking.Monad.MetaVars (lookupMeta, withMetaInfo)
 import Agda.TypeChecking.Monad.Context (getContextArgs)
 import Agda.TypeChecking.Monad.Constraints (getAllConstraints)
 import Agda.TypeChecking.Substitute (piApply, applySubst)
-import Agda.TypeChecking.Telescope (renamingR)
+import Agda.TypeChecking.Telescope (piApplyM, renamingR)
 import qualified Agda.TypeChecking.Substitute as I (absBody)
 import Agda.TypeChecking.Reduce (Normalise, normalise, instantiate)
 import Agda.TypeChecking.EtaContract (etaContract)
@@ -169,7 +173,7 @@ tomy imi icns typs = do
            localVars = map (snd . Common.unDom . ctxEntry) . envContext . clEnv $ minfo
        (targettype, localVars) <- lift $ withMetaInfo minfo $ do
         vs <- getContextArgs
-        let targettype = tt `piApply` permute (takeP (length vs) $ mvPermutation mv) vs
+        targettype <- tt `piApplyM` permute (takeP (length vs) $ mvPermutation mv) vs
         targettype <- norm targettype
         localVars <- mapM norm localVars
         return (targettype, localVars)

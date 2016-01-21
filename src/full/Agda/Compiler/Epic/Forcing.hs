@@ -21,7 +21,7 @@ import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Rules.LHS.Problem (FlexibleVars, defaultFlexibleVar)
 import Agda.TypeChecking.Rules.LHS.Unify
 import Agda.TypeChecking.Substitute
-  (applySubst, apply, wkS, raiseS, dropS, (++#), TelV(..))
+  (applySubst, apply, piApply, wkS, raiseS, dropS, (++#), TelV(..))
 import qualified Agda.TypeChecking.Substitute as S
 import Agda.TypeChecking.Pretty as P
 import Agda.TypeChecking.Reduce
@@ -141,8 +141,7 @@ insertTele er n ins term (ExtendTel x xs) = do
 
 -- TODO: restore fields in ConHead
 mkCon :: QName -> Int -> Term
-mkCon c n = I.Con (I.ConHead c Inductive [])
-                  [ defaultArg $ I.Var i [] | i <- [n - 1, n - 2 .. 0] ]
+mkCon c n = I.Con (I.ConHead c Inductive []) $ map (defaultArg . I.var) $ downFrom n
 
 unifyI :: Telescope -> FlexibleVars -> Type -> Args -> Args -> Compile TCM [Maybe Term]
 unifyI tele flex typ a1 a2 = lift $ typeError $ NotImplemented "using the new unification algorithm for forcing"
@@ -219,7 +218,7 @@ forcedExpr vars tele expr = case expr of
                               ]
                             unifyI (takeTele (n + length as) tele'')
                                    (map defaultFlexibleVar [0 .. n + length as])
-                                   (setType `apply` take typPars a1)
+                                   (setType `piApply` take typPars a1)
                                    (drop typPars a1)
                                    (drop typPars a2)
                         _ -> __IMPOSSIBLE__

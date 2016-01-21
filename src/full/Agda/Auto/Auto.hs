@@ -5,6 +5,10 @@
 {-# LANGUAGE FlexibleContexts #-}
 #endif
 
+#if __GLASGOW_HASKELL__ >= 800
+{-# OPTIONS_GHC -Wno-monomorphism-restriction #-}
+#endif
+
 module Agda.Auto.Auto (auto) where
 
 import Prelude hiding (null)
@@ -25,6 +29,8 @@ import Agda.TypeChecking.Monad hiding (withCurrentModule)
 -- import Agda.TypeChecking.Monad.Context
 -- import Agda.TypeChecking.Monad.Signature
 import Agda.TypeChecking.Substitute
+import Agda.TypeChecking.Telescope
+
 import qualified Agda.Syntax.Abstract as A
 import Agda.Syntax.Abstract.Pretty (prettyA)
 import qualified Text.PrettyPrint as PP
@@ -393,7 +399,7 @@ auto ii rng argstr = do
           minfo = getMetaInfo mv
       targettyp <- withMetaInfo minfo $ do
        vs <- getContextArgs
-       let targettype = tt `piApply` permute (takeP (length vs) $ mvPermutation mv) vs
+       targettype <- tt `piApplyM` permute (takeP (length vs) $ mvPermutation mv) vs
        normalise targettype
       let tctx = length $ envContext $ clEnv minfo
 
