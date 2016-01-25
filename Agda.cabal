@@ -469,7 +469,6 @@ library
                  -fwarn-missing-fields
                  -fwarn-missing-methods
                  -fwarn-missing-signatures
-                 -fwarn-monomorphism-restriction
                  -fwarn-orphans
                  -fwarn-tabs
                  -fwarn-overlapping-patterns
@@ -480,9 +479,9 @@ library
 
   if impl(ghc >= 7.8)
     ghc-options: -fwarn-empty-enumerations
-                 -fwarn-overflowed-literals
-                 -fwarn-typed-holes
                  -fwarn-inline-rule-shadowing
+                 -fwarn-typed-holes
+                 -fwarn-overflowed-literals
 
   if impl(ghc >= 7.10)
      ghc-options: -fwarn-unticked-promoted-constructors
@@ -504,7 +503,8 @@ library
     ghc-options: -fwarn-context-quantification
 
   if impl(ghc >= 8.0)
-    ghc-options: -Wredundant-constraints
+    ghc-options: -Wnoncanonical-monad-instances
+                 -Wredundant-constraints
 
   ghc-prof-options: -fprof-auto
 

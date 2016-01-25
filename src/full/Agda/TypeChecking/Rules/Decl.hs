@@ -6,10 +6,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 #endif
 
-#if __GLASGOW_HASKELL__ >= 800
-{-# OPTIONS_GHC -Wno-monomorphism-restriction #-}
-#endif
-
 module Agda.TypeChecking.Rules.Decl where
 
 import Control.Monad
@@ -34,6 +30,7 @@ import qualified Agda.Syntax.Reflected as R
 import qualified Agda.Syntax.Info as Info
 import Agda.Syntax.Position
 import Agda.Syntax.Common
+import Agda.Syntax.Literal
 import Agda.Syntax.Translation.InternalToAbstract
 import Agda.Syntax.Translation.ReflectedToAbstract
 
@@ -204,8 +201,6 @@ checkDecl d = setCurrentRange d $ do
         theMutualChecks
 
     where
-    unScope (A.ScopedDecl scope ds) = setScope scope >> unScope d
-    unScope d = return d
 
     -- check record or data type signature
     checkSig i x ps t = checkTypeSignature $
@@ -335,14 +330,14 @@ highlight_ d = do
     A.Axiom{}                -> highlight d
     A.Field{}                -> __IMPOSSIBLE__
     A.Primitive{}            -> highlight d
-    A.Mutual{}               -> highlight d
+    A.Mutual i ds            -> mapM_ highlight_ $ deepUnScope =<< ds
     A.Apply{}                -> highlight d
     A.Import{}               -> highlight d
     A.Pragma{}               -> highlight d
     A.ScopedDecl{}           -> return ()
-    A.FunDef{}               -> __IMPOSSIBLE__
-    A.DataDef{}              -> __IMPOSSIBLE__
-    A.DataSig{}              -> __IMPOSSIBLE__
+    A.FunDef{}               -> highlight d
+    A.DataDef{}              -> highlight d
+    A.DataSig{}              -> highlight d
     A.Open{}                 -> highlight d
     A.PatternSynDef{}        -> highlight d
     A.UnquoteDecl{}          -> highlight d
@@ -352,7 +347,7 @@ highlight_ d = do
       -- all that remains is the module declaration.
     A.RecSig{}               -> highlight d
     A.RecDef i x ind eta c ps tel cs ->
-      highlight (A.RecDef i x ind eta c [] tel (fields cs))
+      highlight (A.RecDef i x ind eta c [] dummy (fields cs))
       -- The telescope and all record module declarations except
       -- for the fields have already been highlighted.
       where
@@ -360,6 +355,20 @@ highlight_ d = do
       fields (d@A.Field{}        : ds)  = d : fields ds
       fields (_                  : ds)  = fields ds
       fields []                         = []
+      -- Andreas, 2016-01-22, issue 1791
+      -- The expression denoting the record constructor type
+      -- is replace by a dummy expression in order to /not/
+      -- generate highlighting from it.
+      -- Simply because all the highlighting info is wrong
+      -- in the record constructor type:
+      -- * fields become bound variables,
+      -- * declarations become let-bound variables.
+      -- We do not need that crap.
+      dummy = A.Lit $ LitString noRange $
+        "do not highlight construct(ed/or) type"
+  where
+  deepUnScope (A.ScopedDecl _ ds) = deepUnScope =<< ds
+  deepUnScope d = [d]
 
 -- | Termination check a declaration.
 checkTermination_ :: A.Declaration -> TCM ()

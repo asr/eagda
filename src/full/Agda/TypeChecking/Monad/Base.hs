@@ -13,10 +13,6 @@
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE UndecidableInstances       #-}
 
-#if __GLASGOW_HASKELL__ >= 800
-{-# OPTIONS_GHC -Wno-monomorphism-restriction #-}
-#endif
-
 module Agda.TypeChecking.Monad.Base where
 
 import Prelude hiding (null)
@@ -2242,7 +2238,7 @@ instance Applicative ReduceM where
   ReduceM f <*> ReduceM x = ReduceM $ \ e -> f e $! x e
 
 instance Monad ReduceM where
-  return x = ReduceM (const x)
+  return = pure
   ReduceM m >>= f = ReduceM $ \ e -> unReduceM (f $! m e) e
 
 runReduceM :: ReduceM a -> TCM a
@@ -2373,9 +2369,9 @@ instance MonadTrans TCMT where
 
 -- We want a special monad implementation of fail.
 instance MonadIO m => Monad (TCMT m) where
-    return = returnTCMT
+    return = pure
     (>>=)  = bindTCMT
-    (>>)   = thenTCMT
+    (>>)   = (*>)
     fail   = internalError
 
 -- One goal of the definitions and pragmas below is to inline the
