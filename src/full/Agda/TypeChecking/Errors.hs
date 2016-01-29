@@ -1099,15 +1099,9 @@ instance PrettyTCM TypeError where
         pwords ("Use " ++ def ++ " instead of " ++ con ++ " for non-constructor")
         ++ [prettyTCM x]
 
-      NotAConstructor kind t ->
-        fwords "Unable to unquote the term"
+      NonCanonical kind t ->
+        fwords ("Cannot unquote non-canonical " ++ kind)
         $$ nest 2 (prettyTCM t)
-        $$ fwords ("of type " ++ kind ++ ". Reason: not a constructor.")
-
-      NotALiteral kind t ->
-        fwords "Unable to unquote the term"
-        $$ nest 2 (prettyTCM t)
-        $$ fwords ("of type " ++ kind ++ ". Reason: not a literal value.")
 
       BlockedOnMeta m -> fsep $
         pwords $ "Unquote failed because of unsolved meta variables."
@@ -1326,7 +1320,7 @@ instance PrettyTCM Call where
 
     CheckSectionApplication _ m1 modapp -> fsep $
       pwords "when checking the module application" ++
-      [prettyA $ A.Apply info m1 modapp empty empty]
+      [prettyA $ A.Apply info m1 modapp empty empty defaultImportDir]
       where
       info = A.ModuleInfo noRange noRange Nothing Nothing Nothing
 

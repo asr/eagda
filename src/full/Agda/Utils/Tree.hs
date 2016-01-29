@@ -1,32 +1,34 @@
-{-# LANGUAGE DeriveFoldable #-}
-{-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE DeriveTraversable #-}
+-- ASR (25 January 2016): Not used.
 
-module Agda.Utils.Tree where
+-- {-# LANGUAGE DeriveFoldable #-}
+-- {-# LANGUAGE DeriveFunctor #-}
+-- {-# LANGUAGE DeriveTraversable #-}
 
-import Data.Monoid
-import Data.Foldable
-import Data.Traversable
+-- module Agda.Utils.Tree where
 
-import Agda.Utils.Pointed
+-- import Data.Monoid
+-- import Data.Foldable
+-- import Data.Traversable
 
--- | Leaf-labelled trees (free monoids).
-data Tree a = Empty | Leaf a | Node (Tree a) (Tree a)
-  deriving (Eq, Ord, Functor, Foldable, Traversable)
+-- import Agda.Utils.Pointed
 
-instance Pointed Tree where
-  point = Leaf
+-- -- | Leaf-labelled trees (free monoids).
+-- data Tree a = Empty | Leaf a | Node (Tree a) (Tree a)
+--   deriving (Eq, Ord, Functor, Foldable, Traversable)
 
-instance Monoid (Tree a) where
-  mempty  = Empty
-  mappend = Node
+-- instance Pointed Tree where
+--   point = Leaf
 
--- | Initiality.
-flatten :: (Pointed f, Monoid (f a)) => Tree a -> f a
-flatten = foldMap point
+-- instance Monoid (Tree a) where
+--   mempty  = Empty
+--   mappend = Node
 
--- The properties cannot be stated in full generality
--- because of type ambiguities.
-propFlattenEmpty    = flatten Empty == ([] :: [Int])
-propFlattenLeaf a   = flatten (Leaf a) == [a]
-propFlattenNode l r = flatten (Node l r) == (flatten l) ++ (flatten r)
+-- -- | Initiality.
+-- flatten :: (Pointed f, Monoid (f a)) => Tree a -> f a
+-- flatten = foldMap point
+
+-- -- The properties cannot be stated in full generality
+-- -- because of type ambiguities.
+-- propFlattenEmpty    = flatten Empty == ([] :: [Int])
+-- propFlattenLeaf a   = flatten (Leaf a) == [a]
+-- propFlattenNode l r = flatten (Node l r) == (flatten l) ++ (flatten r)
