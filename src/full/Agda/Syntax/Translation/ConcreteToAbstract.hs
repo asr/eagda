@@ -201,7 +201,7 @@ recordConstructorType fields = build fs
     build (NiceModuleMacro r p x modapp open dir@ImportDirective{ publicOpen = True } : fs) =
       build (NiceModuleMacro r p x modapp open dir{ publicOpen = False } : fs)
 
-    build (NiceField r f _ _ x (Arg info e) : fs) =
+    build (NiceField r _ f _ _ x (Arg info e) : fs) =
         C.Pi [C.TypedBindings r $ Arg info (C.TBind r [pure $ mkBoundName x f] e)] $ build fs
       where r = getRange x
     build (d : fs)                     = C.Let (getRange d) [notSoNiceDeclaration d] $
@@ -470,7 +470,7 @@ newtype NewName a = NewName a
 data OldQName     = OldQName C.QName (Maybe (Set A.Name))
   -- ^ If a set is given, then the first name must correspond to one
   -- of the names in the set.
-newtype OldName   = OldName C.Name
+newtype OldName a = OldName a
 data PatName      = PatName C.QName (Maybe (Set A.Name))
   -- ^ If a set is given, then the first name must correspond to one
   -- of the names in the set.
@@ -531,11 +531,16 @@ instance ToAbstract PatName APatName where
         reportSLn "scope.pat" 10 $ "it was a pat syn: " ++ show (anameName d)
         return $ PatternSynPatName d
 
+class ToQName a where
+  toQName :: a -> C.QName
+
+instance ToQName C.Name  where toQName = C.QName
+instance ToQName C.QName where toQName = id
 
 -- Should be a defined name.
-instance ToAbstract OldName A.QName where
+instance (Show a, ToQName a) => ToAbstract (OldName a) A.QName where
   toAbstract (OldName x) = do
-    rx <- resolveName (C.QName x)
+    rx <- resolveName (toQName x)
     case rx of
       DefinedName _ d     -> return $ anameName d
       -- We can get the cases below for DISPLAY pragmas
@@ -1113,20 +1118,21 @@ instance ToAbstract LetDef [A.LetBinding] where
       NiceMutual _ _ _ d@[C.FunSig _ fx _ instanc macro info _ x t, C.FunDef _ _ _ abstract _ _ [cl]] ->
           do  when (abstract == AbstractDef) $ do
                 genericError $ "abstract not allowed in let expressions"
-              when (instanc == InstanceDef) $ do
-                genericError $ "Using instance is useless here, let expressions are always eligible for instance search."
               when (macro == MacroDef) $ do
                 genericError $ "Macros cannot be defined in a let expression."
               (x', e) <- letToAbstract cl
               t <- toAbstract t
               x <- toAbstract (NewName $ mkBoundName x fx)
+              -- If InstanceDef set info to Instance
+              let info' | instanc == InstanceDef = setHiding Instance info
+                        | otherwise              = info
               -- There are sometimes two instances of the
               -- let-bound variable, one declaration and one
               -- definition. The first list element below is
               -- used to highlight the declared instance in the
               -- right way (see Issue 1618).
               return [ A.LetDeclaredVariable (setRange (getRange x') x)
-                     , A.LetBind (LetRange $ getRange d) info x t e
+                     , A.LetBind (LetRange $ getRange d) info' x t e
                      ]
 
       -- irrefutable let binding, like  (x , y) = rhs
@@ -1195,7 +1201,7 @@ instance ToAbstract LetDef [A.LetBinding] where
             localToAbstract (snd $ lhsArgs p) $ \args ->
 -}
             (x, args) <- do
-              res <- setCurrentRange p $ parseLHS top p
+              res <- setCurrentRange p $ parseLHS (C.QName top) p
               case res of
                 C.LHSHead x args -> return (x, args)
                 C.LHSProj{} -> genericError $ "copatterns not allowed in let bindings"
@@ -1254,7 +1260,7 @@ instance ToAbstract NiceDeclaration A.Declaration where
       toAbstractNiceAxiom A.NoFunSig NotMacroDef d
 
   -- Fields
-    C.NiceField r f p a x t -> do
+    C.NiceField r i f p a x t -> do
       unless (p == PublicAccess) $ genericError "Record fields can not be private"
       -- Interaction points for record fields have already been introduced
       -- when checking the type of the record constructor.
@@ -1270,7 +1276,7 @@ instance ToAbstract NiceDeclaration A.Declaration where
         -- this ensures that projections out of irrelevant fields cannot occur
         -- Ulf: unless you turn on --irrelevant-projections
         bindName p FldName x y
-      return [ A.Field (mkDefInfo x f p a r) y t' ]
+      return [ A.Field (mkDefInfoInstance x f p a i NotMacroDef r) y t' ]
 
   -- Primitive function
     PrimitiveFunction r f p a x t -> do
@@ -1665,32 +1671,25 @@ instance ToAbstract C.Pragma [A.Pragma] where
         getHead (C.RawAppP _ (p : _)) = getHead p
         getHead _                     = err
 
-        setHead x (C.IdentP _) = C.IdentP (C.QName x)
-        setHead x (C.RawAppP r (p : ps)) = C.RawAppP r (setHead x p : ps)
-        setHead x _ = __IMPOSSIBLE__
-
-    hd <- getHead lhs
-    let top  = C.unqualify hd
-        lhs' = setHead top lhs
+    top <- getHead lhs
 
     hd <- do
-      qx <- resolveName' allKindsOfNames Nothing hd
+      qx <- resolveName' allKindsOfNames Nothing top
       case qx of
         VarName x'          -> return $ A.qnameFromList [x']
         DefinedName _ d     -> return $ anameName d
         FieldName     d     -> return $ anameName d
         ConstructorName [d] -> return $ anameName d
-        ConstructorName ds  -> genericError $ "Ambiguous constructor " ++ show hd ++ ": " ++ show (map anameName ds)
-        UnknownName         -> notInScope hd
+        ConstructorName ds  -> genericError $ "Ambiguous constructor " ++ show top ++ ": " ++ show (map anameName ds)
+        UnknownName         -> notInScope top
         PatternSynResName d -> return $ anameName d
 
-    lhs <- toAbstract $ LeftHandSide top lhs' []
-    (f, ps) <-
-      case lhs of
-        A.LHS _ (A.LHSHead _ ps) [] -> return (hd, ps)
-        _ -> err
+    lhs <- toAbstract $ LeftHandSide top lhs []
+    ps  <- case lhs of
+             A.LHS _ (A.LHSHead _ ps) [] -> return ps
+             _ -> err
     rhs <- toAbstract rhs
-    return [A.DisplayPragma f ps rhs]
+    return [A.DisplayPragma hd ps rhs]
 
   -- Termination checking pragmes are handled by the nicifier
   toAbstract C.TerminationCheckPragma{} = __IMPOSSIBLE__
@@ -1807,7 +1806,7 @@ instance ToAbstract C.Clause A.Clause where
     -- Andreas, 2012-02-14: need to reset local vars before checking subclauses
     vars <- getLocalVars
     let wcs' = for wcs $ \ c -> setLocalVars vars $> c
-    lhs' <- toAbstract $ LeftHandSide top p wps
+    lhs' <- toAbstract $ LeftHandSide (C.QName top) p wps
     printLocals 10 "after lhs:"
     let (whname, whds) = case wh of
           NoWhere        -> (Nothing, [])
@@ -1915,7 +1914,7 @@ instance ToAbstract C.RHS AbstractRHS where
     toAbstract C.AbsurdRHS = return $ AbsurdRHS'
     toAbstract (C.RHS e)   = RHS' <$> toAbstract e
 
-data LeftHandSide = LeftHandSide C.Name C.Pattern [C.Pattern]
+data LeftHandSide = LeftHandSide C.QName C.Pattern [C.Pattern]
 
 instance ToAbstract LeftHandSide A.LHS where
     toAbstract (LeftHandSide top lhs wps) =

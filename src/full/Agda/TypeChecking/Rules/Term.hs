@@ -445,10 +445,10 @@ checkAbsurdLambda i h e t = do
             [ text "Adding absurd function" <+> prettyTCM rel <> prettyTCM aux
             , nest 2 $ text "of type" <+> prettyTCM t'
             ]
-          addConstant aux
-            $ Defn (setRelevance rel info') aux t'
-                   [Nonvariant] [Unused] (defaultDisplayForm aux)
-                   0 noCompiledRep Nothing
+          addConstant aux $
+            (\ d -> (defaultDefn (setRelevance rel info') aux t' d)
+                    { defPolarity       = [Nonvariant]
+                    , defArgOccurrences = [Unused] })
             $ Function
               { funClauses        =
                   [Clause
@@ -470,7 +470,6 @@ checkAbsurdLambda i h e t = do
               , funSmashable      = False -- there is no body anyway, smashing doesn't make sense
               , funStatic         = False
               , funInline         = False
-              , funCopy           = False
               , funTerminates     = Just True
               , funExtLam         = Nothing
               , funWith           = Nothing
@@ -511,13 +510,63 @@ checkExtendedLambda i di qname cs e t = do
        , text "hidden  args: " <+> prettyTCM hid
        , text "visible args: " <+> prettyTCM notHid
        ]
-     abstract (A.defAbstract di) $
+     -- Andreas, Ulf, 2016-02-02: We want to postpone type checking an extended lambda
+     -- in case the lhs checker failed due to insufficient type info for the patterns.
+     -- Issues 480, 1159, 1811.
+     mx <- catchIlltypedPatternBlockedOnMeta $ abstract (A.defAbstract di) $
        checkFunDef' t info NotDelayed (Just $ ExtLamInfo (length hid) (length notHid)) Nothing di qname cs
-     return $ Def qname $ map Apply args
+     case mx of
+       -- Case: type checking succeeded, so we go ahead.
+       Nothing -> return $ Def qname $ map Apply args
+       -- Case: we could not check the extended lambda because we are blocked on a meta.
+       -- In this case, we want to postpone.
+       Just (err, x) -> do
+         -- Note that we messed up the state a bit.  We might want to unroll these state changes.
+         -- However, they are harmless:
+         -- 1. We created a new mutual block id.
+         -- 2. We added a constant without definition.
+         -- TODO: roll back the state.
+
+         -- The meta might not be known in the reset state, as it could have been created
+         -- somewhere on the way to the type error.
+         mm <- Map.lookup x <$> getMetaStore
+         case mvInstantiation <$> mm of
+           -- Case: we do not know the meta
+           Nothing -> do
+             -- TODO: mine for a meta in t
+             -- For now, we fail.
+             throwError err
+           -- Case: we know the meta here.  It cannot be instantiated yet.
+           Just InstV{} -> __IMPOSSIBLE__
+           Just InstS{} -> __IMPOSSIBLE__
+           Just{} -> do
+             -- It has to be blocked on some meta, so we can postpone,
+             -- being sure it will be retired when a meta is solved
+             -- (which might be the blocking meta in which case we actually make progress).
+             postponeTypeCheckingProblem (CheckExpr e t) $ isInstantiatedMeta x
   where
     -- Concrete definitions cannot use information about abstract things.
     abstract ConcreteDef = inConcreteMode
     abstract AbstractDef = inAbstractMode
+
+-- | Run a computation.
+--
+--   * If successful, return Nothing.
+--
+--   * If @IlltypedPattern p a@ is thrown and type @a@ is blocked on some meta @x@
+--     return @Just x@.  Note that the returned meta might only exists in the state
+--     where the error was thrown, thus, be an invalid 'MetaId' in the current state.
+--
+--   * If another error was thrown or the type @a@ is not blocked, reraise the error.
+--
+catchIlltypedPatternBlockedOnMeta :: TCM () -> TCM (Maybe (TCErr, MetaId))
+catchIlltypedPatternBlockedOnMeta m = (Nothing <$ m) `catchError` \ err -> do
+  let reraise = throwError err
+  case err of
+    TypeError s cl@(Closure sig env scope (IlltypedPattern p a)) ->
+      enterClosure cl $ \ _ -> do
+        ifBlockedType a (\ x _ -> return $ Just (err, x)) $ {- else -} \ _ -> reraise
+    _ -> reraise
 
 ---------------------------------------------------------------------------
 -- * Records
@@ -1421,8 +1470,8 @@ checkHeadApplication e t hd args = do
       addConstant c' =<< do
         let ai = setRelevance rel defaultArgInfo
         useTerPragma $
-          Defn ai c' forcedType [] [] (defaultDisplayForm c') i noCompiledRep Nothing $
-          emptyFunction
+          (defaultDefn ai c' forcedType emptyFunction)
+          { defMutual = i }
 
       -- Define and type check the fresh function.
       ctx <- getContext
@@ -1563,6 +1612,10 @@ checkArguments exh r args0@(arg@(Arg info e) : args) t0 t1 =
                  -- I do not know what I am doing wrong here.
                  -- Could be extreme order-sensitivity or my abuse of the postponing
                  -- mechanism.
+                 -- Andreas, 2016-02-02: Ulf says unless there is actually some meta
+                 -- blocking a postponed type checking problem, we might never retry,
+                 -- since the trigger for retrying constraints is solving a meta.
+                 -- Thus, the following naive use violates some invariant.
                  -- if not $ isBinderUsed b
                  -- then postponeTypeCheckingProblem (CheckExpr (namedThing e) a) (return True) else
                   checkExpr (namedThing e) a
@@ -1778,6 +1831,9 @@ checkLetBinding b@(A.LetPatBind i p e) ret =
 checkLetBinding (A.LetApply i x modapp rd rm _adir) ret = do
   -- Any variables in the context that doesn't belong to the current
   -- module should go with the new module.
+  -- Example: @f x y = let open M t in u@.
+  -- There are 2 @new@ variables, @x@ and @y@, going into the anonynous module
+  -- @module _ (x : _) (y : _) = M t@.
   fv   <- getCurrentModuleFreeVars
   n    <- getContextSize
   let new = n - fv

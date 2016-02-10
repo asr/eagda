@@ -3,6 +3,7 @@
 module Agda.TypeChecking.Rules.Record where
 
 import Control.Applicative
+import Control.Monad
 import Data.Maybe
 
 import qualified Agda.Syntax.Abstract as A
@@ -215,15 +216,9 @@ checkRecDef i name ind eta con ps contel fields =
           addRecordVar = addCtxString "" $ Dom info rect
           -- the record variable has the empty name by intention, see issue 208
 
-      -- Andreas, 2013-09-13, 2016-01-06.
-      -- Argument telescope for the projections: all parameters are hidden.
-      -- This means parameters of the parent modules and of the current
-      -- record type.
-      -- See test/Succeed/ProjectionsTakeModuleTelAsParameters.agda.
-      tel' <- modifyContext (modifyContextEntries (setHiding Hidden)) $
-        addRecordVar $ getContextTelescope
+      let m = qnameToMName name  -- Name of record module.
 
-      -- For checking the record declarations, make record parameters hidden.
+     -- In the record section, the record parameters are hidden.
       let np = size tel -- Number of record parameters.
       ctx <- (reverse . map hideOrKeepInstance . take np) <$> getContext
       reportSDoc "tc.rec" 80 $ sep
@@ -231,10 +226,13 @@ checkRecDef i name ind eta con ps contel fields =
         , nest 2 $ text "ctx =" <+> prettyTCM ctx
         ]
       escapeContext np $ addContext ctx $ addRecordVar $ do
+      -- Andreas, 2016-02-09 setting all parameters hidden in the record
+      -- section telescope changes the semantics, see e.g.
+      -- test/Succeed/RecordInParModule.
+      -- modifyContext (modifyContextEntries (setHiding Hidden)) $ addRecordVar $ do
 
         -- Add the record section.
 
-        let m = qnameToMName name  -- Name of record module.
         reportSDoc "tc.rec.def" 10 $ sep
           [ text "record section:"
           , nest 2 $ sep
@@ -247,9 +245,20 @@ checkRecDef i name ind eta con ps contel fields =
           ]
         addSection m
 
-        -- Check the types of the fields and the other record declarations.
+      -- Andreas, 2016-02-09, Issue 1815 (see also issue 1759).
+      -- For checking the record declarations, hide the record parameters
+      -- and the parameters of the parent modules.
+      modifyContext (modifyContextEntries (setHiding Hidden)) $ addRecordVar $ do
 
+        -- Check the types of the fields and the other record declarations.
         withCurrentModule m $ do
+
+          -- Andreas, 2013-09-13, 2016-01-06.
+          -- Argument telescope for the projections: all parameters are hidden.
+          -- This means parameters of the parent modules and of the current
+          -- record type.
+          -- See test/Succeed/ProjectionsTakeModuleTelAsParameters.agda.
+          tel' <- getContextTelescope
           checkRecordProjections m name con tel' (raise 1 ftel) fields
 
         -- Andreas 2012-02-13: postpone polarity computation until after positivity check
@@ -285,7 +294,8 @@ checkRecordProjections m r con tel ftel fs = do
     checkProjs ftel1 ftel2 (A.ScopedDecl scope fs' : fs) =
       setScope scope >> checkProjs ftel1 ftel2 (fs' ++ fs)
 
-    checkProjs ftel1 (ExtendTel (Dom ai t) ftel2) (A.Field info x _ : fs) = do
+    checkProjs ftel1 (ExtendTel (Dom ai t) ftel2) (A.Field info x _ : fs) =
+      traceCall (CheckProjection (getRange info) x t) $ do
       -- Andreas, 2012-06-07:
       -- Issue 387: It is wrong to just type check field types again
       -- because then meta variables are created again.
@@ -436,7 +446,6 @@ checkRecordProjections m r con tel ftel fs = do
                        , funSmashable      = True
                        , funStatic         = False
                        , funInline         = False
-                       , funCopy           = False
                        , funTerminates     = Just True
                        , funExtLam         = Nothing
                        , funWith           = Nothing
@@ -445,6 +454,8 @@ checkRecordProjections m r con tel ftel fs = do
                        })
               { defArgOccurrences = [StrictPos] }
           computePolarity projname
+          when (Info.defInstance info == InstanceDef) $
+            addTypedInstance projname finalt
 
         recurse
 

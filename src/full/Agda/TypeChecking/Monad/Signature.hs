@@ -2,6 +2,7 @@
 {-# LANGUAGE DoAndIfThenElse   #-}
 {-# LANGUAGE FlexibleContexts  #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE PatternGuards     #-}
 
 module Agda.TypeChecking.Monad.Signature where
@@ -293,6 +294,12 @@ addDisplayForms x = do
                                                 ++ "\n  " ++ show df
               addDisplayForm y df
               add args top y vs
+        [] | Constructor{ conSrcCon = h } <- theDef def -> do
+              let y  = conName h
+                  df = Display 0 [] $ DTerm $ Con (h {conName = top }) []
+              reportSLn "tc.display.section" 20 $ "adding display form " ++ show y ++ " --> " ++ show top
+                                                ++ "\n  " ++ show df
+              addDisplayForm y df
         _ -> do
           let reason = if not isCopy then "not a copy" else
                   case cs of
@@ -416,7 +423,7 @@ applySection' new ptel old ts rd rm = do
           -- -- Andreas, 2015-09-09 Issue 1643:
           -- -- Do not add a display form for a bare module alias.
           -- when (not isCon && size ptel == 0 && not (null ts)) $ do
-          when (not isCon && size ptel == 0) $ do
+          when (size ptel == 0) $ do
             addDisplayForms y
           where
             ts' = take np ts
@@ -427,7 +434,18 @@ applySection' new ptel old ts rd rm = do
             abstr = defAbstract d
             -- the name is set by the addConstant function
             nd :: QName -> TCM Definition
-            nd y = Defn (defArgInfo d) y t pol occ [] (-1) noCompiledRep inst <$> def  -- TODO: mutual block?
+            nd y = for def $ \ df -> Defn
+                    { defArgInfo        = defArgInfo d
+                    , defName           = y
+                    , defType           = t
+                    , defPolarity       = pol
+                    , defArgOccurrences = occ
+                    , defDisplay        = []
+                    , defMutual         = -1   -- TODO: mutual block?
+                    , defCompiledRep    = noCompiledRep
+                    , defInstance       = inst
+                    , defCopy           = True
+                    , theDef            = df }
             oldDef = theDef d
             isCon  = case oldDef of { Constructor{} -> True ; _ -> False }
             mutual = case oldDef of { Function{funMutual = m} -> m              ; _ -> [] }
@@ -476,7 +494,6 @@ applySection' new ptel old ts rd rm = do
                         , funStatic         = False
                         , funInline         = False
                         , funSmashable      = True
-                        , funCopy           = True
                         , funTerminates     = Just True
                         , funExtLam         = extlam
                         , funWith           = with
@@ -771,8 +788,44 @@ getDefFreeVars q = do
   (+) <$> getAnonymousVariables m <*> (size <$> lookupSection m0)
 
 -- | Compute the context variables to apply a definition to.
+--
+--   We have to insert the module telescope of the common prefix
+--   of the current module and the module where the definition comes from.
+--   (Properly raised to the current context.)
+--
+--   Example:
+--   @
+--      module M₁ Γ where
+--        module M₁ Δ where
+--          f = ...
+--        module M₃ Θ where
+--          ... M₁.M₂.f [insert Γ raised by Θ]
+--   @
 freeVarsToApply :: QName -> TCM Args
-freeVarsToApply x = genericTake <$> getDefFreeVars x <*> getContextArgs
+freeVarsToApply x = do
+  -- Get the correct number of free variables (correctly raised) of @x@.
+
+  args <- take <$> getDefFreeVars x <*> getContextArgs
+
+  -- Apply the original ArgInfo, as the hiding information in the current
+  -- context might be different from the hiding information expected by @x@.
+
+  getSection (qnameModule x) >>= \case
+    Nothing -> do
+      -- We have no section for @x@.
+      -- This should only happen for toplevel definitions, and then there
+      -- are no free vars to apply, or?
+      -- unless (null args) __IMPOSSIBLE__
+      -- No, this invariant is violated by private modules, see Issue1701a.
+      return args
+    Just (Section tel) -> do
+      -- The section telescope of the home of @x@ should be as least
+      -- as long as the number of free vars @x@ is applied to.
+      -- We still check here as in no case, we want @zipWith@ to silently
+      -- drop some @args@.
+      -- And there are also anonymous modules, thus, the invariant is not trivial.
+      when (size tel < size args) __IMPOSSIBLE__
+      return $ zipWith (\ (Dom ai _) (Arg _ v) -> Arg ai v) (telToList tel) args
 
 -- | Instantiate a closed definition with the correct part of the current
 --   context.
@@ -950,37 +1003,3 @@ applyDef f a = do
       -- Get the original projection, if existing.
       caseMaybe (projProper isP) fallback $ \ f' -> do
         return $ unArg a `applyE` [Proj f']
-
--- | @getDefType f t@ computes the type of (possibly projection-(like))
---   function @t@ whose first argument has type @t@.
---   The `parameters' for @f@ are extracted from @t@.
---   @Nothing@ if @f@ is projection(like) but
---   @t@ is not a data/record/axiom type.
---
---   Precondition: @t@ is reduced.
---
---   See also: 'Agda.TypeChecking.Datatypes.getConType'
-getDefType :: QName -> Type -> TCM (Maybe Type)
-getDefType f t = do
-  def <- getConstInfo f
-  let a = defType def
-  -- if @f@ is not a projection (like) function, @a@ is the correct type
-      fallback = return $ Just a
-  caseMaybe (isProjection_ $ theDef def) fallback $
-    \ (Projection{ projIndex = n }) -> if n <= 0 then fallback else do
-      -- otherwise, we have to instantiate @a@ to the "parameters" of @f@
-      let npars | n == 0    = __IMPOSSIBLE__
-                | otherwise = n - 1
-      -- we get the parameters from type @t@
-      case ignoreSharing $ unEl t of
-        Def d es -> do
-          -- Andreas, 2013-10-22
-          -- we need to check this @Def@ is fully reduced.
-          -- If it is stuck due to disabled reductions
-          -- (because of failed termination check),
-          -- we will produce garbage parameters.
-          ifNotM (eligibleForProjectionLike d) (return Nothing) $ {- else -} do
-            -- now we know it is reduced, we can safely take the parameters
-            let pars = fromMaybe __IMPOSSIBLE__ $ allApplyElims $ take npars es
-            Just <$> a `piApplyM` pars
-        _ -> return Nothing
