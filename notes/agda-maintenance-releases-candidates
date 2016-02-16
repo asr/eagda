@@ -1,7 +1,5 @@
-2015-12-10, adapted from agda-maintenance-releases
-
-When releasing a release candidate (RC) bugfix version of Agda, the
-following procedure can be followed:
+When releasing a release candidate (RC) for a bugfix version of Agda,
+the following procedure can be followed:
 
 * Can we use HACKAGE for realising a release candidate? That is, are
   the issues mentioned in
@@ -9,9 +7,6 @@ following procedure can be followed:
     https://github.com/haskell/hackage-server/issues/41
 
   fixed?
-
-* Update in the bug tracker the milestone field of open issues to the
-  next Agda version.
 
 * Verify that the Travis builds have no errors.
 
@@ -25,7 +20,7 @@ following procedure can be followed:
 
 * The version of the RC is the current version released + current date
 
-    RC_VERSION=<current-released-version-current-date-eg-2.4.2.3.20150913
+    RC_VERSION=<current-released-version-current-date-eg-2.4.2.3.20150913>
 
 * Change VERSION to RC_VERSION in:
 
@@ -50,12 +45,17 @@ following procedure can be followed:
 * Remove -Werror and -fprof-auto from Agda.cabal (this is required by
   `cabal --check`).
 
+* Ensure that cabal haddock works for the GHC versions don't support
+  by Travis:
+
+    cabal configure && cabal haddock
+
 * Run the test-suite:
 
-    make install
+    make compile-emacs-mode
     make test
 
-  Note that "make install" invokes "agda-mode compile", which should
+  Note that "compile-emacs-mode" invokes "agda-mode compile", which should
   ensure that the Emacs mode can be compiled without errors or
   warnings (except for the "cl package required at runtime" warning).
 
@@ -72,7 +72,6 @@ following procedure can be followed:
   possible) in Linux, MacOS X and Windows.
 
     BASE=`pwd`
-    RC_VERSION=<rc_version>
     cd ${TMPDIR:-/tmp}
     tar xzf $BASE/dist/Agda-$RC_VERSION.tar.gz
     cd Agda-$RC_VERSION
@@ -106,7 +105,7 @@ following procedure can be followed:
     git checkout master
     git merge maint-$MAJORVERSION
 
-* Push master
+* Push into master
 
     git push
 

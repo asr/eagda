@@ -15,6 +15,8 @@ import Control.Monad.State
 import Control.Monad.Reader
 
 import Data.List hiding (null)
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Maybe
@@ -24,6 +26,7 @@ import Agda.Syntax.Abstract.Name
 import Agda.Syntax.Abstract (Ren)
 import Agda.Syntax.Common
 import Agda.Syntax.Internal as I
+import Agda.Syntax.Internal.Names
 import Agda.Syntax.Position
 import Agda.Syntax.Treeless (Compiled(..), TTerm)
 
@@ -566,12 +569,28 @@ addDisplayForm x df = do
   if inCurrentSig
      then modifySignature add
      else stImportsDisplayForms %= HMap.insertWith (++) x [d]
+  whenM (hasLoopingDisplayForm x) $
+    typeError . GenericDocError $ text "Cannot add recursive display form for" <+> pretty x
 
 getDisplayForms :: QName -> TCM [Open DisplayForm]
 getDisplayForms q = do
   ds <- defDisplay <$> getConstInfo q
   ds' <- maybe [] id . HMap.lookup q <$> use stImportsDisplayForms
   return $ ds ++ ds'
+
+-- | Find all names used (recursively) by display forms of a given name.
+chaseDisplayForms :: QName -> TCM (Set QName)
+chaseDisplayForms q = go Set.empty [q]
+  where
+    go used []       = pure used
+    go used (q : qs) = do
+      ds <- (`Set.difference` used) . Set.unions . map (namesIn . openThing)
+            <$> (getDisplayForms q `catchError_` \ _ -> pure [])  -- might be a pattern synonym
+      go (Set.union ds used) (Set.toList ds ++ qs)
+
+-- | Check if a display form is looping.
+hasLoopingDisplayForm :: QName -> TCM Bool
+hasLoopingDisplayForm q = Set.member q <$> chaseDisplayForms q
 
 canonicalName :: QName -> TCM QName
 canonicalName x = do
@@ -826,6 +845,19 @@ freeVarsToApply x = do
       -- And there are also anonymous modules, thus, the invariant is not trivial.
       when (size tel < size args) __IMPOSSIBLE__
       return $ zipWith (\ (Dom ai _) (Arg _ v) -> Arg ai v) (telToList tel) args
+
+-- | Unless all variables in the context are module parameters, create a fresh
+--   module to capture the non-module parameters. Used when unquoting to make
+--   sure generated definitions work properly.
+inFreshModuleIfFreeParams :: TCM a -> TCM a
+inFreshModuleIfFreeParams k = do
+  a <- getCurrentModuleFreeVars
+  b <- size <$> getContext
+  if a == b then k else do
+    m  <- currentModule
+    m' <- qualifyM m . mnameFromList . (:[]) <$> freshName_ "_"
+    addSection m'
+    withCurrentModule m' k
 
 -- | Instantiate a closed definition with the correct part of the current
 --   context.

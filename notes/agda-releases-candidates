@@ -1,0 +1,133 @@
+When releasing a release candidate (RC) for a new version of Agda, the
+following procedure can be followed:
+
+* Can we use HACKAGE for realising a release candidate? That is, are
+  the issues mentioned in
+
+    https://github.com/haskell/hackage-server/issues/41
+
+  fixed?
+
+* Verify that the Travis builds have no errors.
+
+* Get a clean Agda repository.
+
+    git clone git@github.com:agda/agda agda.release
+    cd agda.release
+
+* The version of the RC is the current version in master + current date
+
+    RC_VERSION=<current-master-version-current-date-eg-2.5.0.20160212>
+
+* Update the version number in:
+
+    .ghci
+    Agda.cabal (twice)
+    default.nix
+    doc/user-manual/conf.py
+    mk/version.mk
+    src/data/emacs-mode/agda2-mode.el
+    src/size-solver/size-solver.cabal
+    test/interaction/Issue1244a.out
+    test/interaction/Issue1244b.out
+
+* Obtain and install the standard library branch related to the Agda
+  new version.
+
+    make up-to-date-std-lib
+
+* Finish the release notes in
+  doc/release-notes/<version-written-with-dashes>.txt.
+
+  Copy the contents of the release notes to the top of the CHANGELOG file.
+
+* Update README.md, if necessary.
+
+* Update the LICENSE file, if necessary.
+
+* Remove -Werror and -fprof-auto from Agda.cabal (this is required by
+  `cabal --check`).
+
+* Ensure that cabal haddock works for the GHC versions don't support
+  by Travis:
+
+    cabal configure && cabal haddock
+
+* Run the test-suite:
+
+    make compile-emacs-mode
+    make test
+
+  Note that "compile-emacs-mode" invokes "agda-mode compile", which
+  should ensure that the Emacs mode can be compiled without errors or
+  warnings (except for the "cl package required at runtime" warning).
+
+* Remove the Cabal test-suite from Agda.cabal.
+
+* Build source distributions:
+
+    cabal configure
+    cabal check
+    cabal sdist
+    cabal install
+
+* Ensure that the package builds properly (with multiple versions of GHC if
+  possible) in Linux, MacOS X and Windows.
+
+    BASE=`pwd`
+    cd ${TMPDIR:-/tmp}
+    tar xzf $BASE/dist/Agda-$RC_VERSION.tar.gz
+    cd Agda-$RC_VERSION
+    cabal install
+
+  Do not forget to test the Emacs mode.
+
+* Tag the relase candidate (do not forget to record the changes above
+  first):
+
+    cd $BASE
+    git tag -a $RC_VERSION -m "Agda $VERSION release candidate"
+
+* Restore the Cabal test-suite in Agda.cabal.
+
+* Restore -Werror and -fprof-auto in Agda.cabal.
+
+* Restore the version number VERSION in:
+
+    .ghci
+    Agda.cabal (twice)
+    default.nix
+    doc/user-manual/conf.py
+    mk/version.mk
+    src/data/emacs-mode/agda2-mode.el
+    src/size-solver/size-solver.cabal
+    test/interaction/Issue1244a.out
+    test/interaction/Issue1244b.out
+
+* Push all changes into the master branch (requires Git >= 1.8.3).
+
+    git push --follow-tags
+
+* Announce the release candidate on the Agda mailing lists (users and
+  developers).
+
+  Note that the announce shouldn't include
+
+    https://github.com/agda/agda/releases/tag/$RC_VERSION.tar.gz
+
+  but $BASE/dist/Agda-$RC_VERSION.tar.gz.
+
+------------------------------------------------------------------------------
+Outdated (2016-02-12)
+
+* Disable sharing by default. Note that this change induces some
+  changes in the test suite.
+
+  N.B. that succeed/Issue1351.agda fails when sharing is disable.
+
+  ** Disable sharing by default in the Agda.Interaction.Options
+     module.
+
+  ** Change the message "(default: ON)" to "(default: OFF)" in the
+     above module.
+
