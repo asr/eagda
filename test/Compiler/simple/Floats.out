@@ -1,0 +1,13 @@
+EXECUTED_PROGRAM
+
+ret > ExitSuccess
+out > 123.0 = 123.0
+out > NaN   = NaN
+out > Inf   = Infinity
+out > -Inf  = -Infinity
+out > -0.0  = 0.0
+out > NaN == NaN = true
+out > Inf == Inf = true
+out > NaN < -Inf = false
+out > NaN < -5.0 = true
+out >

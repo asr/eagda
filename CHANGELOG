@@ -4,18 +4,41 @@
 
 Important changes since 2.4.2.5:
 
-Installation and infrastructure (TODO)
-===============================
-
-* For best performance, compile Agda with GHC >= 7.8.
-  Agda is significantly slower if compiled with GHC-7.6.
-  [Issue 1347]
-
 Documentation
 =============
 
-* There now exists an official Agda User Manual:
+* There is now an official Agda User Manual:
   http://agda.readthedocs.org/en/stable/
+
+Installation and infrastructure
+===============================
+
+* Builtins and primitives are now defined in a new set of modules available to
+  all users, independent of any particular library. The modules are
+
+    Agda.Builtin.Bool
+    Agda.Builtin.Char
+    Agda.Builtin.Coinduction
+    Agda.Builtin.Equality
+    Agda.Builtin.Float
+    Agda.Builtin.FromNat
+    Agda.Builtin.FromNeg
+    Agda.Builtin.FromString
+    Agda.Builtin.IO
+    Agda.Builtin.Int
+    Agda.Builtin.List
+    Agda.Builtin.Nat
+    Agda.Builtin.Reflection
+    Agda.Builtin.Size
+    Agda.Builtin.Strict
+    Agda.Builtin.String
+    Agda.Builtin.TrustMe
+    Agda.Builtin.Unit
+
+  The standard library reexports the primitives from the new modules.
+
+  The Agda.Builtin modules are installed in the same way as Agda.Primitive,
+  but unlike Agda.Primitive they are not loaded automatically.
 
 Pragmas and options
 ===================
@@ -126,6 +149,19 @@ Pragmas and options
     {-# COMPILED_DATA B Issue223.B Issue223.AB Issue223.BB #-}
 
   This fixes issue 223.
+
+* New pragma HASKELL for adding inline Haskell code (GHC backend only)
+
+  Arbitrary Haskell code can be added to a module using the HASKELL pragma.
+  For instance,
+
+    {-# HASKELL
+      echo :: IO ()
+      echo = getLine >>= putStrLn
+    #-}
+
+    postulate echo : IO ⊤
+    {-# COMPILED echo echo #-}
 
 * New option --exact-split.
 

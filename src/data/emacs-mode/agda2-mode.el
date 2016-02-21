@@ -394,18 +394,6 @@ The following paragraph does not apply to Emacs 23 or newer.
 Special commands:
 \\{agda2-mode-map}"
 
- ;; Check that the right version of Agda is used.
- (let* ((coding-system-for-read 'utf-8)
-        (output (with-output-to-string
-                  (call-process agda2-program-name
-                                nil standard-output nil "--version")))
-        (version (and (string-match "^Agda version \\([0-9.]+\\)$" output)
-                      (match-string 1 output))))
-   (unless (equal version agda2-version)
-     (error "The Agda mode's version (%s) does not match that of %s (%s)."
-            agda2-version
-            agda2-program-name (or version "unknown"))))
-
  (if (boundp 'agda2-include-dirs)
      (display-warning 'agda2 "Note that the variable agda2-include-dirs is
 no longer used. You may want to update your configuration. You
@@ -452,38 +440,60 @@ agda2-include-dirs is not bound." :warning))
  (add-hook 'change-major-mode-hook 'agda2-quit nil 'local))
 
 (defun agda2-restart ()
-  "Kill and restart the *agda2* buffer and load `agda2-toplevel-module'."
+  "Tries to start or restart the Agda process."
   (interactive)
-  (save-excursion (let ((agda2-bufname "*agda2*"))
-                    (condition-case nil
-                      (agda2-term)
-                      (error nil))
 
-                    ;; Start the Agda2 process in a new buffer.
-                    (message "Starting agda process `%s'." agda2-program-name)
-                    (let ((process-connection-type nil)) ; pipes are faster than PTYs
-                      (apply 'start-process "Agda2" agda2-bufname
-                             agda2-program-name
-                             (cons "--interaction" agda2-program-args)))
+  ;; Kill any running instance of the Agda process.
+  (condition-case nil
+      (agda2-term)
+    (error nil))
 
-                    ;; Select agda buffer temporarily.
-                    (with-current-buffer agda2-bufname
-                      (setq process-adaptive-read-buffering t)
+  ;; Check that the right version of Agda is used.
+  (let* ((coding-system-for-read 'utf-8)
+         (output (with-output-to-string
+                   (call-process agda2-program-name
+                                 nil standard-output nil "--version")))
+         (version (and (string-match "^Agda version \\([0-9.]+\\)$" output)
+                       (match-string 1 output))))
+    (unless (equal version agda2-version)
+      (error "The Agda mode's version (%s) does not match that of %s (%s)."
+             agda2-version
+             agda2-program-name (or version "unknown"))))
 
-                      ;; Clear message area.
-                      (message "")
+  (let ((all-program-args (cons "--interaction" agda2-program-args)))
 
-                      (setq agda2-process        (get-buffer-process agda2-bufname)
-                            agda2-process-buffer (process-buffer agda2-process)
-                            agda2-in-progress    nil
-                            mode-name            "Agda executable"
-                            agda2-last-responses nil)
-                      (set-buffer-file-coding-system 'utf-8)
-                      (set-buffer-process-coding-system 'utf-8 'utf-8)
-                      (set-process-query-on-exit-flag agda2-process nil))))
-  (setq agda2-file-buffer (current-buffer))
-  (set-process-filter agda2-process 'agda2-output-filter)
-  (agda2-remove-annotations))
+    ;; Check that the arguments are not malformed.
+    (let* ((coding-system-for-read 'utf-8)
+           (status)
+           (output
+            (with-output-to-string
+              (setq status
+                    (apply 'call-process agda2-program-name
+                           nil standard-output nil all-program-args)))))
+      (unless (equal status 0)
+        (error "Failed to start the Agda process:\n%s" output)))
+
+    ;; Start the Agda process.
+    (let ((agda2-bufname "*agda2*"))
+
+      (let ((process-connection-type nil)) ; Pipes are faster than PTYs.
+        (setq agda2-process
+              (apply 'start-process "Agda2" agda2-bufname
+                     agda2-program-name all-program-args)))
+
+      (set-process-coding-system agda2-process 'utf-8 'utf-8)
+      (set-process-query-on-exit-flag agda2-process nil)
+      (set-process-filter agda2-process 'agda2-output-filter)
+      (setq agda2-in-progress nil
+            agda2-file-buffer (current-buffer))
+
+      (with-current-buffer agda2-bufname
+        (setq agda2-process-buffer (current-buffer)
+              mode-name            "Agda executable"
+              agda2-last-responses nil)
+        (set-buffer-file-coding-system 'utf-8))
+
+      (agda2-remove-annotations))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;; Communicating with Agda
@@ -914,49 +924,63 @@ buffer, and point placed after this text.
 If APPEND is nil, then any previous text is removed before TEXT
 is inserted, and point is placed before this text."
   (interactive)
-  (with-current-buffer (agda2-info-buffer)
-    ;; In some cases the jump-to-position-mentioned-in-text
-    ;; functionality (see compilation-error-regexp-alist above) didn't
-    ;; work: Emacs jumped to the wrong position. However, it seems to
-    ;; work if compilation-forget-errors is used. This problem may be
-    ;; related to Emacs bug #9679
-    ;; (http://debbugs.gnu.org/cgi/bugreport.cgi?bug=9679). The idea
-    ;; to use compilation-forget-errors comes from a comment due to
-    ;; Oleksandr Manzyuk
-    ;; (https://github.com/haskell/haskell-mode/issues/67).
-    (compilation-forget-errors)
-    (unless append (erase-buffer))
-    (save-excursion
-      (goto-char (point-max))
-      (insert text))
-    (put-text-property 0 (length name) 'face '(:weight bold) name)
-    (setq mode-line-buffer-identification name)
-    (save-selected-window
-      (let (;; If there is only one window, then the info window
-            ;; should be created above or below the code window, not
-            ;; to the left or right.
-            (split-width-threshold nil)
-            (buf (current-buffer))
-           )
-        ;; Andreas, 2014-02-23, issue 1061
-        ;; If the buffer is already displayed in some window,
-        ;; do not display it again.  Also, do not raise its frame.
-        ;; This allows undisturbed working on something else while
-        ;; Agda is type-checking.
-        ;; The solution is to query for the window displaying the buffer
-        ;; via get-buffer-window.  Only if it return nil, we pop-to-buffer.
-        ;; Credits go to Iqbal Ansari who anwered my question on
-        ;; http://stackoverflow.com/questions/21955162/emacs-how-to-display-a-buffer-without-switching-window-and-without-raising-fram
-        ;; 2014-03-01 DISABLED FIX
-        ;; (unless (get-buffer-window buf t)
-          (pop-to-buffer buf nil 'norecord)
-          (fit-window-to-buffer nil
-            (truncate
-              (* (frame-height) agda2-information-window-max-height)))
-        ;; )
-        (if append
-            (goto-char (point-max))
-          (goto-char (point-min)))))))
+  (let ((buf (agda2-info-buffer)))
+    (with-current-buffer buf
+      ;; In some cases the jump-to-position-mentioned-in-text
+      ;; functionality (see compilation-error-regexp-alist above)
+      ;; didn't work: Emacs jumped to the wrong position. However, it
+      ;; seems to work if compilation-forget-errors is used. This
+      ;; problem may be related to Emacs bug #9679
+      ;; (http://debbugs.gnu.org/cgi/bugreport.cgi?bug=9679). The idea
+      ;; to use compilation-forget-errors comes from a comment due to
+      ;; Oleksandr Manzyuk
+      ;; (https://github.com/haskell/haskell-mode/issues/67).
+      (compilation-forget-errors)
+      (unless append (erase-buffer))
+      (save-excursion
+        (goto-char (point-max))
+        (insert text))
+      (put-text-property 0 (length name) 'face '(:weight bold) name)
+      (setq mode-line-buffer-identification name)
+      (force-mode-line-update))
+    ;; If the current window displays the information buffer, then the
+    ;; window configuration is left untouched.
+    (unless (equal (window-buffer) buf)
+      (let* (;; If there is only one window, then the info window
+             ;; should be created above or below the code window, not
+             ;; to the left or right.
+             (split-width-threshold nil)
+             (window
+               (display-buffer
+                buf
+                ;; Under Emacs 23 the effect of the following argument
+                ;; is only that the current window should not be used.
+                '(nil
+                  .
+                  (;; Do not use the same window.
+                   (inhibit-same-window . t)
+                   ;; Do not raise or select another frame.
+                   (inhibit-switch-frame . t)
+                   ;; If display-buffer-reuse-window is invoked, then
+                   ;; an existing window displaying the buffer, in any
+                   ;; frame on the current terminal, will be reused.
+                   ;; Note that this frame might not be visible.
+                   (reusable-frames . 0))))))
+        (if window
+            (fit-window-to-buffer window
+              (truncate
+                (* (frame-height)
+                   agda2-information-window-max-height))))))
+    ;; Move point in every window displaying the information buffer.
+    ;; Exception: If we are appending, don't move point in selected
+    ;; windows.
+    (dolist (window (get-buffer-window-list buf 'no-minibuffer t))
+      (unless (and append
+                   (equal window (selected-window)))
+        (with-selected-window window
+          (if append
+              (goto-char (point-max))
+            (goto-char (point-min))))))))
 
 (defun agda2-info-action-and-copy (name text &optional append)
   "Same as agda2-info-action but also puts TEXT in the kill ring."

@@ -14,7 +14,7 @@ import Control.Monad.Reader hiding (mapM_, forM_, mapM, forM, sequence)
 import Control.Monad.State  hiding (mapM_, forM_, mapM, forM, sequence)
 
 import Data.Generics.Geniplate
-import Data.Foldable hiding (any, foldr)
+import Data.Foldable hiding (any, foldr, sequence_)
 import qualified Data.List as List
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -47,6 +47,7 @@ import Agda.Syntax.Common
 import qualified Agda.Syntax.Abstract.Name as A
 import qualified Agda.Syntax.Concrete.Name as C
 import Agda.Syntax.Internal as I
+import Agda.Syntax.Internal.Names (namesIn)
 import qualified Agda.Syntax.Treeless as T
 import Agda.Syntax.Literal
 
@@ -94,7 +95,7 @@ compile i = do
     yesComp
     writeModule =<< decl <$> curHsMod <*> (definitions =<< curDefs) <*> imports
   where
-  decl mn ds imp = HS.Module dummy mn [] Nothing Nothing imp ds
+  decl mn ds imp = HS.Module dummy mn [] Nothing Nothing imp (map fakeDecl (reverse $ iHaskellCode i) ++ ds)
   uptodate = liftIO =<< (isNewerThan <$> outFile_ <*> ifile)
   ifile    = maybe __IMPOSSIBLE__ filePath <$>
                (findInterfaceFile . toTopLevelModuleName =<< curMName)
@@ -179,8 +180,11 @@ definition kit Defn{defName = q, defType = ty, defCompiledRep = compiled, theDef
   checkTypeOfMain q ty $ do
     infodecl q <$> case d of
 
-      _ | Just (HsDefn ty hs) <- compiledHaskell compiled ->
-        return $ fbWithType ty (fakeExp hs)
+      _ | Just (HsDefn hsty hs) <- compiledHaskell compiled -> do
+        -- Make sure we have imports for all names mentioned in the type.
+        ty <- normalise ty
+        sequence_ [ xqual x (HS.Ident "_") | x <- Set.toList (namesIn ty) ]
+        return $ fbWithType hsty (fakeExp hs)
 
       -- Special treatment of coinductive builtins.
       Datatype{} | Just q == (nameOfInf <$> kit) -> do

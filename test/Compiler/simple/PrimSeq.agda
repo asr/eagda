@@ -1,19 +1,13 @@
 
 module _ where
 
+open import Agda.Builtin.Nat using (mod-helper)
 open import Common.Prelude
 open import Common.Equality
 
-modAux : Nat → Nat → Nat → Nat → Nat
-modAux k m  zero    j      = k
-modAux k m (suc n)  zero   = modAux 0 m n m
-modAux k m (suc n) (suc j) = modAux (suc k) m n j
-
-{-# BUILTIN NATMODSUCAUX modAux #-}
-
 _mod_ : Nat → Nat → Nat
 n mod zero  = 0
-n mod suc m = modAux 0 m n m
+n mod suc m = mod-helper 0 m n m
 
 {-# INLINE _mod_ #-}
 

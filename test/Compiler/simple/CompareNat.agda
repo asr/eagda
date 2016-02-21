@@ -1,6 +1,7 @@
 {-# OPTIONS -v treeless.opt:20 #-}
 module _ where
 
+open import Agda.Builtin.Nat renaming (_<_ to _<?_)
 open import Common.Prelude
 open import Common.Equality
 
@@ -11,13 +12,6 @@ data Comparison {a} {A : Set a} (_<_ : A → A → Set a) (x y : A) : Set a wher
   less    : x < y → Comparison _<_ x y
   equal   : x ≡ y → Comparison _<_ x y
   greater : y < x → Comparison _<_ x y
-
-_<?_ : Nat → Nat → Bool
-a     <? zero  = false
-zero  <? suc b = true
-suc a <? suc b = a <? b
-
-{-# BUILTIN NATLESS _<?_ #-}
 
 compare : (a b : Nat) → Comparison _<_ a b
 compare a b with a <? b
