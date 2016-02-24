@@ -14,11 +14,13 @@ include ./mk/paths.mk
 
 CABAL_CMD=cabal
 
-# check if this is GHC 7.10 or newer
-GHC_GTEQ_710 := $(shell expr `ghc --numeric-version | sed -e 's/\.\([0-9][0-9]\)/\1/g' -e 's/\.\([0-9]\)/0\1/g' -e 's/^[0-9]\{3,4\}$$/&00/'` \>= 71000)
+# GHC version removing the patchlevel number (e.g. in GHC 7.10.3, the
+# patchlevel number is 3).
+
+GHC_VERSION := $(shell ghc --numeric-version | cut -d. -f1-2)
 
 ifneq ($(shell which uhc),)
-ifeq "$(GHC_GTEQ_710)" "1"
+ifeq "$(GHC_VERSION)" "7.10"
 override CABAL_OPTS+=-fuhc
 endif
 endif
@@ -312,5 +314,14 @@ hlint : $(BUILD_DIR)/build/autogen/cabal_macros.h
               --cpp-include=$(FULL_SRC_DIR) \
 	      --report=hlint-report.html \
 	      $(FULL_SRC_DIR)/Agda
+
+########################################################################
+# Debug
+
+debug :
+	@echo "AGDA_TESTS_OPTIONS = $(AGDA_TESTS_OPTIONS)"
+	@echo "CABAL_CMD          = $(CABAL_CMD)"
+	@echo "CABAL_OPTS         = $(CABAL_OPTS)"
+	@echo "GHC_VERSION        = $(GHC_VERSION)"
 
 # EOF

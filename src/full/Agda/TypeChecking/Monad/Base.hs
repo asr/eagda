@@ -1452,6 +1452,11 @@ defCompiled Defn{theDef = Function {funCompiled  = mcc}} = mcc
 defCompiled Defn{theDef = Primitive{primCompiled = mcc}} = mcc
 defCompiled _ = Nothing
 
+defParameters :: Definition -> Maybe Nat
+defParameters Defn{theDef = Datatype{dataPars = n}} = Just n
+defParameters Defn{theDef = Record  {recPars  = n}} = Just n
+defParameters _                                     = Nothing
+
 defJSDef :: Definition -> Maybe JSCode
 defJSDef = compiledJS . defCompiledRep
 
@@ -1704,6 +1709,9 @@ data TCEnv =
           , envTerminationCheck    :: TerminationCheck ()  -- ^ are we inside the scope of a termination pragma
           , envSolvingConstraints  :: Bool
                 -- ^ Are we currently in the process of solving active constraints?
+          , envCheckingWhere       :: Bool
+                -- ^ Have we stepped into the where-declarations of a clause?
+                --   Everything under a @where@ will be checked with this flag on.
           , envAssignMetas         :: Bool
             -- ^ Are we allowed to assign metas?
           , envActiveProblems      :: [ProblemId]
@@ -1784,6 +1792,7 @@ initEnv = TCEnv { envContext             = []
                 , envMutualBlock         = Nothing
                 , envTerminationCheck    = TerminationCheck
                 , envSolvingConstraints  = False
+                , envCheckingWhere       = False
                 , envActiveProblems      = [0]
                 , envAssignMetas         = True
                 , envAbstractMode        = ConcreteMode

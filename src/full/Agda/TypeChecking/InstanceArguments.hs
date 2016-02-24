@@ -10,6 +10,7 @@ import Control.Applicative
 import Control.Monad.Reader
 import Control.Monad.State
 import qualified Data.Map as Map
+import qualified Data.Set as Set
 import Data.List as List
 
 import Agda.Syntax.Common
@@ -18,6 +19,7 @@ import Agda.Syntax.Internal as I
 import Agda.TypeChecking.Errors ()
 import Agda.TypeChecking.Implicit (implicitArgs)
 import Agda.TypeChecking.Monad
+import Agda.TypeChecking.Monad.Builtin
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Substitute
@@ -248,11 +250,13 @@ rigidlyConstrainedMetas = do
         FindInScope{} -> return Nothing
 
 isRigid :: MetaId -> TCM Bool
-isRigid id = do
+isRigid i = do
   rigid <- rigidlyConstrainedMetas
-  return (elem id rigid)
+  return (elem i rigid)
 
--- | Returns True if one of the arguments of @t@ is a meta which isn’t rigidly constrained
+-- | Returns True if one of the arguments of @t@ is a meta which isn’t rigidly
+--   constrained. Note that level metas are never considered rigidly constrained
+--   (#1865).
 areThereNonRigidMetaArguments :: Term -> TCM (Maybe MetaId)
 areThereNonRigidMetaArguments t = case ignoreSharing t of
     Def n args -> do
@@ -290,7 +294,14 @@ areThereNonRigidMetaArguments t = case ignoreSharing t of
       case ignoreSharing v of
         Def _ es  -> areThereNonRigidMetaArgs es
         Var _ es  -> areThereNonRigidMetaArgs es
-        MetaV i _ -> ifM (not <$> isRigid i) (return (Just i)) (return Nothing)
+        Con _ vs  -> areThereNonRigidMetaArgs (map Apply vs)
+        MetaV i _ -> ifM (isRigid i) (return Nothing) $ do
+                      -- Ignore unconstrained level metas (#1865)
+                      Def lvl [] <- ignoreSharing <$> primLevel
+                      o          <- getOutputTypeName =<< getMetaType i
+                      case o of
+                        OutputTypeName l | l == lvl -> return Nothing
+                        _                           -> return (Just i)
         Lam _ t   -> isNonRigidMeta (unAbs t)
         _         -> return Nothing
 
@@ -320,17 +331,25 @@ filterResetingState m cands f = disableDestructiveUpdate $ do
 -- This is sufficient to reduce the list to a singleton should all be equal.
 dropSameCandidates :: MetaId -> [(Candidate, Term, Type, a)] -> TCM [(Candidate, Term, Type, a)]
 dropSameCandidates m cands = do
+  metas <- Set.fromList . Map.keys <$> getMetaStore
+  let freshMetas x = not $ Set.null $ Set.difference (Set.fromList $ allMetas x) metas
   reportSDoc "tc.instance" 50 $ vcat
     [ text "valid candidates:"
-    , nest 2 $ vcat [ sep [ prettyTCM v <+> text ":", nest 2 $ prettyTCM a ]
-                          | (_, v, a, _) <- cands ] ]
+    , nest 2 $ vcat [ if freshMetas (v, a) then text "(redacted)" else
+                      sep [ prettyTCM v <+> text ":", nest 2 $ prettyTCM a ]
+                    | (_, v, a, _) <- cands ] ]
   rel <- getMetaRelevance <$> lookupMeta m
   case cands of
     []            -> return cands
-    cvd@(_, v, a, _) : vas -> (cvd :) <$> dropWhileM equal vas
+    cvd@(_, v, a, _) : vas -> do
+        if freshMetas (v, a)
+          then return (cvd : vas)
+          else (cvd :) <$> dropWhileM equal vas
       where
         equal _ | isIrrelevant rel = return True
-        equal (_, v', a', _) =
+        equal (_, v', a', _)
+            | freshMetas (v', a') = return False  -- If there are fresh metas we can't compare
+            | otherwise           =
           verboseBracket "tc.instance" 30 "checkEqualCandidates" $ do
           reportSDoc "tc.instance" 30 $ sep [ prettyTCM v <+> text "==", nest 2 $ prettyTCM v' ]
           localTCState $ dontAssignMetas $ ifNoConstraints_ (equalType a a' >> equalTerm a v v')
