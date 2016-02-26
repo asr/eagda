@@ -105,7 +105,7 @@ abstractTerm a u@Con{} b v = do
         , nest 2 $ sep [ prettyTCM v <+> text ":", nest 2 $ prettyTCM b ] ]
 
   hole <- qualify <$> currentModule <*> freshName_ "hole"
-  noMutualBlock $ addConstant hole $ defaultDefn defaultArgInfo hole a Axiom
+  noMutualBlock $ addConstant hole $ defaultDefn defaultArgInfo hole a $ Axiom Nothing []
 
   args <- map Apply <$> getContextArgs
   let n = length args
