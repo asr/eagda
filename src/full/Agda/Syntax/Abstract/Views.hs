@@ -17,12 +17,14 @@ import Control.Monad.Identity
 import Data.Foldable (foldMap)
 import Data.Monoid
 import Data.Traversable
+import Data.Void
 
 import Agda.Syntax.Position
 import Agda.Syntax.Common
 import Agda.Syntax.Abstract as A
 import Agda.Syntax.Concrete (FieldAssignment', exprFieldA)
 import Agda.Syntax.Info
+import Agda.Syntax.Scope.Base (emptyScopeInfo)
 
 import Agda.Utils.Either
 import Agda.Utils.Lens
@@ -59,14 +61,27 @@ isSet _                = False
 -- | Remove top 'ScopedExpr' wrappers.
 unScope :: Expr -> Expr
 unScope (ScopedExpr scope e) = unScope e
+unScope (QuestionMark i ii)  = QuestionMark (i {metaScope = emptyScopeInfo}) ii
+unScope (Underscore i)       = Underscore (i {metaScope = emptyScopeInfo})
 unScope e                    = e
 
 -- | Remove 'ScopedExpr' wrappers everywhere.
 --
 --   NB: Unless the implementation of 'ExprLike' for clauses
 --   has been finished, this does not work for clauses yet.
-deepUnScope :: ExprLike a => a -> a
-deepUnScope = mapExpr unScope
+deepUnscope :: ExprLike a => a -> a
+deepUnscope = mapExpr unScope
+
+deepUnscopeDecls :: [A.Declaration] -> [A.Declaration]
+deepUnscopeDecls = concatMap deepUnscopeDecl
+
+deepUnscopeDecl :: A.Declaration -> [A.Declaration]
+deepUnscopeDecl (A.ScopedDecl _ ds)              = deepUnscopeDecls ds
+deepUnscopeDecl (A.Mutual i ds)                  = [A.Mutual i (deepUnscopeDecls ds)]
+deepUnscopeDecl (A.Section i m tel ds)           = [A.Section i m (deepUnscope tel) (deepUnscopeDecls ds)]
+deepUnscopeDecl (A.RecDef i x ind eta c bs e ds) = [A.RecDef i x ind eta c (deepUnscope bs) (deepUnscope e)
+                                                                           (deepUnscopeDecls ds)]
+deepUnscopeDecl d                                = [deepUnscope d]
 
 -- * Traversal
 
@@ -80,7 +95,7 @@ class ExprLike a where
   recurseExpr = traverse . recurseExpr
 
   foldExpr :: Monoid m => (Expr -> m) -> a -> m
-  foldExpr f = getConst . recurseExpr (\ pre post -> Const $ f pre)
+  foldExpr f = getConst . recurseExpr (\ pre post -> Const (f pre) <* post)
 
   traverseExpr
 #if __GLASGOW_HASKELL__ <= 708
@@ -199,37 +214,28 @@ instance ExprLike Expr where
       PatternSyn{}            -> f e
       Macro{}                 -> f e
 
-instance ExprLike a => ExprLike (Arg a) where
-  foldExpr     = foldMap . foldExpr
-  traverseExpr = traverse . traverseExpr
-
+instance ExprLike a => ExprLike (Arg a)     where
 instance ExprLike a => ExprLike (Named x a) where
-  foldExpr     = foldMap . foldExpr
-  traverseExpr = traverse . traverseExpr
+instance ExprLike a => ExprLike [a]         where
 
-instance ExprLike a => ExprLike [a] where
-  foldExpr     = foldMap . foldExpr
-  traverseExpr = traverse . traverseExpr
+instance (ExprLike a, ExprLike b) => ExprLike (a, b) where
+  recurseExpr f (x, y) = (,) <$> recurseExpr f x <*> recurseExpr f y
+
+instance ExprLike Void where
+  recurseExpr f = absurd
 
 instance ExprLike a => ExprLike (FieldAssignment' a) where
-  foldExpr f a = foldExpr f (a ^. exprFieldA)
-  traverseExpr = exprFieldA . traverseExpr
+  recurseExpr = exprFieldA . recurseExpr
 
-instance
-#if __GLASGOW_HASKELL__ <= 706
-  (Traversable (Either a), ExprLike a, ExprLike b)
-#else
-  (ExprLike a, ExprLike b)
-#endif
-  => ExprLike (Either a b) where
-  foldExpr f = either (foldExpr f) (foldExpr f)
-  traverseExpr f = traverseEither (traverseExpr f)
-                                  (traverseExpr f)
+instance (ExprLike a, ExprLike b) => ExprLike (Either a b) where
+  recurseExpr f = traverseEither (recurseExpr f)
+                                 (recurseExpr f)
 
 instance ExprLike ModuleName where
   recurseExpr f = pure
-  foldExpr f _ = mempty
-  traverseExpr f = pure
+
+instance ExprLike QName where
+  recurseExpr _ = pure
 
 instance ExprLike LamBinding where
   recurseExpr f e =
@@ -294,37 +300,75 @@ instance ExprLike LetBinding where
 
 instance ExprLike a => ExprLike (Pattern' a) where
 
--- | TODO: currently does not go into clauses.
-instance ExprLike (Clause' a) where
-  recurseExpr  f e = pure e
-  foldExpr     f _ = mempty
-  traverseExpr f e = pure e
-
-{- TODO: finish
-instance ExprLike (Clause' a) where
-  foldExpr f (Clause _ rhs ds) = fold rhs `mappend` fold ds
-    where fold e = foldExpr f e
-  traverseExpr f (Clause lhs rhs ds) = Clause lhs <$> trav rhs <*> trav ds
-    where trav e = traverseExpr f e
+instance ExprLike a => ExprLike (Clause' a) where
+  recurseExpr f (Clause lhs rhs ds ca) = Clause <$> rec lhs <*> rec rhs <*> rec ds <*> pure ca
+    where rec = recurseExpr f
 
 instance ExprLike RHS where
-  foldExpr f rhs =
+  recurseExpr f rhs =
     case rhs of
-      RHS e                  -> fold e
-      AbsurdRHS{}            -> mempty
-      WithRHS _ es cs        -> fold es `mappend` fold cs
-      RewriteRHS xes rhs ds  -> fold xes `mappend` fold rhs `mappend` fold ds
-    where fold e = foldExpr f e
-
-  traverseExpr f rhs =
-    case rhs of
-      RHS e                   -> RHS <$> trav e
+      RHS e                   -> RHS <$> rec e
       AbsurdRHS{}             -> pure rhs
-      WithRHS x es cs         -> WithRHS x <$> trav es <*> trav cs
-      RewriteRHS xes rhs ds   -> RewriteRHS <$> trav xes <*> trav rhs <*> trav ds
-    where trav e = traverseExpr f e
+      WithRHS x es cs         -> WithRHS x <$> rec es <*> rec cs
+      RewriteRHS xes rhs ds   -> RewriteRHS <$> rec xes <*> rec rhs <*> rec ds
+    where rec e = recurseExpr f e
+
+instance ExprLike ModuleApplication where
+  recurseExpr f a =
+    case a of
+      SectionApp tel m es -> SectionApp <$> rec tel <*> rec m <*> rec es
+      RecordModuleIFS{}   -> pure a
+    where rec e = recurseExpr f e
+
+instance ExprLike Pragma where
+  recurseExpr f p =
+    case p of
+      BuiltinPragma s e           -> BuiltinPragma s <$> rec e
+      OptionsPragma{}             -> pure p
+      BuiltinNoDefPragma{}        -> pure p
+      RewritePragma{}             -> pure p
+      CompiledPragma{}            -> pure p
+      CompiledExportPragma{}      -> pure p
+      CompiledDeclareDataPragma{} -> pure p
+      CompiledTypePragma{}        -> pure p
+      CompiledDataPragma{}        -> pure p
+      CompiledEpicPragma{}        -> pure p
+      CompiledJSPragma{}          -> pure p
+      CompiledUHCPragma{}         -> pure p
+      CompiledDataUHCPragma{}     -> pure p
+      NoSmashingPragma{}          -> pure p
+      StaticPragma{}              -> pure p
+      InlinePragma{}              -> pure p
+      DisplayPragma f xs e        -> DisplayPragma f <$> rec xs <*> rec e
+    where rec e = recurseExpr f e
+
+instance ExprLike LHS where
+  recurseExpr f (LHS i c ps) = LHS i <$> recurseExpr f c <*> recurseExpr f ps
+
+instance ExprLike a => ExprLike (LHSCore' a) where
+
+instance ExprLike SpineLHS where
+  recurseExpr f (SpineLHS i x ps wps) = SpineLHS i x <$> recurseExpr f ps <*> recurseExpr f wps
 
 instance ExprLike Declaration where
-  foldExpr f d =
+  recurseExpr f d =
     case d of
--}
+      Axiom a d i x e           -> Axiom a d i x <$> rec e
+      Field i x e               -> Field i x <$> rec e
+      Primitive i x e           -> Primitive i x <$> rec e
+      Mutual i ds               -> Mutual i <$> rec ds
+      Section i m tel ds        -> Section i m <$> rec tel <*> rec ds
+      Apply i m a rd rm d       -> (\ a -> Apply i m a rd rm d) <$> rec a
+      Import{}                  -> pure d
+      Pragma i p                -> Pragma i <$> rec p
+      Open{}                    -> pure d
+      FunDef i f d cs           -> FunDef i f d <$> rec cs
+      DataSig i d tel e         -> DataSig i d <$> rec tel <*> rec e
+      DataDef i d bs cs         -> DataDef i d <$> rec bs <*> rec cs
+      RecSig i r tel e          -> RecSig i r <$> rec tel <*> rec e
+      RecDef i r n co c bs e ds -> RecDef i r n co c <$> rec bs <*> rec e <*> rec ds
+      PatternSynDef f xs p      -> PatternSynDef f xs <$> rec p
+      UnquoteDecl i is xs e     -> UnquoteDecl i is xs <$> rec e
+      UnquoteDef i xs e         -> UnquoteDef i xs <$> rec e
+      ScopedDecl s ds           -> ScopedDecl s <$> rec ds
+    where rec e = recurseExpr f e

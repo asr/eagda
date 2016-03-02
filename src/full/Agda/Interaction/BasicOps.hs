@@ -20,6 +20,7 @@ import qualified Data.Map as Map
 import Data.List
 import Data.Maybe
 import Data.Traversable hiding (mapM, forM, for)
+import Data.Monoid
 
 import qualified Agda.Syntax.Concrete as C -- ToDo: Remove with instance of ToConcrete
 import Agda.Syntax.Position
@@ -138,7 +139,7 @@ give ii mr e = liftTCM $ do
   mi  <- lookupInteractionId ii
   whenJust mr $ updateMetaVarRange mi
   reportSDoc "interaction.give" 10 $ TP.text "giving expression" TP.<+> prettyTCM e
-  reportSDoc "interaction.give" 50 $ TP.text $ show $ deepUnScope e
+  reportSDoc "interaction.give" 50 $ TP.text $ show $ deepUnscope e
   -- Try to give mi := e
   _ <- catchError (giveExpr mi e) $ \ err -> case err of
     -- Turn PatternErr into proper error:
@@ -167,7 +168,7 @@ refine ii mr e = do
   reportSDoc "interaction.refine" 10 $
     TP.text "refining with expression" TP.<+> prettyTCM e
   reportSDoc "interaction.refine" 50 $
-    TP.text $ show $ deepUnScope e
+    TP.text $ show $ deepUnscope e
   -- We try to append up to 10 meta variables
   tryRefine 10 range scope e
   where
@@ -176,7 +177,7 @@ refine ii mr e = do
       where
         try :: Int -> Expr -> TCM Expr
         try 0 e = throwError $ strMsg "Cannot refine"
-        try n e = give ii (Just r) e `catchError` (\_ -> try (n-1) =<< appMeta e)
+        try n e = give ii (Just r) e `catchError` (\_ -> try (n - 1) =<< appMeta e)
 
         -- Apply A.Expr to a new meta
         appMeta :: Expr -> TCM Expr
@@ -191,7 +192,25 @@ refine ii mr e = do
                 , metaNameSuggestion = ""
                 }
               metaVar = QuestionMark info ii
-          return $ App (ExprRange r) e $ defaultNamedArg metaVar
+
+              count x e = getSum $ foldExpr isX e
+                where isX (A.Var y) | x == y = Sum 1
+                      isX _                  = mempty
+
+              lamView (A.Lam _ (DomainFree _ x) e) = Just (x, e)
+              lamView (A.Lam i (DomainFull (TypedBindings r (Arg ai (TBind br (x : xs) a)))) e)
+                | null xs   = Just (dget x, e)
+                | otherwise = Just (dget x, A.Lam i (DomainFull $ TypedBindings r $ Arg ai $ TBind br xs a) e)
+              lamView _ = Nothing
+
+              -- reduce beta-redexes where the argument is used at most once
+              smartApp i e arg =
+                case lamView $ unScope e of
+                  Just (x, e) | count x e < 2 -> mapExpr subX e
+                    where subX (A.Var y) | x == y = namedArg arg
+                          subX e = e
+                  _ -> App i e arg
+          return $ smartApp (ExprRange r) e $ defaultNamedArg metaVar
           --ToDo: The position of metaVar is not correct
           --ToDo: The fixity of metavars is not correct -- fixed? MT
 
@@ -505,7 +524,7 @@ metaHelperType :: Rewrite -> InteractionId -> Range -> String -> TCM (OutputCons
 metaHelperType norm ii rng s = case words s of
   []    -> fail "C-c C-h expects an argument of the form f e1 e2 .. en"
   f : _ -> do
-    A.Application h args <- A.appView . getBody . deepUnScope <$> parseExprIn ii rng ("let " ++ f ++ " = _ in " ++ s)
+    A.Application h args <- A.appView . getBody . deepUnscope <$> parseExprIn ii rng ("let " ++ f ++ " = _ in " ++ s)
     withInteractionId ii $ do
       cxtArgs  <- getContextArgs
       -- cleanupType relies on with arguments being named 'w',

@@ -204,8 +204,9 @@ Pragmas and options
 
   {-# DISPLAY f e1 .. en = e #-}
 
-  This causes f e1 .. en to be printed as e, where ei can bind variables used
-  in e. The expressions ei and e are scope checked, but not type checked.
+  This causes f e1 .. en to be printed in the same way as e, where ei can bind
+  variables used in e. The expressions ei and e are scope checked, but not
+  type checked.
 
   For example this can be used to print overloaded (instance) functions with
   the overloaded name:
@@ -984,6 +985,22 @@ Records
 
     thd3 : ...
     thd3 record{ proj₂ = record { proj₂ = c }} = c
+
+* Record modules now properly hide all their parameters [Issue 1759]
+
+  Previously parameters to parent modules were not hidden in the record
+  module, resulting in different behaviour between
+
+    module M (A : Set) where
+      record R (B : Set) : Set where
+
+  and
+
+    module M where
+      record R (A B : Set) : Set where
+
+  where in the former case, `A` would be an explicit argument to the module
+  `M.R`, but implicit in the latter case. Now `A` is implicit in both cases.
 
 Instance search
 ---------------
