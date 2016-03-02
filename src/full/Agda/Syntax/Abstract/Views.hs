@@ -340,6 +340,7 @@ instance ExprLike Pragma where
       StaticPragma{}              -> pure p
       InlinePragma{}              -> pure p
       DisplayPragma f xs e        -> DisplayPragma f <$> rec xs <*> rec e
+      ATPPragma{}                 -> pure p
     where rec e = recurseExpr f e
 
 instance ExprLike LHS where
