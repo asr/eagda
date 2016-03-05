@@ -3,7 +3,30 @@ TOP = ..
 
 include $(TOP)/mk/paths.mk
 
-default : test polydep hello path regexp-talk aim4-bag ac effects minmax real view simplelib lib divmod highlighting malonzo relocatable-interfaces malformed-interfaces term1 term2 term3 html1 html2 # epic
+# Keep the `default` prerequisites in alphabetic order please!
+default : ac \
+          aim4-bag \
+          divmod \
+          effects \
+          hello \
+          highlighting \
+          html1 \
+          html2 \
+          library \
+          malformed-interfaces \
+          malonzo \
+          minmax \
+          path \
+          polydep \
+          regexp-talk \
+          relocatable-interfaces \
+          simplelib \
+          term1 \
+          term2 \
+          term3 \
+          view \
+          test \
+          # epic
 
 agda = $(AGDA_BIN)
 
@@ -43,97 +66,110 @@ ifeq ("$(echo)","")
 echo = echo
 endif
 
+.PHONY : term1
 term1 : Termination/Mutual.agda
 	@$(echo) "Testing $<... "
 	@$(echo) :q | $(run_agda) -iTermination $<
 	@$(echo) "ok"
 
+.PHONY : term2
 term2 : Termination/StructuralOrder.agda
 	@$(echo) "Testing $<... "
 	@$(echo) :q | $(run_agda) -iTermination $<
 	@$(echo) "ok"
 
+.PHONY : term3
 term3 : Termination/Tuple.agda
 	@$(echo) "Testing $<... "
 	@$(echo) :q | $(run_agda) -iTermination $<
 	@$(echo) "ok"
 
+.PHONY : polydep
 polydep : AIM5/PolyDep/Main.agda
 	@$(echo) "Testing $<... "
 	@$(echo) :q | $(run_agda) -iAIM5/PolyDep $<
 	@$(echo) "ok"
 
+.PHONY : hello
 hello : AIM6/HelloAgda/Everything.agda
 	@$(echo) "Testing $<... "
 	@$(echo) :q | $(run_agda) -iAIM6/HelloAgda $<
 	@$(echo) "ok"
 
+.PHONY : path
 path : AIM6/Path/All.agda
 	@$(echo) "Testing $<... "
 	@$(echo) :q | $(run_agda) -iAIM6/Path $<
 	@$(echo) "ok"
 
+.PHONY : regexp-talk
 regexp-talk : AIM6/RegExp/talk/Everything.agda
 	@$(echo) "Testing $<... "
 	@$(echo) :q | $(run_agda) -iAIM6/RegExp/talk $<
 	@$(echo) "ok"
 
+.PHONY : aim4-bag
 aim4-bag : AIM4/bag/Bag.agda
 	@$(echo) "Testing $<... "
 	@$(echo) :q | $(run_agda) -iAIM4/bag $<
 	@$(echo) "ok"
 
+.PHONY : ac
 ac : tactics/ac/AC.agda
 	@$(echo) "Testing $<... "
 	@$(echo) :q | $(run_agda) -itactics/ac $<
 	@$(echo) "ok"
 
+.PHONY : effects
 effects : sinatra/Example.agda
 	@$(echo) "Testing $<..."
 	@$(echo) :q | $(run_agda) -isinatra $<
 	@$(echo) "ok"
 
+.PHONY : minmax
 minmax : order/MinMax.agda
 	@$(echo) "Testing $<... "
 	@$(echo) :q | $(run_agda) -ilib -iorder $<
 	@$(echo) "ok"
 
-real : lib/Data/Real/CReal.agda
-	@$(echo) "Testing $<... "
-	@$(echo) :q | $(run_agda) -ilib $<
-	@$(echo) "ok"
-
+.PHONY : view
 view : vfl/Typechecker.agda
 	@$(echo) "Testing $<... "
 	@$(echo) :q | $(run_agda) -ivfl $<
 	@$(echo) "ok"
 
+.PHONY : simplelib
 simplelib : simple-lib/TestLib.agda
 	@$(echo) "Testing $<... "
 	@$(echo) :q | $(run_agda) -isimple-lib $<
 	@$(echo) "ok"
 
-lib : lib/Test.agda
+.PHONY : library
+library : lib/Test.agda
 	@$(echo) "Testing $<... "
 	@$(echo) :q | $(run_agda) -ilib $<
 	@$(echo) "ok"
 
+.PHONY : divmod
 divmod : arith/DivMod.agda
 	@$(echo) "Testing $<... "
 	@$(echo) :q | $(run_agda) -iarith -isimple-lib $<
 	@$(echo) "ok"
 
+.PHONY : intro
 intro : Introduction/All.agda
 	@$(echo) "Testing $<... "
 	@$(echo) :q | $(run_agda) $<
 	@$(echo) "ok"
 
+.PHONY : highlighting
 highlighting : syntax/highlighting/Test*agda
 	@$(echo) "Testing $^... "
 	@$(echo) :q | $(run_agda) --vim -isyntax/highlighting syntax/highlighting/Test2.agda
 	@$(echo) :q | $(run_agda) --vim -isyntax/highlighting syntax/highlighting/Test3.lagda
 	@$(echo) "ok"
 
+.PHONY : malonzo
 malonzo : compiler/main.agda
 	@$(echo) "Testing the MAlonzo backend"
 	@$(agda) --ignore-interfaces --compile --compile-dir=compiler -icompiler $<
@@ -145,6 +181,8 @@ malonzo : compiler/main.agda
 	@./compiler/main
 	@$(echo) "ok"
 
+# The Epic backend was removed in Agda 2.4.2.3.
+.PHONY : epic
 epic : compiler/main.agda
 	@$(echo) "Testing the Epic backend"
 	@$(agda) --ignore-interfaces --epic --compile-dir=compiler -icompiler $<
@@ -156,6 +194,7 @@ epic : compiler/main.agda
 	@./compiler/main
 	@$(echo) "ok"
 
+.PHONY : relocatable-interfaces
 relocatable-interfaces : relocatable/originals/*.agda
 	-@rm -rf relocatable/copies
 	@$(echo) "Testing that interface files are relocatable"
@@ -169,6 +208,7 @@ relocatable-interfaces : relocatable/originals/*.agda
 	@[ `grep "^ *Skipping" relocatable/copies/output | wc -l` = 1 ]
 	@rm -rf relocatable/copies
 
+.PHONY : malformed-interfaces
 malformed-interfaces : malformed/Empty.agda
 	@$(echo) "Testing that Agda can handle at least some malformed interface files."
 	@echo > malformed/Empty.agdai
@@ -178,6 +218,7 @@ malformed-interfaces : malformed/Empty.agda
 	@echo apa >> malformed/Empty.agdai
 	@$(agda) -imalformed malformed/Empty.agda
 
+.PHONY : html1
 html1 : AIM6/RegExp/talk/Everything.agda
 	@$(echo) "Testing HTML generation in the default directory"
 	@$(run_agda) --html -iAIM6/RegExp/talk $<
@@ -185,6 +226,7 @@ html1 : AIM6/RegExp/talk/Everything.agda
 	@rm -rf html
 	@$(echo) "ok"
 
+.PHONY : html2
 html2 : AIM6/RegExp/talk/Everything.agda
 	@$(echo) "Testing HTML generation in a particular directory"
 	@$(run_agda) --html --html-dir=HTML -iAIM6/RegExp/talk $<

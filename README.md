@@ -1,7 +1,7 @@
-[![Build Status](https://travis-ci.org/asr/eagda.svg?branch=master)](https://travis-ci.org/asr/eagda)
-
 Extended version of Agda
 ========================
+
+[![Build Status](https://travis-ci.org/asr/eagda.svg?branch=master)](https://travis-ci.org/asr/eagda)
 
 Description
 -----------
