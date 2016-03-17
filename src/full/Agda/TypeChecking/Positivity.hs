@@ -15,11 +15,13 @@ import Control.DeepSeq
 import Control.Monad.Reader
 
 import Data.Either
+import qualified Data.Foldable as Fold
 import Data.Function
 import Data.Graph (SCC(..), flattenSCC)
 import Data.List as List hiding (null)
 import Data.Map (Map)
 import qualified Data.Map as Map
+import qualified Data.Sequence as DS
 import Data.Set (Set)
 import qualified Data.Set as Set
 
@@ -66,8 +68,7 @@ checkStrictlyPositive mi qset = disableDestructiveUpdate $ do
   -- compute the occurrence graph for qs
   let qs = Set.toList qset
   reportSDoc "tc.pos.tick" 100 $ text "positivity of" <+> prettyTCM qs
-  -- remove @Unused@ edges
-  g <- Graph.clean <$> buildOccurrenceGraph qset
+  g <- buildOccurrenceGraph qset
   let (gstar, sccs') =
         Graph.gaussJordanFloydWarshallMcNaughtonYamada $ fmap occ g
   reportSDoc "tc.pos.tick" 100 $ text "constructed graph"
@@ -236,33 +237,31 @@ getDefArity def = case theDef def of
 
 -- | Description of an occurrence.
 data OccursWhere
-  = LeftOfArrow OccursWhere
-  | DefArg QName Nat OccursWhere -- ^ in the nth argument of a define constant
-  | UnderInf OccursWhere         -- ^ in the principal argument of built-in ∞
-  | VarArg OccursWhere           -- ^ as an argument to a bound variable
-  | MetaArg OccursWhere          -- ^ as an argument of a metavariable
-  | ConArgType QName OccursWhere -- ^ in the type of a constructor
-  | IndArgType QName OccursWhere -- ^ in a datatype index of a constructor
-  | InClause Nat OccursWhere     -- ^ in the nth clause of a defined function
-  | Matched OccursWhere          -- ^ matched against in a clause of a defined function
-  | InDefOf QName OccursWhere    -- ^ in the definition of a constant
-  | Here
-  | Unknown                      -- ^ an unknown position (treated as negative)
+  = Unknown
+    -- ^ an unknown position (treated as negative)
+  | Known (DS.Seq Where)
+    -- ^ The elements of the sequence, from left to right, explain how
+    -- to get to the occurrence.
+  deriving (Show, Eq, Ord)
+
+-- | One part of the description of an occurrence.
+data Where
+  = LeftOfArrow
+  | DefArg QName Nat -- ^ in the nth argument of a define constant
+  | UnderInf         -- ^ in the principal argument of built-in ∞
+  | VarArg           -- ^ as an argument to a bound variable
+  | MetaArg          -- ^ as an argument of a metavariable
+  | ConArgType QName -- ^ in the type of a constructor
+  | IndArgType QName -- ^ in a datatype index of a constructor
+  | InClause Nat     -- ^ in the nth clause of a defined function
+  | Matched          -- ^ matched against in a clause of a defined function
+  | InDefOf QName    -- ^ in the definition of a constant
   deriving (Show, Eq, Ord)
 
 (>*<) :: OccursWhere -> OccursWhere -> OccursWhere
-Here            >*< o  = o
-Unknown         >*< o  = Unknown
-LeftOfArrow o1  >*< o2 = LeftOfArrow (o1 >*< o2)
-DefArg d i o1   >*< o2 = DefArg d i (o1 >*< o2)
-UnderInf o1     >*< o2 = UnderInf (o1 >*< o2)
-VarArg o1       >*< o2 = VarArg (o1 >*< o2)
-MetaArg o1      >*< o2 = MetaArg (o1 >*< o2)
-ConArgType c o1 >*< o2 = ConArgType c (o1 >*< o2)
-IndArgType c o1 >*< o2 = IndArgType c (o1 >*< o2)
-InClause i o1   >*< o2 = InClause i (o1 >*< o2)
-Matched o1      >*< o2 = Matched (o1 >*< o2)
-InDefOf d o1    >*< o2 = InDefOf d (o1 >*< o2)
+Unknown   >*< _         = Unknown
+Known _   >*< Unknown   = Unknown
+Known os1 >*< Known os2 = Known (os1 DS.>< os2)
 
 instance PrettyTCM OccursWhere where
   prettyTCM o = prettyOs $ map maxOneLeftOfArrow $ uniq $ splitOnDef o
@@ -279,86 +278,53 @@ instance PrettyTCM OccursWhere where
       prettyOs [o] = prettyO o <> text "."
       prettyOs (o:os) = prettyO o <> text ", which occurs" $$ prettyOs os
 
-      prettyO o = case o of
-        Here           -> empty
-        Unknown        -> empty
-        LeftOfArrow o  -> explain o $ pwords "to the left of an arrow"
-        DefArg q i o   -> explain o $ pwords "in the" ++ nth i ++ pwords "argument to" ++
-                                      [prettyTCM q]
-        UnderInf o     -> do
-          Def inf _ <- ignoreSharing <$> primInf  -- this cannot fail if an 'UnderInf' has been generated
-          explain o $ pwords "under" ++ [prettyTCM inf]
-        VarArg o       -> explain o $ pwords "in an argument to a bound variable"
-        MetaArg o      -> explain o $ pwords "in an argument to a metavariable"
-        ConArgType c o -> explain o $ pwords "in the type of the constructor" ++ [prettyTCM c]
-        IndArgType c o -> explain o $ pwords "in an index of the target type of the constructor" ++ [prettyTCM c]
-        InClause i o   -> explain o $ pwords "in the" ++ nth i ++ pwords "clause"
-        Matched o      -> explain o $ pwords "as matched against"
-        InDefOf d o    -> explain o $ pwords "in the definition of" ++ [prettyTCM d]
+      prettyO Unknown    = empty
+      prettyO (Known ws) =
+        Fold.foldrM (\w d -> return d $$ fsep (prettyW w)) empty ws
 
-      explain o ds = prettyO o $$ fsep ds
+      prettyW w = case w of
+        LeftOfArrow  -> pwords "to the left of an arrow"
+        DefArg q i   -> pwords "in the" ++ nth i ++ pwords "argument to" ++
+                          [prettyTCM q]
+        UnderInf     -> pwords "under" ++
+                        [do -- this cannot fail if an 'UnderInf' has been generated
+                            Def inf _ <- ignoreSharing <$> primInf
+                            prettyTCM inf]
+        VarArg       -> pwords "in an argument to a bound variable"
+        MetaArg      -> pwords "in an argument to a metavariable"
+        ConArgType c -> pwords "in the type of the constructor" ++ [prettyTCM c]
+        IndArgType c -> pwords "in an index of the target type of the constructor" ++ [prettyTCM c]
+        InClause i   -> pwords "in the" ++ nth i ++ pwords "clause"
+        Matched      -> pwords "as matched against"
+        InDefOf d    -> pwords "in the definition of" ++ [prettyTCM d]
 
-      maxOneLeftOfArrow o = case o of
-        LeftOfArrow o  -> LeftOfArrow $ purgeArrows o
-        Here           -> Here
-        Unknown        -> Unknown
-        DefArg q i o   -> DefArg q i   $ maxOneLeftOfArrow o
-        UnderInf o     -> UnderInf     $ maxOneLeftOfArrow o
-        InDefOf d o    -> InDefOf d    $ maxOneLeftOfArrow o
-        VarArg o       -> VarArg       $ maxOneLeftOfArrow o
-        MetaArg o      -> MetaArg      $ maxOneLeftOfArrow o
-        ConArgType c o -> ConArgType c $ maxOneLeftOfArrow o
-        IndArgType c o -> IndArgType c $ maxOneLeftOfArrow o
-        InClause i o   -> InClause i   $ maxOneLeftOfArrow o
-        Matched o      -> Matched      $ maxOneLeftOfArrow o
-
-      purgeArrows o = case o of
-        LeftOfArrow o -> purgeArrows o
-        Here           -> Here
-        Unknown        -> Unknown
-        DefArg q i o   -> DefArg q i   $ purgeArrows o
-        UnderInf o     -> UnderInf     $ purgeArrows o
-        InDefOf d o    -> InDefOf d    $ purgeArrows o
-        VarArg o       -> VarArg       $ purgeArrows o
-        MetaArg o      -> MetaArg      $ purgeArrows o
-        ConArgType c o -> ConArgType c $ purgeArrows o
-        IndArgType c o -> IndArgType c $ purgeArrows o
-        InClause i o   -> InClause i   $ purgeArrows o
-        Matched o      -> Matched      $ purgeArrows o
-
-      splitOnDef o = case o of
-        Here           -> [Here]
-        Unknown        -> [Unknown]
-        InDefOf d o    -> sp (InDefOf d) o
-        LeftOfArrow o  -> sp LeftOfArrow o
-        DefArg q i o   -> sp (DefArg q i) o
-        UnderInf o     -> sp UnderInf o
-        VarArg o       -> sp VarArg o
-        MetaArg o      -> sp MetaArg o
-        ConArgType c o -> sp (ConArgType c) o
-        IndArgType c o -> sp (IndArgType c) o
-        InClause i o   -> sp (InClause i) o
-        Matched o      -> sp Matched o
+      maxOneLeftOfArrow Unknown    = Unknown
+      maxOneLeftOfArrow (Known ws) = Known $
+        noArrows
+          DS.><
+        case DS.viewl startsWithArrow of
+          DS.EmptyL  -> DS.empty
+          w DS.:< ws -> w DS.<| DS.filter (not . isArrow) ws
         where
-          sp f o = case splitOnDef o of
-            os@(InDefOf _ _:_) -> f Here : os
-            o:os               -> f o : os
-            []                 -> __IMPOSSIBLE__
+        (noArrows, startsWithArrow) = DS.breakl isArrow ws
+
+        isArrow LeftOfArrow{} = True
+        isArrow _             = False
+
+      splitOnDef Unknown    = [Unknown]
+      splitOnDef (Known ws) = split ws DS.empty
+        where
+        split ws acc = case DS.viewl ws of
+          w@InDefOf{} DS.:< ws -> let rest = split ws (DS.singleton w) in
+                                  if DS.null acc
+                                  then rest
+                                  else Known acc : rest
+          w           DS.:< ws -> split ws (acc DS.|> w)
+          DS.EmptyL            -> [Known acc]
 
 instance Sized OccursWhere where
-  size o = 1 + case o of
-    Here           -> 0
-    Unknown        -> 0
-    LeftOfArrow o  -> size o
-    DefArg _ _ o   -> size o
-    UnderInf o     -> size o
-    VarArg o       -> size o
-    MetaArg o      -> size o
-    ConArgType _ o -> size o
-    IndArgType _ o -> size o
-    InClause _ o   -> size o
-    Matched o      -> size o
-    InDefOf _ o    -> size o
+  size Unknown    = 1
+  size (Known ws) = 1 + size ws
 
 -- Computing occurrences --------------------------------------------------
 
@@ -366,79 +332,83 @@ data Item = AnArg Nat
           | ADef QName
   deriving (Eq, Ord, Show)
 
--- | Note that, in pathological (?) cases, the size of the list of
--- 'OccursWhere' elements can be quadratic in its length. For
--- instance, for @benchmark/misc/SlowOccurrences.agda@ the list for
--- @X@ contains the following elements:
---
--- * @InDefOf "F" (InClause 0 Here)@,
---
--- * @InDefOf "F" (InClause 0 (LeftOfArrow Here))@,
---
--- * @InDefOf "F" (InClause 0 (LeftOfArrow (LeftOfArrow Here)))@,
---
--- * @InDefOf "F" (InClause 0 (LeftOfArrow (LeftOfArrow (LeftOfArrow Here))))@,
---
--- * and so on.
---
--- The function 'computeEdge' is applied to each of these elements.
--- Perhaps it is possible to use a more compact representation for the
--- list of 'OccursWhere' items, and take advantage of this
--- representation to avoid duplicated work in 'computeEdge' (and maybe
--- also elsewhere).
 type Occurrences = Map Item [OccursWhere]
 
--- | Used to build 'Occurrences'.
+-- | Used to build 'Occurrences' and occurrence graphs.
 data OccurrencesBuilder
-  = Empty
-  | Concat [OccurrencesBuilder]
-  | OccurrencesBuilder :>+< OccurrencesBuilder
-  | OccursAs (OccursWhere -> OccursWhere) OccurrencesBuilder
+  = Concat [OccurrencesBuilder]
+  | OccursAs Where OccurrencesBuilder
   | OccursHere Item
   | OnlyVarsUpTo Nat OccurrencesBuilder
     -- ^ @OnlyVarsUpTo n occs@ discards occurrences of de Bruijn index
     -- @>= n@.
 
+-- | Used to build 'Occurrences' and occurrence graphs.
+data OccurrencesBuilder'
+  = Concat' [OccurrencesBuilder']
+  | OccursAs' Where OccurrencesBuilder'
+  | OccursHere' Item OccursWhere
+
+emptyOB :: OccurrencesBuilder
+emptyOB = Concat []
+
+(>+<) :: OccurrencesBuilder -> OccurrencesBuilder -> OccurrencesBuilder
+occs1 >+< occs2 = Concat [occs1, occs2]
+
+-- | Removes 'OnlyVarsUpTo' entries and adds 'OccursWhere' entries.
+--
+-- WARNING: There can be lots of sharing between the generated
+-- 'OccursWhere' entries. Traversing all of these entries could be
+-- expensive. (See 'computeEdges' for an example.)
+preprocess :: OccurrencesBuilder -> OccurrencesBuilder'
+preprocess ob = case pp Nothing DS.empty ob of
+  Nothing -> Concat' []
+  Just ob -> ob
+  where
+  pp :: Maybe Nat
+        -- ^ Variables larger than or equal to this number, if any,
+        --   are not retained.
+     -> DS.Seq Where
+     -> OccurrencesBuilder
+     -> Maybe OccurrencesBuilder'
+  pp !m ws (Concat obs)        = case catMaybes $ map (pp m ws) obs of
+                                   []  -> Nothing
+                                   obs -> return (Concat' obs)
+  pp  m ws (OccursAs w ob)     = OccursAs' w <$> pp m (ws DS.|> w) ob
+  pp  m ws (OnlyVarsUpTo n ob) = pp (Just $! maybe n (min n) m) ws ob
+  pp  m ws (OccursHere i)      = do guard keep
+                                    return (OccursHere' i (Known ws))
+    where
+    keep = case (m, i) of
+      (Nothing, _)      -> True
+      (_, ADef _)       -> True
+      (Just m, AnArg i) -> i < m
+
 -- | A type used locally in 'flatten'.
 data OccursWheres
   = OccursWheres :++ OccursWheres
-  | Where OccursWhere
+  | Occurs OccursWhere
 
 -- | An interpreter for 'OccurrencesBuilder'.
+--
+-- WARNING: There can be lots of sharing between the generated
+-- 'OccursWhere' entries. Traversing all of these entries could be
+-- expensive. (See 'computeEdges' for an example.)
 flatten :: OccurrencesBuilder -> Occurrences
 flatten =
   fmap (flip flatten'' []) .
   Map.fromListWith (:++) .
-  flip (flatten' id Nothing) []
+  flip flatten' [] .
+  preprocess
   where
-  flatten' :: (OccursWhere -> OccursWhere)
-              -- ^ Used to transform results.
-           -> Maybe Nat
-              -- ^ Variables larger than or equal to this number, if
-              -- any, are not retained.
-           -> OccurrencesBuilder
+  flatten' :: OccurrencesBuilder'
            -> [(Item, OccursWheres)] -> [(Item, OccursWheres)]
-  flatten' f !m Empty                 = id
-  flatten' f  m (Concat occss)        = foldr (\occs g ->
-                                                  flatten' f m occs . g)
-                                              id occss
-  flatten' f  m (occs1 :>+< occs2)    = flatten' f m occs1 .
-                                        flatten' f m occs2
-  flatten' f  m (OccursAs g occs)     = flatten' (f . g) m occs
-  flatten' f  m (OnlyVarsUpTo n occs) = flatten' f
-                                          (Just $! maybe n (min n) m)
-                                          occs
-  flatten' f  m (OccursHere i)
-    | p i                            = ((i, Where (f Here)) :)
-    | otherwise                      = id
-    where
-    p (ADef q)  = True
-    p (AnArg i) = case m of
-                    Nothing -> True
-                    Just m  -> i < m
+  flatten' (Concat' obs)     = foldr (\occs f -> flatten' occs . f) id obs
+  flatten' (OccursAs' _ ob)  = flatten' ob
+  flatten' (OccursHere' i o) = ((i, Occurs o) :)
 
-  flatten'' (ws1 :++ ws2) = flatten'' ws1 . flatten'' ws2
-  flatten'' (Where w)     = (w :)
+  flatten'' (os1 :++ os2) = flatten'' os1 . flatten'' os2
+  flatten'' (Occurs o)    = (o :)
 
 -- | Context for computing occurrences.
 data OccEnv = OccEnv
@@ -475,7 +445,7 @@ class ComputeOccurrences a where
 instance ComputeOccurrences Clause where
   occurrences cl = do
     let ps = unnumberPatVars $ clausePats cl
-    (Concat (mapMaybe matching (zip [0..] ps)) :>+<) <$>
+    (Concat (mapMaybe matching (zip [0..] ps)) >+<) <$>
       walk (patItems ps) (clauseBody cl)
     where
       matching (i, p)
@@ -483,7 +453,7 @@ instance ComputeOccurrences Clause where
                                                 OccursHere $ AnArg i
         | otherwise                  = Nothing
 
-      walk _         NoBody     = return Empty
+      walk _         NoBody     = return emptyOB
       walk []        (Body v)   = occurrences v
       walk (i : pis) (Bind b)   = withExtendedOccEnv i $ walk pis $ absBody b
       walk []        Bind{}     = __IMPOSSIBLE__
@@ -510,7 +480,7 @@ instance ComputeOccurrences Term where
              | otherwise       = flip trace __IMPOSSIBLE__ $
                  "impossible: occurrence of de Bruijn index " ++ show i ++
                  " in vars " ++ show vars ++ " is unbound"
-      return $ maybe Empty OccursHere mi :>+< OccursAs VarArg occs
+      return $ maybe emptyOB OccursHere mi >+< OccursAs VarArg occs
 
     Def d args   -> do
       inf <- asks inf
@@ -519,25 +489,25 @@ instance ComputeOccurrences Term where
             -- the first is a level argument (n==0, counting from 0!)
             if n == 1 then OccursAs UnderInf else OccursAs (DefArg d n)
       occs <- mapM occurrences args
-      return $ OccursHere (ADef d) :>+< Concat (zipWith occsAs [0..] occs)
+      return $ OccursHere (ADef d) >+< Concat (zipWith occsAs [0..] occs)
     Con c args   -> occurrences args
     MetaV _ args -> OccursAs MetaArg <$> occurrences args
     Pi a b       -> do
       oa <- occurrences a
       ob <- occurrences b
-      return $ OccursAs LeftOfArrow oa :>+< ob
+      return $ OccursAs LeftOfArrow oa >+< ob
     Lam _ b      -> occurrences b
     Level l      -> occurrences l
-    Lit{}        -> return Empty
-    Sort{}       -> return Empty
-    DontCare _   -> return Empty -- Andreas, 2011-09-09: do we need to check for negative occurrences in irrelevant positions?
+    Lit{}        -> return emptyOB
+    Sort{}       -> return emptyOB
+    DontCare _   -> return emptyOB -- Andreas, 2011-09-09: do we need to check for negative occurrences in irrelevant positions?
     Shared p     -> occurrences $ derefPtr p
 
 instance ComputeOccurrences Level where
   occurrences (Max as) = occurrences as
 
 instance ComputeOccurrences PlusLevel where
-  occurrences ClosedLevel{} = return Empty
+  occurrences ClosedLevel{} = return emptyOB
   occurrences (Plus _ l)    = occurrences l
 
 instance ComputeOccurrences LevelAtom where
@@ -551,7 +521,7 @@ instance ComputeOccurrences Type where
   occurrences (El _ v) = occurrences v
 
 instance ComputeOccurrences a => ComputeOccurrences (Tele a) where
-  occurrences EmptyTel        = return Empty
+  occurrences EmptyTel        = return emptyOB
   occurrences (ExtendTel a b) = occurrences (a, b)
 
 instance ComputeOccurrences a => ComputeOccurrences (Abs a) where
@@ -575,11 +545,19 @@ instance (ComputeOccurrences a, ComputeOccurrences b) => ComputeOccurrences (a, 
   occurrences (x, y) = do
     ox <- occurrences x
     oy <- occurrences y
-    return $ ox :>+< oy
+    return $ ox >+< oy
 
--- | Compute the occurrences in a given definition.
+-- | Computes the occurrences in the given definition.
+--
+-- WARNING: There can be lots of sharing between the 'OccursWhere'
+-- entries. Traversing all of these entries could be expensive. (See
+-- 'computeEdges' for an example.)
 computeOccurrences :: QName -> TCM Occurrences
-computeOccurrences q = inConcreteOrAbstractMode q $ flatten <$> do
+computeOccurrences q = flatten <$> computeOccurrences' q
+
+-- | Computes the occurrences in the given definition.
+computeOccurrences' :: QName -> TCM OccurrencesBuilder
+computeOccurrences' q = inConcreteOrAbstractMode q $ do
   reportSDoc "tc.pos" 25 $ do
     a <- defAbstract <$> getConstInfo q
     m <- asks envAbstractMode
@@ -606,9 +584,9 @@ computeOccurrences q = inConcreteOrAbstractMode q $ flatten <$> do
                             _        -> __IMPOSSIBLE__
             let tel'    = telFromList $ genericDrop np $ telToList tel
                 vars np = map (Just . AnArg) $ downFrom np
-            (:>+<) <$> (OccursAs (ConArgType c) <$> getOccurrences (vars np) tel')
-                   <*> (OccursAs (IndArgType c) . OnlyVarsUpTo np <$> getOccurrences (vars $ size tel) indices)
-      (:>+<) ioccs <$> (Concat <$> mapM conOcc cs)
+            (>+<) <$> (OccursAs (ConArgType c) <$> getOccurrences (vars np) tel')
+                  <*> (OccursAs (IndArgType c) . OnlyVarsUpTo np <$> getOccurrences (vars $ size tel) indices)
+      (>+<) ioccs <$> (Concat <$> mapM conOcc cs)
     Record{recClause = Just c} -> getOccurrences [] =<< instantiateFull c
     Record{recPars = np, recTel = tel} -> do
       let tel' = telFromList $ genericDrop np $ telToList tel
@@ -616,9 +594,9 @@ computeOccurrences q = inConcreteOrAbstractMode q $ flatten <$> do
       getOccurrences vars =<< instantiateFull tel'
 
     -- Arguments to other kinds of definitions are hard-wired.
-    Constructor{} -> return Empty
-    Axiom{}       -> return Empty
-    Primitive{}   -> return Empty
+    Constructor{} -> return emptyOB
+    Axiom{}       -> return emptyOB
+    Primitive{}   -> return emptyOB
 
 -- | Eta expand a clause to have the given number of variables.
 --   Warning: doesn't put correct types in telescope!
@@ -649,8 +627,8 @@ etaExpandClause n c@Clause{ clauseTel = tel, namedClausePats = ps, clauseBody = 
 
 -- Building the occurrence graph ------------------------------------------
 
-data Node = DefNode QName
-          | ArgNode QName Nat
+data Node = DefNode !QName
+          | ArgNode !QName !Nat
   deriving (Eq, Ord)
 
 instance Show Node where
@@ -666,7 +644,7 @@ instance PrettyTCM n => PrettyTCM (WithNode n Edge) where
     prettyTCM o <+> prettyTCM n <+> fsep (pwords $ show w)
 
 -- | Edge labels for the positivity graph.
-data Edge = Edge Occurrence OccursWhere
+data Edge = Edge !Occurrence OccursWhere
   deriving (Eq, Ord, Show)
 
 instance Null Edge where
@@ -703,14 +681,18 @@ instance SemiRing Edge where
 instance StarSemiRing Edge where
   ostar (Edge o w) = Edge (ostar o) w
 
+-- | WARNING: There can be lots of sharing between the 'OccursWhere'
+-- entries in the edges. Traversing all of these entries could be
+-- expensive. (See 'computeEdges' for an example.)
 buildOccurrenceGraph :: Set QName -> TCM (Graph Node Edge)
 buildOccurrenceGraph qs =
-  Graph.fromListWith oplus . concat . concat <$>
+  Graph.fromListWith oplus . concat <$>
     mapM defGraph (Set.toList qs)
   where
-    defGraph :: QName -> TCM [[Graph.Edge Node Node Edge]]
+    defGraph :: QName -> TCM [Graph.Edge Node Node Edge]
     defGraph q = do
-      occs <- computeOccurrences q
+      occs <- computeOccurrences' q
+      es   <- computeEdges qs q occs
 
       reportSDoc "tc.pos.occs" 40 $
         (text "Occurrences in" <+> prettyTCM q <> text ":")
@@ -722,129 +704,142 @@ buildOccurrenceGraph qs =
                    text (show s)) $
            sortBy (compare `on` fst . snd) $
            map (\(i, os) -> (i, (length os, sum $ map size os))) $
-           Map.toList occs)
+           Map.toList (flatten occs))
       reportSDoc "tc.pos.occs" 50 $
         (nest 2 $ vcat $
            map (\(i, os) ->
                    (text (show i) <> text ":")
                      $+$
                    (nest 2 $ vcat $ map (text . show) os))
-               (Map.toList occs))
+               (Map.toList (flatten occs)))
+      reportSDoc "tc.pos.occs.edges" 60 $
+        text "Edges:"
+          $+$
+        (nest 2 $ vcat $
+           map (\e ->
+                   let Edge o w = Graph.label e in
+                   prettyTCM (Graph.source e) <+>
+                   text "-[" <+> text (show o) <> text "," <+>
+                                 text (show w) <+> text "]->" <+>
+                   prettyTCM (Graph.target e))
+               es)
 
-      forM (Map.assocs occs) $ \ (item, occs) -> do
-        let src = itemToNode item
-        es <- mapM (computeEdge qs) occs
-        return $ for es $ \ (tgt, w) ->
-          Graph.Edge { Graph.source = src
-                     , Graph.target = tgt
-                     , Graph.label  = w
-                     }
-      where
-        itemToNode (AnArg i) = ArgNode q i
-        itemToNode (ADef q)  = DefNode q
+      return es
 
--- | Given an 'OccursWhere' computes the target node and an 'Edge'. The first
---   argument is the set of names in the current mutual block.
-computeEdge :: Set QName -> OccursWhere -> TCM (Node, Edge)
-computeEdge muts o = do
-  (to, occ) <- mkEdge __IMPOSSIBLE__ StrictPos o
-  return (to, Edge occ o)
+-- | Computes all non-'ozero' occurrence graph edges represented by
+-- the given 'OccurrencesBuilder'.
+--
+-- WARNING: There can be lots of sharing between the 'OccursWhere'
+-- entries in the edges. Traversing all of these entries could be
+-- expensive. For instance, for the function @F@ in
+-- @benchmark/misc/SlowOccurrences.agda@ a large number of edges from
+-- the argument @X@ to the function @F@ are computed. These edges have
+-- polarity 'StrictPos', 'JustNeg' or 'JustPos', and contain the
+-- following 'OccursWhere' elements:
+--
+-- * @'Known' ('DS.fromList' ['InDefOf' "F", 'InClause' 0])@,
+--
+-- * @'Known' ('DS.fromList' ['InDefOf' "F", 'InClause' 0, 'LeftOfArrow'])@,
+--
+-- * @'Known' ('DS.fromList' ['InDefOf' "F", 'InClause' 0, 'LeftOfArrow', 'LeftOfArrow'])@,
+--
+-- * @'Known' ('DS.fromList' ['InDefOf' "F", 'InClause' 0, 'LeftOfArrow', 'LeftOfArrow', 'LeftOfArrow'])@,
+--
+-- * and so on.
+computeEdges
+  :: Set QName
+     -- ^ The names in the current mutual block.
+  -> QName
+     -- ^ The current name.
+  -> OccurrencesBuilder
+  -> TCM [Graph.Edge Node Node Edge]
+computeEdges muts q ob =
+  ($ []) <$> mkEdge __IMPOSSIBLE__ StrictPos (preprocess ob)
   where
-    mkEdge to !pol o = case o of
-      Here           -> return (to, pol)
-      Unknown        -> return (to, Mixed)
-      VarArg o       -> mixed o
-      MetaArg o      -> mixed o
-      LeftOfArrow o  -> negative o
-      DefArg d i o   -> do
-        isDR <- isDataOrRecordType d
-        let pol' | isDR == Just IsData = GuardPos  -- a datatype is guarding
-                 | otherwise           = StrictPos
-        if Set.member d muts then mkEdge (ArgNode d i) pol' o
-         else addPol o =<< otimes pol' <$> getArgOccurrence d i
-{-
-      DefArg d i o
-        | Set.member d muts -> inArg d i o
-        | otherwise         -> addPol o =<< getArgOccurrence d i
--}
-      UnderInf o     -> addPol o GuardPos -- Andreas, 2012-06-09: ∞ is guarding
-      ConArgType _ o -> keepGoing o
-      IndArgType _ o -> mixed o
-      InClause _ o   -> keepGoing o
-      Matched o      -> mixed o -- consider arguments matched against as used
-      InDefOf d o    -> do
-        isDR <- isDataOrRecordType d
-        let pol' | isDR == Just IsData = GuardPos  -- a datatype is guarding
-                 | otherwise           = StrictPos
-        mkEdge (DefNode d) pol' o
-      where
-        keepGoing     = mkEdge to pol
-        mixed         = mkEdge to Mixed
-        negative o    = mkEdge to (otimes pol JustNeg) o
-        addPol o pol' = mkEdge to (otimes pol pol') o
+  mkEdge to !pol ob = case ob of
+    Concat' obs     -> foldr (liftM2 (.)) (return id)
+                         [ mkEdge to pol ob | ob <- obs ]
+    OccursAs' w ob  -> do (to, pol) <- mkEdge' to pol w
+                          mkEdge to pol ob
+    OccursHere' i o -> return $
+                         if null pol
+                         then id
+                         else (Graph.Edge
+                                 { Graph.source = case i of
+                                                    AnArg i -> ArgNode q i
+                                                    ADef q  -> DefNode q
+                                 , Graph.target = to
+                                 , Graph.label  = Edge pol o
+                                 } :)
 
-        -- Reset polarity when changing the target node
-        -- D: (A B -> C) generates a positive edge B --> A.1
-        -- even though the context is negative.
-        inArg d i = mkEdge (ArgNode d i) StrictPos
+  mkEdge' to !pol w = case w of
+    VarArg         -> mixed
+    MetaArg        -> mixed
+    LeftOfArrow    -> negative
+    DefArg d i     -> do
+      pol' <- isGuarding d
+      if Set.member d muts
+        then return (ArgNode d i, pol')
+        else addPol =<< otimes pol' <$> getArgOccurrence d i
+    UnderInf       -> addPol GuardPos -- Andreas, 2012-06-09: ∞ is guarding
+    ConArgType _   -> keepGoing
+    IndArgType _   -> mixed
+    InClause _     -> keepGoing
+    Matched        -> mixed -- consider arguments matched against as used
+    InDefOf d      -> do
+      pol' <- isGuarding d
+      return (DefNode d, pol')
+    where
+    keepGoing   = return (to, pol)
+    mixed       = return (to, Mixed)
+    negative    = return (to, otimes pol JustNeg)
+    addPol pol' = return (to, otimes pol pol')
+
+  isGuarding d = do
+    isDR <- isDataOrRecordType d
+    return $ case isDR of
+      Just IsData -> GuardPos  -- a datatype is guarding
+      _           -> StrictPos
 
 ------------------------------------------------------------------------
 -- * Generators and tests
 ------------------------------------------------------------------------
 
 instance Arbitrary OccursWhere where
-  arbitrary = sized arbitraryS
-    where
-    arbitraryS n = oneof $
-      [ return Here
-      , return Unknown
-      ] ++
-      if n <= 0 then [] else
-        [ LeftOfArrow <$> arb
-        , DefArg <$> arbitrary <*> arbitrary <*> arb
-        , UnderInf <$> arb
-        , VarArg <$> arb
-        , MetaArg <$> arb
-        , ConArgType <$> arbitrary <*> arb
-        , IndArgType <$> arbitrary <*> arb
-        , InClause <$> arbitrary <*> arb
-        , Matched <$> arb
-        , InDefOf <$> arbitrary <*> arb
-        ]
-      where arb = arbitraryS (n - 1)
+  arbitrary = oneof [return Unknown, Known <$> arbitrary]
 
-  shrink x = replaceConstructor x ++ genericShrink x
-    where
-    replaceConstructor Here    = []
-    replaceConstructor Unknown = []
-    replaceConstructor _       = [Here, Unknown]
+  shrink Unknown    = []
+  shrink (Known ws) = Unknown : [ Known ws | ws <- shrink ws ]
 
-    genericShrink (LeftOfArrow a)  = a : [ LeftOfArrow a  | a <- shrink a ]
-    genericShrink (DefArg a b c)   = c : [ DefArg a b c   | c <- shrink c ]
-    genericShrink (UnderInf a)     = a : [ UnderInf a     | a <- shrink a ]
-    genericShrink (VarArg a)       = a : [ VarArg a       | a <- shrink a ]
-    genericShrink (MetaArg a)      = a : [ MetaArg a      | a <- shrink a ]
-    genericShrink (ConArgType a b) = b : [ ConArgType a b | b <- shrink b ]
-    genericShrink (IndArgType a b) = b : [ IndArgType a b | b <- shrink b ]
-    genericShrink (InClause a b)   = b : [ InClause a b   | b <- shrink b ]
-    genericShrink (Matched a)      = a : [ Matched a      | a <- shrink a ]
-    genericShrink (InDefOf a b)    = b : [ InDefOf a b    | b <- shrink b ]
-    genericShrink Here             = []
-    genericShrink Unknown          = []
+instance Arbitrary Where where
+  arbitrary = oneof
+    [ return LeftOfArrow
+    , DefArg <$> arbitrary <*> arbitrary
+    , return UnderInf
+    , return VarArg
+    , return MetaArg
+    , ConArgType <$> arbitrary
+    , IndArgType <$> arbitrary
+    , InClause <$> arbitrary
+    , return Matched
+    , InDefOf <$> arbitrary
+    ]
 
 instance CoArbitrary OccursWhere where
-  coarbitrary (LeftOfArrow a)  = variant  0 . coarbitrary a
-  coarbitrary (DefArg a b c)   = variant  1 . coarbitrary (a, b, c)
-  coarbitrary (UnderInf a)     = variant  2 . coarbitrary a
-  coarbitrary (VarArg a)       = variant  3 . coarbitrary a
-  coarbitrary (MetaArg a)      = variant  4 . coarbitrary a
-  coarbitrary (ConArgType a b) = variant  5 . coarbitrary (a, b)
-  coarbitrary (IndArgType a b) = variant  6 . coarbitrary (a, b)
-  coarbitrary (InClause a b)   = variant  7 . coarbitrary (a, b)
-  coarbitrary (Matched a)      = variant  8 . coarbitrary a
-  coarbitrary (InDefOf a b)    = variant  9 . coarbitrary (a, b)
-  coarbitrary Here             = variant 10
-  coarbitrary Unknown          = variant 11
+  coarbitrary (Known ws) = variant 0 . coarbitrary ws
+  coarbitrary Unknown    = variant 1
+
+instance CoArbitrary Where where
+  coarbitrary LeftOfArrow    = variant 0
+  coarbitrary (DefArg a b)   = variant 1 . coarbitrary (a, b)
+  coarbitrary UnderInf       = variant 2
+  coarbitrary VarArg         = variant 3
+  coarbitrary MetaArg        = variant 4
+  coarbitrary (ConArgType a) = variant 5 . coarbitrary a
+  coarbitrary (IndArgType a) = variant 6 . coarbitrary a
+  coarbitrary (InClause a)   = variant 7 . coarbitrary a
+  coarbitrary Matched        = variant 8
+  coarbitrary (InDefOf a)    = variant 9 . coarbitrary a
 
 instance Arbitrary Edge where
   arbitrary = Edge <$> arbitrary <*> arbitrary

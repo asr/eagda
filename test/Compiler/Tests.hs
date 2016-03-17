@@ -69,12 +69,8 @@ defaultOptions = TestOptions
 
 disabledTests :: [RegexFilter]
 disabledTests =
--- The Compiler tests using the standard library are horribly
--- slow at the moment (1min or more per test case).
--- Disable most of them using a hacky regex...
-  [ RFInclude "Compiler/.*/with-stdlib/(DivMod|HelloWorld|ShowNat|TrustMe|Vec|dimensions)"
--- See Issue 1866
-  , RFInclude "Compiler/UHC/with-stdlib/.*"
+  [ -- See Issue 1866
+    RFInclude "Compiler/UHC/with-stdlib/.*"
 -- See issue 1528
   , RFInclude "Compiler/.*/simple/Sharing"
 -- Disable UHC backend tests if the backend is also disabled.
@@ -109,16 +105,23 @@ simpleTests comp = do
         compArgs UHC = []
         compArgs MAlonzo = ghcArgsAsAgdaArgs ["-itest/"]
 
+-- The Compiler tests using the standard library are horribly
+-- slow at the moment (1min or more per test case).
 stdlibTests :: Compiler -> IO TestTree
 stdlibTests comp = do
   let testDir = "test" </> "Compiler" </> "with-stdlib"
   inps <- getAgdaFilesInDir NonRec testDir
 
+  let extraArgs :: [String]
+      extraArgs = [ "-i" ++ testDir, "-i" ++ "std-lib" </> "src", "-istd-lib" ]
+
+  let rtsOptions :: [String]
+      rtsOptions = [ "+RTS", "-H1G", "-M1.5G", "-RTS" ]
+
   tests' <- forM inps $ \inp -> do
     opts <- readOptions inp
     return $
-      agdaRunProgGoldenTest testDir comp
-        (return ["-i" ++ testDir, "-i" ++ "std-lib" </> "src", "-istd-lib"]) inp opts
+      agdaRunProgGoldenTest testDir comp (return $ extraArgs ++ rtsOptions) inp opts
   return $ testGroup "with-stdlib" $ catMaybes tests'
 
 
