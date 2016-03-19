@@ -395,9 +395,9 @@ DoubleCloseBrace :: { Range }
 DoubleCloseBrace
   : '}}' { getRange $1 }
   | '}' '}' {%
-      if posPos (fromJust (rEnd (getRange $2))) -
-         posPos (fromJust (rStart (getRange $1))) > 2
-      then parseErrorAt (fromJust (rStart (getRange $2)))
+      if posPos (fromJust (rEnd' (getRange $2))) -
+         posPos (fromJust (rStart' (getRange $1))) > 2
+      then parseErrorAt (fromJust (rStart' (getRange $2)))
          "Expecting '}}', found separated '}'s."
       else return $ getRange ($1, $2)
     }
@@ -1287,7 +1287,7 @@ Open : MaybeOpen 'import' ModuleName OpenArgs ImportDirective {%
                      (Just (AsName m' asR)) doOpen dir
                  ]
               else return [ impStm asR, appStm m' initArgs ]
-          | DontOpen <- doOpen -> parseErrorAt (fromJust $ rStart $ getRange $2) "An import statement with module instantiation does not actually import the module.  This statement achieves nothing.  Either add the `open' keyword or bind the instantiated module with an `as' clause."
+          | DontOpen <- doOpen -> parseErrorAt (fromJust $ rStart' $ getRange $2) "An import statement with module instantiation does not actually import the module.  This statement achieves nothing.  Either add the `open' keyword or bind the instantiated module with an `as' clause."
           | otherwise -> return
               [ impStm noRange
               , appStm (noName $ beginningOf $ getRange m) es
@@ -1739,7 +1739,7 @@ recoverLayout xs@((i, _) : _) = go (iStart i) xs
 
 ensureUnqual :: QName -> Parser Name
 ensureUnqual (QName x) = return x
-ensureUnqual q@Qual{}  = parseError' (rStart $ getRange q) "Qualified name not allowed here"
+ensureUnqual q@Qual{}  = parseError' (rStart' $ getRange q) "Qualified name not allowed here"
 
 -- | Match a particular name.
 isName :: String -> (Interval, String) -> Parser ()
@@ -1768,7 +1768,7 @@ mergeImportDirectives is = do
   where
     merge mi i2 = do
       i1 <- mi
-      let err = parseError' (rStart $ getRange i2) "Cannot mix using and hiding module directives"
+      let err = parseError' (rStart' $ getRange i2) "Cannot mix using and hiding module directives"
       return $ ImportDirective
         { importDirRange = fuseRange i1 i2
         , using          = mappend (using i1) (using i2)
@@ -1784,7 +1784,7 @@ verifyImportDirective i =
          $ sort xs
     of
         []  -> return i
-        yss -> let Just pos = rStart $ getRange $ head $ concat yss in
+        yss -> let Just pos = rStart' $ getRange $ head $ concat yss in
                parseErrorAt pos $
                 "Repeated name" ++ s ++ " in import directive: " ++
                 concat (intersperse ", " $ map (show . head) yss)
@@ -1805,7 +1805,7 @@ data RecordDirective
 
 verifyRecordDirectives :: [RecordDirective] -> Parser (Maybe (Ranged Induction), Maybe Bool, Maybe (Name, IsInstance))
 verifyRecordDirectives xs | null rs = return (ltm is, ltm es, ltm cs)
-                          | otherwise = let Just pos = rStart $ (head rs) in
+                          | otherwise = let Just pos = rStart' $ (head rs) in
                                           parseErrorAt pos $ "Repeated record directives at: \n" ++ intercalate "\n" (map show rs)
 
  where
@@ -1874,7 +1874,7 @@ exprToLHS e = case e of
 --   valid pattern.
 exprToPattern :: Expr -> Parser Pattern
 exprToPattern e = do
-    let Just pos = rStart $ getRange e
+    let Just pos = rStart' $ getRange e
         failure = parseErrorAt pos $ "Not a valid pattern: " ++ show e
     case e of
         Ident x                 -> return $ IdentP x
@@ -1905,7 +1905,7 @@ opAppExprToPattern (Ordinary e) = exprToPattern e
 exprToName :: Expr -> Parser Name
 exprToName (Ident (QName x)) = return x
 exprToName e =
-  let Just pos = rStart $ getRange e in
+  let Just pos = rStart' $ getRange e in
   parseErrorAt pos $ "Not a valid identifier: " ++ show e
 
 stripSingletonRawApp :: Expr -> Expr
