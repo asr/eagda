@@ -94,7 +94,8 @@ library
     ghc-options: -pgmP cpphs -optP --cpp
 
   if flag(uhc)
-    build-depends:    uhc-light >= 1.1.9.2 && < 1.2
+    build-depends:    shuffle >= 0.1.3.3
+                    , uhc-light >= 1.1.9.2 && < 1.2
                     , uhc-util >= 0.1.6.3 && < 0.1.6.6
                     , uulib >= 0.9.20
     -- we use the CPP processor to conditionally import the UHC Light modules. If UHC Light is not
@@ -613,6 +614,10 @@ test-suite agda-tests
   ghc-options:      -threaded
                     -Wall
                     -fwarn-identities
-                    -fwarn-missing-local-sigs
                     -fno-warn-unused-imports
                     -Werror
+
+  if impl(ghc < 8.0)
+    ghc-options: -fwarn-missing-local-sigs
+  else
+    ghc-options: -Wmissing-local-signatures
