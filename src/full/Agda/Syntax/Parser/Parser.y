@@ -18,6 +18,7 @@ module Agda.Syntax.Parser.Parser (
       moduleParser
     , moduleNameParser
     , exprParser
+    , exprWhereParser
     , tokensParser
     , tests
     ) where
@@ -61,6 +62,7 @@ import Agda.Utils.Impossible
 
 %name tokensParser Tokens
 %name exprParser Expr
+%name exprWhereParser ExprWhere
 %name moduleParser File
 %name moduleNameParser ModuleName
 %name funclauseParser FunClause
@@ -1027,6 +1029,8 @@ WhereClause
     | 'module' Id 'where' Declarations0 { SomeWhere $2 $4 }
     | 'module' Underscore 'where' Declarations0 { SomeWhere $2 $4 }
 
+ExprWhere :: { ExprWhere }
+ExprWhere : Expr WhereClause { ExprWhere $1 $2 }
 
 {--------------------------------------------------------------------------
     Different kinds of declarations
@@ -1650,6 +1654,9 @@ tokensParser :: Parser [Token]
 
 -- | Parse an expression. Could be used in interactions.
 exprParser :: Parser Expr
+
+-- | Parse an expression followed by a where clause. Could be used in interactions.
+exprWhereParser :: Parser ExprWhere
 
 -- | Parse a module.
 moduleParser :: Parser Module
