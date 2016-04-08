@@ -723,7 +723,11 @@ buildInterface file topLevel syntaxInfo previousHsImports previousHsImportsUHC p
     -- Andreas, Makoto, 2014-10-18 AIM XX: repeating the experiment
     -- with discarding also the nameBindingSite in QName:
     -- Saves 10% on serialization time (and file size)!
-    sig     <- killRange <$> (eliminateDeadCode =<< getSignature)
+
+    -- ASR TODO (30 September 2015): We remove the use of
+    -- @eliminateDeadCode@ because Apia is not supporting it.
+    sig <- killRange <$> getSignature
+    -- sig     <- killRange <$> (eliminateDeadCode =<< getSignature)
     builtin <- use stLocalBuiltins
     ms      <- getImports
     mhs     <- mapM (\ m -> (m,) <$> moduleHash m) $ Set.toList ms
