@@ -1,8 +1,5 @@
-{-# OPTIONS --universe-polymorphism #-}
 
 module Common.Coinduction where
-
-open import Common.Level
 
 postulate
   ∞  : ∀ {a} (A : Set a) → Set a

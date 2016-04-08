@@ -71,7 +71,7 @@ getCurrentModule :: ScopeM A.ModuleName
 getCurrentModule = setRange noRange . scopeCurrent <$> getScope
 
 setCurrentModule :: A.ModuleName -> ScopeM ()
-setCurrentModule m = modifyScopeInfo $ \s -> s { scopeCurrent = m }
+setCurrentModule m = modifyScope $ \s -> s { scopeCurrent = m }
 
 withCurrentModule :: A.ModuleName -> ScopeM a -> ScopeM a
 withCurrentModule new action = do
@@ -114,13 +114,9 @@ createModule b m = do
   -- Ulf, 2016-02-15: It's not new if multiple imports (#1770).
   modifyScopes $ Map.insertWith const m sm
 
--- | Apply a function to the scope info.
-modifyScopeInfo :: (ScopeInfo -> ScopeInfo) -> ScopeM ()
-modifyScopeInfo = modifyScope
-
 -- | Apply a function to the scope map.
 modifyScopes :: (Map A.ModuleName Scope -> Map A.ModuleName Scope) -> ScopeM ()
-modifyScopes f = modifyScopeInfo $ \s -> s { scopeModules = f $ scopeModules s }
+modifyScopes f = modifyScope $ \s -> s { scopeModules = f $ scopeModules s }
 
 -- | Apply a function to the given scope.
 modifyNamedScope :: A.ModuleName -> (Scope -> Scope) -> ScopeM ()
@@ -149,7 +145,7 @@ modifyCurrentNameSpace acc f = modifyCurrentScope $ updateScopeNameSpaces $
   AssocList.updateAt acc f
 
 setContextPrecedence :: Precedence -> ScopeM ()
-setContextPrecedence p = modifyScopeInfo $ \s -> s { scopePrecedence = p }
+setContextPrecedence p = modifyScope_ $ \s -> s { scopePrecedence = p }
 
 getContextPrecedence :: ScopeM Precedence
 getContextPrecedence = scopePrecedence <$> getScope
@@ -166,7 +162,7 @@ getLocalVars :: ScopeM LocalVars
 getLocalVars = scopeLocals <$> getScope
 
 modifyLocalVars :: (LocalVars -> LocalVars) -> ScopeM ()
-modifyLocalVars = modifyScope . updateScopeLocals
+modifyLocalVars = modifyScope_ . updateScopeLocals
 
 setLocalVars :: LocalVars -> ScopeM ()
 setLocalVars vars = modifyLocalVars $ const vars
@@ -307,7 +303,7 @@ getNotation x ns = do
 
 -- | Bind a variable. The abstract name is supplied as the second argument.
 bindVariable :: C.Name -> A.Name -> ScopeM ()
-bindVariable x y = modifyScope $ updateScopeLocals $ AssocList.insert x $ LocalVar y
+bindVariable x y = modifyScope_ $ updateScopeLocals $ AssocList.insert x $ LocalVar y
 
 -- | Bind a defined name. Must not shadow anything.
 bindName :: Access -> KindOfName -> C.Name -> A.QName -> ScopeM ()
@@ -348,7 +344,7 @@ bindQModule acc q m = modifyCurrentScope $ \s ->
 
 -- | Clear the scope of any no names.
 stripNoNames :: ScopeM ()
-stripNoNames = modifyScopes $ Map.map $ mapScope_ stripN stripN
+stripNoNames = modifyScopes $ Map.map $ mapScope_ stripN stripN id
   where
     stripN = Map.filterWithKey $ const . not . isNoName
 
@@ -366,8 +362,9 @@ copyScope oldc new s = first (inScopeBecause $ Applied oldc) <$> runStateT (copy
       lift $ reportSLn "scope.copy" 20 $ "Copying scope " ++ show old ++ " to " ++ show new
       lift $ reportSLn "scope.copy" 50 $ show s
       s0 <- lift $ getNamedScope new
-      -- Delete private names, then copy names and modules.
-      s' <- mapScopeM_ copyD copyM $ setNameSpace PrivateNS emptyNameSpace s
+      -- Delete private names, then copy names and modules. Recompute inScope
+      -- set rather than trying to copy it.
+      s' <- recomputeInScopeSets <$> mapScopeM_ copyD copyM return (setNameSpace PrivateNS emptyNameSpace s)
       -- Fix name and parent.
       return $ s' { scopeName    = scopeName s0
                   , scopeParents = scopeParents s0

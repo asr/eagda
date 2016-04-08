@@ -6,7 +6,7 @@
 -- {-# OPTIONS --verbose tc.eta.rec:70 #-}
 -- {-# OPTIONS --verbose tc.sig.inst:30 #-}
 
-module 11-monads where
+module InstanceArguments.11-monads where
 
 open import Category.Monad using (RawMonad; module RawMonad)
 open import Category.Monad.Indexed using (RawIMonad; module RawIMonad)
@@ -29,7 +29,11 @@ module RawMonadExt {li f} {I : Set li} {M : IFun I f} (m : RawIMonad M) where
   bind : ∀ {i j k A B} → M i j A → (A → M j k B) → M i k B
   bind {i} {j} {k} {A} {B} = RawIMonad._>>=_ {li} {f} {I} {M} m {i} {j} {k} {A} {B}
 
+  infix -1 bind
   syntax bind m (λ x → c) = do x ← m then c
+
+instance i⊥ = partialityMonad
+         iList = listMonad
 
 stateMonad = StateMonad ℕ
 

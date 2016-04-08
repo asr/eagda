@@ -20,6 +20,7 @@ import Agda.Utils.String
 import Agda.Syntax.Common
 
 import Agda.TypeChecking.Monad
+import qualified Agda.TypeChecking.Monad.Benchmark as Bench
 
 import Agda.Interaction.Response as R
 import Agda.Interaction.InteractionTop
@@ -40,7 +41,8 @@ import Agda.Version
 mimicGHCi :: TCM () -> TCM ()
 mimicGHCi setup = do
     liftIO $ do
-      hSetBuffering stdout NoBuffering
+      hSetBuffering stdout LineBuffering
+      hSetBuffering stdin  LineBuffering
       hSetEncoding  stdout utf8
       hSetEncoding  stdin  utf8
 
@@ -56,8 +58,14 @@ mimicGHCi setup = do
 
     interact' :: CommandM ()
     interact' = do
-        liftIO $ putStr "Agda2> "
-        unlessM (liftIO isEOF) $ do
+      Bench.reset
+      done <- Bench.billTo [] $ do
+
+        liftIO $ do
+          putStr "Agda2> "
+          hFlush stdout
+        done <- liftIO isEOF
+        unless done $ do
             r <- liftIO getLine
             _ <- return $! length r     -- force to read the full input line
             case dropWhile isSpace r of
@@ -67,8 +75,10 @@ mimicGHCi setup = do
                     Just (x, "")  -> runInteraction x
                     Just (_, rem) -> liftIO $ putStrLn $ "not consumed: " ++ rem
                     _ ->             liftIO $ putStrLn $ "cannot read: " ++ r
-            interact'
+        return done
 
+      lift Bench.print
+      unless done interact'
 
 -- | Convert Response to an elisp value for the interactive emacs frontend.
 

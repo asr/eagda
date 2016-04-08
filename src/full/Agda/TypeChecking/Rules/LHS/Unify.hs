@@ -565,10 +565,10 @@ dataStrategy k s = do
          <+> text " with (homogeneous) parameters " <+> prettyTCM hpars
       case (u, v) of
         (MetaV m es, Con c vs  ) -> do
-          us <- mcatMaybes $ liftTCM $ instMetaCon m es d hpars c
+          us <- mcatMaybes $ liftTCM $ addContext (varTel s) $ instMetaCon m es d hpars c
           return $ Injectivity k a d hpars ixs c us vs
         (Con c us  , MetaV m es) -> do
-          vs <- mcatMaybes $ liftTCM $ instMetaCon m es d hpars c
+          vs <- mcatMaybes $ liftTCM $ addContext (varTel s) $ instMetaCon m es d hpars c
           return $ Injectivity k a d hpars ixs c us vs
         (Con c us  , Con c' vs ) | c == c' -> return $ Injectivity k a d hpars ixs c us vs
         (Con c _   , Con c' _  ) -> return $ Conflict k d hpars c c'
@@ -590,7 +590,7 @@ dataStrategy k s = do
     -- Returns the fresh metas if successful
     instMetaCon :: MetaId -> Elims -> QName -> Args -> ConHead -> TCM (Maybe Args)
     instMetaCon m es d pars c = case allApplyElims es of
-      Just us -> do
+      Just us -> ifNotM (asks envAssignMetas) (return Nothing) $ do
           reportSDoc "tc.lhs.unify" 60 $
             text "Trying to instantiate the meta" <+> prettyTCM (MetaV m es) <+>
             text "with the constructor" <+> prettyTCM c <+> text "applied to fresh metas"

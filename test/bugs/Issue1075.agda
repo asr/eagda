@@ -7,22 +7,21 @@
 -- The termination checker now rejects this code instead of crashing.
 -- I do not know whether it is supposed to terminate.
 
-{-# OPTIONS --no-coverage-check #-}
 
 -- {-# OPTIONS -v term.matrices:40 #-}
 
 module Issue1075 where
 
-open import Common.Prelude renaming (Nat to ℕ)
+open import Common.Prelude renaming (Nat to ℕ) hiding (map; length)
 open import Common.Product
 open import Common.Sum
 open import Common.Equality
 
 
-[_] : ∀{A} → A → List A
+[_] : {A : Set} → A → List A
 [ x ] = x ∷ []
 
-map : ∀ {A B} → (A → B) → List A → List B
+map : {A B : Set} → (A → B) → List A → List B
 map f []       = []
 map f (x ∷ xs) = f x ∷ map f xs
 
@@ -421,6 +420,7 @@ rsubst+ Γ' pfΓ pf (⊤⁺ ∷ LA+) LA- LT (_ ∷ Values) (⊤⁺L N) =  rsubst
 -- ... | proj₁ , ()
 rsubst+ Γ' pfΓ pf ((x ∧⁺ x₁) ∷ LA+) LA- LT (∧⁺R V₁ V₂ ∷ Values) (∧⁺L N) =
   rsubst+ Γ' pfΓ pf (x ∷ x₁ ∷ LA+) LA- LT (V₁ ∷ V₂ ∷ Values) N
+rsubst+ {_} {_} {_} _ _ _ _ _ _ _ _ = ?
 
 
 

@@ -21,9 +21,6 @@ default : ac \
           regexp-talk \
           relocatable-interfaces \
           simplelib \
-          term1 \
-          term2 \
-          term3 \
           view \
           test \
           # epic
@@ -32,21 +29,11 @@ agda = $(AGDA_BIN)
 
 run_agda = $(agda) -v0 --vim --ignore-interfaces --no-default-libraries
 
-# the other instance-arguments examples use the standard library,
-# seemingly no way to include it during test run...
 test_files = AIM5/Hedberg/SET.agda \
              AIM5/yoshiki/SET.agda \
              Binary.agda \
              DTP08/conor/Talk.agda \
              DTP08/ulf/Talk.agda \
-             instance-arguments/01-arguments.agda \
-             instance-arguments/02-classes-indep.agda \
-             instance-arguments/04-equality.agda \
-             instance-arguments/06-listEquality.agda \
-             instance-arguments/07-subclasses.agda \
-             instance-arguments/08-higherOrder.agda \
-             instance-arguments/13-implicitProofObligations.agda \
-             instance-arguments/14-implicitConfigurations.agda \
              ISWIM.agda \
              Lookup.agda \
              Miller/Pat.agda \
@@ -55,7 +42,15 @@ test_files = AIM5/Hedberg/SET.agda \
              Setoid.agda \
              SimpleTypes.agda \
              syntax/Literate.lagda \
+             Termination/Acc.agda \
+             Termination/Mutual.agda \
+             Termination/Nat.agda \
+             Termination/Ord.agda \
+             Termination/simplified-comb.agda \
              Termination/StreamEating.agda \
+             Termination/StructuralOrder.agda \
+             Termination/TerminationTwoConstructors.agda \
+             Termination/Tuple.agda \
              TT.agda \
              Vec.agda
 
@@ -65,24 +60,6 @@ echo = $(shell which echo)
 ifeq ("$(echo)","")
 echo = echo
 endif
-
-.PHONY : term1
-term1 : Termination/Mutual.agda
-	@$(echo) "Testing $<... "
-	@$(echo) :q | $(run_agda) -iTermination $<
-	@$(echo) "ok"
-
-.PHONY : term2
-term2 : Termination/StructuralOrder.agda
-	@$(echo) "Testing $<... "
-	@$(echo) :q | $(run_agda) -iTermination $<
-	@$(echo) "ok"
-
-.PHONY : term3
-term3 : Termination/Tuple.agda
-	@$(echo) "Testing $<... "
-	@$(echo) :q | $(run_agda) -iTermination $<
-	@$(echo) "ok"
 
 .PHONY : polydep
 polydep : AIM5/PolyDep/Main.agda
