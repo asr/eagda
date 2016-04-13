@@ -34,20 +34,26 @@ import Agda.Utils.Lens
 import Agda.Utils.Impossible
 #include "undefined.h"
 
+-- ASR TODO (2016-04-13): We remove the use of
+-- @eliminateDeadCode@ because Apia is not supporting it.
+eliminateDeadCode :: DisplayForms -> Signature -> TCM (DisplayForms, Signature)
+eliminateDeadCode disp sig = return (disp, sig)
+
 -- | Run before serialisation to remove any definitions that are not reachable
 --   from the public interface to the module.
-eliminateDeadCode :: Signature -> TCM Signature
-eliminateDeadCode sig = Bench.billTo [Bench.DeadCode] $ do
-  patsyn <- getPatternSyns
-  public <- Set.map anameName . publicNames <$> getScope
-  defs <- traverse instantiateFull $ sig ^. sigDefinitions
-  let r     = reachableFrom public patsyn defs
-      dead  = Set.fromList (HMap.keys defs) `Set.difference` r
-      valid = Set.null . Set.intersection dead . namesIn
-      defs' = HMap.map ( \ d -> d { defDisplay = filter valid (defDisplay d) } )
-            $ HMap.filterWithKey (\ x _ -> Set.member x r) defs
-  reportSLn "tc.dead" 10 $ "Removed " ++ show (HMap.size defs - HMap.size defs') ++ " unused definitions."
-  return $ set sigDefinitions defs' sig
+-- eliminateDeadCode :: DisplayForms -> Signature -> TCM (DisplayForms, Signature)
+-- eliminateDeadCode disp sig = Bench.billTo [Bench.DeadCode] $ do
+--   patsyn <- getPatternSyns
+--   public <- Set.map anameName . publicNames <$> getScope
+--   defs <- traverse instantiateFull $ sig ^. sigDefinitions
+--   let r     = reachableFrom public patsyn defs
+--       dead  = Set.fromList (HMap.keys defs) `Set.difference` r
+--       valid = Set.null . Set.intersection dead . namesIn
+--       defs' = HMap.map ( \ d -> d { defDisplay = filter valid (defDisplay d) } )
+--             $ HMap.filterWithKey (\ x _ -> Set.member x r) defs
+--       disp' = HMap.filter (not . null) $ HMap.map (filter valid) disp
+--   reportSLn "tc.dead" 10 $ "Removed " ++ show (HMap.size defs - HMap.size defs') ++ " unused definitions."
+--   return (disp', set sigDefinitions defs' sig)
 
 reachableFrom :: Set QName -> A.PatternSynDefns -> Definitions -> Set QName
 reachableFrom names psyns defs = follow names (Set.toList names)
