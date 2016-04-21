@@ -209,8 +209,18 @@ install:
 # `$HOME/.local/bin`.
 
   - if [[ $TEST = "doc" ]]; then
-       pip install --user -U sphinx-rtd-theme &&
+       pip install --user -r doc/user-manual/requirements.txt &&
        export PATH=$HOME/.local/bin:$PATH;
+    fi
+
+##############################################################################
+# Installing size-solver and shelltestrunner
+
+# Required for testing the size-solver program.
+
+  - if [[ $TEST = "main" ]]; then
+       make install-size-solver &&
+       cabal install shelltestrunner;
     fi
 
 ##############################################################################
@@ -283,6 +293,10 @@ script:
 
   - if [[ $TEST = "main" ]]; then
        make BUILD_DIR=$BUILD_DIR TAGS;
+    fi
+
+  - if [[ $TEST = "main" ]]; then
+       make test-size-solver;
     fi
 
   - if [[ $TEST = "main" ]]; then
