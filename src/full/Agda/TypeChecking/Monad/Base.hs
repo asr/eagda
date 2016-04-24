@@ -1097,6 +1097,8 @@ data NLPat
     -- ^ Matches @λ x → t@
   | PPi (Dom (Type' NLPat)) (Abs (Type' NLPat))
     -- ^ Matches @(x : A) → B@
+  | PSet NLPat
+    -- ^ Matches @Set l@
   | PBoundVar {-# UNPACK #-} !Int PElims
     -- ^ Matches @x es@ where x is a lambda-bound variable
   | PTerm Term
@@ -2533,6 +2535,10 @@ internalError s = typeError $ InternalError s
 genericError :: MonadTCM tcm => String -> tcm a
 genericError = typeError . GenericError
 
+{-# SPECIALIZE genericDocError :: Doc -> TCM a #-}
+genericDocError :: MonadTCM tcm => Doc -> tcm a
+genericDocError = typeError . GenericDocError
+
 {-# SPECIALIZE typeError :: TypeError -> TCM a #-}
 typeError :: MonadTCM tcm => TypeError -> tcm a
 typeError err = liftTCM $ throwError =<< typeError_ err
@@ -2637,6 +2643,7 @@ instance KillRange NLPat where
   killRange (PDef x y) = killRange2 PDef x y
   killRange (PLam x y) = killRange2 PLam x y
   killRange (PPi x y)  = killRange2 PPi x y
+  killRange (PSet x)   = killRange1 PSet x
   killRange (PBoundVar x y) = killRange2 PBoundVar x y
   killRange (PTerm x)  = killRange1 PTerm x
 

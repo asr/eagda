@@ -1,4 +1,5 @@
 {-# LANGUAGE CPP                   #-}
+{-# LANGUAGE DoAndIfThenElse       #-}
 {-# LANGUAGE FlexibleContexts      #-}
 {-# LANGUAGE FlexibleInstances     #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -51,6 +52,7 @@ import Agda.Syntax.Internal
 
 import Agda.TypeChecking.EtaContract
 import Agda.TypeChecking.Free
+import Agda.TypeChecking.Level (unLevel, reallyUnLevelView)
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Reduce
@@ -96,7 +98,7 @@ instance (PatternFrom a b) => PatternFrom (Type' a) (Type' b) where
 
 instance PatternFrom Term NLPat where
   patternFrom k v = do
-    v <- reduce v
+    v <- unLevel =<< reduce v
     let done = return $ PTerm v
     case ignoreSharing v of
       Var i es
@@ -123,8 +125,11 @@ instance PatternFrom Term NLPat where
       Def f es -> PDef f <$> patternFrom k es
       Con c vs -> PDef (conName c) <$> patternFrom k (Apply <$> vs)
       Pi a b   -> PPi <$> patternFrom k a <*> patternFrom k b
-      Sort{}   -> done
-      Level{}  -> return PWild   -- TODO: unLevel and continue
+      Sort s   ->
+        case s of
+          Type l -> PSet <$> (patternFrom k =<< reallyUnLevelView l)
+          _      -> done
+      Level l  -> __IMPOSSIBLE__
       DontCare{} -> return PWild
       MetaV{}    -> __IMPOSSIBLE__
       Shared{}   -> __IMPOSSIBLE__
@@ -251,21 +256,21 @@ instance Match NLPat Term where
                     then tellSub i (var j)
                     else no (text $ "(CtxId = " ++ show id ++ ")")
           Nothing -> do
-            let boundVarOccs :: FreeVars
-                boundVarOccs = runFree (\var@(i,_) -> if i < n then singleton var else empty) IgnoreNot v
-                allowedVars :: IntSet
+            let allowedVars :: IntSet
                 allowedVars = IntSet.fromList (map unArg bvs)
+                isBadVar :: Int -> Bool
+                isBadVar i = i < n && not (i `IntSet.member` allowedVars)
                 perm :: Permutation
                 perm = Perm n $ reverse $ map unArg $ bvs
                 tel :: Telescope
                 tel = permuteTel perm k
-            if rigidVars boundVarOccs `IntSet.isSubsetOf` allowedVars
-               then if IntMap.keysSet (flexibleVars boundVarOccs) `IntSet.isSubsetOf` allowedVars
-                    then tellSub i $ teleLam tel $ renameP perm v
-                    else matchingBlocked $ foldMap (foldMap $ \m -> Blocked m ()) $ flexibleVars boundVarOccs
-               else no (text "")
+            ok <- liftRed $ reallyFree isBadVar v
+            case ok of
+              Left b         -> matchingBlocked b
+              Right Nothing  -> no (text "")
+              Right (Just v) -> tellSub i $ teleLam tel $ renameP perm v
       PDef f ps -> do
-        v <- liftRed $ constructorForm v
+        v <- liftRed $ constructorForm =<< unLevel v
         case ignoreSharing v of
           Def f' es
             | f == f'   -> matchArgs gamma k ps es
@@ -290,6 +295,12 @@ instance Match NLPat Term where
           match gamma k pa a >> match gamma k pb b
         MetaV m es -> matchingBlocked $ Blocked m ()
         _ -> no (text "")
+      PSet p -> case ignoreSharing v of
+        Sort (Type l) -> do
+          l <- liftRed $ reduce' =<< reallyUnLevelView l
+          match gamma k p l
+        MetaV m es -> matchingBlocked $ Blocked m ()
+        _ -> no (text "")
       PBoundVar i ps -> case ignoreSharing v of
         Var i' es | i == i' -> matchArgs gamma k ps es
         MetaV m es -> matchingBlocked $ Blocked m ()
@@ -298,6 +309,35 @@ instance Match NLPat Term where
     where
       matchArgs :: Telescope -> Telescope -> [Elim' NLPat] -> Elims -> NLM ()
       matchArgs gamma k ps es = match gamma k ps =<< liftRed (reduce' es)
+
+-- Checks if the given term contains any free variables that satisfy the
+-- given condition on their DBI, possibly normalizing the term in the process.
+-- Returns `Right Nothing` if there are such variables, `Right (Just v')`
+-- if there are none (where v' is the possibly normalized version of the given
+-- term) or `Left b` if the problem is blocked on a meta.
+reallyFree :: (Normalise a, Free' a FreeVars)
+           => (Int -> Bool) -> a -> ReduceM (Either Blocked_ (Maybe a))
+reallyFree f v = do
+    let xs = getVars v
+    if null (stronglyRigidVars xs) && null (unguardedVars xs)
+    then do
+      if null (weaklyRigidVars xs) && null (flexibleVars xs)
+         && null (irrelevantVars xs)
+      then return $ Right $ Just v
+      else do
+        v <- normalise' v
+        let xs = getVars v
+        if null (stronglyRigidVars xs) && null (unguardedVars xs)
+           && null (weaklyRigidVars xs) && null (irrelevantVars xs)
+        then if null (flexibleVars xs)
+             then return $ Right $ Just v
+             else return $ Left $ foldMap (foldMap $ \m -> Blocked m ()) $
+                    flexibleVars xs
+        else return $ Right Nothing
+    else return $ Right Nothing
+  where
+    getVars v = runFree (\var@(i,_) -> if f i then singleton var else empty) IgnoreNot v
+
 
 makeSubstitution :: Telescope -> Sub -> Substitution
 makeSubstitution gamma sub =
@@ -368,7 +408,7 @@ instance RaiseNLP NLPat where
     PDef f ps -> PDef f $ raiseNLPFrom c k ps
     PLam i q -> PLam i $ raiseNLPFrom c k q
     PPi a b -> PPi (raiseNLPFrom c k a) (raiseNLPFrom c k b)
+    PSet l -> PSet $ raiseNLPFrom c k l
     PBoundVar i ps -> let j = if i < c then i else i + k
                       in PBoundVar j $ raiseNLPFrom c k ps
     PTerm u -> PTerm $ raiseFrom c k u
-
