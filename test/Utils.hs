@@ -15,6 +15,8 @@ import Test.Tasty.Silver
 import Test.Tasty.Silver.Advanced (readFileMaybe)
 import Data.List
 import System.FilePath
+import qualified System.FilePath.Find as Find
+import System.FilePath.GlobPattern
 import System.Directory
 
 import qualified Data.ByteString as BS
@@ -57,23 +59,43 @@ getEnvVar :: String -> IO (Maybe String)
 getEnvVar v =
   lookup v <$> getEnvironment
 
-agdaExts :: S.Set String
-agdaExts = S.fromList [".agda", ".lagda"]
+-- | Checks if a String has Agda extension
+hasAgdaExtension :: FilePath -> Bool
+hasAgdaExtension = isJust . dropAgdaExtension'
 
 data SearchMode = Rec | NonRec
+
+dropAgdaExtension' :: FilePath -> Maybe FilePath
+dropAgdaExtension' p =  stripExtension ".agda" p
+                        <|> stripExtension ".lagda" p
+                        <|> stripExtension ".lagda.tex" p
+                        <|> stripExtension ".lagda.rst" p
+#if !MIN_VERSION_filepath(1,4,1)
+  where
+    stripExtension :: String -> FilePath -> Maybe FilePath
+    stripExtension e = fmap reverse . stripPrefix (reverse e) . reverse
+#endif
+
+dropAgdaExtension :: FilePath -> FilePath
+dropAgdaExtension p =
+  fromMaybe (error$ "Utils.hs: Path " ++ p ++ " does not have an Agda extension") $
+  dropAgdaExtension' p
+
+dropAgdaOrOtherExtension :: FilePath -> FilePath
+dropAgdaOrOtherExtension = fromMaybe <$> dropExtension <*> dropAgdaExtension'
 
 getAgdaFilesInDir :: SearchMode -> FilePath -> IO [FilePath]
 getAgdaFilesInDir rec dir =
   sort <$>
     case rec of
-      Rec -> findByExtension (S.toList agdaExts) dir
-      NonRec -> map (dir </>) . filter (flip S.member agdaExts . takeExtension) <$>
+      Rec -> Find.find (pure True) (hasAgdaExtension <$> Find.filePath) dir
+      NonRec -> map (dir </>) . filter hasAgdaExtension <$>
                   getDirectoryContents dir
 
 -- | An Agda file path as test name
 asTestName :: FilePath -> FilePath -> String
 asTestName testDir path = intercalate "-" parts
-  where parts = splitDirectories $ dropExtension $ makeRelative testDir path
+  where parts = splitDirectories $ dropAgdaExtension $ makeRelative testDir path
 
 doesEnvContain :: String -> IO Bool
 doesEnvContain v = isJust <$> getEnvVar v
