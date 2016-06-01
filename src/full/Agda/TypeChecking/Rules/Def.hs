@@ -50,7 +50,8 @@ import Agda.TypeChecking.CompiledClause (CompiledClauses(..))
 import Agda.TypeChecking.CompiledClause.Compile
 
 import Agda.TypeChecking.Rules.Term                ( checkExpr, inferExpr, inferExprForWith, checkDontExpandLast, checkTelescope )
-import Agda.TypeChecking.Rules.LHS                 ( checkLeftHandSide, LHSResult(..) )
+import Agda.TypeChecking.Rules.LHS                 ( checkLeftHandSide, LHSResult(..), bindAsPatterns )
+import Agda.TypeChecking.Rules.LHS.Problem         ( AsBinding(..) )
 import {-# SOURCE #-} Agda.TypeChecking.Rules.Decl ( checkDecls )
 
 import Agda.Utils.Except ( MonadError(catchError, throwError) )
@@ -94,7 +95,7 @@ isAlias cs t =
   where
     isMeta (MetaV x _) = Just x
     isMeta _           = Nothing
-    trivialClause [A.Clause (A.LHS i (A.LHSHead f []) []) (A.RHS e) [] _] = Just e
+    trivialClause [A.Clause (A.LHS i (A.LHSHead f []) []) _ (A.RHS e) [] _] = Just e
     trivialClause _ = Nothing
 
 -- | Check a trivial definition of the form @f = e@
@@ -172,6 +173,21 @@ checkFunDef' :: Type             -- ^ the type we expect the function to have
              -> [A.Clause]       -- ^ the clauses to check
              -> TCM ()
 checkFunDef' t ai delayed extlam with i name cs =
+  checkFunDefS t ai delayed extlam with i name Nothing cs
+
+-- | Type check a definition by pattern matching.
+checkFunDefS :: Type             -- ^ the type we expect the function to have
+             -> ArgInfo        -- ^ is it irrelevant (for instance)
+             -> Delayed          -- ^ are the clauses delayed (not unfolded willy-nilly)
+             -> Maybe ExtLamInfo -- ^ does the definition come from an extended lambda
+                                 --   (if so, we need to know some stuff about lambda-lifted args)
+             -> Maybe QName      -- ^ is it a with function (if so, what's the name of the parent function)
+             -> Info.DefInfo     -- ^ range info
+             -> QName            -- ^ the name of the function
+             -> Maybe Substitution -- ^ substitution (from with abstraction) that needs to be applied to module parameters
+             -> [A.Clause]       -- ^ the clauses to check
+             -> TCM ()
+checkFunDefS t ai delayed extlam with i name withSub cs =
 
     traceCall (CheckFunDef (getRange i) (qnameName name) cs) $ do   -- TODO!! (qnameName)
         reportSDoc "tc.def.fun" 10 $
@@ -193,7 +209,7 @@ checkFunDef' t ai delayed extlam with i name cs =
         cs <- traceCall NoHighlighting $ do -- To avoid flicker.
             forM cs $ \ c -> do
               c <- applyRelevanceToContext (argInfoRelevance ai) $ do
-                checkClause t c
+                checkClause t withSub c
               -- Andreas, 2013-11-23 do not solve size constraints here yet
               -- in case we are checking the body of an extended lambda.
               -- 2014-04-24: The size solver requires each clause to be
@@ -309,8 +325,8 @@ useTerPragma def = return def
 -- | Insert some patterns in the in with-clauses LHS of the given RHS
 insertPatterns :: [A.Pattern] -> A.RHS -> A.RHS
 insertPatterns pats (A.WithRHS aux es cs) = A.WithRHS aux es (map insertToClause cs)
-    where insertToClause (A.Clause (A.LHS i lhscore ps) rhs ds catchall)
-              = A.Clause (A.LHS i lhscore (pats ++ ps)) (insertPatterns pats rhs) ds catchall
+    where insertToClause (A.Clause (A.LHS i lhscore ps) dots rhs ds catchall)
+              = A.Clause (A.LHS i lhscore (pats ++ ps)) dots (insertPatterns pats rhs) ds catchall
 insertPatterns pats (A.RewriteRHS qes rhs wh) = A.RewriteRHS qes (insertPatterns pats rhs) wh
 insertPatterns pats rhs = rhs
 
@@ -350,16 +366,21 @@ mkBody perm v = foldr (\ x t -> Bind $ Abs x t) b xs
 
 checkClause
   :: Type          -- ^ Type of function defined by this clause.
+  -> Maybe Substitution  -- ^ Module parameter substitution arising from with-abstraction.
   -> A.SpineClause -- ^ Clause.
   -> TCM Clause    -- ^ Type-checked clause.
 
-checkClause t c@(A.Clause (A.SpineLHS i x aps withPats) rhs0 wh catchall) = do
+checkClause t withSub c@(A.Clause (A.SpineLHS i x aps withPats) namedDots rhs0 wh catchall) = do
     reportSDoc "tc.lhs.top" 30 $ text "Checking clause" $$ prettyA c
     unless (null withPats) $
       typeError $ UnexpectedWithPatterns withPats
     traceCall (CheckClause t c) $ do
       aps <- expandPatternSynonyms aps
-      checkLeftHandSide (CheckPatternShadowing c) (Just x) aps t $ \ lhsResult@(LHSResult delta ps trhs perm) -> do
+      when (not $ null namedDots) $ reportSDoc "tc.lhs.top" 50 $
+        text "namedDots:" <+> vcat [ prettyTCM x <+> text "=" <+> prettyTCM v <+> text ":" <+> prettyTCM a | A.NamedDot x v a <- namedDots ]
+      -- Not really an as-pattern, but this does the right thing.
+      checkLeftHandSide (CheckPatternShadowing c) (Just x) aps t withSub $ \ lhsResult@(LHSResult delta ps trhs perm) ->
+        bindAsPatterns [ AsB x v a | A.NamedDot x v a <- applySubst (fromJust withSub) namedDots ] $ do
         -- Note that we might now be in irrelevant context,
         -- in case checkLeftHandSide walked over an irrelevant projection pattern.
         (body, with) <- checkWhere (unArg trhs) wh $ checkRHS i x aps t lhsResult rhs0
@@ -501,7 +522,7 @@ checkRHS i x aps t lhsResult@(LHSResult delta ps trhs perm) rhs0 = handleRHS rhs
               | otherwise = (A.RewriteRHS qes rhs' wh, [])
             -- Andreas, 2014-03-05 kill range of copied patterns
             -- since they really do not have a source location.
-            cs       = [A.Clause (A.LHS i (A.LHSHead x (killRange aps)) pats) rhs'' outerWhere False]
+            cs       = [A.Clause (A.LHS i (A.LHSHead x (killRange aps)) pats) [] rhs'' outerWhere False]
 
         checkWithRHS x qname t lhsResult [withExpr] [withType] cs
 
@@ -610,6 +631,10 @@ checkWithFunction :: WithFunctionProblem -> TCM ()
 checkWithFunction NoWithFunction = return ()
 checkWithFunction (WithFunction f aux t delta1 delta2 vs as b qs perm' perm finalPerm cs) = do
 
+  let -- Δ₁ ws Δ₂ ⊢ withSub : Δ′    (where Δ′ is the context of the parent lhs)
+      withSub :: Substitution
+      withSub = liftS (size delta2) (wkS (length vs) idS) `composeS` renaming (reverseP perm')
+
   reportSDoc "tc.with.top" 10 $ vcat
     [ text "checkWithFunction"
     , nest 2 $ vcat
@@ -623,6 +648,7 @@ checkWithFunction (WithFunction f aux t delta1 delta2 vs as b qs perm' perm fina
       , text "perm'  =" <+> text (show perm')
       , text "perm   =" <+> text (show perm)
       , text "fperm  =" <+> text (show finalPerm)
+      , text "withSub=" <+> text (show withSub)
       ]
     ]
 
@@ -676,11 +702,11 @@ checkWithFunction (WithFunction f aux t delta1 delta2 vs as b qs perm' perm fina
 
   -- Construct the body for the with function
   cs <- return $ map (A.lhsToSpine) cs
-  cs <- buildWithFunction f aux t qs finalPerm (size delta1) n cs
+  cs <- buildWithFunction f aux t qs withSub finalPerm (size delta1) n cs
   cs <- return $ map (A.spineToLhs) cs
 
   -- Check the with function
-  checkFunDef' withFunType defaultArgInfo NotDelayed Nothing (Just f) info aux cs
+  checkFunDefS withFunType defaultArgInfo NotDelayed Nothing (Just f) info aux (Just withSub) cs
 
   where
     info = Info.mkDefInfo (nameConcrete $ qnameName aux) noFixity' PublicAccess ConcreteDef (getRange cs)
@@ -691,12 +717,8 @@ checkWhere
   -> [A.Declaration] -- ^ Where-declarations to check.
   -> TCM a           -- ^ Continuation.
   -> TCM a
-checkWhere trhs ds ret0 = do
-  -- Temporarily add trailing hidden arguments to check where-declarations.
-  TelV htel _ <- telViewUpTo' (-1) (not . visible) trhs
+checkWhere trhs ds ret = do
   let
-    -- Remove htel after checking ds.
-    ret = escapeContext (size htel) $ ret0
     loop ds = case ds of
       [] -> ret
       [A.ScopedDecl scope ds] -> withScope_ scope $ loop ds
@@ -715,8 +737,7 @@ checkWhere trhs ds ret0 = do
             checkDecls ds
             ret
       _ -> __IMPOSSIBLE__
-  -- Add htel to check ds.
-  addContext htel $ loop ds
+  loop ds
 
 -- | Check if a pattern contains an absurd pattern. For instance, @suc ()@
 containsAbsurdPattern :: A.Pattern -> Bool

@@ -471,9 +471,9 @@ applySection' new ptel old ts rd rm = do
             isVar0 t = case ignoreSharing $ unArg t of Var 0 [] -> True; _ -> False
             proj   = case oldDef of
               Function{funProjection = Just p@Projection{projIndex = n}}
-                | size ts < n || (size ts == n && isVar0 (last ts))
-                -> Just $ p { projIndex    = n - size ts
-                            , projDropPars = projDropPars p `apply` ts
+                | size ts' < n || (size ts' == n && maybe True isVar0 (lastMaybe ts'))
+                -> Just $ p { projIndex    = n - size ts'
+                            , projDropPars = projDropPars p `apply` ts'
                             }
               _ -> Nothing
             def =
@@ -812,11 +812,16 @@ getCurrentModuleFreeVars = size <$> (lookupSection =<< currentModule)
 -- | Compute the number of free variables of a defined name. This is the sum of
 --   number of parameters shared with the current module and the number of
 --   anonymous variables (if the name comes from a let-bound module).
-{-# SPECIALIZE getDefFreeVars :: QName -> TCM Nat #-}
-{-# SPECIALIZE getDefFreeVars :: QName -> ReduceM Nat #-}
 getDefFreeVars :: (Functor m, Applicative m, ReadTCState m, MonadReader TCEnv m) => QName -> m Nat
-getDefFreeVars q = do
-  let m = qnameModule q
+getDefFreeVars = getModuleFreeVars . qnameModule
+
+freeVarsToApply :: QName -> TCM Args
+freeVarsToApply = moduleParamsToApply . qnameModule
+
+{-# SPECIALIZE getModuleFreeVars :: ModuleName -> TCM Nat #-}
+{-# SPECIALIZE getModuleFreeVars :: ModuleName -> ReduceM Nat #-}
+getModuleFreeVars :: (Functor m, Applicative m, ReadTCState m, MonadReader TCEnv m) => ModuleName -> m Nat
+getModuleFreeVars m = do
   m0   <- commonParentModule m <$> currentModule
   (+) <$> getAnonymousVariables m <*> (size <$> lookupSection m0)
 
@@ -834,26 +839,25 @@ getDefFreeVars q = do
 --        module M₃ Θ where
 --          ... M₁.M₂.f [insert Γ raised by Θ]
 --   @
-freeVarsToApply :: QName -> TCM Args
-freeVarsToApply x = do
-  -- Get the correct number of free variables (correctly raised) of @x@.
-
-  args <- take <$> getDefFreeVars x <*> getContextArgs
+moduleParamsToApply :: ModuleName -> TCM Args
+moduleParamsToApply m = do
+  -- Get the correct number of free variables (correctly raised) of @m@.
+  args <- take <$> getModuleFreeVars m <*> getContextArgs
 
   -- Apply the original ArgInfo, as the hiding information in the current
-  -- context might be different from the hiding information expected by @x@.
+  -- context might be different from the hiding information expected by @m@.
 
-  getSection (qnameModule x) >>= \case
+  getSection m >>= \case
     Nothing -> do
-      -- We have no section for @x@.
+      -- We have no section for @m@.
       -- This should only happen for toplevel definitions, and then there
       -- are no free vars to apply, or?
       -- unless (null args) __IMPOSSIBLE__
       -- No, this invariant is violated by private modules, see Issue1701a.
       return args
     Just (Section tel) -> do
-      -- The section telescope of the home of @x@ should be as least
-      -- as long as the number of free vars @x@ is applied to.
+      -- The section telescope of @m@ should be as least
+      -- as long as the number of free vars @m@ is applied to.
       -- We still check here as in no case, we want @zipWith@ to silently
       -- drop some @args@.
       -- And there are also anonymous modules, thus, the invariant is not trivial.

@@ -1,6 +1,9 @@
 {-# LANGUAGE CPP               #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PatternGuards     #-}
+
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 -- | Rewriting with arbitrary rules.
 --
@@ -74,6 +77,9 @@ import Agda.TypeChecking.Rewriting.NonLinMatch
 import qualified Agda.TypeChecking.Reduce.Monad as Red
 
 import Agda.Utils.Functor
+import qualified Agda.Utils.HashMap as HMap
+import Agda.Utils.Lens
+import Agda.Utils.List
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.Null
@@ -208,9 +214,17 @@ addRewriteRule q = do
         rhs <- etaContract =<< normalise rhs
         unless (null $ allMetas (lhs, rhs, b)) failureMetas
         pat <- patternFrom 0 lhs
+        reportSDoc "rewriting" 30 $
+          text "Pattern generated from lhs: " <+> prettyTCM pat
 
         -- check that FV(rhs) ⊆ nlPatVars(lhs)
-        unlessNull (allFreeVars rhs IntSet.\\ nlPatVars pat) failureFreeVars
+        let freeVars  = usedArgs gamma1 `IntSet.union` allFreeVars (pat,rhs)
+            boundVars = nlPatVars pat
+        reportSDoc "rewriting" 40 $
+          text "variables bound by the pattern: " <+> text (show boundVars)
+        reportSDoc "rewriting" 40 $
+          text "variables free in the rewrite rule: " <+> text (show freeVars)
+        unlessNull (freeVars IntSet.\\ boundVars) failureFreeVars
 
         return $ RewriteRule q gamma pat rhs b
 
@@ -243,9 +257,34 @@ addRewriteRule q = do
       unless (v == v') $ do
         reportSDoc "rewriting" 20 $ text "v  = " <+> text (show v)
         reportSDoc "rewriting" 20 $ text "v' = " <+> text (show v')
+        -- Andreas, 2016-06-01, issue 1997
+        -- A reason for a reduction of the lhs could be that
+        -- the rewrite rule has already been added.
+        -- In this case, we want a nicer error message.
+        checkNotAlreadyAdded
         typeError . GenericDocError =<< fsep
           [ prettyTCM q <+> text " is not a legal rewrite rule, since the left-hand side "
           , prettyTCM v <+> text " reduces to " <+> prettyTCM v' ]
+
+    checkNotAlreadyAdded :: TCM ()
+    checkNotAlreadyAdded = do
+      -- get all rewrite rules
+      st <- getTCState
+      let sig  = st ^. stSignature ^. sigRewriteRules
+          imp  = st ^. stImports   ^. sigRewriteRules
+          rews = concat $ HMap.elems sig ++ HMap.elems imp
+      -- check if q is already an added rewrite rule
+      when (any ((q ==) . rewName) rews) $
+        typeError . GenericDocError =<< do
+          text "Rewrite rule " <+> prettyTCM q <+> text " has already been added"
+
+    usedArgs :: Telescope -> IntSet
+    usedArgs tel = IntSet.fromList $ map unDom $ usedIxs
+      where
+        n = size tel
+        allIxs = zipWith ($>) (flattenTel tel) (downFrom n)
+        usedIxs = filter (not . irrelevantOrUnused . getRelevance) allIxs
+
 
 -- | Append rewrite rules to a definition.
 addRewriteRules :: QName -> RewriteRules -> TCM ()
@@ -408,3 +447,15 @@ instance GetMatchables RewriteRule where
   getMatchables rew = case rewLHS rew of
     PDef _ ps -> getMatchables ps
     _         -> __IMPOSSIBLE__
+
+-- Only computes free variables that are not bound (i.e. those in a PTerm)
+instance Free' NLPat c where
+  freeVars' p = case p of
+    PVar _ _ _ -> mempty
+    PWild -> mempty
+    PDef _ es -> freeVars' es
+    PLam _ u -> freeVars' u
+    PPi a b -> freeVars' (a,b)
+    PSet l -> freeVars' l
+    PBoundVar _ es -> freeVars' es
+    PTerm t -> freeVars' t

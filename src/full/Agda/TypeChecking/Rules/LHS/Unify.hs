@@ -304,8 +304,8 @@ solveVar k u s = case instantiateTelescope (varTel s) k u of
   where
     permuteFlex :: Permutation -> FlexibleVars -> FlexibleVars
     permuteFlex perm =
-      mapMaybe $ \(FlexibleVar h k x) ->
-        FlexibleVar h k <$> findIndex (x==) (permPicks perm)
+      mapMaybe $ \(FlexibleVar h k p x) ->
+        FlexibleVar h k p <$> findIndex (x==) (permPicks perm)
 
 applyUnder :: Int -> Telescope -> Term -> Telescope
 applyUnder k tel u
@@ -602,10 +602,10 @@ dataStrategy k s = do
             reportSDoc "tc.lhs.unify" 80 $ text "Type of constructor: " <+> prettyTCM ctype
             withMetaInfo' mv $ do
               let perm = mvPermutation mv
-              tel <- permuteTel perm <$> getContextTelescope
+              tel <- permuteTel perm <$> (instantiateFull =<< getContextTelescope)
               reportSDoc "tc.lhs.unify" 100 $ text "Context tel (for new metas): " <+> prettyTCM tel
               -- important: create the meta in the same environment as the original meta
-              newArgsMetaCtx ctype tel (mvPermutation mv) us
+              newArgsMetaCtx ctype tel perm us
           reportSDoc "tc.lhs.unify" 80 $ text "Generated meta args: " <+> prettyTCM margs
           noConstraints $ assignV DirEq m us (Con c margs)
           return $ Just margs
@@ -854,7 +854,7 @@ unifyStep s EtaExpandVar{ expandVar = fi, expandVarRecordType = d , expandVarPar
   c       <- liftTCM $ getRecordConstructor d
   let nfields         = size delta
       (varTel', rho)  = expandTelescopeVar (varTel s) (m-1-i) delta c
-      projectFlexible = [ FlexibleVar (flexHiding fi) (projFlexKind j) (i+j) | j <- [0..nfields-1] ]
+      projectFlexible = [ FlexibleVar (flexHiding fi) (projFlexKind j) (flexPos fi) (i+j) | j <- [0..nfields-1] ]
   tellUnifySubst $ rho
   Unifies <$> liftTCM (reduce $ UState
     { varTel   = varTel'
