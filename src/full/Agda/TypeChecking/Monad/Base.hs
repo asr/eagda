@@ -4,13 +4,7 @@
 {-# LANGUAGE DeriveFoldable             #-}
 {-# LANGUAGE DeriveFunctor              #-}
 {-# LANGUAGE DeriveTraversable          #-}
-{-# LANGUAGE ExistentialQuantification  #-}
-{-# LANGUAGE FlexibleContexts           #-}
-{-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE MultiParamTypeClasses      #-}
-{-# LANGUAGE NamedFieldPuns             #-}
-{-# LANGUAGE Rank2Types                 #-}
 {-# LANGUAGE ScopedTypeVariables        #-}
 {-# LANGUAGE UndecidableInstances       #-}
 
@@ -22,7 +16,7 @@ import qualified Control.Concurrent as C
 import qualified Control.Exception as E
 import Control.Monad.State
 import Control.Monad.Reader
-import Control.Monad.Writer
+import Control.Monad.Writer hiding ((<>))
 import Control.Monad.Trans.Maybe
 import Control.Applicative hiding (empty)
 
@@ -36,8 +30,9 @@ import Data.Map (Map)
 import qualified Data.Map as Map -- hiding (singleton, null, empty)
 import Data.Set (Set)
 import qualified Data.Set as Set -- hiding (singleton, null, empty)
+import Data.Semigroup (Semigroup, Monoid, (<>), mempty, mappend, Any(..))
 import Data.Typeable (Typeable)
-import Data.Foldable
+import Data.Foldable (Foldable)
 import Data.Traversable
 import Data.IORef
 
@@ -86,12 +81,14 @@ import Agda.Utils.HashMap (HashMap)
 import qualified Agda.Utils.HashMap as HMap
 import Agda.Utils.Hash
 import Agda.Utils.Lens
+import Agda.Utils.List
 import Agda.Utils.ListT
 import Agda.Utils.Monad
 import Agda.Utils.Null
 import Agda.Utils.Permutation
-import Agda.Utils.Pretty
+import Agda.Utils.Pretty hiding ((<>))
 import Agda.Utils.Singleton
+import Agda.Utils.Functor
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -157,6 +154,8 @@ data PostScopeState = PostScopeState
     --   for each @'A.AmbiguousQName'@ already passed by the type checker.
   , stPostMetaStore           :: MetaStore
   , stPostInteractionPoints   :: InteractionPoints -- scope checker first
+  , stPostSolvedInteractionPoints :: InteractionPoints
+    -- ^ Interaction points that have been filled by a give or solve action.
   , stPostAwakeConstraints    :: Constraints
   , stPostSleepingConstraints :: Constraints
   , stPostDirty               :: Bool -- local
@@ -170,6 +169,7 @@ data PostScopeState = PostScopeState
   , stPostSignature           :: Signature
     -- ^ Declared identifiers of the current file.
     --   These will be serialized after successful type checking.
+  , stPostModuleParameters    :: Map ModuleName ModuleParameters
   , stPostImportsDisplayForms :: !DisplayForms
     -- ^ Display forms we add for imported identifiers
   , stPostImportedDisplayForms :: !DisplayForms
@@ -279,11 +279,13 @@ initPostScopeState = PostScopeState
   , stPostDisambiguatedNames   = IntMap.empty
   , stPostMetaStore            = Map.empty
   , stPostInteractionPoints    = Map.empty
+  , stPostSolvedInteractionPoints = Map.empty
   , stPostAwakeConstraints     = []
   , stPostSleepingConstraints  = []
   , stPostDirty                = False
   , stPostOccursCheckDefs      = Set.empty
   , stPostSignature            = emptySignature
+  , stPostModuleParameters     = Map.empty
   , stPostImportsDisplayForms  = HMap.empty
   , stPostImportedDisplayForms = HMap.empty
   , stPostCurrentModule        = Nothing
@@ -404,6 +406,12 @@ stInteractionPoints f s =
   f (stPostInteractionPoints (stPostScopeState s)) <&>
   \x -> s {stPostScopeState = (stPostScopeState s) {stPostInteractionPoints = x}}
 
+stSolvedInteractionPoints :: Lens' InteractionPoints TCState
+stSolvedInteractionPoints f s =
+  f (stPostSolvedInteractionPoints (stPostScopeState s)) <&>
+  \ x -> s {stPostScopeState = (stPostScopeState s)
+             {stPostSolvedInteractionPoints = x}}
+
 stAwakeConstraints :: Lens' Constraints TCState
 stAwakeConstraints f s =
   f (stPostAwakeConstraints (stPostScopeState s)) <&>
@@ -428,6 +436,11 @@ stSignature :: Lens' Signature TCState
 stSignature f s =
   f (stPostSignature (stPostScopeState s)) <&>
   \x -> s {stPostScopeState = (stPostScopeState s) {stPostSignature = x}}
+
+stModuleParameters :: Lens' (Map ModuleName ModuleParameters) TCState
+stModuleParameters f s =
+  f (stPostModuleParameters (stPostScopeState s)) <&>
+  \x -> s {stPostScopeState = (stPostScopeState s) {stPostModuleParameters = x}}
 
 stImportsDisplayForms :: Lens' DisplayForms TCState
 stImportsDisplayForms f s =
@@ -687,10 +700,11 @@ iFullHash i = combineHashes $ iSourceHash i : List.map snd (iImportedModules i)
 -- ** Closure
 ---------------------------------------------------------------------------
 
-data Closure a = Closure { clSignature  :: Signature
-                         , clEnv        :: TCEnv
-                         , clScope      :: ScopeInfo
-                         , clValue      :: a
+data Closure a = Closure { clSignature        :: Signature
+                         , clEnv              :: TCEnv
+                         , clScope            :: ScopeInfo
+                         , clModuleParameters :: Map ModuleName ModuleParameters
+                         , clValue            :: a
                          }
     deriving (Typeable)
 
@@ -705,7 +719,8 @@ buildClosure x = do
     env   <- ask
     sig   <- use stSignature
     scope <- use stScope
-    return $ Closure sig env scope x
+    pars  <- use stModuleParameters
+    return $ Closure sig env scope pars x
 
 ---------------------------------------------------------------------------
 -- ** Constraints
@@ -714,8 +729,8 @@ buildClosure x = do
 type Constraints = [ProblemConstraint]
 
 data ProblemConstraint = PConstr
-  { constraintProblem :: ProblemId
-  , theConstraint     :: Closure Constraint
+  { constraintProblems :: [ProblemId]
+  , theConstraint      :: Closure Constraint
   }
   deriving (Typeable, Show)
 
@@ -811,6 +826,22 @@ dirToCmp cont DirGeq = flip $ cont CmpLeq
 -- | A thing tagged with the context it came from.
 data Open a = OpenThing { openThingCtxIds :: [CtxId], openThing :: a }
     deriving (Typeable, Show, Functor)
+
+instance Decoration Open where
+  traverseF f (OpenThing cxt x) = OpenThing cxt <$> f x
+
+data Local a = Local ModuleName a   -- ^ Local to a given module, the value
+                                    -- should have module parameters as free variables.
+             | Global a             -- ^ Global value, should be closed.
+    deriving (Typeable, Show, Functor, Foldable, Traversable)
+
+isGlobal :: Local a -> Bool
+isGlobal Global{} = True
+isGlobal Local{}  = False
+
+instance Decoration Local where
+  traverseF f (Local m x) = Local m <$> f x
+  traverseF f (Global x)  = Global <$> f x
 
 ---------------------------------------------------------------------------
 -- * Judgements
@@ -985,12 +1016,28 @@ getMetaRelevance = envRelevance . getMetaEnv
 data InteractionPoint = InteractionPoint
   { ipRange :: Range        -- ^ The position of the interaction point.
   , ipMeta  :: Maybe MetaId -- ^ The meta variable, if any, holding the type etc.
+  , ipClause:: IPClause
+      -- ^ The clause of the interaction point (if any).
+      --   Used for case splitting.
   }
 
 instance Eq InteractionPoint where (==) = (==) `on` ipMeta
 
 -- | Data structure managing the interaction points.
 type InteractionPoints = Map InteractionId InteractionPoint
+
+-- | Which clause is an interaction point located in?
+data IPClause = IPClause
+  { ipcQName    :: QName  -- ^ The name of the function.
+  , ipcClauseNo :: Int    -- ^ The number of the clause of this function.
+  , ipcClause   :: A.RHS  -- ^ The original AST clause rhs.
+  }
+  | IPNoClause -- ^ The interaction point is not in the rhs of a clause.
+
+instance Eq IPClause where
+  IPNoClause     == IPNoClause       = True
+  IPClause x i _ == IPClause x' i' _ = x == x' && i == i'
+  _              == _                = False
 
 ---------------------------------------------------------------------------
 -- ** Signature
@@ -1021,7 +1068,7 @@ sigRewriteRules f s =
 type Sections    = Map ModuleName Section
 type Definitions = HashMap QName Definition
 type RewriteRuleMap = HashMap QName RewriteRules
-type DisplayForms = HashMap QName [Open DisplayForm]
+type DisplayForms = HashMap QName [LocalDisplayForm]
 
 data Section = Section { _secTelescope :: Telescope }
   deriving (Typeable, Show)
@@ -1059,6 +1106,8 @@ data DisplayForm = Display
   }
   deriving (Typeable, Show)
 
+type LocalDisplayForm = Local DisplayForm
+
 -- | A structured presentation of a 'Term' for reification into
 --   'Abstract.Syntax'.
 data DisplayTerm
@@ -1089,7 +1138,7 @@ instance Free' DisplayTerm c where
   freeVars' (DTerm v)          = freeVars' v
 
 -- | By default, we have no display form.
-defaultDisplayForm :: QName -> [Open DisplayForm]
+defaultDisplayForm :: QName -> [LocalDisplayForm]
 defaultDisplayForm c = []
 
 defRelevance :: Definition -> Relevance
@@ -1121,10 +1170,11 @@ type RewriteRules = [RewriteRule]
 
 -- | Rewrite rules can be added independently from function clauses.
 data RewriteRule = RewriteRule
-  { rewName    :: QName      -- ^ Name of rewrite rule @q : Γ → lhs ≡ rhs@
+  { rewName    :: QName      -- ^ Name of rewrite rule @q : Γ → f ps ≡ rhs@
                              --   where @≡@ is the rewrite relation.
   , rewContext :: Telescope  -- ^ @Γ@.
-  , rewLHS     :: NLPat      -- ^ @Γ ⊢ lhs : t@.
+  , rewHead    :: QName      -- ^ @f@.
+  , rewPats    :: PElims     -- ^ @Γ ⊢ ps  : t@.
   , rewRHS     :: Term       -- ^ @Γ ⊢ rhs : t@.
   , rewType    :: Type       -- ^ @Γ ⊢ t@.
   }
@@ -1180,7 +1230,7 @@ data Definition = Defn
     --   23,    3
     --   27,    1
 
-  , defDisplay        :: [Open DisplayForm]
+  , defDisplay        :: [LocalDisplayForm]
   , defMutual         :: MutualId
   , defCompiledRep    :: CompiledRepresentation
   , defInstance       :: Maybe QName
@@ -1257,10 +1307,11 @@ data ExtLamInfo = ExtLamInfo
 
 -- | Additional information for projection 'Function's.
 data Projection = Projection
-  { projProper    :: Maybe QName
-    -- ^ @Nothing@ if only projection-like, @Just q@ if record projection,
-    --   where @q@ is the original projection name
-    --   (current name could be from module app).
+  { projProper    :: Bool
+    -- ^ @False@ if only projection-like, @True@ if record projection.
+  , projOrig      :: QName
+    -- ^ The original projection name
+    --   (current name could be from module application).
   , projFromType  :: QName
     -- ^ Type projected from.  Record type if @projProper = Just{}@.
   , projIndex     :: Int
@@ -1269,7 +1320,7 @@ data Projection = Projection
     --   it is already applied to the record value.
     --   This can happen in module instantiation, but
     --   then either the record value is @var 0@, or @funProjection == Nothing@.
-  , projDropPars  :: Term
+  , projLams :: ProjLams
     -- ^ Term @t@ to be be applied to record parameters and record value.
     --   The parameters will be dropped.
     --   In case of a proper projection, a postfix projection application
@@ -1277,9 +1328,31 @@ data Projection = Projection
     --   (Invariant: the number of abstractions equals 'projIndex'.)
     --   In case of a projection-like function, just the function symbol
     --   is returned as 'Def':  @t = \ pars -> f@.
-  , projArgInfo   :: ArgInfo
-    -- ^ The info of the principal (record) argument.
   } deriving (Typeable, Show)
+
+-- | Abstractions to build projection function (dropping parameters).
+newtype ProjLams = ProjLams { getProjLams :: [Arg ArgName] }
+  deriving (Typeable, Show, Null)
+
+-- | Building the projection function (which drops the parameters).
+projDropPars :: Projection -> Term
+-- Proper projections:
+projDropPars (Projection True d _ _ lams) =
+  case initLast $ getProjLams lams of
+    Nothing -> Def d []
+    Just (pars, Arg i y) ->
+      let core = Lam i $ Abs y $ Var 0 [Proj d] in
+      List.foldr (\ (Arg ai x) -> Lam ai . NoAbs x) core pars
+-- Projection-like functions:
+projDropPars (Projection False _ _ _ lams) | null lams = __IMPOSSIBLE__
+projDropPars (Projection False d _ _ lams) =
+  List.foldr (\ (Arg ai x) -> Lam ai . NoAbs x) (Def d []) $ init $ getProjLams lams
+
+-- | The info of the principal (record) argument.
+projArgInfo :: Projection -> ArgInfo
+projArgInfo (Projection _ _ _ _ lams) =
+  maybe __IMPOSSIBLE__ getArgInfo $ lastMaybe $ getProjLams lams
+
 
 data EtaEquality = Specified !Bool | Inferred !Bool deriving (Typeable,Show)
 
@@ -1356,7 +1429,6 @@ data Defn = Axiom
             , recClause         :: Maybe Clause
             , recConHead        :: ConHead              -- ^ Constructor name and fields.
             , recNamedCon       :: Bool
-            , recConType        :: Type                 -- ^ The record constructor's type. (Includes record parameters.)
             , recFields         :: [Arg QName]
             , recTel            :: Telescope            -- ^ The record field telescope. (Includes record parameters.)
                                                         --   Note: @TelV recTel _ == telView' recConType@.
@@ -1454,10 +1526,13 @@ instance Null Simplification where
   empty = NoSimplification
   null  = (== NoSimplification)
 
+instance Semigroup Simplification where
+  YesSimplification <> _ = YesSimplification
+  NoSimplification  <> s = s
+
 instance Monoid Simplification where
   mempty = NoSimplification
-  mappend YesSimplification _ = YesSimplification
-  mappend NoSimplification  s = s
+  mappend = (<>)
 
 data Reduced no yes = NoReduction no | YesReduction Simplification yes
     deriving (Typeable, Functor)
@@ -1608,7 +1683,7 @@ data Call = CheckClause Type A.SpineClause
           | IsTypeCall A.Expr Sort
           | IsType_ A.Expr
           | InferVar Name
-          | InferDef Range QName
+          | InferDef QName
           | CheckArguments Range [NamedArg A.Expr] Type Type
           | CheckDataDef Range Name [A.LamBinding] [A.Constructor]
           | CheckRecDef Range Name [A.LamBinding] [A.Constructor]
@@ -1667,7 +1742,7 @@ instance HasRange Call where
     getRange (IsTypeCall e s)                = getRange e
     getRange (IsType_ e)                     = getRange e
     getRange (InferVar x)                    = getRange x
-    getRange (InferDef _ f)                  = getRange f
+    getRange (InferDef f)                    = getRange f
     getRange (CheckArguments r _ _ _)        = r
     getRange (CheckDataDef i _ _ _)          = getRange i
     getRange (CheckRecDef i _ _ _)           = getRange i
@@ -1770,6 +1845,14 @@ ifTopLevelAndHighlightingLevelIs l m = do
 -- * Type checking environment
 ---------------------------------------------------------------------------
 
+data ModuleParameters = ModuleParams
+  { mpSubstitution :: Substitution
+      -- ^ @Δ ⊢ σ : Γ@ for a @module M Γ@ where @Δ@ is the current context.
+  } deriving (Typeable, Show)
+
+defaultModuleParameters :: ModuleParameters
+defaultModuleParameters = ModuleParams IdS
+
 data TCEnv =
     TCEnv { envContext             :: Context
           , envLetBindings         :: LetBindings
@@ -1812,6 +1895,9 @@ data TCEnv =
           , envHighlightingRange :: Range
                 -- ^ Interactive highlighting uses this range rather
                 --   than 'envRange'.
+          , envClause :: IPClause
+                -- ^ What is the current clause we are type-checking?
+                --   Will be recorded in interaction points in this clause.
           , envCall  :: Maybe (Closure Call)
                 -- ^ what we're doing at the moment
           , envHighlightingLevel  :: HighlightingLevel
@@ -1885,6 +1971,7 @@ initEnv = TCEnv { envContext             = []
                 , envEtaContractImplicit    = True
                 , envRange                  = noRange
                 , envHighlightingRange      = noRange
+                , envClause                 = IPNoClause
                 , envCall                   = Nothing
                 , envHighlightingLevel      = None
                 , envHighlightingMethod     = Indirect
@@ -2205,13 +2292,13 @@ data TypeError
         | CannotEliminateWithPattern (NamedArg A.Pattern) Type
         | TooManyArgumentsInLHS Type
         | WrongNumberOfConstructorArguments QName Nat Nat
-        | ShouldBeEmpty Type [Pattern]
+        | ShouldBeEmpty Type [DeBruijnPattern]
         | ShouldBeASort Type
             -- ^ The given type should have been a sort.
         | ShouldBePi Type
             -- ^ The given type should have been a pi.
         | ShouldBeRecordType Type
-        | ShouldBeRecordPattern Pattern
+        | ShouldBeRecordPattern DeBruijnPattern
         | NotAProjectionPattern (NamedArg A.Pattern)
         | NotAProperTerm
         | SetOmegaNotValidType
@@ -2283,6 +2370,7 @@ data TypeError
         | SplitError SplitError
     -- Positivity errors
         | NotStrictlyPositive QName [Occ]
+        | TooManyPolarities QName Integer
     -- Import errors
         | LocalVsImportedModuleClash ModuleName
         | UnsolvedMetas [Range]
@@ -2345,6 +2433,7 @@ data TypeError
         | IFSNoCandidateInScope Type
     -- Reflection errors
         | UnquoteFailed UnquoteError
+        | DeBruijnIndexOutOfScope Nat Telescope [Name]
     -- Safe flag errors
         | SafeFlagPostulate C.Name
         | SafeFlagPragma [String]
@@ -2352,6 +2441,7 @@ data TypeError
         | SafeFlagTerminating
         | SafeFlagPrimTrustMe
         | SafeFlagNoPositivityCheck
+        | SafeFlagPolarity
     -- Language option errors
         | NeedOptionCopatterns
         | NeedOptionRewriting
@@ -2632,9 +2722,12 @@ instance Null (TCM Doc) where
   null = __IMPOSSIBLE__
 
 -- | Short-cutting disjunction forms a monoid.
+instance Semigroup (TCM Any) where
+  ma <> mb = Any <$> do (getAny <$> ma) `or2M` (getAny <$> mb)
+
 instance Monoid (TCM Any) where
   mempty = return mempty
-  ma `mappend` mb = Any <$> do (getAny <$> ma) `or2M` (getAny <$> mb)
+  mappend = (<>)
 
 patternViolation :: TCM a
 patternViolation = throwError PatternErr
@@ -2758,8 +2851,8 @@ instance KillRange NLPat where
   killRange (PTerm x)  = killRange1 PTerm x
 
 instance KillRange RewriteRule where
-  killRange (RewriteRule q gamma lhs rhs t) =
-    killRange5 RewriteRule q gamma lhs rhs t
+  killRange (RewriteRule q gamma f es rhs t) =
+    killRange6 RewriteRule q gamma f es rhs t
 
 instance KillRange CompiledRepresentation where
   killRange = id
@@ -2778,7 +2871,7 @@ instance KillRange Defn where
       Function cls comp tt inv mut isAbs delayed proj static inline smash term extlam with cop role ->
         killRange16 Function cls comp tt inv mut isAbs delayed proj static inline smash term extlam with cop role
       Datatype a b c d e f g h i j k -> killRange11 Datatype a b c d e f g h i j k
-      Record a b c d e f g h i j k l -> killRange12 Record a b c d e f g h i j k l
+      Record a b c d e f g h i j k   -> killRange11 Record a b c d e f g h i j k
       Constructor a b c d e f        -> killRange6 Constructor a b c d e f
       Primitive a b c d              -> killRange4 Primitive a b c d
 
@@ -2795,10 +2888,17 @@ instance KillRange TermHead where
   killRange (ConsHead q) = ConsHead $ killRange q
 
 instance KillRange Projection where
-  killRange (Projection a b c d e) = killRange4 Projection a b c d e
+  killRange (Projection a b c d e) = killRange5 Projection a b c d e
+
+instance KillRange ProjLams where
+  killRange = id
 
 instance KillRange a => KillRange (Open a) where
   killRange = fmap killRange
+
+instance KillRange a => KillRange (Local a) where
+  killRange (Local a b) = killRange2 Local a b
+  killRange (Global a)  = killRange1 Global a
 
 instance KillRange DisplayForm where
   killRange (Display n vs dt) = killRange3 Display n vs dt

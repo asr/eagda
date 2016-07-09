@@ -82,7 +82,6 @@ bindBuiltinSharp e =
                   , recInduction      = Just CoInductive
                   , recClause         = Nothing
                   , recConHead        = ConHead sharp CoInductive []  -- flat is added later
-                  , recConType        = sharpType
                   , recNamedCon       = True
                   , recFields         = []  -- flat is added later
                   , recTel            = fieldTel
@@ -131,7 +130,7 @@ bindBuiltinFlat e =
           { clauseRange     = noRange
           , clauseTel       = tel
           , namedClausePats = [ argN $ Named Nothing $
-              ConP sharpCon cpi [ argN $ Named Nothing $ VarP (0,"x") ] ]
+              ConP sharpCon cpi [ argN $ Named Nothing $ debruijnNamedVar "x" 0 ] ]
           , clauseBody      = Bind $ Abs "x" $ Body $ var 0
           , clauseType      = Just $ defaultArg $ El (varSort 2) $ var 1
           , clauseCatchall  = False
@@ -142,11 +141,11 @@ bindBuiltinFlat e =
                                Map.empty
                                Nothing
         projection = Projection
-          { projProper   = Just flat
+          { projProper   = True
+          , projOrig     = flat
           , projFromType = inf
           , projIndex    = 3
-          , projDropPars = teleNoAbs (take 2 $ telToList tel) $ Lam defaultArgInfo $ Abs "x" $ Var 0 [Proj flat]
-          , projArgInfo  = defaultArgInfo
+          , projLams     = ProjLams $ [ argH "a" , argH "A" , argN "x" ]
           }
     addConstant flat $
       flatDefn { defPolarity       = []

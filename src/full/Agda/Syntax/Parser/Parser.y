@@ -20,7 +20,7 @@ module Agda.Syntax.Parser.Parser (
     , exprParser
     , exprWhereParser
     , tokensParser
-    , tests
+    , splitOnDots  -- only used by the internal test-suite
     ) where
 
 import Control.Monad
@@ -45,14 +45,14 @@ import Agda.Syntax.Fixity
 import Agda.Syntax.Notation
 import Agda.Syntax.Literal
 
+import Agda.TypeChecking.Positivity.Occurrence hiding (tests)
+
 import Agda.Utils.Either hiding (tests)
 import Agda.Utils.Hash
 import Agda.Utils.List (spanJust)
 import Agda.Utils.Monad
 import Agda.Utils.Pretty
-import Agda.Utils.QuickCheck
 import Agda.Utils.Singleton
-import Agda.Utils.TestHelpers
 import Agda.Utils.Tuple
 
 import Agda.Utils.Impossible
@@ -151,6 +151,7 @@ import Agda.Utils.Impossible
     'NO_POSITIVITY_CHECK'     { TokKeyword KwNO_POSITIVITY_CHECK $$ }
     'NON_TERMINATING'         { TokKeyword KwNON_TERMINATING $$ }
     'OPTIONS'                 { TokKeyword KwOPTIONS $$ }
+    'POLARITY'                { TokKeyword KwPOLARITY $$ }
     'REWRITE'                 { TokKeyword KwREWRITE $$ }
     'STATIC'                  { TokKeyword KwSTATIC $$ }
     'TERMINATING'             { TokKeyword KwTERMINATING $$ }
@@ -281,6 +282,7 @@ Token
     | 'NO_POSITIVITY_CHECK'     { TokKeyword KwNO_POSITIVITY_CHECK $1 }
     | 'NON_TERMINATING'         { TokKeyword KwNON_TERMINATING $1 }
     | 'OPTIONS'                 { TokKeyword KwOPTIONS $1 }
+    | 'POLARITY'                { TokKeyword KwPOLARITY $1 }
     | 'REWRITE'                 { TokKeyword KwREWRITE $1 }
     | 'STATIC'                  { TokKeyword KwSTATIC $1 }
     | 'TERMINATING'             { TokKeyword KwTERMINATING $1 }
@@ -1032,8 +1034,8 @@ WhereClause :: { WhereClause }
 WhereClause
     : {- empty -}                      { NoWhere         }
     | 'where' Declarations0            { AnyWhere $2     }
-    | 'module' Id 'where' Declarations0 { SomeWhere $2 $4 }
-    | 'module' Underscore 'where' Declarations0 { SomeWhere $2 $4 }
+    | 'module' Id 'where' Declarations0 { SomeWhere $2 PublicAccess $4 }
+    | 'module' Underscore 'where' Declarations0 { SomeWhere $2 PublicAccess $4 }
 
 ExprWhere :: { ExprWhere }
 ExprWhere : Expr WhereClause { ExprWhere $1 $2 }
@@ -1393,6 +1395,7 @@ DeclarationPragma
   | CatchallPragma           { $1 }
   | DisplayPragma            { $1 }
   | NoPositivityCheckPragma  { $1 }
+  | PolarityPragma           { $1 }
   | OptionsPragma            { $1 }
     -- Andreas, 2014-03-06
     -- OPTIONS pragma not allowed everywhere, but don't give parse error.
@@ -1569,6 +1572,20 @@ NoPositivityCheckPragma
   : '{-#' 'NO_POSITIVITY_CHECK' '#-}'
     { NoPositivityCheckPragma (getRange ($1,$2,$3)) }
 
+PolarityPragma :: { Pragma }
+PolarityPragma
+  : '{-#' 'POLARITY' PragmaName Polarities '#-}'
+    { let (rs, occs) = unzip (reverse $4) in
+      PolarityPragma (getRange ($1,$2,$3,rs,$5)) $3 occs }
+
+-- Possibly empty list of polarities. Reversed.
+Polarities :: { [(Range, Occurrence)] }
+Polarities : {- empty -}          { [] }
+           | Polarities Polarity  { $2 : $1 }
+
+Polarity :: { (Range, Occurrence) }
+Polarity : string {% polarity $1 }
+
 {--------------------------------------------------------------------------
     Sequences of declarations
  --------------------------------------------------------------------------}
@@ -1737,6 +1754,20 @@ mkQName ss = do
     xs <- mapM mkName ss
     return $ foldr Qual (QName $ last xs) (init xs)
 
+-- | Polarity parser.
+
+polarity :: (Interval, String) -> Parser (Range, Occurrence)
+polarity (i, s) =
+  case s of
+    "_"  -> ret Unused
+    "++" -> ret StrictPos
+    "+"  -> ret JustPos
+    "-"  -> ret JustNeg
+    "*"  -> ret Mixed
+    _    -> fail $ "Not a valid polarity: " ++ s
+  where
+  ret x = return (getRange i, x)
+
 recoverLayout :: [(Interval, String)] -> String
 recoverLayout [] = ""
 recoverLayout xs@((i, _) : _) = go (iStart i) xs
@@ -1849,13 +1880,6 @@ splitOnDots ('.' : s) = [] : splitOnDots s
 splitOnDots (c   : s) = case splitOnDots s of
   p : ps -> (c : p) : ps
 
-prop_splitOnDots = and
-  [ splitOnDots ""         == [""]
-  , splitOnDots "foo.bar"  == ["foo", "bar"]
-  , splitOnDots ".foo.bar" == ["", "foo", "bar"]
-  , splitOnDots "foo.bar." == ["foo", "bar", ""]
-  , splitOnDots "foo..bar" == ["foo", "", "bar"]
-  ]
 
 -- | Returns 'True' iff the name is a valid Haskell (hierarchical)
 -- module name.
@@ -1986,15 +2010,5 @@ parseDisplayPragma r pos s =
     ParseOk s [FunClause (LHS lhs [] [] []) (RHS rhs) NoWhere ca] | null (parseInp s) ->
       return $ DisplayPragma r lhs rhs
     _ -> parseError "Invalid DISPLAY pragma. Should have form {-# DISPLAY LHS = RHS #-}."
-
-{--------------------------------------------------------------------------
-    Tests
- --------------------------------------------------------------------------}
-
--- | Test suite.
-tests :: IO Bool
-tests = runTests "Agda.Syntax.Parser.Parser"
-  [ quickCheck' prop_splitOnDots
-  ]
 
 }

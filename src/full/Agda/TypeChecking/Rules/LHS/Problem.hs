@@ -2,8 +2,6 @@
 {-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveTraversable #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 
 module Agda.TypeChecking.Rules.LHS.Problem where
 
@@ -11,7 +9,7 @@ import Prelude hiding (null)
 
 import Data.Foldable ( Foldable )
 import Data.Maybe ( fromMaybe )
-import Data.Monoid (Monoid, mempty, mappend, mconcat)
+import Data.Semigroup (Semigroup, Monoid, (<>), mempty, mappend, mconcat)
 import Data.Traversable
 
 import Agda.Syntax.Common
@@ -23,10 +21,13 @@ import qualified Agda.Syntax.Abstract as A
 
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Substitute.Pattern
-import Agda.TypeChecking.Pretty
+import qualified Agda.TypeChecking.Pretty as P
+import Agda.TypeChecking.Pretty hiding ((<>))
 
+import Agda.Utils.List
 import Agda.Utils.Null
 import Agda.Utils.Permutation
+import Agda.Utils.Size
 
 type Substitution   = [Maybe Term]
 type FlexibleVars   = [FlexibleVar Nat]
@@ -61,20 +62,27 @@ defaultFlexibleVar a = FlexibleVar Hidden ImplicitFlex Nothing a
 flexibleVarFromHiding :: Hiding -> a -> FlexibleVar a
 flexibleVarFromHiding h a = FlexibleVar h ImplicitFlex Nothing a
 
+allFlexVars :: Telescope -> FlexibleVars
+allFlexVars tel = zipWith makeFlex (downFrom $ size tel) $ telToList tel
+  where
+    makeFlex i d = FlexibleVar (getHiding d) ImplicitFlex (Just i) i
+
 data FlexChoice = ChooseLeft | ChooseRight | ChooseEither | ExpandBoth
   deriving (Eq, Show)
 
+instance Semigroup FlexChoice where
+  ExpandBoth   <> _            = ExpandBoth
+  _            <> ExpandBoth   = ExpandBoth
+  ChooseEither <> y            = y
+  x            <> ChooseEither = x
+  ChooseLeft   <> ChooseRight  = ExpandBoth -- If there's dot patterns on both sides,
+  ChooseRight  <> ChooseLeft   = ExpandBoth -- we need to eta-expand
+  ChooseLeft   <> ChooseLeft   = ChooseLeft
+  ChooseRight  <> ChooseRight  = ChooseRight
+
 instance Monoid FlexChoice where
   mempty = ChooseEither
-
-  ExpandBoth   `mappend` _            = ExpandBoth
-  _            `mappend` ExpandBoth   = ExpandBoth
-  ChooseEither `mappend` y            = y
-  x            `mappend` ChooseEither = x
-  ChooseLeft   `mappend` ChooseRight  = ExpandBoth -- If there's dot patterns on both sides,
-  ChooseRight  `mappend` ChooseLeft   = ExpandBoth -- we need to eta-expand
-  ChooseLeft   `mappend` ChooseLeft   = ChooseLeft
-  ChooseRight  `mappend` ChooseRight  = ChooseRight
+  mappend = (<>)
 
 class ChooseFlex a where
   chooseFlex :: a -> a -> FlexChoice
@@ -195,8 +203,6 @@ data SplitProblem
       { splitLPats   :: ProblemPart
         -- ^ The typed user patterns left of the split position.
         --   Invariant: @'problemRest' == empty@.
-      , splitAsNames :: [Name]
-        -- ^ The as-bindings for the focus.
       , splitFocus   :: Arg Focus
         -- ^ How to split the variable at the split position.
       , splitRPats   :: Abs ProblemPart
@@ -225,9 +231,10 @@ consSplitProblem p x dom s@Split{ splitLPats = ps } = s{ splitLPats = consProble
 
 -- | Instantiations of a dot pattern with a term.
 --   `Maybe e` if the user wrote a dot pattern .e
---   `Nothing` if this is an instantiation of an implicit argument or an underscore _
+--   `Nothing` if this is an instantiation of an implicit argument or a name.
 data DotPatternInst = DPI
-  { dotPatternUserExpr :: Maybe A.Expr
+  { dotPatternName     :: Maybe A.Name
+  , dotPatternUserExpr :: Maybe A.Expr
   , dotPatternInst     :: Term
   , dotPatternType     :: Dom Type
   }
@@ -238,7 +245,6 @@ data LHSState = LHSState
   { lhsProblem :: Problem
   , lhsSubst   :: PatternSubstitution
   , lhsDPI     :: [DotPatternInst]
-  , lhsAsB     :: [AsBinding]
   }
 
 instance Subst Term ProblemRest where
@@ -249,22 +255,23 @@ instance Subst Term (Problem' p) where
                        , problemRest = applySubst rho $ problemRest p }
 
 instance Subst Term DotPatternInst where
-  applySubst rho (DPI e v a) = uncurry (DPI e) $ applySubst rho (v,a)
+  applySubst rho (DPI x e v a) = uncurry (DPI x e) $ applySubst rho (v,a)
 
 instance Subst Term AsBinding where
   applySubst rho (AsB x v a) = uncurry (AsB x) $ applySubst rho (v, a)
 
 instance PrettyTCM DotPatternInst where
-  prettyTCM (DPI me v a) = sep
-    [ prettyA e <+> text "="
+  prettyTCM (DPI mx me v a) = sep
+    [ x <+> text "=" <+> text "." P.<> prettyA e
     , nest 2 $ prettyTCM v <+> text ":"
     , nest 2 $ prettyTCM a
     ]
-    where e = fromMaybe underscore me
+    where x = maybe (text "_") prettyA mx
+          e = fromMaybe underscore me
 
 instance PrettyTCM AsBinding where
   prettyTCM (AsB x v a) =
-    sep [ prettyTCM x <> text "@" <> parens (prettyTCM v)
+    sep [ prettyTCM x P.<> text "@" P.<> parens (prettyTCM v)
         , nest 2 $ text ":" <+> prettyTCM a
         ]
 

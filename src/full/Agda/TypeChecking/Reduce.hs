@@ -1,12 +1,6 @@
-{-# LANGUAGE CPP                  #-}
-{-# LANGUAGE FlexibleInstances    #-}
-{-# LANGUAGE PatternGuards        #-}
-{-# LANGUAGE TupleSections        #-}
-{-# LANGUAGE UndecidableInstances #-}
-
-#if __GLASGOW_HASKELL__ >= 710
-{-# LANGUAGE FlexibleContexts #-}
-#endif
+{-# LANGUAGE CPP                      #-}
+{-# LANGUAGE NondecreasingIndentation #-}
+{-# LANGUAGE UndecidableInstances     #-}
 
 module Agda.TypeChecking.Reduce where
 
@@ -587,7 +581,7 @@ appDefE' v cls es = goCls cls $ map ignoreReduced es
           -- if clause is underapplied, skip to next clause
           if length es < n then goCls cls es else do
             let (es0, es1) = splitAt n es
-            (m, es0) <- matchCopatterns (unnumberPatVars pats) es0
+            (m, es0) <- matchCopatterns pats es0
             es <- return $ es0 ++ es1
             case m of
               No         -> goCls cls es
@@ -611,9 +605,9 @@ appDefE' v cls es = goCls cls $ map ignoreReduced es
     --   Γ ⊢ (σ,v) : Δ.A
     --   Δ ⊢ λ b : A → B
     --   Δ.A ⊢ b : B
-    app :: [Term] -> ClauseBody -> Substitution -> Term
+    app :: Args -> ClauseBody -> Substitution -> Term
     app []       (Body v)           sigma = applySubst sigma v
-    app (v : vs) (Bind (Abs   _ b)) sigma = app vs b $ consS v sigma -- CBN
+    app (v : vs) (Bind (Abs   _ b)) sigma = app vs b $ consS (unArg v) sigma -- CBN
     app (v : vs) (Bind (NoAbs _ b)) sigma = app vs b sigma
     app  _        NoBody            sigma = __IMPOSSIBLE__
     app (_ : _)  (Body _)           sigma = __IMPOSSIBLE__
@@ -953,6 +947,9 @@ instance Normalise Char where
 instance Normalise ConPatternInfo where
   normalise' (ConPatternInfo mr mt) = ConPatternInfo mr <$> normalise' mt
 
+instance Normalise DBPatVar where
+  normalise' = return
+
 instance Normalise a => Normalise (Pattern' a) where
   normalise' p = case p of
     VarP x       -> VarP <$> normalise' x
@@ -1071,6 +1068,9 @@ instance InstantiateFull Int where
 instance InstantiateFull ConPatternInfo where
   instantiateFull' (ConPatternInfo mr mt) = ConPatternInfo mr <$> instantiateFull' mt
 
+instance InstantiateFull DBPatVar where
+    instantiateFull' = return
+
 instance InstantiateFull a => InstantiateFull (Pattern' a) where
     instantiateFull' (VarP x)       = VarP <$> instantiateFull' x
     instantiateFull' (DotP t)       = DotP <$> instantiateFull' t
@@ -1177,15 +1177,19 @@ instance InstantiateFull NLPat where
   instantiateFull' (PTerm x)  = PTerm <$> instantiateFull' x
 
 instance InstantiateFull RewriteRule where
-  instantiateFull' (RewriteRule q gamma lhs rhs t) =
+  instantiateFull' (RewriteRule q gamma f ps rhs t) =
     RewriteRule q
       <$> instantiateFull' gamma
-      <*> instantiateFull' lhs
+      <*> pure f
+      <*> instantiateFull' ps
       <*> instantiateFull' rhs
       <*> instantiateFull' t
 
 instance InstantiateFull a => InstantiateFull (Open a) where
   instantiateFull' (OpenThing n a) = OpenThing n <$> instantiateFull' a
+
+instance InstantiateFull a => InstantiateFull (Local a) where
+  instantiateFull' = traverseF instantiateFull'
 
 instance InstantiateFull DisplayForm where
   instantiateFull' (Display n ps v) = uncurry (Display n) <$> instantiateFull' (ps, v)
@@ -1207,11 +1211,10 @@ instance InstantiateFull Defn where
         s  <- instantiateFull' s
         cl <- instantiateFull' cl
         return $ d { dataSort = s, dataClause = cl }
-      Record{ recConType = t, recClause = cl, recTel = tel } -> do
-        t   <- instantiateFull' t
+      Record{ recClause = cl, recTel = tel } -> do
         cl  <- instantiateFull' cl
         tel <- instantiateFull' tel
-        return $ d { recConType = t, recClause = cl, recTel = tel }
+        return $ d { recClause = cl, recTel = tel }
       Constructor{} -> return d
       Primitive{ primClauses = cs } -> do
         cs <- instantiateFull' cs

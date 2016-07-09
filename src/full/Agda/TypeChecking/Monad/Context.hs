@@ -1,7 +1,4 @@
 {-# LANGUAGE CPP               #-}
-{-# LANGUAGE FlexibleContexts  #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE TupleSections     #-}
 
 #if __GLASGOW_HASKELL__ <= 708
 {-# LANGUAGE OverlappingInstances #-}
@@ -11,8 +8,10 @@ module Agda.TypeChecking.Monad.Context where
 
 import Control.Applicative
 import Control.Monad.Reader
+import Control.Monad.State
 
 import Data.List hiding (sort)
+import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Monoid
 
@@ -24,10 +23,13 @@ import Agda.Syntax.Scope.Monad (getLocalVars, setLocalVars)
 import Agda.TypeChecking.Monad.Base
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Monad.Open
+import Agda.TypeChecking.Monad.Options
 
 import Agda.Utils.Except ( MonadError(catchError) )
 import Agda.Utils.Functor
 import Agda.Utils.List ((!!!), downFrom)
+import Agda.Utils.Size
+import Agda.Utils.Lens
 
 -- * Modifying the context
 
@@ -72,6 +74,50 @@ inTopContext cont = do
 escapeContext :: MonadTCM tcm => Int -> tcm a -> tcm a
 escapeContext n = modifyContext $ drop n
 
+-- Manipulating module parameters --
+
+withModuleParameters :: Map ModuleName ModuleParameters -> TCM a -> TCM a
+withModuleParameters mp ret = do
+  old <- use stModuleParameters
+  stModuleParameters .= mp
+  x <- ret
+  stModuleParameters .= old
+  return x
+
+-- Applies a substitution to all module parameters
+updateModuleParameters :: MonadTCM tcm => Substitution -> tcm a -> tcm a
+updateModuleParameters sub ret = do
+  pm <- use stModuleParameters
+  let showMP pref mps = intercalate "\n" $ [ p ++ show m ++ " : " ++ show (mpSubstitution mp)
+                                           | (p, (m, mp)) <- zip (pref : repeat (map (const ' ') pref))
+                                                                 (Map.toList mps) ]
+  cxt <- reverse <$> getContext
+  reportSLn "tc.cxt.param" 90 $ "updatingModuleParameters\n  sub = " ++ show sub ++
+                                "\n  cxt = " ++ unwords (map (show . fst . unDom) cxt) ++
+                                "\n" ++ showMP "  old = " pm
+  let pm' = Map.map f pm
+  reportSLn "tc.cxt.param" 90 $ showMP "  new = " pm'
+  stModuleParameters .= pm'
+  x <- ret              -- We need to keep introduced modules around
+  pm1 <- use stModuleParameters
+  let pm'' = Map.union pm (defaultModuleParameters <$ Map.difference pm1 pm)
+  stModuleParameters .= pm''
+  reportSLn "tc.cxt.param" 90 $ showMP "  restored = " pm''
+  return x
+  where
+    f mp = mp { mpSubstitution = composeS sub (mpSubstitution mp) }
+
+-- Should be called everytime the context is extended.
+weakenModuleParameters :: MonadTCM tcm => Nat -> tcm a -> tcm a
+weakenModuleParameters n = updateModuleParameters (Wk n IdS)
+
+getModuleParameterSub :: MonadTCM tcm => ModuleName -> tcm Substitution
+getModuleParameterSub m = do
+  r <- use stModuleParameters
+  case Map.lookup m r of
+    Nothing -> return IdS
+    Just mp -> return $ mpSubstitution mp
+
 -- * Adding to the context
 
 -- | @addCtx x arg cont@ add a variable to the context.
@@ -91,7 +137,12 @@ addCtx x a ret = do
 -- | Various specializations of @addCtx@.
 {-# SPECIALIZE addContext :: b -> TCM a -> TCM a #-}
 class AddContext b where
-  addContext :: MonadTCM tcm => b -> tcm a -> tcm a
+  addContext  :: MonadTCM tcm => b -> tcm a -> tcm a
+  contextSize :: b -> Nat
+
+-- | Also weaken module parameter substitution.
+addContext' :: (MonadTCM tcm, AddContext b) => b -> tcm a -> tcm a
+addContext' cxt = addContext cxt . weakenModuleParameters (contextSize cxt)
 
 #if __GLASGOW_HASKELL__ >= 710
 instance {-# OVERLAPPABLE #-} AddContext a => AddContext [a] where
@@ -99,37 +150,46 @@ instance {-# OVERLAPPABLE #-} AddContext a => AddContext [a] where
 instance AddContext a => AddContext [a] where
 #endif
   addContext = flip (foldr addContext)
+  contextSize = sum . map contextSize
 
 instance AddContext (Name, Dom Type) where
   addContext = uncurry addCtx
+  contextSize _ = 1
 
 instance AddContext (Dom (Name, Type)) where
   addContext = addContext . distributeF
   -- addContext dom = addCtx (fst $ unDom dom) (snd <$> dom)
+  contextSize _ = 1
 
 instance AddContext ([Name], Dom Type) where
   addContext (xs, dom) = addContext (bindsToTel' id xs dom)
+  contextSize (xs, _) = length xs
 
 instance AddContext ([WithHiding Name], Dom Type) where
   addContext ([]                 , dom) = id
   addContext (WithHiding h x : xs, dom) =
     addContext (x , mapHiding (mappend h) dom) .
     addContext (xs, raise 1 dom)
+  contextSize (xs, _) = length xs
 
 instance AddContext (String, Dom Type) where
   addContext (s, dom) ret = do
     x <- freshName_ s
     addCtx x dom ret
+  contextSize _ = 1
 
 instance AddContext (Dom (String, Type)) where
   addContext = addContext . distributeF
   -- addContext dom = addContext (fst $ unDom dom, snd <$> dom)
+  contextSize _ = 1
 
 instance AddContext (Dom Type) where
   addContext dom = addContext ("_", dom)
+  contextSize _ = 1
 
 instance AddContext Name where
   addContext x = addContext (x, dummyDom)
+  contextSize _ = 1
 
 #if __GLASGOW_HASKELL__ >= 710
 instance {-# OVERLAPPING #-} AddContext String where
@@ -137,11 +197,13 @@ instance {-# OVERLAPPING #-} AddContext String where
 instance AddContext String where
 #endif
   addContext s = addContext (s, dummyDom)
+  contextSize _ = 1
 
 instance AddContext Telescope where
   addContext tel ret = loop tel where
     loop EmptyTel          = ret
     loop (ExtendTel t tel) = underAbstraction t tel loop
+  contextSize = size
 
 -- | Context entries without a type have this dummy type.
 dummyDom :: Dom Type
@@ -215,7 +277,7 @@ getContextNames = map (fst . unDom) <$> getContext
 lookupBV :: MonadReader TCEnv m => Nat -> m (Dom (Name, Type))
 lookupBV n = do
   ctx <- getContext
-  let failure = fail $ "deBruijn index out of scope: " ++ show n ++
+  let failure = fail $ "de Bruijn index out of scope: " ++ show n ++
                        " in context " ++ show (map (fst . unDom) ctx)
   maybe failure (return . fmap (raise $ n + 1)) $ ctx !!! n
 

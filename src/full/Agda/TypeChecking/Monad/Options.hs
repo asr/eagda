@@ -1,5 +1,4 @@
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE FlexibleContexts #-}
 
 module Agda.TypeChecking.Monad.Options where
 
@@ -106,11 +105,10 @@ setLibraryIncludes o = do
 addDefaultLibraries :: RelativeTo -> CommandLineOptions -> TCM CommandLineOptions
 addDefaultLibraries rel o
   | or [ not $ null $ optLibraries o
-       , not $ optDefaultLibs o
        , optShowVersion o ] = pure o
   | otherwise = do
   root <- getProjectRoot rel
-  (libs, incs) <- libToTCM $ getDefaultLibraries (filePath root)
+  (libs, incs) <- libToTCM $ getDefaultLibraries (filePath root) (optDefaultLibs o)
   return o{ optIncludePaths = incs ++ optIncludePaths o, optLibraries = libs }
 
 class (Functor m, Applicative m, Monad m) => HasOptions m where
@@ -301,11 +299,14 @@ showIrrelevantArguments = optShowIrrelevant <$> pragmaOptions
 -- | Switch on printing of implicit and irrelevant arguments.
 --   E.g. for reification in with-function generation.
 withShowAllArguments :: TCM a -> TCM a
-withShowAllArguments ret = do
+withShowAllArguments = withShowAllArguments' True
+
+withShowAllArguments' :: Bool -> TCM a -> TCM a
+withShowAllArguments' yes ret = do
   opts <- pragmaOptions
   let imp = optShowImplicit opts
       irr = optShowIrrelevant opts
-  setPragmaOptions $ opts { optShowImplicit = True, optShowIrrelevant = True }
+  setPragmaOptions $ opts { optShowImplicit = yes, optShowIrrelevant = yes }
   x <- ret
   opts <- pragmaOptions
   setPragmaOptions $ opts { optShowImplicit = imp, optShowIrrelevant = irr }

@@ -1,14 +1,6 @@
 {-# LANGUAGE CPP                       #-}
-{-# LANGUAGE FlexibleInstances         #-}
-{-# LANGUAGE MultiParamTypeClasses     #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
-{-# LANGUAGE PatternGuards             #-}
 {-# LANGUAGE ScopedTypeVariables       #-}
-{-# LANGUAGE TupleSections             #-}
-
-#if __GLASGOW_HASKELL__ >= 710
-{-# LANGUAGE FlexibleContexts #-}
-#endif
 
 module Agda.TypeChecking.SizedTypes.WarshallSolver where
 
@@ -25,8 +17,6 @@ import qualified Data.Set as Set
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Traversable (for)
-
-import Test.QuickCheck (Arbitrary(..), frequency, choose)
 
 import Agda.TypeChecking.SizedTypes.Syntax
 import Agda.TypeChecking.SizedTypes.Utils
@@ -147,12 +137,6 @@ instance Num Weight where
 instance Plus Weight Offset Weight where
   plus w k = w + (Offset k)
 
-instance Arbitrary Weight where
-  arbitrary = frequency
-    [ (1, return Infinity)
-    , (5, Offset . O <$> choose (0, 200))
-    ]
-
 -- | Test for negativity, used to detect negative cycles.
 class Negative a where
   negative :: a -> Bool
@@ -225,12 +209,6 @@ instance Top Label where
   top                 = LInf
   isTop Label{}       = False
   isTop LInf          = True
-
-instance Arbitrary Label where
-  arbitrary = frequency
-    [ (1, return LInf)
-    , (5, Label <$> arbitrary <*> arbitrary)
-    ]
 
 -- * Semiring with idempotent '+' == dioid
 

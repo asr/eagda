@@ -4,7 +4,6 @@
 {-# LANGUAGE DeriveFunctor              #-}
 {-# LANGUAGE DeriveGeneric              #-}
 {-# LANGUAGE DeriveTraversable          #-}
-{-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
 {-| Some common syntactic entities are defined in this module.
@@ -19,18 +18,16 @@ import qualified Data.ByteString.Char8 as ByteString
 import Data.Foldable
 import Data.Hashable
 import qualified Data.Strict.Maybe as Strict
-import Data.Monoid
+import Data.Semigroup hiding (Arg)
 import Data.Traversable
 import Data.Typeable (Typeable)
 
 import GHC.Generics (Generic)
 
-import Test.QuickCheck hiding (Small)
-
 import Agda.Syntax.Position
 
 import Agda.Utils.Functor
-import Agda.Utils.Pretty
+import Agda.Utils.Pretty hiding ((<>))
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -63,13 +60,6 @@ instance HasRange Induction where
 instance KillRange Induction where
   killRange = id
 
-instance Arbitrary Induction where
-  arbitrary = elements [Inductive, CoInductive]
-
-instance CoArbitrary Induction where
-  coarbitrary Inductive   = variant 0
-  coarbitrary CoInductive = variant 1
-
 instance NFData Induction where
   rnf Inductive   = ()
   rnf CoInductive = ()
@@ -83,13 +73,16 @@ data Hiding  = Hidden | Instance | NotHidden
 
 -- | 'Hiding' is an idempotent partial monoid, with unit 'NotHidden'.
 --   'Instance' and 'NotHidden' are incompatible.
+instance Semigroup Hiding where
+  NotHidden <> h         = h
+  h         <> NotHidden = h
+  Hidden    <> Hidden    = Hidden
+  Instance  <> Instance  = Instance
+  _         <> _         = __IMPOSSIBLE__
+
 instance Monoid Hiding where
   mempty = NotHidden
-  mappend NotHidden h         = h
-  mappend h         NotHidden = h
-  mappend Hidden    Hidden    = Hidden
-  mappend Instance  Instance  = Instance
-  mappend _         _         = __IMPOSSIBLE__
+  mappend = (<>)
 
 instance KillRange Hiding where
   killRange = id
@@ -232,9 +225,6 @@ allRelevances =
 instance KillRange Relevance where
   killRange rel = rel -- no range to kill
 
-instance Arbitrary Relevance where
-  arbitrary = elements allRelevances
-
 instance Ord Relevance where
   (<=) = moreRelevant
 
@@ -358,6 +348,36 @@ nonStrictToIrr NonStrict = Irrelevant
 nonStrictToIrr rel       = rel
 
 ---------------------------------------------------------------------------
+-- * Origin of arguments (user-written, inserted or reflected)
+---------------------------------------------------------------------------
+
+data Origin = UserWritten | Inserted | Reflected
+  deriving (Typeable, Show, Eq, Ord)
+
+instance KillRange Origin where
+  killRange = id
+
+instance NFData Origin where
+  rnf UserWritten = ()
+  rnf Inserted = ()
+  rnf Reflected = ()
+
+class LensOrigin a where
+
+  getOrigin :: a -> Origin
+
+  setOrigin :: Origin -> a -> a
+  setOrigin o = mapOrigin (const o)
+
+  mapOrigin :: (Origin -> Origin) -> a -> a
+  mapOrigin f a = setOrigin (f $ getOrigin a) a
+
+instance LensOrigin Origin where
+  getOrigin = id
+  setOrigin = const
+  mapOrigin = id
+
+---------------------------------------------------------------------------
 -- * Argument decoration
 ---------------------------------------------------------------------------
 
@@ -366,10 +386,11 @@ nonStrictToIrr rel       = rel
 data ArgInfo = ArgInfo
   { argInfoHiding    :: Hiding
   , argInfoRelevance :: Relevance
+  , argInfoOrigin    :: Origin
   } deriving (Typeable, Eq, Ord, Show)
 
 instance KillRange ArgInfo where
-  killRange (ArgInfo h r) = killRange2 ArgInfo h r
+  killRange (ArgInfo h r o) = killRange3 ArgInfo h r o
 
 class LensArgInfo a where
   getArgInfo :: a -> ArgInfo
@@ -384,7 +405,7 @@ instance LensArgInfo ArgInfo where
   mapArgInfo = id
 
 instance NFData ArgInfo where
-  rnf (ArgInfo a b) = rnf a `seq` rnf b
+  rnf (ArgInfo a b c) = rnf a `seq` rnf b `seq` rnf c
 
 instance LensHiding ArgInfo where
   getHiding = argInfoHiding
@@ -396,9 +417,15 @@ instance LensRelevance ArgInfo where
   setRelevance h ai = ai { argInfoRelevance = h }
   mapRelevance f ai = ai { argInfoRelevance = f (argInfoRelevance ai) }
 
+instance LensOrigin ArgInfo where
+  getOrigin = argInfoOrigin
+  setOrigin o ai = ai { argInfoOrigin = o }
+  mapOrigin f ai = ai { argInfoOrigin = f (argInfoOrigin ai) }
+
 defaultArgInfo :: ArgInfo
 defaultArgInfo =  ArgInfo { argInfoHiding    = NotHidden
-                          , argInfoRelevance = Relevant }
+                          , argInfoRelevance = Relevant
+                          , argInfoOrigin    = UserWritten }
 
 
 ---------------------------------------------------------------------------
@@ -423,10 +450,10 @@ instance KillRange a => KillRange (Arg a) where
   killRange (Arg info a) = killRange2 Arg info a
 
 instance Eq a => Eq (Arg a) where
-  Arg (ArgInfo h1 _) x1 == Arg (ArgInfo h2 _) x2 = (h1, x1) == (h2, x2)
+  Arg (ArgInfo h1 _ _) x1 == Arg (ArgInfo h2 _ _) x2 = (h1, x1) == (h2, x2)
 
 instance Show a => Show (Arg a) where
-    show (Arg (ArgInfo h r) x) = showR r $ showH h $ show x
+    show (Arg (ArgInfo h r o) x) = showR r $ showO o $ showH h $ show x
       where
         showH Hidden     s = "{" ++ s ++ "}"
         showH NotHidden  s = "(" ++ s ++ ")"
@@ -438,6 +465,10 @@ instance Show a => Show (Arg a) where
           Forced Small -> "!" ++ s
           UnusedArg    -> "k" ++ s -- constant
           Relevant     -> "r" ++ s -- Andreas: I want to see it explicitly
+        showO o s = case o of
+          UserWritten -> "u" ++ s
+          Inserted    -> "i" ++ s
+          Reflected   -> "g" ++ s -- generated by reflection
 
 instance NFData e => NFData (Arg e) where
   rnf (Arg a b) = rnf a `seq` rnf b
@@ -449,6 +480,10 @@ instance LensHiding (Arg e) where
 instance LensRelevance (Arg e) where
   getRelevance = getRelevance . argInfo
   mapRelevance = mapArgInfo . mapRelevance
+
+instance LensOrigin (Arg e) where
+  getOrigin = getOrigin . argInfo
+  mapOrigin = mapArgInfo . mapOrigin
 
 {- RETIRED
 hide :: Arg a -> Arg a
@@ -699,6 +734,15 @@ data Access = PrivateAccess | PublicAccess
                              --   Used for qualified constructors.
     deriving (Typeable, Show, Eq, Ord)
 
+instance NFData Access where
+  rnf _ = ()
+
+instance HasRange Access where
+  getRange _ = noRange
+
+instance KillRange Access where
+  killRange = id
+
 -- | Abstract or concrete
 data IsAbstract = AbstractDef | ConcreteDef
     deriving (Typeable, Show, Eq, Ord)
@@ -757,11 +801,6 @@ instance NFData NameId where
 instance Hashable NameId where
   {-# INLINE hashWithSalt #-}
   hashWithSalt salt (NameId n m) = hashWithSalt salt (n, m)
-
-instance Arbitrary NameId where
-  arbitrary = elements [ NameId x y | x <- [-1, 1], y <- [-1, 1] ]
-
-instance CoArbitrary NameId
 
 ---------------------------------------------------------------------------
 -- * Meta variables
@@ -859,11 +898,14 @@ data ImportDirective' a b = ImportDirective
 data Using' a b = UseEverything | Using [ImportedName' a b]
   deriving (Typeable, Eq)
 
+instance Semigroup (Using' a b) where
+  UseEverything <> u = u
+  u <> UseEverything = u
+  Using xs <> Using ys = Using (xs ++ ys)
+
 instance Monoid (Using' a b) where
   mempty = UseEverything
-  mappend UseEverything u = u
-  mappend u UseEverything = u
-  mappend (Using xs) (Using ys) = Using (xs ++ ys)
+  mappend = (<>)
 
 -- | Default is directive is @private@ (use everything, but do not export).
 defaultImportDir :: ImportDirective' a b

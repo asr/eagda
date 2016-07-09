@@ -1,5 +1,4 @@
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE FlexibleInstances #-}
 
 -- | Find the places where the builtin static is used and do some normalisation
 --   there.
@@ -61,7 +60,8 @@ etaExpand def@(Def n ts) = do
         toEta :: Num a => a
         toEta = fromIntegral $ len - length ts
         term  = raise toEta def `applys` map var (downFrom toEta)
-    return $ foldr (\ v t -> Lam defaultArgInfo (Abs v t)) term $ replicate toEta "staticVar"
+        info  = setOrigin Inserted defaultArgInfo
+    return $ foldr (\ v t -> Lam info (Abs v t)) term $ replicate toEta "staticVar"
 etaExpand x = return x
 
 class Evaluate a where

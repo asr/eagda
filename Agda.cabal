@@ -1,6 +1,6 @@
 name:            Agda
 version:         2.6.0.1
-cabal-version:   >= 1.8
+cabal-version:   >= 1.10
 build-type:      Custom
 license:         OtherLicense
 license-file:    LICENSE
@@ -39,6 +39,7 @@ tested-with:        GHC == 7.6.3
 extra-source-files: src/full/undefined.h
                     README.md
                     CHANGELOG
+                    stack.yaml
 data-dir:           src/data
 data-files:         Agda.css
                     emacs-mode/*.el
@@ -86,6 +87,12 @@ flag uhc
   description:
     Enable the UHC backend. For details, consult the Agda User Manual.
 
+flag debug
+  default: False
+  manual: True
+  description:
+    Enable debugging features that may slow Agda down.
+
 library
   hs-source-dirs:   src/full
   include-dirs:     src/full
@@ -104,6 +111,9 @@ library
     -- definitions, see module Agda.Compiler.UHC.Bridge.
     cpp-options:    -DUHC_BACKEND
 
+  if flag(debug)
+    cpp-options:    -DDEBUG
+
   if os(windows)
     build-depends:  Win32 >= 2.2 && < 2.4
 
@@ -116,11 +126,6 @@ library
                 , data-hash >= 0.2.0.0 && < 0.3
                 , deepseq >= 1.3.0.1 && < 1.5
                 , directory >= 1.2.0.1 && < 1.3
-                -- Edison versioning scheme:
-                -- http://rwd.rdockins.name/edison/home/.  EdisonAPI
-                -- isn't used by Agda, but EdisonCore 1.3.1 doesn't
-                -- declare what version of EdisonAPI it depends on.
-                , EdisonAPI == 1.3
                 , EdisonCore >= 1.3.1.1 && < 1.3.2
                 , edit-distance >= 0.2.1.2 && < 0.3
                 , equivalence >= 0.2.5 && < 0.4
@@ -137,14 +142,13 @@ library
                 -- some cases.
                 , hashtables >= 1.0.1.8 && < 1.2 || >= 1.2.0.2 && < 1.3
                 , haskeline >= 0.7.1.3 && < 0.8
-                , haskell-src-exts >= 1.16.0.1 && < 1.18
+                , haskell-src-exts >= 1.17 && < 1.18
                 , monadplus >= 1.4 && < 1.5
                 -- mtl-2.1 contains a severe bug.
                 --
                 -- mtl >= 2.2 && < 2.2.1 doesn't export Control.Monad.Except.
                 , mtl >= 2.1.1 && <= 2.1.3.1 || >= 2.2.1 && < 2.3
                 , murmur-hash >= 0.1 && < 0.2
-                , QuickCheck >= 2.8.2 && < 2.9
                 , parallel >= 3.2.0.4 && < 3.3
                 -- pretty 1.1.1.2 and 1.1.1.3 do not follow the
                 -- package versioning policy.
@@ -172,6 +176,12 @@ library
     build-depends: zlib >= 0.4.0.1 && < 0.6.1
   else
     build-depends: zlib >= 0.4.0.1 && < 0.7
+
+  if impl(ghc < 8.0)
+    -- provide/emulate `Control.Monad.Fail` and `Data.Semigroups` API
+    -- for pre-GHC8
+    build-depends:  fail == 4.9.*
+                  , semigroups == 0.18.*
 
   build-tools:  alex >= 3.1.0 && < 3.2
               , happy >= 1.19.4 && < 2
@@ -214,6 +224,7 @@ library
                     Agda.Compiler.MAlonzo.Pretty
                     Agda.Compiler.MAlonzo.Primitives
                     Agda.Compiler.ToTreeless
+                    Agda.Compiler.Treeless.AsPatterns
                     Agda.Compiler.Treeless.Builtin
                     Agda.Compiler.Treeless.Compare
                     Agda.Compiler.Treeless.Erase
@@ -270,6 +281,7 @@ library
                     Agda.Syntax.Concrete.Generic
                     Agda.Syntax.Concrete.Name
                     Agda.Syntax.Concrete.Operators.Parser
+                    Agda.Syntax.Concrete.Operators.Parser.Monad
                     Agda.Syntax.Concrete.Operators
                     Agda.Syntax.Concrete.Pretty
                     Agda.Syntax.Concrete
@@ -315,7 +327,6 @@ library
                     Agda.Termination.Semiring
                     Agda.Termination.TermCheck
                     Agda.Termination.Termination
-                    Agda.Tests
                     Agda.TheTypeChecker
                     Agda.TypeChecking.Abstract
                     Agda.TypeChecking.CheckInternal
@@ -337,7 +348,6 @@ library
                     Agda.TypeChecking.Free
                     Agda.TypeChecking.Free.Lazy
                     Agda.TypeChecking.Free.Old
-                    Agda.TypeChecking.Free.Tests
                     Agda.TypeChecking.Forcing
                     Agda.TypeChecking.Implicit
                     Agda.TypeChecking.Injectivity
@@ -358,6 +368,7 @@ library
                     Agda.TypeChecking.Monad.Env
                     Agda.TypeChecking.Monad.Exception
                     Agda.TypeChecking.Monad.Imports
+                    Agda.TypeChecking.Monad.Local
                     Agda.TypeChecking.Monad.MetaVars
                     Agda.TypeChecking.Monad.Mutual
                     Agda.TypeChecking.Monad.Open
@@ -374,7 +385,6 @@ library
                     Agda.TypeChecking.Polarity
                     Agda.TypeChecking.Positivity
                     Agda.TypeChecking.Positivity.Occurrence
-                    Agda.TypeChecking.Positivity.Tests
                     Agda.TypeChecking.Pretty
                     Agda.TypeChecking.Primitive
                     Agda.TypeChecking.ProjectionLike
@@ -393,6 +403,7 @@ library
                     Agda.TypeChecking.Rules.Def
                     Agda.TypeChecking.Rules.Display
                     Agda.TypeChecking.Rules.LHS
+                    Agda.TypeChecking.Rules.LHS.AsPatterns
                     Agda.TypeChecking.Rules.LHS.Implicit
                     Agda.TypeChecking.Rules.LHS.Instantiate
                     Agda.TypeChecking.Rules.LHS.Problem
@@ -412,15 +423,12 @@ library
                     Agda.TypeChecking.SizedTypes
                     Agda.TypeChecking.SizedTypes.Solve
                     Agda.TypeChecking.SizedTypes.Syntax
-                    Agda.TypeChecking.SizedTypes.Tests
                     Agda.TypeChecking.SizedTypes.Utils
                     Agda.TypeChecking.SizedTypes.WarshallSolver
                     Agda.TypeChecking.Substitute
                     Agda.TypeChecking.Substitute.Pattern
                     Agda.TypeChecking.SyntacticEquality
                     Agda.TypeChecking.Telescope
-                    Agda.TypeChecking.Test.Generators
-                    Agda.TypeChecking.Tests
                     Agda.TypeChecking.Unquote
                     Agda.TypeChecking.With
                     Agda.Utils.AssocList
@@ -439,7 +447,6 @@ library
                     Agda.Utils.Function
                     Agda.Utils.Geniplate
                     Agda.Utils.Graph.AdjacencyMap.Unidirectional
-                    Agda.Utils.Graph.AdjacencyMap.Unidirectional.Tests
                     Agda.Utils.Hash
                     Agda.Utils.HashMap
                     Agda.Utils.Impossible
@@ -451,7 +458,6 @@ library
                     Agda.Utils.Lens.Examples
                     Agda.Utils.List
                     Agda.Utils.ListT
-                    Agda.Utils.ListT.Tests
                     Agda.Utils.Map
                     Agda.Utils.Maybe
                     Agda.Utils.Maybe.Strict
@@ -462,16 +468,13 @@ library
                     Agda.Utils.Parser.ReadP
                     Agda.Utils.PartialOrd
                     Agda.Utils.Permutation
-                    Agda.Utils.Permutation.Tests
                     Agda.Utils.Pointer
                     Agda.Utils.Pretty
-                    Agda.Utils.QuickCheck
                     Agda.Utils.SemiRing
                     Agda.Utils.Singleton
                     Agda.Utils.Size
                     Agda.Utils.String
                     Agda.Utils.Suffix
-                    Agda.Utils.TestHelpers
                     Agda.Utils.Time
                     Agda.Utils.Trie
                     Agda.Utils.Tuple
@@ -496,7 +499,6 @@ library
                  -fwarn-missing-fields
                  -fwarn-missing-methods
                  -fwarn-missing-signatures
-                 -fwarn-orphans
                  -fwarn-tabs
                  -fwarn-overlapping-patterns
                  -fwarn-unrecognised-pragmas
@@ -534,10 +536,29 @@ library
   if impl(ghc >= 8.0)
     ghc-options: -Wmissing-pattern-synonym-signatures
                  -Wnoncanonical-monad-instances
+                 -Wnoncanonical-monoid-instances
                  -Wunrecognised-warning-flags
+                 -Wsemigroup
                  -Wunused-foralls
 
   ghc-prof-options: -fprof-auto
+
+  default-language: Haskell2010
+  default-extensions: ConstraintKinds
+                    , DataKinds
+                    , DefaultSignatures
+                    , ExistentialQuantification
+                    , FlexibleContexts
+                    , FlexibleInstances
+                    , FunctionalDependencies
+                    , LambdaCase
+                    , MultiParamTypeClasses
+                    , NamedFieldPuns
+                    , RankNTypes
+                    , RecordWildCards
+                    , StandaloneDeriving
+                    , TupleSections
+                    , TypeSynonymInstances
 
 executable agda
   hs-source-dirs: src/main
@@ -546,6 +567,7 @@ executable agda
                   -- Nothing is used from the following package,
                   -- except for the prelude.
                 , base >= 4.6.0.1 && < 6
+  default-language: Haskell2010
   if impl(ghc >= 7)
     -- If someone installs Agda with the setuid bit set, then the
     -- presence of +RTS may be a security problem (see GHC bug #3910).
@@ -562,6 +584,7 @@ executable agda-mode
                   , directory >= 1.2.0.1 && < 1.3
                   , filepath >= 1.3.0.1 && < 1.5
                   , process >= 1.1.0.2 && < 1.5
+  default-language: Haskell2010
 
 executable agda-ghc-names
   hs-source-dirs:   src/agda-ghc-names
@@ -580,6 +603,7 @@ executable agda-ghc-names
                 , mtl >= 2.1.1 && <= 2.1.3.1 || >= 2.2.1 && < 2.3
 
   ghc-options:  -rtsopts
+  default-language: Haskell2010
 
 
 -- Cabal testsuite integration has some serious bugs, but we
@@ -633,3 +657,146 @@ test-suite agda-tests
     ghc-options: -fwarn-missing-local-sigs
   else
     ghc-options: -Wmissing-local-signatures
+  default-language: Haskell2010
+
+test-suite internal-tests
+  type:            exitcode-stdio-1.0
+  hs-source-dirs:  test
+  main-is:         InternalTests.hs
+
+  other-modules:  InternalTests.Compiler.MAlonzo.Encode
+                , InternalTests.Helpers
+                , InternalTests.Interaction.Highlighting.Emacs
+                , InternalTests.Interaction.Highlighting.Generate
+                , InternalTests.Interaction.Highlighting.Precise
+                , InternalTests.Interaction.Highlighting.Range
+                , InternalTests.Interaction.Options
+                , InternalTests.Syntax.Abstract.Name
+                , InternalTests.Syntax.Common
+                , InternalTests.Syntax.Concrete.Name
+                , InternalTests.Syntax.Parser.Parser
+                , InternalTests.Syntax.Position
+                , InternalTests.Termination.CallGraph
+                , InternalTests.Termination.CallMatrix
+                , InternalTests.Termination.Order
+                , InternalTests.Termination.Semiring
+                , InternalTests.Termination.SparseMatrix
+                , InternalTests.Termination.Termination
+                , InternalTests.TypeChecking
+                , InternalTests.TypeChecking.Coverage.SplitTree
+                , InternalTests.TypeChecking.Free
+                , InternalTests.TypeChecking.Free.Lazy
+                , InternalTests.TypeChecking.Generators
+                , InternalTests.TypeChecking.Irrelevance
+                , InternalTests.TypeChecking.Positivity
+                , InternalTests.TypeChecking.Positivity.Occurrence
+                , InternalTests.TypeChecking.SizedTypes
+                , InternalTests.TypeChecking.SizedTypes.Syntax
+                , InternalTests.TypeChecking.SizedTypes.WarshallSolver
+                , InternalTests.Utils.Bag
+                , InternalTests.Utils.BiMap
+                , InternalTests.Utils.Cluster
+                , InternalTests.Utils.Either
+                , InternalTests.Utils.Favorites
+                , InternalTests.Utils.FileName
+                , InternalTests.Utils.Graph.AdjacencyMap.Unidirectional
+                , InternalTests.Utils.List
+                , InternalTests.Utils.ListT
+                , InternalTests.Utils.Maybe.Strict
+                , InternalTests.Utils.PartialOrd
+                , InternalTests.Utils.Permutation
+                , InternalTests.Utils.Trie
+                , InternalTests.Utils.Warshall
+
+  build-depends:  Agda == 2.6.0.1
+                , array >= 0.4.0.1 && < 0.6
+                , base >= 4.6.0.1 && < 4.10
+                , containers >= 0.5.0.0 && < 0.6
+                , filepath >= 1.3.0.1 && < 1.5
+                , haskell-src-exts >= 1.17 && < 1.18
+                -- mtl-2.1 contains a severe bug.
+                --
+                -- mtl >= 2.2 && < 2.2.1 doesn't export Control.Monad.Except.
+                , mtl >= 2.1.1 && <= 2.1.3.1 || >= 2.2.1 && < 2.3
+                , QuickCheck >= 2.8.2 && < 2.9
+                -- transformers 0.4.0.0 was deprecated.
+                , text >= 0.11.3.1 && < 1.3
+                , transformers >= 0.3 && < 0.4 || >= 0.4.1.0 && < 0.6
+
+  if impl(ghc < 8.0)
+    -- provide/emulate `Data.Semigroups` API for pre-GHC8
+    build-depends:  semigroups == 0.18.*
+
+  default-language:  Haskell2010
+
+  default-extensions:  ConstraintKinds
+                     , DataKinds
+                     , DefaultSignatures
+                     , ExistentialQuantification
+                     , FlexibleContexts
+                     , FlexibleInstances
+                     , FunctionalDependencies
+                     , LambdaCase
+                     , MultiParamTypeClasses
+                     , NamedFieldPuns
+                     , RankNTypes
+                     , RecordWildCards
+                     , StandaloneDeriving
+                     , TupleSections
+                     , TypeSynonymInstances
+
+  if impl(ghc >= 7.6.3)
+    ghc-options: -w
+                 -Werror
+                 -fwarn-deprecated-flags
+                 -fwarn-dodgy-exports
+                 -fwarn-dodgy-foreign-imports
+                 -fwarn-dodgy-imports
+                 -fwarn-duplicate-exports
+                 -fwarn-hi-shadowing
+                 -fwarn-identities
+                 -fwarn-incomplete-patterns
+                 -fwarn-missing-fields
+                 -fwarn-missing-methods
+                 -fwarn-missing-signatures
+                 -fwarn-tabs
+                 -fwarn-overlapping-patterns
+                 -fwarn-unrecognised-pragmas
+                 -fwarn-unused-do-bind
+                 -fwarn-warnings-deprecations
+                 -fwarn-wrong-do-bind
+
+  if impl(ghc >= 7.8)
+    ghc-options: -fwarn-empty-enumerations
+                 -fwarn-inline-rule-shadowing
+                 -fwarn-typed-holes
+                 -fwarn-overflowed-literals
+
+  if impl(ghc >= 7.10)
+     ghc-options: -fwarn-unticked-promoted-constructors
+                  -- Enable after removing the support for GHC 7.8.
+                  -- -fwarn-deriving-typeable
+
+  -- This option is deprected in GHC 7.10.1.
+  if impl(ghc >= 7.8) && impl(ghc < 7.10)
+    ghc-options: -fwarn-amp
+
+  -- This option will be removed in GHC 8.0.1.
+  if impl(ghc >= 7.6) && impl(ghc < 8.0)
+    ghc-options: -fwarn-pointless-pragmas
+
+  -- This option will be deprected in GHC 8.0.1.
+  if impl(ghc >= 7.8) && impl(ghc < 8.0)
+    ghc-options: -fwarn-duplicate-constraints
+
+  -- This option will be deprected in GHC 8.0.1.
+  if impl(ghc >= 7.10) && impl(ghc < 8.0)
+    ghc-options: -fwarn-context-quantification
+
+  if impl(ghc >= 8.0)
+    ghc-options: -Wmissing-pattern-synonym-signatures
+                 -Wnoncanonical-monad-instances
+                 -Wnoncanonical-monoid-instances
+                 -Wunrecognised-warning-flags
+                 -Wsemigroup
+                 -Wunused-foralls

@@ -1,6 +1,3 @@
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 -- | Computing the free variables of a term lazily.
@@ -36,10 +33,8 @@ import Control.Monad.Reader
 
 import Data.Foldable (foldMap)
 import Data.IntMap (IntMap)
-import Data.Monoid
+import Data.Semigroup (Semigroup, Monoid, (<>), mempty, mappend, mconcat)
 import Data.Set (Set)
-
-import Test.QuickCheck
 
 import Agda.Syntax.Common
 import Agda.Syntax.Internal
@@ -155,9 +150,11 @@ initFreeEnv sing = FreeEnv
 
 type FreeM c = Reader (FreeEnv c) c
 
+instance Monoid c => Semigroup (FreeM c) where
+  (<>) = liftA2 mappend
 instance Monoid c => Monoid (FreeM c) where
   mempty  = pure mempty
-  mappend = liftA2 mappend
+  mappend = (<>)
   mconcat = mconcat <.> sequence
 
 -- instance Singleton a c => Singleton a (FreeM c) where
@@ -380,18 +377,3 @@ instance Free' Clause c where
 instance Free' EqualityView c where
   freeVars' (OtherType t) = freeVars' t
   freeVars' (EqualityType s _eq l t a b) = freeVars' s `mappend` freeVars' [l, t, a, b]
-
--- Generators
-
-instance Arbitrary FlexRig where
-  arbitrary = oneof
-    [ pure $ Flexible mempty -- TODO
-    , pure WeaklyRigid
-    , pure Unguarded
-    , pure StronglyRigid
-    ]
-
-instance Arbitrary VarOcc where
-  arbitrary = VarOcc <$> arbitrary <*> arbitrary
-
--- -}

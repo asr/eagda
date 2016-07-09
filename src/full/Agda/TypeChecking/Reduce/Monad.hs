@@ -1,7 +1,4 @@
 {-# LANGUAGE CPP              #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE RankNTypes       #-}
-{-# LANGUAGE TupleSections    #-}
 
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
@@ -79,10 +76,12 @@ constructorForm v = do
   return $ fromMaybe v $ constructorForm' mz ms v
 
 enterClosure :: Closure a -> (a -> ReduceM b) -> ReduceM b
-enterClosure (Closure sig env scope x) f = localR (mapRedEnvSt inEnv inState) (f x)
+enterClosure (Closure sig env scope pars x) f = localR (mapRedEnvSt inEnv inState) (f x)
   where
     inEnv   e = env { envAllowDestructiveUpdate = envAllowDestructiveUpdate e }
-    inState s = set stScope scope s   -- TODO: use the signature here? would that fix parts of issue 118?
+    inState s =
+      -- TODO: use the signature here? would that fix parts of issue 118?
+      set stScope scope $ set stModuleParameters pars s
 
 withFreshR :: HasFresh i => (i -> ReduceM a) -> ReduceM a
 withFreshR f = do

@@ -1,16 +1,6 @@
 {-# LANGUAGE CPP                      #-}
-{-# LANGUAGE FlexibleInstances        #-}
-{-# LANGUAGE LambdaCase               #-}
-{-# LANGUAGE NamedFieldPuns           #-}
 {-# LANGUAGE NondecreasingIndentation #-}
-{-# LANGUAGE MultiParamTypeClasses    #-}
-{-# LANGUAGE PatternGuards            #-}
 {-# LANGUAGE ScopedTypeVariables      #-}
-{-# LANGUAGE TupleSections            #-}
-
-#if __GLASGOW_HASKELL__ >= 710
-{-# LANGUAGE FlexibleContexts #-}
-#endif
 
 module Agda.TypeChecking.Rules.Term where
 
@@ -76,6 +66,7 @@ import Agda.TypeChecking.RecordPatterns
 import Agda.TypeChecking.Records
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.SizedTypes
+import Agda.TypeChecking.SizedTypes.Solve
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.Rules.LHS (checkLeftHandSide, LHSResult(..))
@@ -138,7 +129,7 @@ isType_ e =
       return t'
     A.Set _ n    -> do
       return $ sort (mkType n)
-    A.App i s (Arg (ArgInfo NotHidden r) l)
+    A.App i s (Arg (ArgInfo NotHidden r o) l)
       | A.Set _ 0 <- unScope s ->
       ifNotM hasUniversePolymorphism
           (typeError $ GenericError "Use --universe-polymorphism to enable level arguments to Set")
@@ -262,7 +253,7 @@ checkTypedBinding lamOrPi info (A.TBind i xs e) ret = do
     allowed <- optExperimentalIrrelevance <$> pragmaOptions
     t <- modEnv lamOrPi allowed $ isType_ e
     let info' = mapRelevance (modRel lamOrPi allowed) info
-    addContext (xs, Dom info' t) $
+    addContext' (xs, Dom info' t) $
       ret $ bindsWithHidingToTel xs (Dom info t)
     where
         -- if we are checking a typed lambda, we resurrect before we check the
@@ -319,13 +310,13 @@ checkLambda (Arg info (A.TBind _ xs typ)) body target = do
         pid <- newProblem_ $ leqType (telePi tel t1) target
         -- Now check body : ?t₁
         -- WRONG: v <- addContext tel $ checkExpr body t1
-        v <- addContext (xs, argsT) $ checkExpr body t1
+        v <- addContext' (xs, argsT) $ checkExpr body t1
         -- Block on the type comparison
         blockTermOnProblem target (teleLam tel v) pid
        else do
         -- Now check body : ?t₁
         -- WRONG: v <- addContext tel $ checkExpr body t1
-        v <- addContext (xs, argsT) $ checkExpr body t1
+        v <- addContext' (xs, argsT) $ checkExpr body t1
         -- Block on the type comparison
         coerce (teleLam tel v) (telePi tel t1) target
 
@@ -355,8 +346,8 @@ checkLambda (Arg info (A.TBind _ xs typ)) body target = do
       where
         [WithHiding h x] = xs
         -- Andreas, Issue 630: take name from function type if lambda name is "_"
-        add y dom | isNoName x = addContext (y, dom)
-                  | otherwise  = addContext (x, dom)
+        add y dom | isNoName x = addContext' (y, dom)
+                  | otherwise  = addContext' (x, dom)
     useTargetType _ _ = __IMPOSSIBLE__
 
 -- | Checking a lambda whose domain type has already been checked.
@@ -419,7 +410,7 @@ insertHiddenLambdas h target postpone ret = do
             -- Otherwise, we found a hidden argument that we can insert.
             let x = absName b
             Lam (domInfo dom) . Abs x <$> do
-              addContext (x, dom) $ insertHiddenLambdas h (absBody b) postpone ret
+              addContext' (x, dom) $ insertHiddenLambdas h (absBody b) postpone ret
 
       _ -> typeError . GenericDocError =<< do
         text "Expected " <+> prettyTCM target <+> text " to be a function type"
@@ -457,7 +448,7 @@ checkAbsurdLambda i h e t = do
                   [Clause
                     { clauseRange     = getRange e
                     , clauseTel       = telFromList [fmap ("()",) dom]
-                    , namedClausePats = [Arg info' $ Named (Just $ unranged $ absName b) $ VarP (0,"()")]
+                    , namedClausePats = [Arg info' $ Named (Just $ unranged $ absName b) $ debruijnNamedVar "()" 0]
                     , clauseBody      = Bind $ NoAbs "()" NoBody
                     , clauseType      = Just $ setRelevance rel $ defaultArg $ absBody b
                     , clauseCatchall  = False
@@ -490,6 +481,10 @@ checkAbsurdLambda i h e t = do
 checkExtendedLambda :: A.ExprInfo -> A.DefInfo -> QName -> [A.Clause] ->
                        A.Expr -> Type -> TCM Term
 checkExtendedLambda i di qname cs e t = do
+   -- Andreas, 2016-06-16 issue #2045
+   -- Try to get rid of unsolved size metas before we
+   -- fix the type of the extended lambda auxiliary function
+   solveSizeConstraints DontDefaultToInfty
    t <- instantiateFull t
    ifBlockedType t (\ m t' -> postponeTypeCheckingProblem_ $ CheckExpr e t') $ \ t -> do
      j   <- currentOrFreshMutualBlock
@@ -566,7 +561,7 @@ catchIlltypedPatternBlockedOnMeta :: TCM () -> TCM (Maybe (TCErr, MetaId))
 catchIlltypedPatternBlockedOnMeta m = (Nothing <$ m) `catchError` \ err -> do
   let reraise = throwError err
   case err of
-    TypeError s cl@(Closure sig env scope (IlltypedPattern p a)) ->
+    TypeError s cl@Closure{ clValue = IlltypedPattern p a } ->
       enterClosure cl $ \ _ -> do
         ifBlockedType a (\ x _ -> return $ Just (err, x)) $ {- else -} \ _ -> reraise
     _ -> reraise
@@ -1067,8 +1062,8 @@ inferOrCheckProjApp e ds args mt = do
                 , text "  td  = " <+> caseMaybeM (getDefType d ta) (text "Nothing") prettyTCM
                 ]
               -- get the original projection name
-              Projection{ projProper = mp } <- MaybeT $ isProjection d
-              orig <- MaybeT $ return mp
+              Projection{ projProper = proper, projOrig = orig } <- MaybeT $ isProjection d
+              guard proper
               -- try to eliminate
               (dom, u, tb) <- MaybeT (projectTyped v ta d `catchError` \ _ -> return Nothing)
               reportSDoc "tc.proj.amb" 30 $ vcat
@@ -1354,8 +1349,8 @@ inferHeadDef x = do
   proj <- isProjection x
   let app =
         case proj of
-          Nothing -> \ f args -> return $ Def f $ map Apply args
-          Just p  -> \ f args -> return $ projDropPars p `apply` args
+          Nothing -> \ args -> Def x $ map Apply args
+          Just p  -> \ args -> projDropParsApply p args
   mapFst apply <$> inferDef app x
 
 -- | Infer the type of a head thing (variable, function symbol, or constructor).
@@ -1385,7 +1380,8 @@ inferHead e = do
 
       -- First, inferDef will try to apply the constructor
       -- to the free parameters of the current context. We ignore that.
-      (u, a) <- inferDef (\ c _ -> getOrigConTerm c) c
+      vc <- getOrigConTerm c
+      (u, a) <- inferDef (\ _ -> vc) c
 
       -- Next get the number of parameters in the current context.
       Constructor{conPars = n} <- theDef <$> (instantiateDef =<< getConstInfo c)
@@ -1401,9 +1397,9 @@ inferHead e = do
       (term, t) <- inferExpr e
       return (apply term, t)
 
-inferDef :: (QName -> Args -> TCM Term) -> QName -> TCM (Term, Type)
+inferDef :: (Args -> Term) -> QName -> TCM (Term, Type)
 inferDef mkTerm x =
-    traceCall (InferDef (getRange x) x) $ do
+    traceCall (InferDef x) $ do
     -- getConstInfo retrieves the *absolute* (closed) type of x
     -- instantiateDef relativizes it to the current context
     d  <- instantiateDef =<< getConstInfo x
@@ -1423,7 +1419,7 @@ inferDef mkTerm x =
       text "inferred def " <+> prettyTCM x <+> hsep (map prettyTCM vs)
     let t = defType d
     reportSDoc "tc.term.def" 10 $ nest 2 $ text " : " <+> prettyTCM t
-    v  <- mkTerm x vs
+    let v = mkTerm vs -- applies x to vs, dropping parameters
     reportSDoc "tc.term.def" 10 $ nest 2 $ text " --> " <+> prettyTCM v
     return (v, t)
 
@@ -1997,9 +1993,12 @@ checkLetBinding b@(A.LetPatBind i p e) ret =
         , text "t     =" <+> prettyTCM t
         ]
       ]
-    checkLeftHandSide (CheckPattern p EmptyTel t) Nothing [p0] t0 Nothing $ \ (LHSResult delta ps _t _perm) -> do
-      -- A single pattern in internal syntax is returned.
-      let p = case ps of [p] -> namedArg p; _ -> __IMPOSSIBLE__
+    fvs <- getContextSize
+    checkLeftHandSide (CheckPattern p EmptyTel t) Nothing [p0] t0 Nothing $ \ (LHSResult _ delta0 ps _t _perm) -> do
+          -- After dropping the free variable patterns there should be a single pattern left.
+      let p = case drop fvs ps of [p] -> namedArg p; _ -> __IMPOSSIBLE__
+          -- Also strip the context variables from the telescope
+          delta = telFromList $ drop fvs $ telToList delta0
       reportSDoc "tc.term.let.pattern" 20 $ nest 2 $ vcat
         [ text "p (I) =" <+> text (show p)
         , text "delta =" <+> text (show delta)
@@ -2009,7 +2008,25 @@ checkLetBinding b@(A.LetPatBind i p e) ret =
       -- We remove the bindings for the pattern variables from the context.
       cxt0 <- getContext
       let (binds, cxt) = splitAt (size delta) cxt0
-      escapeContext (length binds) $ do
+          toDrop       = length binds
+
+          -- We create a substitution for the let-bound variables
+          -- (unfortunately, we cannot refer to x in internal syntax
+          -- so we have to copy v).
+          sigma = zipWith ($) fs (repeat v)
+          -- We apply the types of the let bound-variables to this substitution.
+          -- The 0th variable in a context is the last one, so we reverse.
+          -- Further, we need to lower all other de Bruijn indices by
+          -- the size of delta, so we append the identity substitution.
+          sub    = parallelS (reverse sigma)
+
+          -- Outer let-bindings will have been rebound by checkLeftHandSide, so
+          -- we need to strenghten those as well. Don't use a strengthening
+          -- subsititution since @-patterns in the pattern binding will reference
+          -- the pattern variables.
+          subLetBind (OpenThing cxt va) = OpenThing (drop toDrop cxt) (applySubst sub va)
+      escapeContext toDrop $ updateModuleParameters sub
+                           $ locally eLetBindings (fmap subLetBind) $ do
         reportSDoc "tc.term.let.pattern" 20 $ nest 2 $ vcat
           [ text "delta =" <+> prettyTCM delta
           , text "binds =" <+> text (show binds) -- prettyTCM binds
@@ -2019,15 +2036,6 @@ checkLetBinding b@(A.LetPatBind i p e) ret =
        x <- freshNoName (getRange e)
        addLetBinding Relevant x v t $ do
  -}
-        -- We create a substitution for the let-bound variables
-        -- (unfortunately, we cannot refer to x in internal syntax
-        -- so we have to copy v).
-        let sigma = zipWith ($) fs (repeat v)
-        -- We apply the types of the let bound-variables to this substitution.
-        -- The 0th variable in a context is the last one, so we reverse.
-        -- Further, we need to lower all other de Bruijn indices by
-        -- the size of delta, so we append the identity substitution.
-        let sub    = parallelS (reverse sigma)
         let fdelta = flattenTel delta
         reportSDoc "tc.term.let.pattern" 20 $ nest 2 $ vcat
           [ text "fdelta =" <+> text (show fdelta)

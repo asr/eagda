@@ -1,8 +1,4 @@
 {-# LANGUAGE CPP                  #-}
-{-# LANGUAGE FlexibleInstances    #-}
-{-# LANGUAGE PatternGuards        #-}
-{-# LANGUAGE TupleSections        #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 
 module Agda.TypeChecking.Rules.LHS where
 
@@ -14,6 +10,7 @@ import Control.Applicative
 import Control.Arrow (first, second, (***))
 import Control.Monad hiding (mapM, forM, sequence)
 import Control.Monad.State hiding (mapM, forM, sequence)
+import Control.Monad.Reader hiding (mapM, forM, sequence)
 import Control.Monad.Trans.Maybe
 
 import Data.Function (on)
@@ -22,6 +19,8 @@ import qualified Data.IntMap as IntMap
 import Data.List (delete, sortBy, stripPrefix)
 import Data.Monoid
 import Data.Traversable
+import Data.Map (Map)
+import qualified Data.Map as Map
 
 import Agda.Interaction.Options
 import Agda.Interaction.Options.Lenses
@@ -49,11 +48,13 @@ import Agda.TypeChecking.Patterns.Abstract
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Records
 import Agda.TypeChecking.Reduce
+import Agda.TypeChecking.Rewriting
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Substitute.Pattern
 import Agda.TypeChecking.Telescope
 
 import {-# SOURCE #-} Agda.TypeChecking.Rules.Term (checkExpr)
+import Agda.TypeChecking.Rules.LHS.AsPatterns
 import Agda.TypeChecking.Rules.LHS.Problem hiding (Substitution)
 import Agda.TypeChecking.Rules.LHS.ProblemRest
 import Agda.TypeChecking.Rules.LHS.Unify
@@ -92,10 +93,10 @@ class IsFlexiblePattern a where
 instance IsFlexiblePattern A.Pattern where
   maybeFlexiblePattern p =
     case p of
-      A.DotP{}
-        -> return DotFlex
-      A.WildP{}
-        -> return ImplicitFlex
+      A.DotP{}  -> return DotFlex
+      A.VarP{}  -> return ImplicitFlex
+      A.WildP{} -> return ImplicitFlex
+      A.AsP _ _ p -> maybeFlexiblePattern p
       A.ConP _ (A.AmbQ [c]) qs
         -> ifM (isNothing <$> isRecordConstructor c) mzero {-else-}
              (maybeFlexiblePattern qs)
@@ -149,11 +150,12 @@ updateInPatterns as ps qs = do
            -> TCM (IntMap (NamedArg A.Pattern), [DotPatternInst])
     update a p q = case unArg q of
       -- Case: the unifier did not instantiate the variable
-      VarP (i,_) -> return (IntMap.singleton i p, [])
+      VarP x     -> return (IntMap.singleton (dbPatVarIndex x) p, [])
       -- Case: the unifier did instantiate the variable
-      DotP u     -> case namedThing (unArg p) of
-        A.DotP _ e -> return (IntMap.empty,[DPI (Just e) u a])
-        A.WildP _  -> return (IntMap.empty,[DPI Nothing  u a])
+      DotP u     -> case snd $ asView $ namedThing (unArg p) of
+        A.DotP _ e -> return (IntMap.empty, [DPI Nothing  (Just e) u a])
+        A.WildP _  -> return (IntMap.empty, [DPI Nothing  Nothing  u a])
+        A.VarP x   -> return (IntMap.empty, [DPI (Just x) Nothing  u a])
         A.ConP _ (A.AmbQ [c]) qs -> do
           Def r es  <- ignoreSharing <$> reduce (unEl $ unDom a)
           let vs = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
@@ -166,12 +168,11 @@ updateInPatterns as ps qs = do
               -- Andreas, 2012-09-19 propagate relevance info to dot patterns
               bs  = map (mapRelevance (composeRelevance (getRelevance a))) bs0
           updates bs qs (map (DotP . unArg) us `withArgsFrom` teleArgNames ftel)
-        A.VarP        _     -> __IMPOSSIBLE__
+        A.AsP         _ _ _ -> __IMPOSSIBLE__
         A.ConP        _ _ _ -> __IMPOSSIBLE__
         A.RecP        _ _   -> __IMPOSSIBLE__
         A.ProjP       _ _   -> __IMPOSSIBLE__
         A.DefP        _ _ _ -> __IMPOSSIBLE__
-        A.AsP         _ _ _ -> __IMPOSSIBLE__
         A.AbsurdP     _     -> __IMPOSSIBLE__
         A.LitP        _     -> __IMPOSSIBLE__
         A.PatternSynP _ _ _ -> __IMPOSSIBLE__
@@ -183,10 +184,15 @@ updateInPatterns as ps qs = do
             fs  = killRange $ recFields def
             tel = recTel def `apply` pars
             as  = applyPatSubst (parallelS $ map (namedThing . unArg) qs) $ flattenTel tel
-            -- If the user wrote a dot pattern but the unifier eta-expanded the
-            -- corresponding variable, add the corresponding instantiation
+            -- If the user wrote a dot pattern or variable but the unifier
+            -- eta-expanded it, add the corresponding instantiation.
             dpi :: [DotPatternInst]
-            dpi = maybe [] (\e -> [DPI (Just e) (patternToTerm $ unArg q) a]) (isDotP (namedThing $ unArg p))
+            dpi = mkDPI $ patternToTerm $ unArg q
+              where
+                mkDPI v = case namedThing $ unArg p of
+                  A.DotP _ e -> [DPI Nothing (Just e) v a]
+                  A.VarP x   -> [DPI (Just x) Nothing v a]
+                  _        -> []
         second (dpi++) <$>
           updates as (projectInPat p fs) (map (fmap namedThing) qs)
       LitP _     -> __IMPOSSIBLE__
@@ -194,7 +200,7 @@ updateInPatterns as ps qs = do
 
     projectInPat :: NamedArg A.Pattern -> [Arg QName] -> [NamedArg A.Pattern]
     projectInPat p fs = case namedThing (unArg p) of
-      A.VarP x            -> map makeVarField fs
+      A.VarP x            -> map (makeDotField $ PatRange $ getRange x) fs
       A.ConP cpi _ nps    -> nps
       A.WildP pi          -> map (makeWildField pi) fs
       A.DotP pi e         -> map (makeDotField pi) fs
@@ -206,7 +212,6 @@ updateInPatterns as ps qs = do
       A.PatternSynP _ _ _ -> __IMPOSSIBLE__
       A.RecP _ _          -> __IMPOSSIBLE__
       where
-        makeVarField (Arg fi f) = Arg fi $ unnamed $ A.VarP $ qnameName f
         makeWildField pi (Arg fi f) = Arg fi $ unnamed $ A.WildP pi
         makeDotField pi (Arg fi f) = Arg fi $ unnamed $
           A.DotP pi $ A.Underscore underscoreInfo
@@ -218,10 +223,6 @@ updateInPatterns as ps qs = do
               , A.metaNameSuggestion = show $ A.nameConcrete $ qnameName f
               }
 
-
-    isDotP :: A.Pattern -> Maybe A.Expr
-    isDotP (A.DotP _ e) = Just e
-    isDotP _            = Nothing
 
 -- | Check if a problem is solved. That is, if the patterns are all variables.
 isSolvedProblem :: Problem -> Bool
@@ -311,7 +312,7 @@ noShadowingOfConstructors mkCall problem =
 
 -- | Check that a dot pattern matches it's instantiation.
 checkDotPattern :: DotPatternInst -> TCM ()
-checkDotPattern (DPI (Just e) v (Dom info a)) =
+checkDotPattern (DPI _ (Just e) v (Dom info a)) =
   traceCall (CheckDotPattern e v) $ do
   reportSDoc "tc.lhs.dot" 15 $
     sep [ text "checking dot pattern"
@@ -329,7 +330,7 @@ checkDotPattern (DPI (Just e) v (Dom info a)) =
           ]
     -- Should be ok to do noConstraints here
     noConstraints $ equalTerm a u v
-checkDotPattern (DPI Nothing _ _) = return ()
+checkDotPattern (DPI _ Nothing _ _) = return ()
 
 -- | Checks whether the dot patterns left over after splitting can be covered
 --   by shuffling around the dots from implicit positions. Returns the updated
@@ -392,8 +393,8 @@ checkLeftoverDotPatterns ps vs as dpi = do
       A.PatternSynP _ _ _ -> __IMPOSSIBLE__
 
     gatherImplicitDotVars :: DotPatternInst -> TCM [(Int,[QName])]
-    gatherImplicitDotVars (DPI (Just _) _ _) = return [] -- Not implicit
-    gatherImplicitDotVars (DPI Nothing u _)  = gatherVars u
+    gatherImplicitDotVars (DPI _ (Just _) _ _) = return [] -- Not implicit
+    gatherImplicitDotVars (DPI _ Nothing u _)  = gatherVars u
       where
         gatherVars :: Term -> TCM [(Int,[QName])]
         gatherVars u = case ignoreSharing u of
@@ -447,7 +448,9 @@ bindLHSVars []        tel@ExtendTel{}  _   = do
 bindLHSVars (_ : _)   EmptyTel         _   = __IMPOSSIBLE__
 bindLHSVars []        EmptyTel         ret = ret
 bindLHSVars (p : ps) (ExtendTel a tel) ret = do
+  -- see test/Fail/WronHidingInLHS:
   unless (getHiding p == getHiding a) $ typeError WrongHidingInLHS
+
   case namedArg p of
     A.VarP x      -> addContext (x, a) $ bindLHSVars ps (absBody tel) ret
     A.WildP _     -> bindDummy (absName tel)
@@ -484,10 +487,13 @@ bindAsPatterns (AsB x v a : asb) ret = do
 
 -- | Result of checking the LHS of a clause.
 data LHSResult = LHSResult
-  { lhsVarTele      :: Telescope
+  { lhsParameters   :: Nat
+    -- ^ The number of original module parameters. These are present in the
+    -- the patterns.
+  , lhsVarTele      :: Telescope
     -- ^ Δ : The types of the pattern variables, in internal dependency order.
     -- Corresponds to 'clauseTel'.
-  , lhsPatterns     :: [NamedArg Pattern]
+  , lhsPatterns     :: [NamedArg DeBruijnPattern]
     -- ^ The patterns in internal syntax.
   , lhsBodyType     :: Arg Type
     -- ^ The type of the body. Is @bσ@ if @Γ@ is defined.
@@ -498,7 +504,7 @@ data LHSResult = LHSResult
   }
 
 instance InstantiateFull LHSResult where
-  instantiateFull' (LHSResult tel ps t perm) = LHSResult
+  instantiateFull' (LHSResult n tel ps t perm) = LHSResult n
     <$> instantiateFull' tel
     <*> instantiateFull' ps
     <*> instantiateFull' t
@@ -525,55 +531,115 @@ checkLeftHandSide
      -- ^ Continuation.
   -> TCM a
 checkLeftHandSide c f ps a withSub' ret = Bench.billTo [Bench.Typing, Bench.CheckLHS] $ do
-  problem0 <- problemFromPats ps a
+
+  -- To allow module parameters to be refined by matching, we're adding the
+  -- context arguments as wildcard patterns and extending the type with the
+  -- context telescope.
+  cxt <- reverse <$> getContext
+  let tel = telFromList' show cxt
+      cps = [ unnamed . A.VarP . fst <$> setOrigin Inserted (argFromDom d)
+            | d <- cxt ]
+  problem0 <- problemFromPats (cps ++ ps) (telePi tel a)
   -- Andreas, 2013-03-15 deactivating the following test allows
   -- flexible arity
   -- unless (noProblemRest problem) $ typeError $ TooManyArgumentsInLHS a
 
+  -- We need to grab all let-bindings here (while we still have the old
+  -- context). They will be rebound below once we have the new context set up.
+  -- Subtle: if we're checking a with the context will be empty so we can't use
+  -- 'getOpen'. On the other hand, if we're checking a with the let bindings
+  -- lives in the right context already so we can use 'openThing'.
+  let openLet | isNothing withSub' = getOpen
+              | otherwise          = return . openThing
+  oldLets <- asks $ Map.toList . envLetBindings
+  reportSDoc "tc.lhs.top" 70 $ vcat
+    [ text "context =" <+> inTopContext (prettyTCM tel)
+    , text "cIds    =" <+> (text . show =<< getContextId)
+    , text "oldLets =" <+> text (show oldLets) ]
+  oldLets <- sequence [ (x,) <$> openLet b | (x, b) <- oldLets ]
+
   -- doing the splits:
-  LHSState problem@(Problem ps qs delta rest) sigma dpi asb
-    <- checkLHS f $ LHSState problem0 idS [] []
+  inTopContext $ do
+    LHSState problem@(Problem pxs qs delta rest) sigma dpi
+      <- checkLHS f $ LHSState problem0 idS []
 
-  unless (null $ restPats rest) $ typeError $ TooManyArgumentsInLHS a
+    unless (null $ restPats rest) $ typeError $ TooManyArgumentsInLHS a
 
-  addContext delta $ do
-    noShadowingOfConstructors c problem
-    noPatternMatchingOnCodata qs
+    addContext delta $ do
+      noShadowingOfConstructors c problem
+      noPatternMatchingOnCodata qs
 
-  reportSDoc "tc.lhs.top" 10 $
-    vcat [ text "checked lhs:"
-         , nest 2 $ vcat
-           [ text "ps    = " <+> fsep (map prettyA ps)
-           , text "delta = " <+> prettyTCM delta
-           , text "dpi   = " <+> addContext delta (brackets $ fsep $ punctuate comma $ map prettyTCM dpi)
-           , text "asb   = " <+> addContext delta (brackets $ fsep $ punctuate comma $ map prettyTCM asb)
-           , text "qs    = " <+> text (show qs)
+    -- f is Nothing when checking let pattern-bindings. In that case there can
+    -- be no copatterns, so we don't need to worry about self.
+    let self = Def (fromMaybe __IMPOSSIBLE__ f) []
+    asb <- addContext delta $ recoverAsPatterns delta (telePi tel a) self (cps ++ ps) qs
+
+    reportSDoc "tc.lhs.top" 10 $
+      vcat [ text "checked lhs:"
+           , nest 2 $ vcat
+             [ text "pxs   = " <+> fsep (map prettyA pxs)
+             , text "delta = " <+> prettyTCM delta
+             , text "dpi   = " <+> addContext delta (brackets $ fsep $ punctuate comma $ map prettyTCM dpi)
+             , text "asb   = " <+> addContext delta (brackets $ fsep $ punctuate comma $ map prettyTCM asb)
+             , text "qs    = " <+> text (show qs)
+             ]
            ]
-         ]
 
-  let b' = restType rest
-  bindLHSVars (filter (isNothing . isProjP) ps) delta $ bindAsPatterns asb $ do
-    reportSDoc "tc.lhs.top" 10 $ text "bound pattern variables"
-    reportSDoc "tc.lhs.top" 60 $ nest 2 $ text "context = " <+> ((text . show) =<< getContext)
-    reportSDoc "tc.lhs.top" 10 $ nest 2 $ text "type  = " <+> prettyTCM b'
-    reportSDoc "tc.lhs.top" 60 $ nest 2 $ text "type  = " <+> text (show b')
+    let b' = restType rest
+    bindLHSVars (filter (isNothing . isProjP) pxs) delta $ do
+      let -- Find the variable patterns that have been refined
+          refinedParams = [ AsB x v (unDom a) | DPI (Just x) _ v a <- dpi ]
+          asb'          = refinedParams ++ asb
 
-    -- Check dot patterns
-    mapM_ checkDotPattern dpi
-    checkLeftoverDotPatterns ps (downFrom $ size delta) (flattenTel delta) dpi
+      reportSDoc "tc.lhs.top" 10 $ text "asb' = " <+> (brackets $ fsep $ punctuate comma $ map prettyTCM asb')
 
-    let qs'  = unnumberPatVars qs
-        perm = dbPatPerm qs
-        lhsResult = LHSResult delta qs' b' perm
-    reportSDoc "tc.lhs.top" 20 $ nest 2 $ text "perm  = " <+> text (show perm)
-    applyRelevanceToContext (getRelevance b') $ ret lhsResult
+      reportSDoc "tc.lhs.top" 10 $ text "bound pattern variables"
+      reportSDoc "tc.lhs.top" 60 $ nest 2 $ text "context = " <+> ((text . show) =<< getContext)
+      reportSDoc "tc.lhs.top" 10 $ nest 2 $ text "type  = " <+> prettyTCM b'
+      reportSDoc "tc.lhs.top" 60 $ nest 2 $ text "type  = " <+> text (show b')
+
+      let perm = fromMaybe __IMPOSSIBLE__ $ dbPatPerm qs
+          notProj ProjP{} = False
+          notProj _       = True
+                      -- Note: This works because we can't change the number of
+                      --       arguments in the lhs of a with-function relative to
+                      --       the parent function.
+          numPats   = length $ takeWhile (notProj . namedArg) qs
+          lhsResult = LHSResult (length cxt) delta qs b' perm
+          -- In the case of a non-with function the pattern substitution
+          -- should be weakened by the number of non-parameter patterns to
+          -- get the paramSub.
+          withSub = fromMaybe (wkS (numPats - length cxt) idS) withSub'
+          -- At this point we need to update the module parameters for all
+          -- parent modules.
+          patSub   = (map (patternToTerm . namedArg) $ reverse $ take numPats qs) ++# EmptyS
+          paramSub = composeS patSub withSub
+      reportSDoc "tc.lhs.top" 20 $ nest 2 $ text "perm  = " <+> text (show perm)
+      reportSDoc "tc.lhs.top" 20 $ nest 2 $ text "patSub   = " <+> text (show patSub)
+      reportSDoc "tc.lhs.top" 20 $ nest 2 $ text "withSub  = " <+> text (show withSub)
+      reportSDoc "tc.lhs.top" 20 $ nest 2 $ text "paramSub = " <+> text (show paramSub)
+
+      let newLets = [ AsB x (applySubst paramSub v) (applySubst paramSub $ unDom a) | (x, (v, a)) <- oldLets ]
+      reportSDoc "tc.lhs.top" 50 $ text "old let-bindings:" <+> text (show oldLets)
+      reportSDoc "tc.lhs.top" 50 $ text "new let-bindings:" <+> (brackets $ fsep $ punctuate comma $ map prettyTCM newLets)
+
+      bindAsPatterns (asb' ++ newLets) $
+        applyRelevanceToContext (getRelevance b') $ updateModuleParameters paramSub $ do
+
+        rebindLocalRewriteRules
+
+        -- Check dot patterns
+        mapM_ checkDotPattern dpi
+        checkLeftoverDotPatterns pxs (downFrom $ size delta) (flattenTel delta) dpi
+
+        ret lhsResult
 
 -- | The loop (tail-recursive): split at a variable in the problem until problem is solved
 checkLHS
   :: Maybe QName       -- ^ The name of the definition we are checking.
   -> LHSState          -- ^ The current state.
   -> TCM LHSState      -- ^ The final state after all splitting is completed
-checkLHS f st@(LHSState problem sigma dpi asb) = do
+checkLHS f st@(LHSState problem sigma dpi) = do
 
   problem <- insertImplicitProblem problem
   -- Note: inserting implicits no longer preserve solvedness,
@@ -602,7 +668,7 @@ checkLHS f st@(LHSState problem sigma dpi asb) = do
           ip'      = ip ++ [fmap (Named Nothing . ProjP) projPat]
           problem' = Problem ps' ip' delta rest
       -- Jump the trampolin
-      st' <- updateProblemRest (LHSState problem' sigma dpi asb)
+      st' <- updateProblemRest (LHSState problem' sigma dpi)
       -- If the field is irrelevant, we need to continue in irr. cxt.
       -- (see Issue 939).
       applyRelevanceToContext (getRelevance projPat) $ do
@@ -610,9 +676,9 @@ checkLHS f st@(LHSState problem sigma dpi asb) = do
 
     -- Split on literal pattern (does not fail as there is no call to unifier)
 
-    trySplit (Split p0 xs (Arg _ (LitFocus lit ip a)) p1) _ = do
+    trySplit (Split p0 (Arg _ (LitFocus lit ip a)) p1) _ = do
 
-      -- substitute the literal in p1 and sigma and dpi and asb
+      -- substitute the literal in p1 and sigma and dpi
       let delta1 = problemTel p0
           delta2 = absApp (fmap problemTel p1) (Lit lit)
           rho    = singletonS (size delta2) (LitP lit)
@@ -623,7 +689,6 @@ checkLHS f st@(LHSState problem sigma dpi asb) = do
           --       ++ [ var i | i <- [size delta2 ..] ]
           sigma'   = applySubst rho sigma
           dpi'     = applyPatSubst rho dpi
-          asb0     = applyPatSubst rho asb
           ip'      = applySubst rho ip
           rest'    = applyPatSubst rho (problemRest problem)
 
@@ -631,14 +696,13 @@ checkLHS f st@(LHSState problem sigma dpi asb) = do
       let ps'      = problemInPat p0 ++ problemInPat (absBody p1)
           delta'   = abstract delta1 delta2
           problem' = Problem ps' ip' delta' rest'
-          asb'     = raise (size delta2) (map (\x -> AsB x (Lit lit) a) xs) ++ asb0
-      st' <- updateProblemRest (LHSState problem' sigma' dpi' asb')
+      st' <- updateProblemRest (LHSState problem' sigma' dpi')
       checkLHS f st'
 
     -- Split on constructor pattern (unifier might fail)
 
-    trySplit (Split p0 xs focus@(Arg info Focus{}) p1) tryNextSplit = do
-      res <- trySplitConstructor p0 xs focus p1
+    trySplit (Split p0 focus@(Arg info Focus{}) p1) tryNextSplit = do
+      res <- trySplitConstructor p0 focus p1
       case res of
         -- Success.  Continue checking LHS.
         Unifies st'    -> checkLHS f st'
@@ -660,8 +724,8 @@ checkLHS f st@(LHSState problem sigma dpi asb) = do
         NoUnify  tcerr -> return $ NoUnify  tcerr
         DontKnow tcerr -> return $ DontKnow tcerr
 
-    trySplitConstructor p0 xs (Arg info LitFocus{}) p1 = __IMPOSSIBLE__
-    trySplitConstructor p0 xs (Arg info
+    trySplitConstructor p0 (Arg info LitFocus{}) p1 = __IMPOSSIBLE__
+    trySplitConstructor p0 (Arg info
              (Focus { focusCon      = c
                     , focusPatOrigin= porigin
                     , focusConArgs  = qs
@@ -833,7 +897,8 @@ checkLHS f st@(LHSState problem sigma dpi asb) = do
           let cpi = ConPatternInfo (isRec $> porigin) (Just storedPatternType)
 
           -- compute final context and permutation
-          let crho2   = ConP c cpi $ applySubst rho2 $ teleNamedArgs gamma
+          let crho2   = ConP c cpi $ applySubst rho2 $
+                          teleNamedArgs gamma `useOriginFrom` qs'
               rho3    = consS crho2 rho1
               delta2' = applyPatSubst rho3 delta2
               delta'  = delta1' `abstract` delta2'
@@ -864,14 +929,12 @@ checkLHS f st@(LHSState problem sigma dpi asb) = do
               [ text "ps'    =" <+> brackets (fsep $ punctuate comma $ map prettyA ps')
               ]
 
-          -- The final dpis and asbs are the new ones plus the old ones substituted by ρ
+          -- The final dpis are the new ones plus the old ones substituted by ρ
           let dpi' = applyPatSubst rho dpi ++ raise (size delta2') newDpi
-              asb' = applyPatSubst rho asb ++ raise (size delta2') (map (\x -> AsB x (patternToTerm crho2) ca) xs)
 
           reportSDoc "tc.lhs.top" 15 $ addContext delta' $
             nest 2 $ vcat
               [ text "dpi'    =" <+> brackets (fsep $ punctuate comma $ map prettyTCM dpi')
-              , text "asb'    =" <+> brackets (fsep $ punctuate comma $ map prettyTCM asb')
               ]
 
           -- Apply the substitution
@@ -891,8 +954,8 @@ checkLHS f st@(LHSState problem sigma dpi asb) = do
           -- if rest type reduces,
           -- extend the split problem by previously not considered patterns
           st'@(LHSState problem'@(Problem ps' ip' delta' rest')
-                        sigma' dpi' asb')
-            <- updateProblemRest $ LHSState problem' sigma' dpi' asb'
+                        sigma' dpi')
+            <- updateProblemRest $ LHSState problem' sigma' dpi'
 
           reportSDoc "tc.lhs.top" 12 $ sep
             [ text "new problem from rest"

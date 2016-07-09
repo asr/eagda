@@ -2,9 +2,7 @@
 {-# LANGUAGE DeriveFunctor              #-}
 {-# LANGUAGE DeriveFoldable             #-}
 {-# LANGUAGE DeriveTraversable          #-}
-{-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE MultiParamTypeClasses      #-}
 
 -- | The monad for the termination checker.
 --
@@ -23,6 +21,7 @@ import Control.Monad.State
 
 import Data.Foldable (Foldable)
 import Data.Traversable (Traversable)
+import Data.Semigroup (Semigroup)
 
 import Agda.Interaction.Options
 
@@ -406,7 +405,7 @@ isProjectionButNotCoinductive qn = liftTCM $ do
         else do
           mp <- isProjection qn
           case mp of
-            Just Projection{ projProper = Just{}, projFromType = t }
+            Just Projection{ projProper = True, projFromType = t }
               -> isInductiveRecord t
             _ -> return False
 
@@ -426,7 +425,7 @@ isCoinductiveProjection mustBeRecursive q = liftTCM $ do
   if Just q == flat then return True else do
     pdef <- getConstInfo q
     case isProjection_ (theDef pdef) of
-      Just Projection{ projProper = Just{}, projFromType = r, projIndex = n } ->
+      Just Projection{ projProper = True, projFromType = r, projIndex = n } ->
         caseMaybeM (isRecord r) __IMPOSSIBLE__ $ \ rdef -> do
           -- no for inductive or non-recursive record
           if recInduction rdef /= Just CoInductive then return False else do
@@ -593,7 +592,7 @@ instance PrettyTCM a => PrettyTCM (Masked a) where
 --   Performance-wise, I could not see a difference between Set and list.
 
 newtype CallPath = CallPath { callInfos :: [CallInfo] }
-  deriving (Show, Monoid, AllNames)
+  deriving (Show, Semigroup, Monoid, AllNames)
 
 -- | Only show intermediate nodes.  (Drop last 'CallInfo').
 instance Pretty CallPath where

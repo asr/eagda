@@ -1,9 +1,4 @@
 {-# LANGUAGE CPP               #-}
-{-# LANGUAGE DoAndIfThenElse   #-}
-{-# LANGUAGE FlexibleContexts  #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE LambdaCase        #-}
-{-# LANGUAGE PatternGuards     #-}
 
 module Agda.TypeChecking.Monad.Signature where
 
@@ -40,6 +35,7 @@ import Agda.TypeChecking.Monad.Env
 import Agda.TypeChecking.Monad.Exception ( ExceptionT )
 import Agda.TypeChecking.Monad.Mutual
 import Agda.TypeChecking.Monad.Open
+import Agda.TypeChecking.Monad.Local
 import Agda.TypeChecking.Monad.State
 import Agda.TypeChecking.Positivity.Occurrence
 import Agda.TypeChecking.Substitute
@@ -71,7 +67,7 @@ addConstant q d = do
   tel <- getContextTelescope
   let tel' = replaceEmptyName "r" $ killRange $ case theDef d of
               Constructor{} -> fmap hideOrKeepInstance tel
-              Function{ funProjection = Just Projection{ projProper = Just{}, projIndex = n } } ->
+              Function{ funProjection = Just Projection{ projProper = True, projIndex = n } } ->
                 let fallback = fmap hideOrKeepInstance tel in
                 if n > 0 then fallback else
                 -- if the record value is part of the telescope, its hiding should left unchanged
@@ -271,17 +267,34 @@ addSection m = do
       reportSLn "impossible" 60 $ "with content " ++ show sec
       __IMPOSSIBLE__
   -- Add the new section.
+  setDefaultModuleParameters m
   modifySignature $ over sigSections $ Map.insert m sec
 
--- | Lookup a section. If it doesn't exist that just means that the module
---   wasn't parameterised.
+setDefaultModuleParameters :: ModuleName -> TCM ()
+setDefaultModuleParameters m =
+  stModuleParameters %= Map.insert m defaultModuleParameters
+
+-- | Get a section.
+--
+--   Why Maybe? The reason is that we look up all prefixes of a module to
+--   compute number of parameters, and for hierarchical top-level modules,
+--   A.B.C say, A and A.B do not exist.
+{-# SPECIALIZE getSection :: ModuleName -> TCM (Maybe Section) #-}
+{-# SPECIALIZE getSection :: ModuleName -> ReduceM (Maybe Section) #-}
+getSection :: (Functor m, ReadTCState m) => ModuleName -> m (Maybe Section)
+getSection m = do
+  sig  <- (^. stSignature . sigSections) <$> getTCState
+  isig <- (^. stImports   . sigSections) <$> getTCState
+  return $ Map.lookup m sig `mplus` Map.lookup m isig
+
+-- | Lookup a section telescope.
+--
+--   If it doesn't exist, like in hierarchical top-level modules,
+--   the section telescope is empty.
 {-# SPECIALIZE lookupSection :: ModuleName -> TCM Telescope #-}
 {-# SPECIALIZE lookupSection :: ModuleName -> ReduceM Telescope #-}
 lookupSection :: (Functor m, ReadTCState m) => ModuleName -> m Telescope
-lookupSection m = do
-  sig  <- (^. stSignature . sigSections) <$> getTCState
-  isig <- (^. stImports   . sigSections) <$> getTCState
-  return $ maybe EmptyTel (^. secTelescope) $ Map.lookup m sig `mplus` Map.lookup m isig
+lookupSection m = maybe EmptyTel (^. secTelescope) <$> getSection m
 
 -- Add display forms to all names @xn@ such that @x = x1 es1@, ... @xn-1 = xn esn@.
 addDisplayForms :: QName -> TCM ()
@@ -300,8 +313,8 @@ addDisplayForms x = do
           , all (isVar . namedArg) pats
           , Just (m, Def y es) <- strip (b `apply` vs0)
           , Just vs <- mapM isApplyElim es -> do
-              let ps = raise 1 $ map unArg vs
-                  df = Display 0 ps $ DTerm $ Def top $ map Apply args
+              let ps = map unArg vs
+                  df = Display m ps $ DTerm $ Def top $ map Apply args
               reportSLn "tc.display.section" 20 $ "adding display form " ++ show y ++ " --> " ++ show top
                                                 ++ "\n  " ++ show df
               addDisplayForm y df
@@ -330,7 +343,7 @@ addDisplayForms x = do
     strip (Body v)   = return (0, unSpine v)
     strip  NoBody    = Nothing
     strip (Bind b)   = do
-      (n, v) <- strip $ absBody b
+      (n, v) <- strip $ absApp b (Var 0 [])
       return (n + 1, ignoreSharing v)
 
     isVar VarP{} = True
@@ -418,7 +431,8 @@ applySection' new ptel old ts rd rm = do
           reportSLn "tc.mod.apply" 60 $ "making new def for " ++ show y ++ " from " ++ show x ++ " with " ++ show np ++ " args " ++ show abstr
           reportSLn "tc.mod.apply" 80 $
             "args = " ++ show ts' ++ "\n" ++
-            "old type = " ++ prettyShow (defType d) ++ "\n" ++
+            "old type = " ++ prettyShow (defType d)
+          reportSLn "tc.mod.apply" 80 $
             "new type = " ++ prettyShow t
           addConstant y =<< nd y
           makeProjection y
@@ -472,8 +486,8 @@ applySection' new ptel old ts rd rm = do
             proj   = case oldDef of
               Function{funProjection = Just p@Projection{projIndex = n}}
                 | size ts' < n || (size ts' == n && maybe True isVar0 (lastMaybe ts'))
-                -> Just $ p { projIndex    = n - size ts'
-                            , projDropPars = projDropPars p `apply` ts'
+                -> Just $ p { projIndex = n - size ts'
+                            , projLams  = projLams p `apply` ts'
                             }
               _ -> Nothing
             def =
@@ -487,10 +501,9 @@ applySection' new ptel old ts rd rm = do
                          , dataClause = Just cl
                          , dataCons   = map copyName cs
                          }
-                Record{ recPars = np, recConType = t, recTel = tel } -> return $
+                Record{ recPars = np, recTel = tel } -> return $
                   oldDef { recPars    = np - size ts'
                          , recClause  = Just cl
-                         , recConType = piApply t ts'
                          , recTel     = apply tel ts'
                          }
                 _ -> do
@@ -516,14 +529,12 @@ applySection' new ptel old ts rd rm = do
                   reportSLn "tc.mod.apply" 80 $ "new def for " ++ show x ++ "\n  " ++ show newDef
                   return newDef
 
-            head = case oldDef of
-                     Function{funProjection = Just Projection{ projDropPars = f}}
-                       -> f
-                     _ -> Def x []
             cl = Clause { clauseRange     = getRange $ defClauses d
                         , clauseTel       = EmptyTel
                         , namedClausePats = []
-                        , clauseBody      = Body $ head `apply` ts'
+                        , clauseBody      = Body $ case oldDef of
+                            Function{funProjection = Just p} -> projDropParsApply p ts'
+                            _ -> Def x $ map Apply ts'
                         , clauseType      = Just $ defaultArg t
                         , clauseCatchall  = False
                         }
@@ -573,21 +584,24 @@ applySection' new ptel old ts rd rm = do
 -- | Add a display form to a definition (could be in this or imported signature).
 addDisplayForm :: QName -> DisplayForm -> TCM ()
 addDisplayForm x df = do
-  d <- makeOpen df
+  d <- makeLocal df
   let add = updateDefinition x $ \ def -> def{ defDisplay = d : defDisplay def }
-  inCurrentSig <- isJust . HMap.lookup x <$> use (stSignature . sigDefinitions)
-  if inCurrentSig
-     then modifySignature add
-     else stImportsDisplayForms %= HMap.insertWith (++) x [d]
+  ifM (isLocal x)
+    {-then-} (modifySignature add)
+    {-else-} (stImportsDisplayForms %= HMap.insertWith (++) x [d])
   whenM (hasLoopingDisplayForm x) $
     typeError . GenericDocError $ text "Cannot add recursive display form for" <+> pretty x
 
-getDisplayForms :: QName -> TCM [Open DisplayForm]
+isLocal :: QName -> TCM Bool
+isLocal x = isJust . HMap.lookup x <$> use (stSignature . sigDefinitions)
+
+getDisplayForms :: QName -> TCM [LocalDisplayForm]
 getDisplayForms q = do
   ds  <- defDisplay <$> getConstInfo q
   ds1 <- maybe [] id . HMap.lookup q <$> use stImportsDisplayForms
   ds2 <- maybe [] id . HMap.lookup q <$> use stImportedDisplayForms
-  return $ ds ++ ds1 ++ ds2
+  ifM (isLocal q) (return $ ds ++ ds1 ++ ds2)
+                  (return $ ds1 ++ ds ++ ds2)
 
 -- | Find all names used (recursively) by display forms of a given name.
 chaseDisplayForms :: QName -> TCM (Set QName)
@@ -596,7 +610,7 @@ chaseDisplayForms q = go Set.empty [q]
     go used []       = pure used
     go used (q : qs) = do
       let rhs (Display _ _ e) = e   -- Only look at names in the right-hand side (#1870)
-      ds <- (`Set.difference` used) . Set.unions . map (namesIn . rhs . openThing)
+      ds <- (`Set.difference` used) . Set.unions . map (namesIn . rhs . dget)
             <$> (getDisplayForms q `catchError_` \ _ -> pure [])  -- might be a pattern synonym
       go (Set.union ds used) (Set.toList ds ++ qs)
 
@@ -718,7 +732,10 @@ getPolarity' CmpLeq q = getPolarity q -- composition with Covariant is identity
 
 -- | Set the polarity of a definition.
 setPolarity :: QName -> [Polarity] -> TCM ()
-setPolarity q pol = modifySignature $ updateDefinition q $ updateDefPolarity $ const pol
+setPolarity q pol = do
+  reportSLn "tc.polarity.set" 20 $
+    "Setting polarity of " ++ show q ++ " to " ++ show pol ++ "."
+  modifySignature $ updateDefinition q $ updateDefPolarity $ const pol
 
 -- | Get argument occurrence info for argument @i@ of definition @d@ (never fails).
 getArgOccurrence :: QName -> Nat -> TCM Occurrence
@@ -728,6 +745,8 @@ getArgOccurrence d i = do
     Constructor{} -> StrictPos
     _             -> fromMaybe Mixed $ defArgOccurrences def !!! i
 
+-- | Sets the 'defArgOccurrences' for the given identifier (which
+-- should already exist in the signature).
 setArgOccurrences :: QName -> [Occurrence] -> TCM ()
 setArgOccurrences d os = modifyArgOccurrences d $ const os
 
@@ -796,15 +815,6 @@ getTPTPRole qname = do
 mutuallyRecursive :: QName -> QName -> TCM Bool
 mutuallyRecursive d d' = (d `elem`) <$> getMutual d'
 
--- | Why Maybe? The reason is that we look up all prefixes of a module to
---   compute number of parameters, and for hierarchical top-level modules,
---   A.B.C say, A and A.B do not exist.
-getSection :: ModuleName -> TCM (Maybe Section)
-getSection m = do
-  sig  <- use $ stSignature . sigSections
-  isig <- use $ stImports   . sigSections
-  return $ Map.lookup m sig <|> Map.lookup m isig
-
 -- | Get the number of parameters to the current module.
 getCurrentModuleFreeVars :: TCM Nat
 getCurrentModuleFreeVars = size <$> (lookupSection =<< currentModule)
@@ -842,7 +852,17 @@ getModuleFreeVars m = do
 moduleParamsToApply :: ModuleName -> TCM Args
 moduleParamsToApply m = do
   -- Get the correct number of free variables (correctly raised) of @m@.
-  args <- take <$> getModuleFreeVars m <*> getContextArgs
+
+  reportSLn "tc.sig.param" 90 $ "compupting module parameters of " ++ show m
+  cxt <- getContext
+  n   <- getModuleFreeVars m
+  tel <- take n . telToList <$> lookupSection m
+  sub <- getModuleParameterSub m
+  reportSLn "tc.sig.param" 20 $ "  n    = " ++ show n ++
+                                "\n  cxt  = " ++ show cxt ++
+                                "\n  sub  = " ++ show sub
+  let args = applySubst sub $ zipWith (\ i a -> Var i [] <$ argFromDom a) (downFrom (length tel)) tel
+  reportSLn "tc.sig.param" 20 $ "  args = " ++ show args
 
   -- Apply the original ArgInfo, as the hiding information in the current
   -- context might be different from the hiding information expected by @m@.
@@ -1029,7 +1049,7 @@ isInlineFun _ = False
 --   (projection applied to argument).
 isProperProjection :: Defn -> Bool
 isProperProjection d = caseMaybe (isProjection_ d) False $ \ isP ->
-  if projIndex isP <= 0 then False else isJust $ projProper isP
+  if projIndex isP <= 0 then False else projProper isP
 
 -- | Number of dropped initial arguments of a projection(-like) function.
 projectionArgs :: Defn -> Int
@@ -1051,5 +1071,5 @@ applyDef f a = do
   caseMaybeM (isProjection f) fallback $ \ isP -> do
     if projIndex isP <= 0 then fallback else do
       -- Get the original projection, if existing.
-      caseMaybe (projProper isP) fallback $ \ f' -> do
-        return $ unArg a `applyE` [Proj f']
+      if not (projProper isP) then fallback else do
+        return $ unArg a `applyE` [Proj $ projOrig isP]

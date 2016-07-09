@@ -1,7 +1,5 @@
-{-# LANGUAGE CPP           #-}
-{-# LANGUAGE DoAndIfThenElse #-}
-{-# LANGUAGE PatternGuards #-}
-{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE CPP                      #-}
+{-# LANGUAGE NondecreasingIndentation #-}
 
 module Agda.TypeChecking.Records where
 
@@ -84,7 +82,7 @@ insertMissingFields r placeholder fs axs = do
       givenFields = [ (x, Just $ arg x e) | FieldAssignment x e <- fs ]
   -- Compute a list of p[aceholders for the missing visible fields.
   let missingExplicits =
-       [ (x, Just $ unnamed . placeholder <$> a)
+       [ (x, Just $ setOrigin Inserted $ unnamed . placeholder <$> a)
        | a <- filter notHidden axs
        , let x = unArg a
        , x `notElem` map (view nameFieldA) fs
@@ -110,8 +108,9 @@ getRecordDef r = maybe err return =<< isRecord r
 
 -- | Get the record name belonging to a field name.
 getRecordOfField :: QName -> TCM (Maybe QName)
-getRecordOfField d = maybe Nothing fromP <$> isProjection d
-  where fromP Projection{ projProper = mp, projFromType = r} = mp $> r
+getRecordOfField d = caseMaybeM (isProjection d) (return Nothing) $
+  \ Projection{ projProper = proper, projFromType = r} ->
+    return $ if proper then Just r else Nothing
 
 -- | Get the field names of a record.
 getRecordFieldNames :: QName -> TCM [Arg C.Name]
@@ -123,13 +122,18 @@ recordFieldNames = map (fmap (nameConcrete . qnameName)) . recFields
 -- | Find all records with at least the given fields.
 findPossibleRecords :: [C.Name] -> TCM [QName]
 findPossibleRecords fields = do
-  defs <- (HMap.union `on` (^. sigDefinitions)) <$> getSignature <*> getImportedSignature
-  let possible def = case theDef def of
-        Record{ recFields = fs } -> Set.isSubsetOf given inrecord
-          where inrecord = Set.fromList $ map (nameConcrete . qnameName . unArg) fs
-        _ -> False
-  return [ defName d | d <- HMap.elems defs, possible d ]
+  defs  <- HMap.elems <$> use (stSignature . sigDefinitions)
+  idefs <- HMap.elems <$> use (stImports   . sigDefinitions)
+  return $ cands defs ++ cands idefs
   where
+    cands defs = [ defName d | d <- defs, possible d ]
+    possible def =
+      -- Check whether the given fields are contained
+      -- in the fields of record @def@ (if it is a record).
+      case theDef def of
+        Record{ recFields = fs } -> Set.isSubsetOf given $
+          Set.fromList $ map (nameConcrete . qnameName . unArg) fs
+        _ -> False
     given = Set.fromList fields
 
 -- | Get the field types of a record.
@@ -150,13 +154,7 @@ getRecordTypeFields t =
 -- | Get the original name of the projection
 --   (the current one could be from a module application).
 getOriginalProjection :: QName -> TCM QName
-getOriginalProjection q = do
-  proj <- fromMaybe __IMPOSSIBLE__ <$> isProjection q
-  return $ fromMaybe __IMPOSSIBLE__ $ projProper proj
-
--- | Get the type of the record constructor.
-getRecordConstructorType :: QName -> TCM Type
-getRecordConstructorType r = recConType <$> getRecordDef r
+getOriginalProjection q = projOrig . fromMaybe __IMPOSSIBLE__ <$> isProjection q
 
 -- | Returns the given record type's constructor name (with an empty
 -- range).
@@ -198,9 +196,11 @@ tryRecordType t = ifBlockedType t (\ _ _ -> return $ Left Nothing) $ \ t -> do
 origProjection ::  HasConstInfo m => QName -> m (QName, Definition, Maybe Projection)
 origProjection f = do
   def <- getConstInfo f
-  caseMaybe (isProjection_ $ theDef def) (return (f, def, Nothing)) $
-    \ p@Projection{ projProper = mproper } -> caseMaybe mproper (return (f, def, Just p)) $
-      \ f' -> if f == f' then return (f, def, Just p) else do
+  let proj     = isProjection_ $ theDef def
+      fallback = return (f, def, proj)
+  caseMaybe proj fallback $
+    \ p@Projection{ projProper = proper, projOrig = f' } ->
+      if not proper || f == f' then fallback else do
         def <- getConstInfo f'
         return (f', def, isProjection_ $ theDef def)
 

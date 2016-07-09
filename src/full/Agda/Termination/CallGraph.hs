@@ -1,8 +1,6 @@
 {-# LANGUAGE CPP                        #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams             #-}
-{-# LANGUAGE StandaloneDeriving         #-}
-{-# LANGUAGE TupleSections              #-}
 
 -- | Call graphs and related concepts, more or less as defined in
 --     \"A Predicative Analysis of Structural Recursion\" by
@@ -24,20 +22,18 @@ module Agda.Termination.CallGraph
   , insert
   , complete, completionStep
   -- , prettyBehaviour
-    -- * Tests
-  , Agda.Termination.CallGraph.tests
   ) where
 
 import Prelude hiding (null)
 
 import qualified Data.List as List
-import Data.Monoid
+import Data.Semigroup
 import Data.Set (Set)
 
-import Agda.Termination.CallMatrix (CallMatrix, callMatrix, CallMatrixAug(..), CMSet(..), CallComb(..))
+import Agda.Termination.CallMatrix (CallMatrix, CallMatrixAug(..), CMSet(..), CallComb(..))
 import qualified Agda.Termination.CallMatrix as CMSet
 import Agda.Termination.CutOff
-import Agda.Termination.SparseMatrix as Matrix hiding (tests)
+import Agda.Termination.SparseMatrix as Matrix
 
 import Agda.Utils.Favorites (Favorites)
 import qualified Agda.Utils.Favorites as Fav
@@ -48,10 +44,8 @@ import Agda.Utils.Function
 import Agda.Utils.Monad
 import Agda.Utils.Null
 import Agda.Utils.PartialOrd
-import Agda.Utils.Pretty
-import Agda.Utils.QuickCheck hiding (label)
+import Agda.Utils.Pretty hiding ((<>))
 import Agda.Utils.Singleton
-import Agda.Utils.TestHelpers
 import Agda.Utils.Tuple
 
 ------------------------------------------------------------------------
@@ -123,9 +117,12 @@ union (CallGraph cs1) (CallGraph cs2) = CallGraph $
 
 -- | 'CallGraph' is a monoid under 'union'.
 
+instance Semigroup (CallGraph cinfo) where
+  (<>) = union
+
 instance Monoid (CallGraph cinfo) where
   mempty  = empty
-  mappend = union
+  mappend = (<>)
 
 -- | Inserts a call into a call graph.
 
@@ -202,16 +199,6 @@ completionStep :: (?cutoff :: CutOff) => Monoid cinfo =>
   CallGraph cinfo -> CallGraph cinfo -> (CallGraph cinfo, CallGraph cinfo)
 completionStep gOrig gThis = combineNewOldCallGraph gOrig gThis
 
--- prop_complete :: (?cutoff :: CutOff) => Property
--- prop_complete =
---   forAll (callGraph :: Gen (CallGraph [Integer])) $ \cs ->
---     isComplete (complete cs)
-
--- -- | Returns 'True' iff the call graph is complete.
-
--- isComplete :: (Ord cinfo, Monoid cinfo, ?cutoff :: CutOff) => CallGraph cinfo -> Bool
--- isComplete s = (s `union` (s `combine` s)) `notWorse` s
-
 ------------------------------------------------------------------------
 -- * Printing
 ------------------------------------------------------------------------
@@ -240,32 +227,3 @@ instance Pretty cinfo => Pretty (CallGraph cinfo) where
 -- --    , "Meta info: " ++ show cinfo
 --     ]
 
-------------------------------------------------------------------------
--- * Generators and properties
-------------------------------------------------------------------------
-
--- | Generates a call graph.
-
-callGraph :: Arbitrary cinfo => Gen (CallGraph cinfo)
-callGraph = do
-  indices <- fmap List.nub arbitrary
-  n <- natural
-  let noMatrices | List.null indices = 0
-                 | otherwise    = n `min` 3  -- Not too many.
-  fromList <$> vectorOf noMatrices (matGen indices)
-  where
-  matGen indices = do
-    [s, t] <- vectorOf 2 (elements indices)
-    [c, r] <- vectorOf 2 (choose (0, 2))     -- Not too large.
-    m <- callMatrix (Size { rows = r, cols = c })
-    mkCall s t m <$> arbitrary
-
-------------------------------------------------------------------------
--- All tests
-
-tests :: IO Bool
-tests = runTests "Agda.Termination.CallGraph" []
-  -- [ quickCheck' prop_complete
-  -- , quickCheck' prop_ensureCompletePrecondition
-  -- ]
-  where ?cutoff = DontCutOff -- CutOff 2  -- don't cut off in tests!

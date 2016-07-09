@@ -58,7 +58,7 @@ checkRecDef
   :: Info.DefInfo              -- ^ Position and other info.
   -> QName                     -- ^ Record type identifier.
   -> Maybe (Ranged Induction)  -- ^ Optional: (co)inductive declaration.
-  -> Maybe Bool
+  -> Maybe Bool                -- ^ Optional: user specified eta/no-eta
   -> Maybe QName               -- ^ Optional: constructor name.
   -> [A.LamBinding]            -- ^ Record parameters.
   -> A.Expr                    -- ^ Approximate type of constructor (@fields@ -> Set).
@@ -102,12 +102,13 @@ checkRecDef i name ind eta con ps contel fields =
       s <- case ignoreSharing $ unEl t0' of
         Sort s  -> return s
         _       -> typeError $ ShouldBeASort t0
-      gamma <- getContextTelescope  -- the record params (incl. module params)
-      reportSDoc "tc.rec" 20 $ vcat
-        [ text "gamma = " <+> inTopContext (prettyTCM gamma) ]
+
+      reportSDoc "tc.rec" 20 $ do
+        gamma <- getContextTelescope  -- the record params (incl. module params)
+        text "gamma = " <+> inTopContext (prettyTCM gamma)
 
       -- record type (name applied to parameters)
-      let rect = El s $ Def name $ map Apply $ teleArgs gamma
+      rect <- El s . Def name . map Apply <$> getContextArgs
 
       -- Put in @rect@ as correct target of constructor type.
       -- Andreas, 2011-05-10 use telePi_ instead of telePi to preserve
@@ -143,34 +144,48 @@ checkRecDef i name ind eta con ps contel fields =
           con = ConHead conName conInduction $ map unArg fs
 
       reportSDoc "tc.rec" 30 $ text "record constructor is " <+> text (show con)
-      addConstant name $ defaultDefn defaultArgInfo name t0
-                       $ Record { recPars           = 0
-                                , recClause         = Nothing
-                                , recConHead        = con
-                                , recNamedCon       = hasNamedCon
-                                , recConType        = contype  -- addConstant adds params!
-                                , recFields         = fs
-                                , recTel            = ftel     -- addConstant adds params!
-                                , recAbstr          = Info.defAbstract i
-                                , recEtaEquality'   = haveEta
-                                , recInduction      = indCo    -- we retain the original user declaration, in case the record turns out to be recursive
-                                -- determined by positivity checker:
-                                , recRecursive      = False
-                                , recMutual         = []
-                                }
 
-      -- Add record constructor to signature
-      -- Andreas, 2011-05-19 moved this here, it was below the record module
-      --   creation
-      addConstant conName $
-        defaultDefn defaultArgInfo conName contype $
-             Constructor { conPars     = 0
-                         , conSrcCon   = con
-                         , conData     = name
-                         , conAbstr    = Info.defAbstract conInfo
-                         , conInd      = conInduction
-                         , conTPTPRole = Nothing
-                         }
+      -- Add the record definition.
+
+      -- Andreas, 2016-06-17, Issue #2018:
+      -- Do not rely on @addConstant@ to put in the record parameters,
+      -- as they might be renamed in the context.
+      -- By putting them ourselves (e.g. by using the original type @t@)
+      -- we make sure we get the original names!
+      let npars = size tel
+          telh  = fmap hideAndRelParams tel
+      escapeContext npars $ do
+        addConstant name $
+          defaultDefn defaultArgInfo name t $
+            Record
+              { recPars           = npars
+              , recClause         = Nothing
+              , recConHead        = con
+              , recNamedCon       = hasNamedCon
+              , recFields         = fs
+              , recTel            = telh `abstract` ftel
+              , recAbstr          = Info.defAbstract i
+              , recEtaEquality'   = haveEta
+              , recInduction      = indCo
+                  -- We retain the original user declaration [(co)inductive]
+                  -- in case the record turns out to be recursive.
+              -- Determined by positivity checker:
+              , recRecursive      = False
+              , recMutual         = []
+              }
+
+        -- Add record constructor to signature
+        addConstant conName $
+          defaultDefn defaultArgInfo conName (telh `abstract` contype) $
+            Constructor
+              { conPars     = npars
+              , conSrcCon   = con
+              , conData     = name
+              , conAbstr    = Info.defAbstract conInfo
+              , conInd      = conInduction
+              , conTPTPRole = Nothing
+              }
+
       -- Declare the constructor as eligible for instance search
       when (Info.defInstance i == InstanceDef) $ do
         addNamedInstance conName name
@@ -213,7 +228,7 @@ checkRecDef i name ind eta con ps contel fields =
 -}
 
       let info = setRelevance recordRelevance defaultArgInfo
-          addRecordVar = addContext ("", Dom info rect)
+          addRecordVar = addContext' ("", Dom info rect)
           -- the record variable has the empty name by intention, see issue 208
 
       let m = qnameToMName name  -- Name of record module.
@@ -252,6 +267,7 @@ checkRecDef i name ind eta con ps contel fields =
           -- record type.
           -- See test/Succeed/ProjectionsTakeModuleTelAsParameters.agda.
           tel' <- getContextTelescope
+          setDefaultModuleParameters m
           checkRecordProjections m name con tel' (raise 1 ftel) fields
 
         -- Andreas 2012-02-13: postpone polarity computation until after positivity check
@@ -363,11 +379,11 @@ checkRecordProjections m r con tel ftel fs = do
         let -- Andreas, 2010-09-09: comment for existing code
             -- split the telescope into parameters (ptel) and the type or the record
             -- (rt) which should be  R ptel
-            (ptel,[rt]) = splitAt (size tel - 1) $ telToList tel
-            projArgI    = domInfo rt
+            telList = telToList tel
+            (_ptel,[rt]) = splitAt (size tel - 1) telList
             cpi    = ConPatternInfo (Just ConPRec) (Just $ argFromDom $ fmap snd rt)
             conp   = defaultArg $ ConP con cpi $
-                     [ Arg info $ unnamed $ VarP "x" | Dom info _ <- telToList ftel ]
+                     [ Arg info $ unnamed $ varP "x" | Dom info _ <- telToList ftel ]
             nobind 0 = id
             nobind n = Bind . Abs "_" . nobind (n - 1)
             body   = nobind (size ftel1)
@@ -383,21 +399,15 @@ checkRecordProjections m r con tel ftel fs = do
                             , clauseCatchall  = False
                             }
 
-        -- Andreas, 2013-10-20
-        -- creating the projection construction function
-        let core = Lam projArgI $ Abs "r" $ bodyMod $ projcall
-            -- leading lambdas are to ignore parameter applications
-            proj = teleNoAbs ptel core
-            -- proj = foldr (\ (Dom ai (x, _)) -> Lam ai . NoAbs x) core ptel
-            projection = Projection
-              { projProper   = Just projname
+        let projection = Projection
+              { projProper   = True
+              , projOrig     = projname
               -- name of the record type:
               , projFromType = r
               -- index of the record argument (in the type),
               -- start counting with 1:
-              , projIndex    = size ptel + 1  -- which is @size tel@
-              , projDropPars = proj
-              , projArgInfo  = projArgI
+              , projIndex    = size tel -- which is @size ptel + 1@
+              , projLams     = ProjLams $ map (\ (Dom ai (x,_)) -> Arg ai x) telList
               }
 
         reportSDoc "tc.rec.proj" 80 $ sep

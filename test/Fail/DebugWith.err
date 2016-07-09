@@ -18,6 +18,9 @@ with function call .DebugWith.with-34 b f (f b) trash1 trash2
                    (f : (x : A) → P x) (trash3 : Trash)
              delta (trash1 : Trash) (b : A) (trash2 : Trash)
                    (f : (x : A) → P x) (trash3 : Trash)
+            delta1 (b : A) (f : (x : A) → P x)
+            delta2 (trash1 : Trash) (trash2 : Trash)
+                   (trash3 : Trash)
               body [h0 h1 h2 h3 h4]
                    .DebugWith.with-34 h1 h3 (h3 h1) h0 h2 h4
 checkWithFunction
@@ -27,7 +30,7 @@ checkWithFunction
   as     = [P b]
   vs     = [f b]
   b      = Set
-  qs     = [r(trash1 = VarP "trash1"),r(b = VarP "b"),r(trash2 = VarP "trash2"),r(f = VarP "f"),r(trash3 = VarP "trash3")]
+  qs     = [ru(trash1 = VarP (DBPatVar {dbPatVarName = "trash1", dbPatVarIndex = 4})),ru(b = VarP (DBPatVar {dbPatVarName = "b", dbPatVarIndex = 3})),ru(trash2 = VarP (DBPatVar {dbPatVarName = "trash2", dbPatVarIndex = 2})),ru(f = VarP (DBPatVar {dbPatVarName = "f", dbPatVarIndex = 1})),ru(trash3 = VarP (DBPatVar {dbPatVarName = "trash3", dbPatVarIndex = 0}))]
   perm'  = x0,x1,x2,x3,x4 -> x1,x3,x0,x2,x4
   perm   = x0,x1,x2,x3,x4 -> x0,x1,x2,x3,x4
   fperm  = x0,x1,x2,x3,x4 -> x1,x3,x0,x2,x4

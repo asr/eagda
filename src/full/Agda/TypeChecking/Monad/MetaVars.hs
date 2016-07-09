@@ -1,6 +1,4 @@
 {-# LANGUAGE CPP               #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE TupleSections     #-}
 
 module Agda.TypeChecking.Monad.MetaVars where
 
@@ -191,7 +189,7 @@ registerInteractionPoint r maybeId = do
     Just i  -> return $ InteractionId i
     Nothing -> fresh
   m <- use stInteractionPoints
-  let ip = InteractionPoint { ipRange = r, ipMeta = Nothing }
+  let ip = InteractionPoint { ipRange = r, ipMeta = Nothing, ipClause = IPNoClause }
   case Map.insertLookupWithKey (\ key new old -> old) ii ip m of
     -- If the interaction point is already present, we keep the old ip.
     -- However, it needs to be at the same range as the new one.
@@ -205,8 +203,9 @@ registerInteractionPoint r maybeId = do
 -- | Hook up meta variable to interaction point.
 connectInteractionPoint :: InteractionId -> MetaId -> TCM ()
 connectInteractionPoint ii mi = do
+  ipCl <- asks envClause
   m <- use stInteractionPoints
-  let ip = InteractionPoint { ipRange = __IMPOSSIBLE__, ipMeta = Just mi }
+  let ip = InteractionPoint { ipRange = __IMPOSSIBLE__, ipMeta = Just mi, ipClause = ipCl }
   -- The interaction point needs to be present already, we just set the meta.
   case Map.insertLookupWithKey (\ key new old -> new { ipRange = ipRange old }) ii ip m of
     (Nothing, _) -> __IMPOSSIBLE__
@@ -215,8 +214,11 @@ connectInteractionPoint ii mi = do
 -- | Move an interaction point from the current ones to the old ones.
 removeInteractionPoint :: InteractionId -> TCM ()
 removeInteractionPoint ii = do
-  scope <- getInteractionScope ii
-  modifyInteractionPoints $ Map.delete ii
+  ip <- stInteractionPoints %%= \ m -> do
+    let (mip, m') = Map.updateLookupWithKey (\ _ _ -> Nothing) ii m
+    return (m',
+      fromMaybe __IMPOSSIBLE__ mip)
+  stSolvedInteractionPoints %= Map.insert ii ip
 
 -- | Get a list of interaction ids.
 getInteractionPoints :: TCM [InteractionId]
@@ -249,7 +251,7 @@ lookupInteractionPoint ii =
 lookupInteractionId :: InteractionId -> TCM MetaId
 lookupInteractionId ii = fromMaybeM err2 $ ipMeta <$> lookupInteractionPoint ii
   where
-    err2 = typeError $ GenericError $ "No type nor action available for hole " ++ show ii
+    err2 = typeError $ GenericError $ "No type nor action available for hole " ++ show ii ++ ". Possible cause: the hole has not been reached during type checking (do you see yellow?)"
 
 -- | Generate new meta variable.
 newMeta :: MetaInfo -> MetaPriority -> Permutation -> Judgement a -> TCM MetaId

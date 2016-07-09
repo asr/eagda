@@ -1,6 +1,3 @@
-{-# LANGUAGE FlexibleInstances      #-}
-{-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE MultiParamTypeClasses  #-}
 {-# LANGUAGE ScopedTypeVariables    #-}
 {-# LANGUAGE UndecidableInstances   #-}
 
@@ -27,6 +24,7 @@ import Agda.Syntax.Scope.Monad (getCurrentModule)
 import Agda.Utils.Maybe
 import Agda.Utils.List
 import Agda.Utils.Functor
+import Agda.Utils.Size
 
 type Names = [Name]
 
@@ -93,14 +91,18 @@ instance ToAbstract Literal Expr where
 instance ToAbstract Term Expr where
   toAbstract t = case t of
     R.Var i es -> do
-      let fallback = withName ("@" ++ show i) return
-      name <- fromMaybeM fallback $ askName i
-      toAbstract (A.Var name, es)
+      mname <- askName i
+      case mname of
+        Nothing -> do
+          cxt   <- lift $ getContextTelescope
+          names <- asks $ drop (size cxt) . reverse
+          lift $ withShowAllArguments' False $ typeError $ DeBruijnIndexOutOfScope i cxt names
+        Just name -> toAbstract (A.Var name, es)
     R.Con c es -> toAbstract (A.Con (AmbQ [killRange c]), es)
     R.Def f es -> toAbstract (A.Def (killRange f), es)
     R.Lam h t  -> do
       (e, name) <- toAbstract t
-      let info  = setHiding h defaultArgInfo
+      let info  = setHiding h $ setOrigin Reflected defaultArgInfo
       return $ A.Lam exprNoRange (DomainFree info name) e
     R.ExtLam cs es -> do
       name <- freshName_ extendedLambdaName

@@ -1,13 +1,6 @@
 {-# LANGUAGE CPP                #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE DeriveFunctor      #-}
-{-# LANGUAGE FlexibleContexts   #-}
-{-# LANGUAGE FlexibleInstances  #-}
-{-# LANGUAGE PatternGuards      #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE TupleSections      #-}
-{-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE MultiParamTypeClasses  #-}
 {-# LANGUAGE UndecidableInstances   #-}
 
 #if __GLASGOW_HASKELL__ <= 708
@@ -192,7 +185,8 @@ instance Apply RewriteRule where
   apply r args = RewriteRule
     { rewName    = rewName r
     , rewContext = apply (rewContext r) args
-    , rewLHS     = applySubst sub (rewLHS r)
+    , rewHead    = rewHead r
+    , rewPats    = applySubst sub (rewPats r)
     , rewRHS     = applySubst sub (rewRHS r)
     , rewType    = applySubst sub (rewType r)
     }
@@ -212,11 +206,33 @@ instance Apply [Polarity] where
 #endif
   apply pol args = List.drop (length args) pol
 
+-- | Make sure we only drop variable patterns.
+#if __GLASGOW_HASKELL__ >= 710
+instance {-# OVERLAPPING #-} Apply [NamedArg (Pattern' a)] where
+#else
+instance Apply [NamedArg (Pattern' a)] where
+#endif
+  apply ps args = loop (length args) ps
+    where
+    loop 0 ps = ps
+    loop n [] = __IMPOSSIBLE__
+    loop n (p : ps) =
+      let recurse = loop (n - 1) ps
+      in  case namedArg p of
+            VarP{}  -> recurse
+            DotP{}  -> __IMPOSSIBLE__
+            LitP{}  -> __IMPOSSIBLE__
+            ConP{}  -> __IMPOSSIBLE__
+            ProjP{} -> __IMPOSSIBLE__
+
 instance Apply Projection where
   apply p args = p
-    { projIndex    = projIndex p - size args
-    , projDropPars = projDropPars p `apply` args
+    { projIndex = projIndex p - size args
+    , projLams  = projLams p `apply` args
     }
+
+instance Apply ProjLams where
+  apply (ProjLams lams) args = ProjLams $ List.drop (length args) lams
 
 instance Apply Defn where
   apply d [] = d
@@ -269,9 +285,9 @@ instance Apply Defn where
         , dataClause     = apply cl args
 --        , dataArgOccurrences = List.drop (length args) occ
         }
-    Record{ recPars = np, recConType = t, recClause = cl, recTel = tel
+    Record{ recPars = np, recClause = cl, recTel = tel
           {-, recArgOccurrences = occ-} } ->
-      d { recPars = np - size args, recConType = piApply t args
+      d { recPars = np - size args
         , recClause = apply cl args, recTel = apply tel args
 --        , recArgOccurrences = List.drop (length args) occ
         }
@@ -287,7 +303,7 @@ instance Apply Clause where
     apply (Clause r tel ps b t catchall) args =
       Clause r
              (apply tel args)
-             (List.drop (size args) ps)
+             (apply ps args)
              (apply b args)
              (applySubst (parallelS (map unArg args)) t)
              catchall
@@ -428,8 +444,8 @@ instance Abstract Definition where
 --   we do not need to change lhs, rhs, and t since they live in Γ.
 --   See 'Abstract Clause'.
 instance Abstract RewriteRule where
-  abstract tel (RewriteRule q gamma lhs rhs t) =
-    RewriteRule q (abstract tel gamma) lhs rhs t
+  abstract tel (RewriteRule q gamma f ps rhs t) =
+    RewriteRule q (abstract tel gamma) f ps rhs t
 
 #if __GLASGOW_HASKELL__ >= 710
 instance {-# OVERLAPPING #-} Abstract [Occ.Occurrence] where
@@ -449,11 +465,13 @@ instance Abstract [Polarity] where
 
 instance Abstract Projection where
   abstract tel p = p
-    { projIndex    = size tel + projIndex p
-    , projDropPars = abstract tel $ projDropPars p
-    , projArgInfo  = if projIndex p > 0 then projArgInfo p else
-       domInfo $ last $ telToList tel
+    { projIndex = size tel + projIndex p
+    , projLams  = abstract tel $ projLams p
     }
+
+instance Abstract ProjLams where
+  abstract tel (ProjLams lams) = ProjLams $
+    map (\ (Dom ai (x, _)) -> Arg ai x) (telToList tel) ++ lams
 
 instance Abstract Defn where
   abstract tel d = case d of
@@ -483,9 +501,8 @@ instance Abstract Defn where
         , dataNonLinPars = abstract tel nlps
         , dataClause     = abstract tel cl
         }
-    Record{ recPars = np, recConType = t, recClause = cl, recTel = tel' } ->
+    Record{ recPars = np, recClause = cl, recTel = tel' } ->
       d { recPars    = np + size tel
-        , recConType = abstract tel t
         , recClause  = abstract tel cl
         , recTel     = abstract tel tel'
         }
@@ -793,9 +810,9 @@ instance Subst Term NLPat where
     PTerm u -> PTerm $ applySubst rho u
 
 instance Subst Term RewriteRule where
-  applySubst rho (RewriteRule q gamma lhs rhs t) =
+  applySubst rho (RewriteRule q gamma f ps rhs t) =
     RewriteRule q (applySubst rho gamma)
-                  (applySubst (liftS n rho) lhs)
+                f (applySubst (liftS n rho) ps)
                   (applySubst (liftS n rho) rhs)
                   (applySubst (liftS n rho) t)
     where n = size gamma
@@ -892,6 +909,28 @@ instance Subst Term EqualityView where
     (applySubst rho t)
     (applySubst rho a)
     (applySubst rho b)
+
+---------------------------------------------------------------------------
+-- * Projections
+---------------------------------------------------------------------------
+
+-- | @projDropParsApply proj args = 'projDropPars' proj `'apply'` args@
+--
+--   This function is an optimization, saving us from construction lambdas we
+--   immediately remove through application.
+projDropParsApply :: Projection -> Args -> Term
+projDropParsApply (Projection proper d _ _ lams) args =
+  case initLast $ getProjLams lams of
+    -- If we have no more abstractions, we must be a record field
+    -- (projection applied already to record value).
+    Nothing -> if proper then Def d $ map Apply args else __IMPOSSIBLE__
+    Just (pars, Arg i y) ->
+      let core = if proper then Lam i $ Abs y $ Var 0 [Proj d] else Def d []
+      -- Now drop pars many args
+          (pars', args') = dropCommon pars args
+      -- We only have to abstract over the parameters that exceed the arguments.
+      -- We only have to apply to the arguments that exceed the parameters.
+      in List.foldr (\ (Arg ai x) -> Lam ai . NoAbs x) (core `apply` args') pars'
 
 ---------------------------------------------------------------------------
 -- * Telescopes

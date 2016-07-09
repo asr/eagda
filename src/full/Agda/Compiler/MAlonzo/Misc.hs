@@ -3,6 +3,7 @@
 module Agda.Compiler.MAlonzo.Misc where
 
 import Control.Monad.State (gets)
+import Data.Char
 import Data.List as List
 import Data.Map as Map
 import Data.Set as Set
@@ -81,9 +82,11 @@ conhqn :: QName -> TCM HS.QName
 conhqn q = do
     cq  <- canonicalName q
     def <- getConstInfo cq
+    cname <- xhqn "C" cq  -- Do this even if it has custom compiledHaskell code
+                          -- to make sure we get the import.
     case (compiledHaskell (defCompiledRep def), theDef def) of
       (Just (HsDefn _ hs), Constructor{}) -> return $ hsName hs
-      _                                   -> xhqn "C" cq
+      _                                   -> return cname
 
 -- qualify name s by the module of builtin b
 bltQual :: String -> String -> TCM HS.QName
@@ -241,3 +244,15 @@ emptyBinds = Nothing
 emptyBinds :: HS.Binds
 emptyBinds = HS.BDecls []
 #endif
+
+--------------------------------------------------
+-- Utilities for Haskell modules names
+--------------------------------------------------
+
+-- | Can the character be used in a Haskell module name part
+-- (@conid@)? This function is more restrictive than what the Haskell
+-- report allows.
+
+isModChar :: Char -> Bool
+isModChar c =
+  isLower c || isUpper c || isDigit c || c == '_' || c == '\''

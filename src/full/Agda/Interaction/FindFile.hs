@@ -14,7 +14,6 @@ module Agda.Interaction.FindFile
   , findInterfaceFile
   , checkModuleName
   , moduleName', moduleName
-  , tests
   , rootNameModule
   , replaceModuleExtension
   ) where
@@ -174,7 +173,8 @@ moduleName' file = billTo [Bench.ModuleName] $ do
       _ <- liftIO (parse moduleNameParser defaultName)
              `catchError` \_ ->
            typeError $
-             GenericError $ "Invalid file name: " ++ show file ++ "."
+             GenericError $ "File name " ++ show file ++
+               " is invalid as it does not correpond to a valid module name."
       return $ TopLevelModuleName [defaultName]
     _ -> return name
   where

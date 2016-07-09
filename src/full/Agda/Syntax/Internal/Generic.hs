@@ -1,5 +1,4 @@
 {-# LANGUAGE CPP               #-}
-{-# LANGUAGE FlexibleInstances #-}
 
 module Agda.Syntax.Internal.Generic where
 
@@ -96,6 +95,11 @@ instance TermLike a => TermLike (Abs a) where
   foldTerm f = foldMap (foldTerm f)
 
 instance TermLike a => TermLike (Ptr a) where
+  traverseTerm f = fmap (traverseTerm f)
+  traverseTermM f = traverse (traverseTermM f)
+  foldTerm f = foldMap (foldTerm f)
+
+instance TermLike a => TermLike (Blocked a) where
   traverseTerm f = fmap (traverseTerm f)
   traverseTermM f = traverse (traverseTermM f)
   foldTerm f = foldMap (foldTerm f)

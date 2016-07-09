@@ -1,8 +1,6 @@
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE FlexibleInstances #-}
 
 {-| Pretty printer for the concrete syntax.
 -}
@@ -20,6 +18,9 @@ import Agda.Syntax.Fixity
 import Agda.Syntax.Notation
 import Agda.Syntax.Position
 
+import Agda.TypeChecking.Positivity.Occurrence
+
+import Agda.Utils.Function
 import Agda.Utils.Functor
 import Agda.Utils.Null
 import Agda.Utils.Pretty
@@ -256,8 +257,9 @@ instance Pretty WhereClause where
   pretty (AnyWhere [Module _ x [] ds]) | isNoName (unqualify x)
                        = vcat [ text "where", nest 2 (vcat $ map pretty ds) ]
   pretty (AnyWhere ds) = vcat [ text "where", nest 2 (vcat $ map pretty ds) ]
-  pretty (SomeWhere m ds) =
-    vcat [ hsep [ text "module", pretty m, text "where" ]
+  pretty (SomeWhere m a ds) =
+    vcat [ hsep $ applyWhen (a == PrivateAccess) (text "private" :)
+             [ text "module", pretty m, text "where" ]
          , nest 2 (vcat $ map pretty ds)
          ]
 
@@ -473,6 +475,8 @@ instance Pretty Pragma where
     pretty (CatchallPragma _) = text "CATCHALL"
     pretty (DisplayPragma _ lhs rhs) = text "DISPLAY" <+> sep [ pretty lhs <+> text "=", nest 2 $ pretty rhs ]
     pretty (NoPositivityCheckPragma _) = text "NO_POSITIVITY_CHECK"
+    pretty (PolarityPragma _ q occs) =
+      hsep (text "NO_POSITIVITY_CHECK" : pretty q : map pretty occs)
 
 instance Pretty Fixity where
     pretty (Fixity _ Unrelated   _)   = __IMPOSSIBLE__
@@ -482,6 +486,17 @@ instance Pretty Fixity where
             LeftAssoc  -> "infixl"
             RightAssoc -> "infixr"
             NonAssoc   -> "infix"
+
+instance Pretty Occurrence where
+  pretty Unused    = text "_"
+  pretty Mixed     = text "*"
+  pretty JustNeg   = text "-"
+  pretty JustPos   = text "+"
+  pretty StrictPos = text "++"
+
+  -- No syntax has been assigned to GuardPos.
+
+  pretty GuardPos  = __IMPOSSIBLE__
 
 instance Pretty GenPart where
     pretty (IdPart x)   = text x

@@ -19,6 +19,7 @@ import qualified Agda.Syntax.Abstract as A
 import Agda.TypeChecking.Monad.Base
 import Agda.TypeChecking.CompiledClause
 
+import Agda.Utils.Functor
 import Agda.Utils.Impossible
 #include "undefined.h"
 
@@ -55,7 +56,7 @@ instance NamesIn Defn where
     Function    { funClauses = cl, funCompiled = cc }              -> namesIn (cl, cc)
     Datatype    { dataClause = cl, dataCons = cs, dataSort = s }   -> namesIn (cl, cs, s)
     Record      { recClause = cl, recConHead = c, recFields = fs } -> namesIn (cl, c, fs)
-      -- Don't need recTel or recConType since those will be reachable from the constructor
+      -- Don't need recTel since those will be reachable from the constructor
     Constructor { conSrcCon = c, conData = d }                     -> namesIn (c, d)
     Primitive   { primClauses = cl, primCompiled = cc }            -> namesIn (cl, cc)
 
@@ -138,6 +139,8 @@ instance NamesIn ConHead where namesIn h = namesIn (conName h)
 
 instance NamesIn a => NamesIn (Open a) where
   namesIn = namesIn . openThing
+
+instance NamesIn a => NamesIn (Local a) where namesIn = namesIn . dget
 
 instance NamesIn DisplayForm where
   namesIn (Display _ ps v) = namesIn (ps, v)

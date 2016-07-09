@@ -177,6 +177,15 @@ instance EmbPrj a => EmbPrj (Open a) where
     valu [a, b] = valu2 OpenThing a b
     valu _      = malformed
 
+instance EmbPrj a => EmbPrj (Local a) where
+  icod_ (Local a b) = icode2' a b
+  icod_ (Global a)  = icode1' a
+
+  value = vcase valu where
+    valu [a, b] = valu2 Local a b
+    valu [a]    = valu1 Global a
+    valu _      = malformed
+
 instance EmbPrj CtxId where
   icod_ (CtxId a) = icode a
   value n         = CtxId `fmap` value n
@@ -229,18 +238,25 @@ instance EmbPrj NLPat where
     valu _            = malformed
 
 instance EmbPrj RewriteRule where
-  icod_ (RewriteRule a b c d e) = icode5' a b c d e
+  icod_ (RewriteRule a b c d e f) = icode6' a b c d e f
 
   value = vcase valu where
-    valu [a, b, c, d, e] = valu5 RewriteRule a b c d e
-    valu _               = malformed
+    valu [a, b, c, d, e, f] = valu6 RewriteRule a b c d e f
+    valu _                  = malformed
 
 instance EmbPrj Projection where
   icod_ (Projection a b c d e) = icode5' a b c d e
 
   value = vcase valu where
     valu [a, b, c, d, e] = valu5 Projection a b c d e
-    valu _               = malformed
+    valu _ = malformed
+
+instance EmbPrj ProjLams where
+  icod_ (ProjLams a) = icode1' a
+
+  value = vcase valu where
+    valu [a] = valu1 ProjLams a
+    valu _   = malformed
 
 instance EmbPrj ExtLamInfo where
   icod_ (ExtLamInfo a b) = icode2' a b
@@ -290,7 +306,7 @@ instance EmbPrj Defn where
   icod_ (Axiom       a b)                             = icode2 0 a b
   icod_ (Function    a b _ c d e f g h i j k l m n o) = icode15 1 a b c d e f g h i j k l m n o
   icod_ (Datatype    a b c d e f g h i j k)           = icode11 2 a b c d e f g h i j k
-  icod_ (Record      a b c d e f g h i j k l)         = icode12 3 a b c d e f g h i j k l
+  icod_ (Record      a b c d e f g h i j k)           = icode11 3 a b c d e f g h i j k
   icod_ (Constructor a b c d e f)                     = icode6 4 a b c d e f
   icod_ (Primitive   a b c d)                         = icode4 5 a b c d
 
@@ -298,7 +314,7 @@ instance EmbPrj Defn where
     valu [0, a, b]                                        = valu2 Axiom a b
     valu [1, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o] = valu15 (\ a b -> Function a b Nothing) a b c d e f g h i j k l m n o
     valu [2, a, b, c, d, e, f, g, h, i, j, k]             = valu11 Datatype a b c d e f g h i j k
-    valu [3, a, b, c, d, e, f, g, h, i, j, k, l]          = valu12 Record  a b c d e f g h i j k l
+    valu [3, a, b, c, d, e, f, g, h, i, j, k]             = valu11 Record  a b c d e f g h i j k
     valu [4, a, b, c, d, e, f]                            = valu6 Constructor a b c d e f
     valu [5, a, b, c, d]                                  = valu4 Primitive   a b c d
     valu _                                                = malformed
@@ -371,6 +387,13 @@ instance EmbPrj I.ConPatternInfo where
 
   value = vcase valu where
     valu [a, b] = valu2 ConPatternInfo a b
+    valu _      = malformed
+
+instance EmbPrj I.DBPatVar where
+  icod_ (DBPatVar a b) = icode2' a b
+
+  value = vcase valu where
+    valu [a, b] = valu2 DBPatVar a b
     valu _      = malformed
 
 instance EmbPrj a => EmbPrj (I.Pattern' a) where

@@ -1,8 +1,16 @@
 {-# LANGUAGE CPP                  #-}
-{-# LANGUAGE FlexibleContexts     #-}
-{-# LANGUAGE FlexibleInstances    #-}
-{-# LANGUAGE TupleSections        #-}
 {-# LANGUAGE UndecidableInstances #-}
+
+-- To define <>, we will probably need to add:
+--import Prelude hiding ((<>))
+-- but using that now gives warnings and doesn't silence -Wsemigroup
+#if __GLASGOW_HASKELL__ >= 800
+{-# OPTIONS_GHC -Wno-semigroup    #-}
+#endif
+#if __GLASGOW_HASKELL__ <= 708
+{-# LANGUAGE OverlappingInstances #-}
+#endif
+
 
 module Agda.TypeChecking.Pretty where
 
@@ -132,7 +140,11 @@ instance PrettyTCM Range       where prettyTCM = pretty
 instance PrettyTCM a => PrettyTCM (Closure a) where
   prettyTCM cl = enterClosure cl prettyTCM
 
+#if __GLASGOW_HASKELL__ >= 710
+instance {-# OVERLAPPABLE #-} PrettyTCM a => PrettyTCM [a] where
+#else
 instance PrettyTCM a => PrettyTCM [a] where
+#endif
   prettyTCM = prettyList . map prettyTCM
 
 instance (PrettyTCM a, PrettyTCM b) => PrettyTCM (a,b) where
@@ -147,6 +159,7 @@ instance PrettyTCM Type         where prettyTCM = prettyA <=< reify
 instance PrettyTCM Sort         where prettyTCM = prettyA <=< reify
 instance PrettyTCM DisplayTerm  where prettyTCM = prettyA <=< reify
 instance PrettyTCM NamedClause  where prettyTCM = prettyA <=< reify
+instance PrettyTCM (QNamed Clause) where prettyTCM = prettyA <=< reify
 instance PrettyTCM Level        where prettyTCM = prettyA <=< reify . Level
 instance PrettyTCM Permutation  where prettyTCM = text . show
 instance PrettyTCM Polarity     where prettyTCM = text . show
@@ -199,6 +212,13 @@ instance (Reify a e, ToConcrete e c, P.Pretty c) => PrettyTCM (Arg a) where
 instance (Reify a e, ToConcrete e c, P.Pretty c) => PrettyTCM (Dom a) where
   prettyTCM x = prettyA =<< reify x
 
+#if __GLASGOW_HASKELL__ >= 710
+instance {-# OVERLAPPING #-} PrettyTCM ArgName where
+#else
+instance PrettyTCM ArgName where
+#endif
+  prettyTCM = text . show
+
 -- instance (Reify a e, ToConcrete e c, P.Pretty c, PrettyTCM a) => PrettyTCM (Elim' a) where
 instance PrettyTCM Elim where
   prettyTCM (Apply v) = text "$" <+> prettyTCM v
@@ -221,7 +241,7 @@ instance PrettyTCM Relevance where
   prettyTCM UnusedArg  = empty
 
 instance PrettyTCM ProblemConstraint where
-  prettyTCM (PConstr pid c) = brackets (prettyTCM pid) <+> prettyTCM c
+  prettyTCM (PConstr pid c) = prettyList (map prettyTCM pid) <+> prettyTCM c
 
 instance PrettyTCM Constraint where
     prettyTCM c = case c of
@@ -356,20 +376,14 @@ instance PrettyTCM Context where
 instance PrettyTCM CtxId where
   prettyTCM (CtxId x) = prettyTCM x
 
-instance PrettyTCM Pattern where
-  prettyTCM = showPat' (text . patVarNameToString)
+instance PrettyTCM DBPatVar where
+  prettyTCM = prettyTCM . var . dbPatVarIndex
 
-instance PrettyTCM DeBruijnPattern where
-  prettyTCM = showPat' $ \ (i, x) -> prettyTCM $ var i
-
--- | Show a pattern, given a method how to show pattern variables.
-showPat' :: (a -> TCM Doc) -> Pattern' a -> TCM Doc
-showPat' showVar = showPat
-  where
-      showPat (VarP x)      = showVar x
-      showPat (DotP t)      = text ".(" <> prettyTCM t <> text ")"
-      showPat (ConP c i ps) = (if b then braces else parens) $ prTy $
-        prettyTCM c <+> fsep (map (showPat . namedArg) ps)
+instance PrettyTCM a => PrettyTCM (Pattern' a) where
+  prettyTCM (VarP x)      = prettyTCM x
+  prettyTCM (DotP t)      = text ".(" <> prettyTCM t <> text ")"
+  prettyTCM (ConP c i ps) = (if b then braces else parens) $ prTy $
+        prettyTCM c <+> fsep (map (prettyTCM . namedArg) ps)
         where
         b = maybe False (/= ConPCon) $ conPRecord i
         showRec :: TCM Doc
@@ -378,11 +392,11 @@ showPat' showVar = showPat
           , bracesAndSemicolons <$> zipWithM showField (conFields c) ps
           ]
         showField x p =
-          sep [ prettyTCM (A.qnameName x) <+> text "=" , nest 2 $ showPat $ namedArg p ]
-        showCon = parens $ prTy $ prettyTCM c <+> fsep (map (showPat . namedArg) ps)
+          sep [ prettyTCM (A.qnameName x) <+> text "=" , nest 2 $ prettyTCM $ namedArg p ]
+        showCon = parens $ prTy $ prettyTCM c <+> fsep (map (prettyTCM . namedArg) ps)
         prTy d = d -- caseMaybe (conPType i) d $ \ t -> d  <+> text ":" <+> prettyTCM t
-      showPat (LitP l)      = text (show l)
-      showPat (ProjP q)     = text (show q)
+  prettyTCM (LitP l)      = text (show l)
+  prettyTCM (ProjP q)     = text (show q)
 
 instance PrettyTCM (Elim' DisplayTerm) where
   prettyTCM (Apply v) = text "$" <+> prettyTCM (unArg v)
@@ -419,11 +433,11 @@ instance PrettyTCM (Type' NLPat) where
   prettyTCM = prettyTCM . unEl
 
 instance PrettyTCM RewriteRule where
-  prettyTCM (RewriteRule q gamma lhs rhs b) = sep
+  prettyTCM (RewriteRule q gamma f ps rhs b) = sep
     [ prettyTCM q <+> text " rule "
     , prettyTCM gamma <+> text " |- "
     , addContext gamma $ hsep
-      [ prettyTCM lhs
+      [ prettyTCM (PDef f ps)
       , text " --> "
       , prettyTCM rhs
       , text " : "

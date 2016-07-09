@@ -1,10 +1,7 @@
 {-# LANGUAGE DeriveFoldable             #-}
 {-# LANGUAGE DeriveFunctor              #-}
 {-# LANGUAGE DeriveTraversable          #-}
-{-# LANGUAGE FlexibleInstances          #-}
-{-# LANGUAGE FunctionalDependencies     #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE MultiParamTypeClasses      #-}
 {-# LANGUAGE NoMonomorphismRestriction  #-}
 {-# LANGUAGE UndecidableInstances       #-}
 
@@ -18,8 +15,6 @@ import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Traversable (Traversable)
-
-import Test.QuickCheck
 
 import Agda.TypeChecking.SizedTypes.Utils
 
@@ -37,13 +32,6 @@ instance MeetSemiLattice Offset where
 
 instance Plus Offset Offset Offset where
   plus (O x) (O y) = O (plus x y)
-
-instance Arbitrary Offset where
-  arbitrary = do
-    NonNegative x <- arbitrary
-    return x
-
-  shrink (O x) = map O $ filter (>= 0) (shrink x)
 
 -- | Fixed size variables @i@.
 newtype Rigid  = RigidId { rigidId :: String }
@@ -88,9 +76,6 @@ instance MeetSemiLattice Cmp where
 
 instance Top Cmp where
   top = Le
-
-instance Arbitrary Cmp where
-  arbitrary = arbitraryBoundedEnum
 
 -- | Constraint: an inequation between size expressions,
 --   e.g. @X < ∞@ or @i + 3 ≤ j@.

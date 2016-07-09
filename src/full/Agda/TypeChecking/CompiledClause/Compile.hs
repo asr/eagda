@@ -1,5 +1,4 @@
 {-# LANGUAGE CPP           #-}
-{-# LANGUAGE TupleSections #-}
 
 module Agda.TypeChecking.CompiledClause.Compile where
 
@@ -45,7 +44,7 @@ compileClauses ::
   Maybe (QName, Type) -- ^ Translate record patterns and coverage check with given type?
   -> [Clause] -> TCM CompiledClauses
 compileClauses mt cs = do
-  let cls = [ Cl (unnumberPatVars $ clausePats c) (clauseBody c) | c <- cs ]
+  let cls = [ Cl (clausePats c) (clauseBody c) | c <- cs ]
   shared <- sharedFun
   case mt of
     Nothing -> return $ compile shared cls
@@ -70,7 +69,7 @@ compileClauses mt cs = do
 -- | Stripped-down version of 'Agda.Syntax.Internal.Clause'
 --   used in clause compiler.
 data Cl = Cl
-  { clPats :: [Arg Pattern]
+  { clPats :: [Arg DeBruijnPattern]
   , clBody :: ClauseBody
   } deriving (Show)
 
@@ -115,7 +114,7 @@ compile shared cs = case nextSplit cs of
     Nothing : _ -> Fail
     []          -> __IMPOSSIBLE__
   where
-    name (VarP x) = x
+    name (VarP x) = dbPatVarName x
     name (DotP _) = underscore
     name ConP{}  = __IMPOSSIBLE__
     name LitP{}  = __IMPOSSIBLE__
@@ -130,7 +129,7 @@ nextSplit (Cl ps _ : _) = headMaybe $ catMaybes $
 
 -- | Is is not a variable pattern?
 --   And if yes, is it a record pattern?
-properSplit :: Pattern -> Maybe Bool
+properSplit :: Pattern' a -> Maybe Bool
 properSplit (ConP _ cpi _) = Just $ isJust $ conPRecord cpi
 properSplit LitP{}  = Just False
 properSplit ProjP{} = Just False
@@ -140,7 +139,7 @@ properSplit DotP{}  = Nothing
 -- | Is this a variable pattern?
 --
 --   Maintain invariant: @isVar = isNothing . properSplit@!
-isVar :: Pattern -> Bool
+isVar :: Pattern' a -> Bool
 isVar VarP{}  = True
 isVar DotP{}  = True
 isVar ConP{}  = False
@@ -155,16 +154,18 @@ splitOn single n cs = mconcat $ map (fmap (:[]) . splitC n) $
     expandCatchAlls single n cs
 
 splitC :: Int -> Cl -> Case Cl
-splitC n (Cl ps b) = case unArg p of
+splitC n (Cl ps b) = caseMaybe mp fallback $ \case
   ProjP d     -> projCase d $ Cl (ps0 ++ ps1) b
   ConP c _ qs -> conCase (conName c) $ WithArity (length qs) $
                    Cl (ps0 ++ map (fmap namedThing) qs ++ ps1) b
   LitP l      -> litCase l $ Cl (ps0 ++ ps1) b
-  VarP{}      -> catchAll $ Cl ps b
-  DotP{}      -> catchAll $ Cl ps b
+  VarP{}      -> fallback
+  DotP{}      -> fallback
   where
-    (ps0, rest)   = splitAt n ps
-    (p, ps1)      = fromMaybe __IMPOSSIBLE__ $ uncons rest
+    (ps0, rest) = splitAt n ps
+    mp          = unArg <$> headMaybe rest
+    ps1         = drop 1 rest
+    fallback    = catchAll $ Cl ps b
 
 -- | Expand catch-alls that appear before actual matches.
 --
@@ -246,7 +247,7 @@ expandCatchAlls single n cs =
           where
             m        = length qs'
             -- replace all direct subpatterns of q by _
-            conPArgs = map (fmap ($> VarP underscore)) qs'
+            conPArgs = map (fmap ($> debruijnNamedVar "_" 0)) qs'
             conArgs  = zipWith (\ q n -> q $> var n) qs' $ downFrom m
         LitP l -> Cl (ps0 ++ [q $> LitP l] ++ ps1) (substBody n' 0 (Lit l) b)
         _ -> __IMPOSSIBLE__

@@ -3,7 +3,6 @@
 {-# LANGUAGE DeriveFoldable     #-}
 {-# LANGUAGE DeriveFunctor      #-}
 {-# LANGUAGE DeriveTraversable  #-}
-{-# LANGUAGE FlexibleInstances  #-}
 
 {-| The concrete syntax is a raw representation of the program text
     without any desugaring at all.  This is what the parser produces.
@@ -71,6 +70,8 @@ import Agda.Syntax.Literal
 
 import Agda.Syntax.Concrete.Name
 import qualified Agda.Syntax.Abstract.Name as A
+
+import Agda.TypeChecking.Positivity.Occurrence
 
 import Agda.Utils.Lens
 import Agda.Utils.Null
@@ -286,7 +287,10 @@ type WhereClause = WhereClause' [Declaration]
 data WhereClause' decls
   = NoWhere               -- ^ No @where@ clauses.
   | AnyWhere decls        -- ^ Ordinary @where@.
-  | SomeWhere Name decls  -- ^ Named where: @module M where@.
+  | SomeWhere Name Access decls
+    -- ^ Named where: @module M where@.
+    --   The 'Access' flag applies to the 'Name' (not the module contents!)
+    --   and is propagated from the parent function.
   deriving (Typeable, Functor, Foldable, Traversable)
 
 -- | An expression followed by a where clause.
@@ -394,6 +398,7 @@ data Pragma
   | CatchallPragma            Range
   | DisplayPragma             Range Pattern Expr
   | NoPositivityCheckPragma   Range
+  | PolarityPragma            Range Name [Occurrence]
   deriving (Typeable)
 
 ---------------------------------------------------------------------------
@@ -586,7 +591,7 @@ instance HasRange BoundName where
 instance HasRange WhereClause where
   getRange  NoWhere         = noRange
   getRange (AnyWhere ds)    = getRange ds
-  getRange (SomeWhere _ ds) = getRange ds
+  getRange (SomeWhere _ _ ds) = getRange ds
 
 instance HasRange ModuleApplication where
   getRange (SectionApp r _ _) = r
@@ -663,6 +668,7 @@ instance HasRange Pragma where
   getRange (CatchallPragma r)                = r
   getRange (DisplayPragma r _ _)             = r
   getRange (NoPositivityCheckPragma r)       = r
+  getRange (PolarityPragma r _ _)            = r
 
 instance HasRange AsName where
   getRange a = getRange (asRange a, asName a)
@@ -842,6 +848,7 @@ instance KillRange Pragma where
   killRange (CatchallPragma _)                = CatchallPragma noRange
   killRange (DisplayPragma _ lhs rhs)         = killRange2 (DisplayPragma noRange) lhs rhs
   killRange (NoPositivityCheckPragma _)       = NoPositivityCheckPragma noRange
+  killRange (PolarityPragma _ q occs)         = killRange1 (\q -> PolarityPragma noRange q occs) q
 
 instance KillRange RHS where
   killRange AbsurdRHS = AbsurdRHS
@@ -857,7 +864,7 @@ instance KillRange TypedBindings where
 instance KillRange WhereClause where
   killRange NoWhere         = NoWhere
   killRange (AnyWhere d)    = killRange1 AnyWhere d
-  killRange (SomeWhere n d) = killRange2 SomeWhere n d
+  killRange (SomeWhere n a d) = killRange3 SomeWhere n a d
 
 ------------------------------------------------------------------------
 -- NFData instances
@@ -976,6 +983,7 @@ instance NFData Pragma where
   rnf (CatchallPragma _)                = ()
   rnf (DisplayPragma _ a b)             = rnf a `seq` rnf b
   rnf (NoPositivityCheckPragma _)       = ()
+  rnf (PolarityPragma _ a b)            = rnf a `seq` rnf b
 
 -- | Ranges are not forced.
 
@@ -1020,7 +1028,7 @@ instance NFData ModuleAssignment where
 instance NFData a => NFData (WhereClause' a) where
   rnf NoWhere         = ()
   rnf (AnyWhere a)    = rnf a
-  rnf (SomeWhere a b) = rnf a `seq` rnf b
+  rnf (SomeWhere a b c) = rnf a `seq` rnf b `seq` rnf c
 
 instance NFData a => NFData (LamBinding' a) where
   rnf (DomainFree a b) = rnf a `seq` rnf b

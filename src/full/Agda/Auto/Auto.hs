@@ -1,9 +1,4 @@
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE TupleSections #-}
-
-#if __GLASGOW_HASKELL__ >= 710
-{-# LANGUAGE FlexibleContexts #-}
-#endif
 
 module Agda.Auto.Auto (auto) where
 
@@ -127,8 +122,7 @@ auto ii rng argstr = do
     -- Get the meta variable for the interaction point we are trying to fill.
     -- Add the @autohints@ for that meta to the hints collection.
     mi <- lookupInteractionId ii
-    --thisdefinfo <- catchError (liftM Just $ findClause mi) (\_ -> return Nothing)
-    thisdefinfo <- findClauseDeep mi
+    thisdefinfo <- findClauseDeep ii
     ehints <- (ehints ++) <$> do autohints hintmode mi $ fmap fst3 thisdefinfo
 
     -- If @thisdefinfo /= Nothing@ get the its type (normalized).

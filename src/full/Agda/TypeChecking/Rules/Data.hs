@@ -1,9 +1,5 @@
 {-# LANGUAGE CPP #-}
 
-#if __GLASGOW_HASKELL__ >= 710
-{-# LANGUAGE FlexibleContexts #-}
-#endif
-
 module Agda.TypeChecking.Rules.Data where
 
 import Control.Applicative
@@ -210,7 +206,7 @@ checkConstructor
 checkConstructor d tel nofIxs s (A.ScopedDecl scope [con]) = do
   setScope scope
   checkConstructor d tel nofIxs s con
-checkConstructor d tel nofIxs s con@(A.Axiom _ i ai c e) =
+checkConstructor d tel nofIxs s con@(A.Axiom _ i ai Nothing c e) =
     traceCall (CheckConstructor d tel s con) $ do
 {- WRONG
       -- Andreas, 2011-04-26: the following happens to the right of ':'
@@ -290,7 +286,7 @@ bindParameters ps0@(A.DomainFree info x : ps) (El _ (Pi arg@(Dom info' a) b)) re
   -- Andreas, 2011-04-07 ignore relevance information in binding?!
     | argInfoHiding info /= argInfoHiding info' =
         __IMPOSSIBLE__
-    | otherwise = addContext (x, arg) $ bindParameters ps (absBody b) $ \tel s ->
+    | otherwise = addContext' (x, arg) $ bindParameters ps (absBody b) $ \tel s ->
                     ret (ExtendTel arg $ Abs (nameToArgName x) tel) s
 bindParameters bs (El s (Shared p)) ret = bindParameters bs (El s $ derefPtr p) ret
 bindParameters (b : bs) t _ = __IMPOSSIBLE__

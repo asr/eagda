@@ -1,6 +1,4 @@
 {-# LANGUAGE CPP              #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE RelaxedPolyRec   #-}
 
 -- | Generates data used for precise syntax highlighting.
 
@@ -16,7 +14,6 @@ module Agda.Interaction.Highlighting.Generate
   , computeUnsolvedMetaWarnings
   , computeUnsolvedConstraints
   , storeDisambiguatedName
-  , Agda.Interaction.Highlighting.Generate.tests
   ) where
 
 import Prelude hiding (null)
@@ -37,8 +34,8 @@ import qualified Data.IntMap as IntMap
 import Data.Void
 
 import Agda.Interaction.Response (Response(Resp_HighlightingInfo))
-import Agda.Interaction.Highlighting.Precise hiding (tests)
-import Agda.Interaction.Highlighting.Range   hiding (tests)
+import Agda.Interaction.Highlighting.Precise
+import Agda.Interaction.Highlighting.Range
 
 import qualified Agda.TypeChecking.Errors as E
 import Agda.TypeChecking.MetaVars (isBlockedTerm)
@@ -64,7 +61,6 @@ import Agda.Utils.List
 import Agda.Utils.Maybe
 import qualified Agda.Utils.Maybe.Strict as Strict
 import Agda.Utils.Null
-import Agda.Utils.TestHelpers
 import Agda.Utils.HashMap (HashMap)
 import qualified Agda.Utils.HashMap as HMap
 
@@ -425,7 +421,7 @@ nameKinds hlLevel decl = do
 
   declToKind :: A.Declaration ->
                 HashMap A.QName NameKind -> HashMap A.QName NameKind
-  declToKind (A.Axiom _ i _ q _)
+  declToKind (A.Axiom _ i _ _ q _)
     | SI.defMacro i == Common.MacroDef = insert q Macro
     | otherwise                        = insert q Postulate
   declToKind (A.Field _ q _)        = insert q Field -- Function
@@ -506,7 +502,7 @@ printErrorInfo e = printHighlightingInfo . compress =<< errorHighlighting e
 
 errorHighlighting :: TCErr -> TCM File
 
-errorHighlighting (TypeError s cl@(Closure sig env scope (TerminationCheckFailed termErrs))) =
+errorHighlighting (TypeError s cl@Closure{ clValue = TerminationCheckFailed termErrs }) =
   -- For termination errors, we keep the previous highlighting,
   -- just additionally mark the bad calls.
   return $ terminationErrorHighlighting termErrs
@@ -678,11 +674,3 @@ storeDisambiguatedName q = whenJust (start $ P.getRange q) $ \ i ->
   stDisambiguatedNames %= IntMap.insert i q
   where
   start r = fromIntegral . P.posPos <$> P.rStart' r
-
-------------------------------------------------------------------------
--- All tests
-
--- | All the properties.
-
-tests :: IO Bool
-tests = runTests "Agda.Interaction.Highlighting.Generate" []

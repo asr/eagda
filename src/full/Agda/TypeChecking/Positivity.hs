@@ -1,8 +1,5 @@
 {-# LANGUAGE BangPatterns         #-}
 {-# LANGUAGE CPP                  #-}
-{-# LANGUAGE FlexibleContexts     #-}
-{-# LANGUAGE FlexibleInstances    #-}
-{-# LANGUAGE TupleSections        #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 -- | Check that a datatype is strictly positive.
@@ -26,8 +23,6 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 
 import Debug.Trace
-
-import Test.QuickCheck
 
 import Agda.Syntax.Common
 import qualified Agda.Syntax.Info as Info
@@ -444,7 +439,7 @@ class ComputeOccurrences a where
 
 instance ComputeOccurrences Clause where
   occurrences cl = do
-    let ps = unnumberPatVars $ clausePats cl
+    let ps = clausePats cl
     (Concat (mapMaybe matching (zip [0..] ps)) >+<) <$>
       walk (patItems ps) (clauseBody cl)
     where
@@ -466,7 +461,7 @@ instance ComputeOccurrences Clause where
 
       -- @patItem i p@ replicates index @i@ as often as there are
       -- pattern variables in @p@ (dot patterns count as variable)
-      patItem :: Int -> Arg Pattern -> [Maybe Item]
+      patItem :: Int -> Arg (Pattern' a) -> [Maybe Item]
       patItem i p = map (const $ Just $ AnArg i) $ patternVars p
 
 instance ComputeOccurrences Term where
@@ -606,7 +601,7 @@ etaExpandClause :: Nat -> Clause -> Clause
 etaExpandClause n c@Clause{ clauseTel = tel, namedClausePats = ps, clauseBody = b }
   | m <= 0    = c
   | otherwise = c
-      { namedClausePats = raise m ps ++ map (defaultArg . unnamed . VarP . (,underscore)) (downFrom m)
+      { namedClausePats = raise m ps ++ map (\i -> defaultArg $ namedDBVarP i underscore) (downFrom m)
       , clauseBody      = liftBody m b
       , clauseTel       = telFromList $
           telToList tel ++ (replicate m $ (underscore,) <$> dummyDom)
@@ -805,53 +800,3 @@ computeEdges muts q ob =
       Just IsData -> GuardPos  -- a datatype is guarding
       _           -> StrictPos
 
-------------------------------------------------------------------------
--- * Generators and tests
-------------------------------------------------------------------------
-
-instance Arbitrary OccursWhere where
-  arbitrary = oneof [return Unknown, Known <$> arbitrary]
-
-  shrink Unknown    = []
-  shrink (Known ws) = Unknown : [ Known ws | ws <- shrink ws ]
-
-instance Arbitrary Where where
-  arbitrary = oneof
-    [ return LeftOfArrow
-    , DefArg <$> arbitrary <*> arbitrary
-    , return UnderInf
-    , return VarArg
-    , return MetaArg
-    , ConArgType <$> arbitrary
-    , IndArgType <$> arbitrary
-    , InClause <$> arbitrary
-    , return Matched
-    , InDefOf <$> arbitrary
-    ]
-
-instance CoArbitrary OccursWhere where
-  coarbitrary (Known ws) = variant 0 . coarbitrary ws
-  coarbitrary Unknown    = variant 1
-
-instance CoArbitrary Where where
-  coarbitrary LeftOfArrow    = variant 0
-  coarbitrary (DefArg a b)   = variant 1 . coarbitrary (a, b)
-  coarbitrary UnderInf       = variant 2
-  coarbitrary VarArg         = variant 3
-  coarbitrary MetaArg        = variant 4
-  coarbitrary (ConArgType a) = variant 5 . coarbitrary a
-  coarbitrary (IndArgType a) = variant 6 . coarbitrary a
-  coarbitrary (InClause a)   = variant 7 . coarbitrary a
-  coarbitrary Matched        = variant 8
-  coarbitrary (InDefOf a)    = variant 9 . coarbitrary a
-
-instance Arbitrary Edge where
-  arbitrary = Edge <$> arbitrary <*> arbitrary
-
-  shrink (Edge o w) = [ Edge o w | o <- shrink o ] ++
-                      [ Edge o w | w <- shrink w ]
-
-instance CoArbitrary Edge where
-  coarbitrary (Edge o w) = coarbitrary (o, w)
-
--- properties moved to Agda.TypeChecking.Positivity.Tests
