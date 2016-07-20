@@ -1,16 +1,18 @@
-{-# LANGUAGE CPP           #-}
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE NondecreasingIndentation #-}
 
 module Agda.TypeChecking.Rules.Decl where
 
 import Control.Monad
 import Control.Monad.Reader
-import Control.Monad.State (modify, gets)
+import Control.Monad.State (modify, gets, get)
 import Control.Monad.Writer (tell)
 
 import qualified Data.Foldable as Fold
 import Data.List (genericLength)
 import Data.Maybe
 import Data.Map (Map)
+import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
 import Data.Set (Set)
 
@@ -64,12 +66,13 @@ import Agda.TypeChecking.Rules.Display ( checkDisplayPragma )
 
 import Agda.Termination.TermCheck
 
-import qualified Agda.Utils.HashMap as HMap
+import Agda.Utils.Except
+import Agda.Utils.Functor
+import Agda.Utils.Function
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.Pretty (prettyShow)
 import Agda.Utils.Size
-import Agda.Utils.Except
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -143,15 +146,16 @@ checkDecl d = setCurrentRange d $ do
     reportSDoc "tc.decl" 10 $ prettyA d  -- Might loop, see e.g. Issue 1597
 
     -- Issue 418 fix: freeze metas before checking an abstract thing
-    when_ isAbstract freezeMetas
+    -- when_ isAbstract freezeMetas -- WAS IN PLACE 2012-2016, but too crude
+    -- applyWhen isAbstract withFreezeMetas $ do -- WRONG
 
     let -- What kind of final checks/computations should be performed
         -- if we're not inside a mutual block?
-        none        m = m >> return Nothing
-        meta        m = m >> return (Just (return ()))
-        mutual i ds m = m >>= return . Just . uncurry (mutualChecks i d ds)
-        impossible  m = m >> return __IMPOSSIBLE__
-                       -- We're definitely inside a mutual block.
+        none        m = m $>  Nothing           -- skip all checks
+        meta        m = m $>  Just (return ())  -- do the usual checks
+        mutual i ds m = m <&> Just . uncurry (mutualChecks i d ds)
+        impossible  m = m $>  __IMPOSSIBLE__
+                        -- We're definitely inside a mutual block.
 
     let mi = Info.MutualInfo TerminationCheck True noRange
 
@@ -359,8 +363,15 @@ checkTermination_ mid d = Bench.billTo [Bench.Termination] $ do
       A.RecDef {} -> return ()
       _ -> disableDestructiveUpdate $ do
         termErrs <- termDecl mid d
-        unless (null termErrs) $
-          typeError $ TerminationCheckFailed termErrs
+        -- If there are some termination errors, we collect them in
+        -- the state and mark the definition as non-terminating so
+        -- that it does not get unfolded
+        unless (null termErrs) $ do
+          termIssue <- TerminationIssue <$> get <*> buildClosure termErrs
+          warning termIssue
+          case Seq.viewl (A.allNames d) of
+            nm Seq.:< _ -> setTerminates nm False
+            _           -> return ()
 
 -- | Check a set of mutual names for positivity.
 checkPositivity_ :: Info.MutualInfo -> Set QName -> TCM ()
@@ -444,10 +455,27 @@ checkProjectionLikeness_ names = Bench.billTo [Bench.ProjectionLikeness] $ do
         _ -> reportSLn "tc.proj.like" 25 $
                "mutual definitions are not considered for projection-likeness"
 
+-- | Freeze metas created by given computation if in abstract mode.
+whenAbstractFreezeMetasAfter :: Info.DefInfo -> TCM a -> TCM a
+whenAbstractFreezeMetasAfter Info.DefInfo{ defAccess, defAbstract} m = do
+  let pubAbs = defAccess == PublicAccess && defAbstract == AbstractDef
+  if not pubAbs then m else do
+    (a, ms) <- metasCreatedBy m
+    xs <- freezeMetas' $ (`Set.member` ms)
+    reportSDoc "tc.decl.ax" 20 $ vcat
+      [ text "Abstract type signature produced new metas: " <+> sep (map prettyTCM $ Set.toList ms)
+      , text "We froze the following ones of these:       " <+> sep (map prettyTCM xs)
+      ]
+    return a
+
 -- | Type check an axiom.
 checkAxiom :: A.Axiom -> Info.DefInfo -> ArgInfo ->
               Maybe [Occurrence] -> QName -> A.Expr -> TCM ()
-checkAxiom funSig i info0 mp x e = do
+checkAxiom funSig i info0 mp x e = whenAbstractFreezeMetasAfter i $ do
+  -- Andreas, 2016-07-19 issues #418 #2102:
+  -- We freeze metas in type signatures of abstract definitions, to prevent
+  -- leakage of implementation details.
+
   -- Andreas, 2012-04-18  if we are in irrelevant context, axioms is irrelevant
   -- even if not declared as such (Issue 610).
   rel <- max (getRelevance info0) <$> asks envRelevance
@@ -822,7 +850,7 @@ checkTypeSignature (A.ScopedDecl scope ds) = do
 checkTypeSignature (A.Axiom funSig i info mp x e) =
     case Info.defAccess i of
         PublicAccess  -> inConcreteMode $ checkAxiom funSig i info mp x e
-        PrivateAccess -> inAbstractMode $ checkAxiom funSig i info mp x e
+        PrivateAccess{} -> inAbstractMode $ checkAxiom funSig i info mp x e
         OnlyQualified -> __IMPOSSIBLE__
 checkTypeSignature _ = __IMPOSSIBLE__   -- type signatures are always axioms
 
