@@ -217,7 +217,6 @@ tcErrString err = show (getRange err) ++ " " ++ case err of
   Exception r s   -> show r ++ " " ++ show s
   IOException r e -> show r ++ " " ++ show e
   PatternErr{}    -> "PatternErr"
-  {- AbortAssign _   -> "AbortAssign" -- UNUSED -}
 
 errorString :: TypeError -> String
 errorString err = case err of
@@ -296,6 +295,7 @@ errorString err = case err of
   InvalidTypeSort{}                        -> "InvalidTypeSort"
   FunctionTypeInSizeUniv{}                 -> "FunctionTypeInSizeUniv"
   NotAValidLetBinding{}                    -> "NotAValidLetBinding"
+  NotValidBeforeField{}                    -> "NotValidBeforeField"
   NotAnExpression{}                        -> "NotAnExpression"
   NotImplemented{}                         -> "NotImplemented"
   NotSupported{}                           -> "NotSupported"
@@ -386,7 +386,6 @@ instance PrettyTCM TCErr where
     Exception r s   -> sayWhere r $ return s
     IOException r e -> sayWhere r $ fwords $ show e
     PatternErr{}    -> sayWhere err $ panic "uncaught pattern violation"
-    {- AbortAssign _   -> sayWhere err $ panic "uncaught aborted assignment" -- UNUSED -}
 
 instance PrettyTCM CallInfo where
   prettyTCM c = do
@@ -897,6 +896,9 @@ instance PrettyTCM TypeError where
     NotAValidLetBinding nd -> fwords $
       "Not a valid let-declaration"
 
+    NotValidBeforeField nd -> fwords $
+      "This declaration is illegal in a record before the last field"
+
     NothingAppliedToHiddenArg e -> fsep $
       [pretty e] ++ pwords "cannot appear by itself. It needs to be the argument to" ++
       pwords "a function expecting an implicit argument."
@@ -1265,7 +1267,7 @@ instance PrettyTCM TypeError where
       mpar n args $
         prettyTCM c <+> fsep (map (prettyArg . fmap namedThing) args)
     prettyPat _ (I.LitP l) = prettyTCM l
-    prettyPat _ (I.ProjP p) = prettyTCM p
+    prettyPat _ (I.ProjP _ p) = text "." <> prettyTCM p
 
 notCmp :: Comparison -> TCM Doc
 notCmp cmp = text "!" <> prettyTCM cmp

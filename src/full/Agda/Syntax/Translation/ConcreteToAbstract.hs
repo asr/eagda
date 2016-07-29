@@ -165,7 +165,7 @@ instance PatternVars (A.Pattern' e) where
   patternVars p = case p of
       A.VarP x               -> [x]
       A.ConP _ _ args        -> patternVars args
-      A.ProjP _ _            -> []
+      A.ProjP _ _ _          -> []
       A.WildP _              -> []
       A.AsP _ x p            -> x : patternVars p
       A.DotP _ _             -> []
@@ -186,7 +186,7 @@ noDotPattern err = dot
     dot p = case p of
       A.VarP x               -> pure $ A.VarP x
       A.ConP i c args        -> A.ConP i c <$> (traverse $ traverse $ traverse dot) args
-      A.ProjP i d            -> pure $ A.ProjP i d
+      A.ProjP i o d          -> pure $ A.ProjP i o d
       A.WildP i              -> pure $ A.WildP i
       A.AsP i x p            -> A.AsP i x <$> dot p
       A.DotP{}               -> typeError $ GenericError err
@@ -197,8 +197,8 @@ noDotPattern err = dot
       A.RecP i fs            -> A.RecP i <$> (traverse $ traverse dot) fs
 
 -- | Compute the type of the record constructor (with bogus target type)
-recordConstructorType :: [NiceDeclaration] -> C.Expr
-recordConstructorType fields = build fs
+recordConstructorType :: [NiceDeclaration] -> ScopeM C.Expr
+recordConstructorType fields = build <$> mapM validForLet fs
   where
     -- drop all declarations after the last field declaration
     fs = reverse $ dropWhile notField $ reverse fields
@@ -206,22 +206,70 @@ recordConstructorType fields = build fs
     notField NiceField{} = False
     notField _           = True
 
-    -- Andreas, 2013-11-08
-    -- Turn @open public@ into just @open@, since we cannot have an
-    -- @open public@ in a @let@.  Fixes issue 532.
-    build (NiceOpen r m dir@ImportDirective{ publicOpen = True }  : fs) =
-      build (NiceOpen r m dir{ publicOpen = False } : fs)
+    -- | Check that declarations before last field can be handled
+    --   by current translation into let.
+    --
+    --   Sometimes a declaration is valid with minor modifications.
+    validForLet :: NiceDeclaration -> ScopeM NiceDeclaration
+    validForLet d = do
+      let failure = traceCall (SetRange $ getRange d) $
+            typeError $ NotValidBeforeField d
+      case d of
 
-    build (NiceModuleMacro r p x modapp open dir@ImportDirective{ publicOpen = True } : fs) =
-      build (NiceModuleMacro r p x modapp open dir{ publicOpen = False } : fs)
+        -- Andreas, 2013-11-08
+        -- Turn @open public@ into just @open@, since we cannot have an
+        -- @open public@ in a @let@.  Fixes issue #532.
+        C.NiceOpen r m dir ->
+          return $ C.NiceOpen r m dir{ publicOpen = False }
 
-    build (NiceField r f _ _ _ x (Arg info e) : fs) =
+        C.NiceModuleMacro r p x modapp open dir ->
+          return $ C.NiceModuleMacro r p x modapp open dir{ publicOpen = False }
+
+        C.NiceField{} ->
+          return d
+
+        C.NiceMutual _ _ _
+          [ C.FunSig _ _ _ _ _instanc macro _info _ _ _
+          , C.FunDef _ _ _ abstract _ _
+             [ C.Clause _top _catchall (C.LHS _p [] [] []) (C.RHS _rhs) NoWhere [] ]
+          ] | abstract /= AbstractDef && macro /= MacroDef ->
+          -- TODO: this is still too generous, we also need to check that _p
+          -- is only variable patterns.
+          return d
+
+        C.NiceMutual{}        -> failure
+        -- TODO: some of these cases might be __IMPOSSIBLE__
+        C.Axiom{}             -> failure
+        C.PrimitiveFunction{} -> failure
+        C.NiceModule{}        -> failure
+        C.NiceImport{}        -> failure
+        C.NicePragma{}        -> failure
+        C.NiceRecSig{}        -> failure
+        C.NiceDataSig{}       -> failure
+        C.NiceFunClause{}     -> failure
+        C.FunSig{}            -> failure  -- Note: these are bundled with FunDef in NiceMutual
+        C.FunDef{}            -> failure
+        C.DataDef{}           -> failure
+        C.RecDef{}            -> failure
+        C.NicePatternSyn{}    -> failure
+        C.NiceUnquoteDecl{}   -> failure
+        C.NiceUnquoteDef{}    -> failure
+
+    build fs =
+      let (ds1, ds2) = span notField fs
+      in  lets (concatMap notSoNiceDeclarations ds1) $ fld ds2
+
+    -- Turn a field declaration into a the domain of a Pi-type
+    fld [] = C.SetN noRange 0 -- todo: nicer
+    fld (NiceField r f _ _ _ x (Arg info e) : fs) =
         C.Pi [C.TypedBindings r $ Arg info (C.TBind r [pure $ mkBoundName x f] e)] $ build fs
       where r = getRange x
-    build (d : fs)                     = C.Let (getRange d) (notSoNiceDeclarations d) $
-                                           build fs
-    build []                           = C.SetN noRange 0 -- todo: nicer
+    fld _ = __IMPOSSIBLE__
 
+    -- Turn non-field declarations into a let binding.
+    -- Smart constructor for C.Let:
+    lets [] c = c
+    lets ds c = C.Let (getRange ds) ds c
 
 -- | @checkModuleApplication modapp m0 x dir = return (modapp', renD, renM)@
 --
@@ -508,7 +556,7 @@ instance ToAbstract OldQName A.Expr where
     case qx of
       VarName x'          -> return $ A.Var x'
       DefinedName _ d     -> return $ nameExpr d
-      FieldName     ds    -> return $ A.Proj $ AmbQ (map anameName ds)
+      FieldName     ds    -> return $ A.Proj ProjPrefix $ AmbQ (map anameName ds)
       ConstructorName ds  -> return $ A.Con $ AmbQ (map anameName ds)
       UnknownName         -> notInScope x
       PatternSynResName d -> return $ nameExpr d
@@ -828,8 +876,10 @@ instance ToAbstract C.Expr A.Expr where
       C.IdiomBrackets r e ->
         toAbstractCtx TopCtx =<< parseIdiomBrackets r e
 
+  -- Post-fix projections
+      C.Dot r e  -> A.Dot (ExprRange r) <$> toAbstract e
+
   -- Pattern things
-      C.Dot _ _  -> notAnExpression e
       C.As _ _ _ -> notAnExpression e
       C.Absurd _ -> notAnExpression e
 
@@ -1405,9 +1455,9 @@ instance ToAbstract NiceDeclaration A.Declaration where
         let x' = anameName ax
         -- We scope check the fields a first time when putting together
         -- the type of the constructor.
-        contel <- toAbstract $ recordConstructorType fields
+        contel <- toAbstract =<< recordConstructorType fields
         m0     <- getCurrentModule
-        let m = A.qualifyM m0 $ mnameFromList $ (:[]) $ last $ qnameToList x'
+        let m = A.qualifyM m0 $ mnameFromList [ last $ qnameToList x' ]
         printScope "rec" 15 "before record"
         createModule False m
         -- We scope check the fields a second time, as actual fields.
@@ -1599,8 +1649,8 @@ instance ToAbstract C.Pragma [A.Pragma] where
     e <- toAbstract $ OldQName x Nothing
     case e of
       A.Def x          -> return [ A.RewritePragma x ]
-      A.Proj (AmbQ [x])-> return [ A.RewritePragma x ]
-      A.Proj x         -> genericError $ "REWRITE used on ambiguous name " ++ show x
+      A.Proj _ (AmbQ [x]) -> return [ A.RewritePragma x ]
+      A.Proj _ x       -> genericError $ "REWRITE used on ambiguous name " ++ show x
       A.Con (AmbQ [x]) -> return [ A.RewritePragma x ]
       A.Con x          -> genericError $ "REWRITE used on ambiguous name " ++ show x
       A.Var x          -> genericError $ "REWRITE used on parameter " ++ show x ++ " instead of on a defined symbol"
@@ -1624,8 +1674,8 @@ instance ToAbstract C.Pragma [A.Pragma] where
     e <- toAbstract $ OldQName x Nothing
     y <- case e of
           A.Def x -> return x
-          A.Proj (AmbQ [x]) -> return x -- TODO: do we need to do s.th. special for projections? (Andreas, 2014-10-12)
-          A.Proj x -> genericError $ "COMPILED on ambiguous name " ++ show x
+          A.Proj _ (AmbQ [x]) -> return x -- TODO: do we need to do s.th. special for projections? (Andreas, 2014-10-12)
+          A.Proj _ x -> genericError $ "COMPILED on ambiguous name " ++ show x
           A.Con _ -> genericError "Use COMPILED_DATA for constructors" -- TODO
           _       -> __IMPOSSIBLE__
     return [ A.CompiledPragma y hs ]
@@ -1645,8 +1695,8 @@ instance ToAbstract C.Pragma [A.Pragma] where
     e <- toAbstract $ OldQName x Nothing
     y <- case e of
           A.Def x -> return x
-          A.Proj (AmbQ [x]) -> return x
-          A.Proj x -> genericError $
+          A.Proj _ (AmbQ [x]) -> return x
+          A.Proj _ x -> genericError $
             "COMPILED_JS used on ambiguous name " ++ prettyShow x
           A.Con (AmbQ [x]) -> return x
           A.Con x -> genericError $
@@ -1668,8 +1718,8 @@ instance ToAbstract C.Pragma [A.Pragma] where
       e <- toAbstract $ OldQName x Nothing
       y <- case e of
           A.Def  x -> return x
-          A.Proj (AmbQ [x]) -> return x
-          A.Proj x -> genericError $
+          A.Proj _ (AmbQ [x]) -> return x
+          A.Proj _ x -> genericError $
             "NO_SMASHING used on ambiguous name " ++ prettyShow x
           _        -> genericError "Target of NO_SMASHING pragma should be a function"
       return [ A.NoSmashingPragma y ]
@@ -1677,8 +1727,8 @@ instance ToAbstract C.Pragma [A.Pragma] where
       e <- toAbstract $ OldQName x Nothing
       y <- case e of
           A.Def  x -> return x
-          A.Proj (AmbQ [x]) -> return x
-          A.Proj x -> genericError $
+          A.Proj _ (AmbQ [x]) -> return x
+          A.Proj _ x -> genericError $
             "STATIC used on ambiguous name " ++ prettyShow x
           _        -> genericError "Target of STATIC pragma should be a function"
       return [ A.StaticPragma y ]
@@ -1686,8 +1736,8 @@ instance ToAbstract C.Pragma [A.Pragma] where
       e <- toAbstract $ OldQName x Nothing
       y <- case e of
           A.Def  x -> return x
-          A.Proj (AmbQ [x]) -> return x
-          A.Proj x -> genericError $
+          A.Proj _ (AmbQ [x]) -> return x
+          A.Proj _ x -> genericError $
             "INLINE used on ambiguous name " ++ prettyShow x
           _        -> genericError "Target of INLINE pragma should be a function"
       return [ A.InlinePragma y ]
@@ -2051,7 +2101,7 @@ instance ToAbstract (A.LHSCore' C.Expr) (A.LHSCore' A.Expr) where
 instance ToAbstract (A.Pattern' C.Expr) (A.Pattern' A.Expr) where
     toAbstract (A.VarP x)             = return $ A.VarP x
     toAbstract (A.ConP i ds as)       = A.ConP i ds <$> mapM toAbstract as
-    toAbstract (A.ProjP i ds)         = return $ A.ProjP i ds
+    toAbstract (A.ProjP i o ds)       = return $ A.ProjP i o ds
     toAbstract (A.DefP i x as)        = A.DefP i x <$> mapM toAbstract as
     toAbstract (A.WildP i)            = return $ A.WildP i
     toAbstract (A.AsP i x p)          = A.AsP i x <$> toAbstract p
@@ -2083,8 +2133,8 @@ instance ToAbstract C.Pattern (A.Pattern' C.Expr) where
         getHiding p == NotHidden = do
       e <- toAbstract (OldQName x Nothing)
       let quoted (A.Def x) = return x
-          quoted (A.Proj (AmbQ [x])) = return x
-          quoted (A.Proj (AmbQ xs))  = genericError $ "quote: Ambigous name: " ++ show xs
+          quoted (A.Proj _ (AmbQ [x])) = return x
+          quoted (A.Proj _ (AmbQ xs))  = genericError $ "quote: Ambigous name: " ++ show xs
           quoted (A.Con (AmbQ [x])) = return x
           quoted (A.Con (AmbQ xs))  = genericError $ "quote: Ambigous name: " ++ show xs
           quoted (A.ScopedExpr _ e) = quoted e
@@ -2098,7 +2148,7 @@ instance ToAbstract C.Pattern (A.Pattern' C.Expr) where
         (p', q') <- toAbstract (p, q)
         case p' of
             ConP i x as        -> return $ ConP (i {patInfo = info}) x (as ++ [q'])
-            ProjP i x          -> typeError $ InvalidPattern p0
+            ProjP i o x        -> typeError $ InvalidPattern p0
             DefP _ x as        -> return $ DefP info x (as ++ [q'])
             PatternSynP _ x as -> return $ PatternSynP info x (as ++ [q'])
             _                  -> typeError $ InvalidPattern p0

@@ -61,13 +61,13 @@ instance EmbPrj a => EmbPrj (Drop a) where
     valu _      = malformed
 
 instance EmbPrj a => EmbPrj (Elim' a) where
-  icod_ (Apply a) = icode1' a
-  icod_ (Proj  a) = icode1 0 a
+  icod_ (Apply a)  = icode1' a
+  icod_ (Proj a b) = icode2 0 a b
 
   value = vcase valu where
-    valu [a]    = valu1 Apply a
-    valu [0, a] = valu1 Proj a
-    valu _      = malformed
+    valu [a]       = valu1 Apply a
+    valu [0, a, b] = valu2 Proj a b
+    valu _         = malformed
 
 instance EmbPrj I.ConHead where
   icod_ (ConHead a b c) = icode3' a b c
@@ -371,17 +371,6 @@ instance EmbPrj I.Clause where
     valu [a, b, c, d, e, f] = valu6 Clause a b c d e f
     valu _                  = malformed
 
-instance EmbPrj a => EmbPrj (I.ClauseBodyF a) where
-  icod_ (Body   a) = icode1 0 a
-  icod_ (Bind   a) = icode1' a
-  icod_ NoBody     = icode0'
-
-  value = vcase valu where
-    valu [0, a] = valu1 Body   a
-    valu [a]    = valu1 Bind   a
-    valu []     = valu0 NoBody
-    valu _      = malformed
-
 instance EmbPrj I.ConPatternInfo where
   icod_ (ConPatternInfo a b) = icode2' a b
 
@@ -398,17 +387,17 @@ instance EmbPrj I.DBPatVar where
 
 instance EmbPrj a => EmbPrj (I.Pattern' a) where
   icod_ (VarP a    ) = icode1' a
-  icod_ (ConP a b c) = icode3' a b c
+  icod_ (ConP a b c) = icode3 1 a b c
   icod_ (LitP a    ) = icode1 2 a
   icod_ (DotP a    ) = icode1 3 a
-  icod_ (ProjP a   ) = icode1 4 a
+  icod_ (ProjP a b ) = icode2 4 a b
 
   value = vcase valu where
     valu [a]       = valu1 VarP a
-    valu [a, b, c] = valu3 ConP a b c
+    valu [1, a, b, c] = valu3 ConP a b c
     valu [2, a]    = valu1 LitP a
     valu [3, a]    = valu1 DotP a
-    valu [4, a]    = valu1 ProjP a
+    valu [4, a, b] = valu2 ProjP a b
     valu _         = malformed
 
 instance EmbPrj a => EmbPrj (Builtin a) where

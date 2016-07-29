@@ -94,7 +94,7 @@ checkInjectivity f cs = do
   -- Extract the head symbol of the rhs of each clause (skip absurd clauses)
   es <- catMaybes <$> do
     forM cs $ \ c -> do             -- produces a list ...
-      mapM ((,c) <.> headSymbol) $ getBodyUnraised c -- ... of maybes
+      mapM ((,c) <.> headSymbol) $ clauseBody c -- ... of maybes
   let (hs, ps) = unzip es
   reportSLn "tc.inj.check" 40 $ "  right hand sides: " ++ show hs
   if all isJust hs && distinct hs
@@ -248,7 +248,7 @@ useInjectivity cmp a u v = do
       sub <- ask
       return $ applySubst sub v
 
-    metaElim (Arg _ (ProjP p)) = return $ Proj p
+    metaElim (Arg _ (ProjP o p))  = return $ Proj o p
     metaElim (Arg info p)         = Apply . Arg info <$> metaPat p
 
     metaArgs args = mapM (traverse $ metaPat . namedThing) args

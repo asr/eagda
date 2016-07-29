@@ -56,7 +56,7 @@ import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Reduce.Monad
 import Agda.TypeChecking.Substitute
-import Agda.TypeChecking.Telescope (renameP, permuteTel)
+import Agda.TypeChecking.Telescope (permuteTel)
 
 import Agda.Utils.Either
 import Agda.Utils.Except
@@ -232,7 +232,7 @@ instance Match a b => Match (Elim' a) (Elim' b) where
   match gamma k p v =
    case (p, v) of
      (Apply p, Apply v) -> match gamma k p v
-     (Proj x , Proj y ) -> if x == y then return () else
+     (Proj _ x, Proj _ y) -> if x == y then return () else
                              traceSDocNLM "rewriting" 80 (sep
                                [ text "mismatch between projections " <+> prettyTCM x
                                , text " and " <+> prettyTCM y ]) mzero
@@ -300,7 +300,7 @@ instance Match NLPat Term where
             case ok of
               Left b         -> block b
               Right Nothing  -> no (text "")
-              Right (Just v) -> tellSub i $ teleLam tel $ renameP perm v
+              Right (Just v) -> tellSub i $ teleLam tel $ renameP __IMPOSSIBLE__ perm v
       PDef f ps -> do
         v <- liftRed $ constructorForm =<< unLevel v
         case ignoreSharing v of

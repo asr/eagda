@@ -61,6 +61,8 @@ import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.DropArgs
 
+import Agda.Interaction.Options ( optPostfixProjections )
+
 import Agda.Utils.Except ( MonadError(catchError) )
 import Agda.Utils.Functor
 import Agda.Utils.Lens
@@ -95,8 +97,10 @@ nelims e (I.Apply arg : es) = do
   let hd | notVisible arg && dontShowImp = e
          | otherwise                     = A.App noExprInfo e arg
   nelims hd es
-nelims e (I.Proj d    : es) =
-  nelims (A.App noExprInfo (A.Proj $ AmbQ [d]) $ defaultNamedArg e) es
+nelims e (I.Proj o@ProjPrefix d  : es) =
+  nelims (A.App noExprInfo (A.Proj o $ AmbQ [d]) $ defaultNamedArg e) es
+nelims e (I.Proj o d  : es) =
+  nelims (A.App noExprInfo e (defaultNamedArg $ A.Proj o $ AmbQ [d])) es
 
 elims :: Expr -> [I.Elim' Expr] -> TCM Expr
 elims e = nelims e . map (fmap unnamed)
@@ -272,7 +276,7 @@ reifyDisplayFormP lhs@(A.SpineLHS i f ps wps) =
 
         argToPat arg = fmap unnamed <$> traverse termToPat arg
         elimToPat (I.Apply arg) = argToPat arg
-        elimToPat (I.Proj d)    = return $ defaultNamedArg $ A.ProjP patNoRange $ AmbQ [d]
+        elimToPat (I.Proj o d)  = return $ defaultNamedArg $ A.ProjP patNoRange o $ AmbQ [d]
 
         termToPat :: DisplayTerm -> TCM A.Pattern
 
@@ -332,7 +336,11 @@ reifyTerm expandAnonDefs0 v = do
   -- Ulf 2014-07-10: Don't expand anonymous when display forms are disabled
   -- (i.e. when we don't care about nice printing)
   expandAnonDefs <- return expandAnonDefs0 `and2M` displayFormsEnabled
-  v <- unSpine <$> instantiate v
+  -- Andreas, 2016-07-21 if --postfix-projections
+  -- then we print system-generated projections as postfix, else prefix.
+  havePfp <- optPostfixProjections <$> pragmaOptions
+  let pred = if havePfp then (== ProjPrefix) else (/= ProjPostfix)
+  v <- unSpine' pred <$> instantiate v
   case v of
     I.Var n es   -> do
         x  <- liftTCM $ nameOfBV n `catchError` \_ -> freshName_ ("@" ++ show n)
@@ -593,11 +601,6 @@ instance (Reify i a) => Reify (Arg i) (Arg a) where
 data NamedClause = NamedClause QName Bool I.Clause
   -- ^ Also tracks whether module parameters should be dropped from the patterns.
 
-instance Reify ClauseBody RHS where
-  reify NoBody     = return AbsurdRHS
-  reify (Body v)   = RHS <$> reify v
-  reify (Bind b)   = reify $ absBody b  -- the variables should already be bound
-
 -- The Monoid instance for Data.Map doesn't require that the values are a
 -- monoid.
 newtype MonoidMap k v = MonoidMap { unMonoidMap :: Map.Map k v }
@@ -661,7 +664,7 @@ stripImplicits (ps, wps) = do          -- v if show-implicit we don't need the n
           stripPat p = case p of
             A.VarP _      -> p
             A.ConP i c ps -> A.ConP i c $ stripArgs True ps
-            A.ProjP _ _   -> p
+            A.ProjP{}     -> p
             A.DefP _ _ _  -> p
             A.DotP _ e    -> p
             A.WildP _     -> p
@@ -723,7 +726,7 @@ instance BlankVars A.Pattern where
   blank bound p = case p of
     A.VarP _      -> p   -- do not blank pattern vars
     A.ConP c i ps -> A.ConP c i $ blank bound ps
-    A.ProjP _ _   -> p
+    A.ProjP{}     -> p
     A.DefP i f ps -> A.DefP i f $ blank bound ps
     A.DotP i e    -> A.DotP i $ blank bound e
     A.WildP _     -> p
@@ -739,11 +742,12 @@ instance BlankVars A.Expr where
     A.Var x                -> if x `Set.member` bound then e
                               else A.Underscore emptyMetaInfo
     A.Def _                -> e
-    A.Proj _               -> e
+    A.Proj{}               -> e
     A.Con _                -> e
     A.Lit _                -> e
     A.QuestionMark{}       -> e
     A.Underscore _         -> e
+    A.Dot i e              -> A.Dot i $ blank bound e
     A.App i e1 e2          -> uncurry (A.App i) $ blank bound (e1, e2)
     A.WithApp i e es       -> uncurry (A.WithApp i) $ blank bound (e, es)
     A.Lam i b e            -> let bound' = varsBoundIn b `Set.union` bound
@@ -874,7 +878,7 @@ reifyPatterns = mapM $ stripNameFromExplicit <.> traverse (traverse reifyPat)
         t <- liftTCM $ reify v
         return $ A.DotP patNoRange t
       I.LitP l  -> return $ A.LitP l
-      I.ProjP d -> return $ A.ProjP patNoRange $ AmbQ [d]
+      I.ProjP o d     -> return $ A.ProjP patNoRange o $ AmbQ [d]
       I.ConP c cpi ps -> do
         liftTCM $ reportSLn "reify.pat" 60 $ "reifying pattern " ++ show p
         tryRecPFromConP =<< do A.ConP ci (AmbQ [conName c]) <$> reifyPatterns ps
@@ -906,9 +910,9 @@ instance Reify (QNamed I.Clause) A.Clause where
   reify (QNamed f cl) = reify (NamedClause f True cl)
 
 instance Reify NamedClause A.Clause where
-  reify (NamedClause f toDrop cl@(I.Clause _ tel ps body _ catchall)) = addContext tel $ do
+  reify (NamedClause f toDrop cl) = addContext (clauseTel cl) $ do
     reportSLn "reify.clause" 60 $ "reifying NamedClause, cl = " ++ show cl
-    ps  <- reifyPatterns ps
+    ps  <- reifyPatterns $ namedClausePats cl
     lhs <- liftTCM $ reifyDisplayFormP $ SpineLHS info f ps [] -- LHS info (LHSHead f ps) []
     -- Unless @toDrop@ we have already dropped the module patterns from the clauses
     -- (e.g. for extended lambdas).
@@ -917,14 +921,14 @@ instance Reify NamedClause A.Clause where
       return $ dropParams nfv lhs
     lhs <- stripImps lhs
     reportSLn "reify.clause" 60 $ "reifying NamedClause, lhs = " ++ show lhs
-    rhs <- reify $ renameP (reverseP perm) <$> body
+    rhs <- maybe (return AbsurdRHS) (RHS <.> reify) $ clauseBody cl
     reportSLn "reify.clause" 60 $ "reifying NamedClause, rhs = " ++ show rhs
-    let result = A.Clause (spineToLhs lhs) [] rhs [] catchall
+    let result = A.Clause (spineToLhs lhs) [] rhs [] (I.clauseCatchall cl)
     reportSLn "reify.clause" 60 $ "reified NamedClause, result = " ++ show result
     return result
     where
+      perm = fromMaybe __IMPOSSIBLE__ $ clausePerm cl
       info = LHSRange noRange
-      perm = fromMaybe __IMPOSSIBLE__ $ dbPatPerm ps
 
       dropParams n (SpineLHS i f ps wps) = SpineLHS i f (genericDrop n ps) wps
       stripImps (SpineLHS i f ps wps) = do

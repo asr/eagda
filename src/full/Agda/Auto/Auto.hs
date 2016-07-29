@@ -66,7 +66,7 @@ insertAbsurdPattern (c:s) = c : insertAbsurdPattern s
 getName :: A.Expr -> Maybe (Bool, I.QName)
 getName (A.ScopedExpr _ e) = getName e
 getName (A.Def qname) = Just (False, qname)
-getName (A.Proj qname) = Just (False, head $ I.unAmbQ qname)
+getName (A.Proj _ qname) = Just (False, head $ I.unAmbQ qname)
 getName (A.Con qname) = Just (True, head $ I.unAmbQ qname)
 getName _ = Nothing
 
@@ -370,7 +370,7 @@ auto ii rng argstr = do
                 withCurrentModule (AN.qnameModule def) $ do
                  -- Normalise the dot patterns
                  ps <- addContext tel $ normalise ps
-                 body <- etaContractBody body
+                 body <- etaContract body
                  liftM modifyAbstractClause $ inContext [] $ reify $ AN.QNamed def $ I.Clause noRange tel ps body t catchall
               pcs <- withInteractionId ii $ mapM prettyA cls''
               ticks <- liftIO $ readIORef ticks

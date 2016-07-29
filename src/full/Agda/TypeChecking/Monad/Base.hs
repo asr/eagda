@@ -1357,17 +1357,17 @@ newtype ProjLams = ProjLams { getProjLams :: [Arg ArgName] }
   deriving (Typeable, Show, Null)
 
 -- | Building the projection function (which drops the parameters).
-projDropPars :: Projection -> Term
+projDropPars :: Projection -> ProjOrigin -> Term
 -- Proper projections:
-projDropPars (Projection True d _ _ lams) =
+projDropPars (Projection True d _ _ lams) o =
   case initLast $ getProjLams lams of
     Nothing -> Def d []
     Just (pars, Arg i y) ->
-      let core = Lam i $ Abs y $ Var 0 [Proj d] in
+      let core = Lam i $ Abs y $ Var 0 [Proj o d] in
       List.foldr (\ (Arg ai x) -> Lam ai . NoAbs x) core pars
 -- Projection-like functions:
-projDropPars (Projection False _ _ _ lams) | null lams = __IMPOSSIBLE__
-projDropPars (Projection False d _ _ lams) =
+projDropPars (Projection False _ _ _ lams) o | null lams = __IMPOSSIBLE__
+projDropPars (Projection False d _ _ lams) o =
   List.foldr (\ (Arg ai x) -> Lam ai . NoAbs x) (Def d []) $ init $ getProjLams lams
 
 -- | The info of the principal (record) argument.
@@ -2450,6 +2450,7 @@ data TypeError
             --   definition, but it wasn't of the form @m Delta@.
         | NotAnExpression C.Expr
         | NotAValidLetBinding D.NiceDeclaration
+        | NotValidBeforeField D.NiceDeclaration
         | NothingAppliedToHiddenArg C.Expr
         | NothingAppliedToInstanceArg C.Expr
     -- Pattern synonym errors
@@ -2501,11 +2502,19 @@ instance Error TypeError where
 
 -- | Type-checking errors.
 
-data TCErr = TypeError TCState (Closure TypeError)
-           | Exception Range Doc
-           | IOException Range E.IOException
-           | PatternErr  -- TCState -- ^ for pattern violations
-           {- AbortAssign TCState -- ^ used to abort assignment to meta when there are instantiations -- UNUSED -}
+data TCErr
+  = TypeError
+    { tcErrState   :: TCState
+        -- ^ The state in which the error was raised.
+    , tcErrClosErr :: Closure TypeError
+        -- ^ The environment in which the error as raised plus the error.
+    }
+  | Exception Range Doc
+  | IOException Range E.IOException
+  | PatternErr
+      -- ^ The exception which is usually caught.
+      --   Raised for pattern violations during unification ('assignV')
+      --   but also in other situations where we want to backtrack.
   deriving (Typeable)
 
 instance Error TCErr where
@@ -2516,14 +2525,12 @@ instance Show TCErr where
     show (Exception r d) = show r ++ ": " ++ render d
     show (IOException r e) = show r ++ ": " ++ show e
     show PatternErr{}  = "Pattern violation (you shouldn't see this)"
-    {- show (AbortAssign _) = "Abort assignment (you shouldn't see this)" -- UNUSED -}
 
 instance HasRange TCErr where
     getRange (TypeError _ cl)  = envRange $ clEnv cl
     getRange (Exception r _)   = r
     getRange (IOException r _) = r
     getRange PatternErr{}      = noRange
-    {- getRange (AbortAssign s)   = noRange -- UNUSED -}
 
 instance E.Exception TCErr
 

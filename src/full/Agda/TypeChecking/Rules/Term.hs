@@ -449,7 +449,7 @@ checkAbsurdLambda i h e t = do
                     { clauseRange     = getRange e
                     , clauseTel       = telFromList [fmap ("()",) dom]
                     , namedClausePats = [Arg info' $ Named (Just $ unranged $ absName b) $ debruijnNamedVar "()" 0]
-                    , clauseBody      = Bind $ NoAbs "()" NoBody
+                    , clauseBody      = Nothing
                     , clauseType      = Just $ setRelevance rel $ defaultArg $ absBody b
                     , clauseCatchall  = False
                     }
@@ -540,8 +540,8 @@ checkExtendedLambda i di qname cs e t = do
              -- TODO: mine for a meta in t
              -- For now, we fail.
              throwError err
-           -- Case: we know the meta here.  It cannot be instantiated yet.
-           Just InstV{} -> __IMPOSSIBLE__
+           -- Case: we know the meta here.
+           Just InstV{} -> __IMPOSSIBLE__  -- It cannot be instantiated yet.
            Just InstS{} -> __IMPOSSIBLE__
            Just{} -> do
              -- It has to be blocked on some meta, so we can postpone,
@@ -564,12 +564,16 @@ checkExtendedLambda i di qname cs e t = do
 --   * If another error was thrown or the type @a@ is not blocked, reraise the error.
 --
 catchIlltypedPatternBlockedOnMeta :: TCM () -> TCM (Maybe (TCErr, MetaId))
-catchIlltypedPatternBlockedOnMeta m = (Nothing <$ m) `catchError` \ err -> do
+catchIlltypedPatternBlockedOnMeta m = (Nothing <$ do disableDestructiveUpdate m)
+  `catchError` \ err -> do
   let reraise = throwError err
   case err of
-    TypeError s cl@Closure{ clValue = IlltypedPattern p a } ->
-      enterClosure cl $ \ _ -> do
-        ifBlockedType a (\ x _ -> return $ Just (err, x)) $ {- else -} \ _ -> reraise
+    TypeError s cl@Closure{ clValue = IlltypedPattern p a } -> do
+      mx <- localState $ do
+        put s
+        enterClosure cl $ \ _ -> do
+          ifBlockedType a (\ x _ -> return $ Just x) $ {- else -} \ _ -> return Nothing
+      caseMaybe mx reraise $ \ x -> return $ Just (err, x)
     _ -> reraise
 
 ---------------------------------------------------------------------------
@@ -855,8 +859,8 @@ checkExpr e t0 =
         e0@(A.App i q (Arg ai e))
           | A.Quote _ <- unScope q, visible ai -> do
           let quoted (A.Def x) = return x
-              quoted (A.Proj (AmbQ [x])) = return x
-              quoted (A.Proj (AmbQ xs))  = typeError $ GenericError $ "quote: Ambigous name: " ++ show xs
+              quoted (A.Proj o (AmbQ [x])) = return x
+              quoted (A.Proj o (AmbQ xs))  = typeError $ GenericError $ "quote: Ambigous name: " ++ show xs
               quoted (A.Con (AmbQ [x])) = return x
               quoted (A.Con (AmbQ xs))  = typeError $ GenericError $ "quote: Ambigous name: " ++ show xs
               quoted (A.ScopedExpr _ e) = quoted e
@@ -984,16 +988,16 @@ quoteContext = do
 
 -- | Document ME!
 
-inferProjApp :: A.Expr -> [QName] -> A.Args -> TCM (Term, Type)
-inferProjApp e ds args0 = inferOrCheckProjApp e ds args0 Nothing
+inferProjApp :: A.Expr -> ProjOrigin -> [QName] -> A.Args -> TCM (Term, Type)
+inferProjApp e o ds args0 = inferOrCheckProjApp e o ds args0 Nothing
 
-checkProjApp  :: A.Expr -> [QName] -> A.Args -> Type -> TCM Term
-checkProjApp e ds args0 t = do
-  (v, ti) <- inferOrCheckProjApp e ds args0 (Just t)
+checkProjApp  :: A.Expr -> ProjOrigin -> [QName] -> A.Args -> Type -> TCM Term
+checkProjApp e o ds args0 t = do
+  (v, ti) <- inferOrCheckProjApp e o ds args0 (Just t)
   coerce v ti t
 
-inferOrCheckProjApp :: A.Expr -> [QName] -> A.Args -> Maybe Type -> TCM (Term, Type)
-inferOrCheckProjApp e ds args mt = do
+inferOrCheckProjApp :: A.Expr -> ProjOrigin -> [QName] -> A.Args -> Maybe Type -> TCM (Term, Type)
+inferOrCheckProjApp e o ds args mt = do
   reportSDoc "tc.proj.amb" 20 $ vcat
     [ text "checking ambiguous projection"
     , text $ "  ds   = " ++ show ds
@@ -1044,7 +1048,7 @@ inferOrCheckProjApp e ds args mt = do
             [] -> refuseNoMatching
             [d] -> do
               storeDisambiguatedName d
-              (,t) <$> checkHeadApplication e t (A.Proj $ AmbQ [d]) args
+              (,t) <$> checkHeadApplication e t (A.Proj o $ AmbQ [d]) args
             _ -> __IMPOSSIBLE__
         _ -> __IMPOSSIBLE__
 
@@ -1071,7 +1075,7 @@ inferOrCheckProjApp e ds args mt = do
               Projection{ projProper = proper, projOrig = orig } <- MaybeT $ isProjection d
               guard proper
               -- try to eliminate
-              (dom, u, tb) <- MaybeT (projectTyped v ta d `catchError` \ _ -> return Nothing)
+              (dom, u, tb) <- MaybeT (projectTyped v ta o d `catchError` \ _ -> return Nothing)
               reportSDoc "tc.proj.amb" 30 $ vcat
                 [ text "  dom = " <+> prettyTCM dom
                 , text "  u   = " <+> prettyTCM u
@@ -1139,13 +1143,13 @@ inferOrCheckProjApp e ds args mt = do
 checkApplication :: A.Expr -> A.Args -> A.Expr -> Type -> TCM Term
 checkApplication hd args e t = do
   case hd of
-    A.Proj (AmbQ []) -> __IMPOSSIBLE__
+    A.Proj _ (AmbQ []) -> __IMPOSSIBLE__
 
     -- Subcase: unambiguous projection
-    A.Proj (AmbQ [_]) -> checkHeadApplication e t hd args
+    A.Proj _ (AmbQ [_]) -> checkHeadApplication e t hd args
 
     -- Subcase: ambiguous projection
-    A.Proj (AmbQ ds@(_:_:_)) -> checkProjApp e ds args t
+    A.Proj o (AmbQ ds@(_:_:_)) -> checkProjApp e o ds args t
 
     -- Subcase: ambiguous constructor
     A.Con (AmbQ cs@(_:_:_)) -> do
@@ -1350,13 +1354,13 @@ checkOrInferMeta newMeta mt i = do
 -- * Applications
 ---------------------------------------------------------------------------
 
-inferHeadDef :: QName -> TCM (Args -> Term, Type)
-inferHeadDef x = do
+inferHeadDef :: ProjOrigin -> QName -> TCM (Args -> Term, Type)
+inferHeadDef o x = do
   proj <- isProjection x
   let app =
         case proj of
           Nothing -> \ args -> Def x $ map Apply args
-          Just p  -> \ args -> projDropParsApply p args
+          Just p  -> \ args -> projDropParsApply p o args
   mapFst apply <$> inferDef app x
 
 -- | Infer the type of a head thing (variable, function symbol, or constructor).
@@ -1375,9 +1379,9 @@ inferHead e = do
       when (unusableRelevance $ getRelevance a) $
         typeError $ VariableIsIrrelevant x
       return (apply u, unDom a)
-    (A.Def x) -> inferHeadDef x
-    (A.Proj (AmbQ [d])) -> inferHeadDef d
-    (A.Proj _) -> __IMPOSSIBLE__ -- inferHead will only be called on unambiguous projections
+    (A.Def x) -> inferHeadDef ProjPrefix x
+    (A.Proj o (AmbQ [d])) -> inferHeadDef o d
+    (A.Proj{}) -> __IMPOSSIBLE__ -- inferHead will only be called on unambiguous projections
     (A.Con (AmbQ [c])) -> do
 
       -- Constructors are polymorphic internally.
@@ -1880,7 +1884,7 @@ inferExpr' :: ExpandHidden -> A.Expr -> TCM (Term, Type)
 inferExpr' exh e = case e of
   _ | Application hd args <- appView e, defOrVar hd -> traceCall (InferExpr e) $ do
     case hd of
-      A.Proj (AmbQ ds@(_:_:_)) -> inferProjApp e ds args
+      A.Proj o (AmbQ ds@(_:_:_)) -> inferProjApp e o ds args
       _ -> do
         (f, t0) <- inferHead hd
         res <- runExceptT $ checkArguments exh (getRange hd) args t0 (sort Prop)
@@ -2000,7 +2004,7 @@ checkLetBinding b@(A.LetPatBind i p e) ret =
         ]
       ]
     fvs <- getContextSize
-    checkLeftHandSide (CheckPattern p EmptyTel t) Nothing [p0] t0 Nothing $ \ (LHSResult _ delta0 ps _t _perm) -> do
+    checkLeftHandSide (CheckPattern p EmptyTel t) Nothing [p0] t0 Nothing $ \ (LHSResult _ delta0 ps _t) -> do
           -- After dropping the free variable patterns there should be a single pattern left.
       let p = case drop fvs ps of [p] -> namedArg p; _ -> __IMPOSSIBLE__
           -- Also strip the context variables from the telescope

@@ -25,14 +25,13 @@ import Agda.Syntax.Abstract.Name
 import Agda.Syntax.Internal
   ( Name, Args, Type,
     Clause, Pattern, Pattern'(VarP,DotP,LitP,ConP,ProjP),
-    ClauseBodyF(Body,NoBody,Bind),ClauseBody,
     Term(Var,Lam,Lit,Level,Def,Con,Pi,Sort,MetaV,DontCare,Shared),
     unSpine, allApplyElims,
     conName,
     derefPtr,
-    toTopLevelModuleName, clausePats, clauseBody, arity, unEl, unAbs )
+    toTopLevelModuleName, clausePats, arity, unEl, unAbs )
 import Agda.Syntax.Internal.Pattern ( unnumberPatVars )
-import Agda.TypeChecking.Substitute ( absBody )
+import Agda.TypeChecking.Substitute ( absBody, compiledClauseBody )
 import Agda.Syntax.Literal ( Literal(LitNat,LitFloat,LitString,LitChar,LitQName,LitMeta) )
 import Agda.TypeChecking.Level ( reallyUnLevelView )
 import Agda.TypeChecking.Monad
@@ -290,7 +289,7 @@ clause c = do
   let pats = unnumberPatVars $ clausePats c
   ps <- mapM (pattern . unArg) pats
   (av,bv,es) <- return (mapping (map unArg pats))
-  e <- body (clauseBody c)
+  e <- maybe (return Undefined) term $ compiledClauseBody c
   return (Case ps (subst av es e))
 
 -- Mapping from Agda variables to JS variables in a pattern.
@@ -302,7 +301,7 @@ mapping :: [Pattern] -> (Nat,Nat,[Exp])
 mapping = foldr mapping' (0,0,[])
 
 mapping' :: Pattern -> (Nat,Nat,[Exp]) -> (Nat,Nat,[Exp])
-mapping' (ProjP _)     (av,bv,es) =
+mapping' ProjP{}       (av,bv,es) =
   __IMPOSSIBLE__
 mapping' (VarP _)      (av,bv,es) = (av+1, bv+1, Local (LocalId bv) : es)
 mapping' (DotP _)      (av,bv,es) = (av+1, bv+1, Local (LocalId bv) : es)
@@ -313,7 +312,7 @@ mapping' (LitP _)      (av,bv,es) = (av, bv+1, es)
 -- Not doing literal patterns yet
 
 pattern :: Pattern -> TCM Patt
-pattern (ProjP _)     = typeError $ NotImplemented $ "Compilation of copatterns"
+pattern (ProjP _ _)   = typeError $ NotImplemented $ "Compilation of copatterns"
 pattern (ConP c _ ps) = do
   l <- tag $ conName c
   ps <- mapM (pattern . namedArg) ps
@@ -343,11 +342,6 @@ tag q = do
 
 visitorName :: QName -> TCM MemberId
 visitorName q = do (m,ls) <- global q; return (last ls)
-
-body :: ClauseBody -> TCM Exp
-body (Body e) = term e
-body (Bind b) = body (unAbs b)
-body (NoBody) = return Undefined
 
 term :: Term -> TCM Exp
 term v = do

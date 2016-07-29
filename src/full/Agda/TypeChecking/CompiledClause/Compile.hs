@@ -44,7 +44,7 @@ compileClauses ::
   Maybe (QName, Type) -- ^ Translate record patterns and coverage check with given type?
   -> [Clause] -> TCM CompiledClauses
 compileClauses mt cs = do
-  let cls = [ Cl (clausePats c) (clauseBody c) | c <- cs ]
+  let cls = [ Cl (clausePats c) (compiledClauseBody c) | c <- cs ]
   shared <- sharedFun
   case mt of
     Nothing -> return $ compile shared cls
@@ -70,11 +70,11 @@ compileClauses mt cs = do
 --   used in clause compiler.
 data Cl = Cl
   { clPats :: [Arg DeBruijnPattern]
-  , clBody :: ClauseBody
+  , clBody :: Maybe Term
   } deriving (Show)
 
 instance Pretty Cl where
-  pretty (Cl ps b) = P.prettyList ps P.<+> P.text "->" P.<+> pretty b
+  pretty (Cl ps b) = P.prettyList ps P.<+> P.text "->" P.<+> maybe (P.text "_|_") pretty b
 
 type Cls = [Cl]
 
@@ -107,7 +107,7 @@ compileWithSplitTree shared t cs = case t of
 compile :: (Term -> Term) -> Cls -> CompiledClauses
 compile shared cs = case nextSplit cs of
   Just (isRecP, n)-> Case n $ fmap (compile shared) $ splitOn isRecP (unArg n) cs
-  Nothing -> case map (getBody . clBody) cs of
+  Nothing -> case map clBody cs of
     -- It's possible to get more than one clause here due to
     -- catch-all expansion.
     Just t : _  -> Done (map (fmap name) $ clPats $ head cs) (shared t)
@@ -155,7 +155,7 @@ splitOn single n cs = mconcat $ map (fmap (:[]) . splitC n) $
 
 splitC :: Int -> Cl -> Case Cl
 splitC n (Cl ps b) = caseMaybe mp fallback $ \case
-  ProjP d     -> projCase d $ Cl (ps0 ++ ps1) b
+  ProjP _ d   -> projCase d $ Cl (ps0 ++ ps1) b
   ConP c _ qs -> conCase (conName c) $ WithArity (length qs) $
                    Cl (ps0 ++ map (fmap namedThing) qs ++ ps1) b
   LitP l      -> litCase l $ Cl (ps0 ++ ps1) b
@@ -255,18 +255,12 @@ expandCatchAlls single n cs =
         (ps0, rest) = splitAt n ps
         ps1         = maybe __IMPOSSIBLE__ snd $ uncons rest
 
-        n' = countVars ps0
+        n' = countVars ps1
         countVars = sum . map (count . unArg)
         count VarP{}        = 1
         count (ConP _ _ ps) = countVars $ map (fmap namedThing) ps
         count DotP{}        = 1   -- dot patterns are treated as variables in the clauses
         count _             = 0
 
-substBody :: Int -> Int -> Term -> ClauseBody -> ClauseBody
-substBody _ _ _ NoBody = NoBody
-substBody 0 m v b = case b of
-  Bind   b -> foldr (.) id (replicate m (Bind . Abs underscore)) $ subst 0 v (absBody $ raise m b)
-  _        -> __IMPOSSIBLE__
-substBody n m v b = case b of
-  Bind b   -> Bind $ fmap (substBody (n - 1) m v) b
-  _        -> __IMPOSSIBLE__
+substBody :: (Subst t a) => Int -> Int -> t -> a -> a
+substBody n m v = applySubst $ liftS n $ v :# raiseS m

@@ -33,6 +33,7 @@
 , zlib, tasty-quickcheck, monadplus, EdisonCore, EdisonAPI
 , uhc-backend ? false, uhc ? null, uhc-light ? null
 , user-manual ? true, sphinx ? null, sphinx_rtd_theme ? null, texLive ? null
+, nodejs-5_x
 }:
 
 assert uhc-backend -> uhc != null && uhc-light != null;
@@ -62,13 +63,26 @@ mkDerivation {
     tasty-silver temporary text
   ];
   configureFlags = if uhc-backend then [ "-fuhc" ] else [];
-  buildTools = [ alex cpphs emacs happy ]
+  buildTools = [ alex cpphs happy nodejs-5_x]
     ++ stdenv.lib.optionals uhc-backend [ uhc ]
     ++ stdenv.lib.optionals user-manual [ sphinx sphinx_rtd_theme texLive ];
+
+  executableToolDepends = [ emacs ];
+
   postInstall = ''
-    $out/bin/agda -c --no-main $(find $out/share -name Primitive.agda)
-    $out/bin/agda-mode compile
-  '';
+     # Separate loops to avoid internal error
+     files=($out/share/*-ghc-*/Agda-*/lib/prim/Agda/{Primitive.agda,Builtin/*.agda})
+     for f in "''${files[@]}"
+     do
+       $out/bin/agda $f
+     done
+     for f in "''${files[@]}"
+     do
+       $out/bin/agda -c --no-main $f
+     done
+     $out/bin/agda-mode compile
+   '';
+
   homepage = "http://wiki.portal.chalmers.se/agda/";
   description = "A dependently typed functional programming language and proof assistant";
   license = "unknown";

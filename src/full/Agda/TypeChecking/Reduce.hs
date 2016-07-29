@@ -41,6 +41,7 @@ import Agda.Utils.Function
 import Agda.Utils.Functor
 import Agda.Utils.Monad
 import Agda.Utils.HashMap (HashMap)
+import Agda.Utils.Size
 import Agda.Utils.Tuple
 
 #include "undefined.h"
@@ -138,7 +139,7 @@ instance Instantiate Sort where
 
 instance Instantiate Elim where
   instantiate' (Apply v) = Apply <$> instantiate' v
-  instantiate' (Proj f)  = pure $ Proj f
+  instantiate' (Proj o f)= pure $ Proj o f
 
 instance Instantiate t => Instantiate (Abs t) where
   instantiate' = traverse instantiate'
@@ -251,7 +252,7 @@ instance Reduce Sort where
 
 instance Reduce Elim where
   reduce' (Apply v) = Apply <$> reduce' v
-  reduce' (Proj f)  = pure $ Proj f
+  reduce' (Proj o f)= pure $ Proj o f
 
 instance Reduce Level where
   reduce'  (Max as) = levelMax <$> mapM reduce' as
@@ -354,7 +355,7 @@ rewriteAfter f = trampolineM $ rewrite <=< f
 -- Andreas, 2013-03-20 recursive invokations of unfoldCorecursion
 -- need also to instantiate metas, see Issue 826.
 unfoldCorecursionE :: Elim -> ReduceM (Blocked Elim)
-unfoldCorecursionE e@(Proj f)           = return $ notBlocked e
+unfoldCorecursionE e@Proj{}             = return $ notBlocked e
 unfoldCorecursionE (Apply (Arg info v)) = fmap (Apply . Arg info) <$>
   unfoldCorecursion v
 
@@ -575,42 +576,27 @@ appDefE' v cls es = goCls cls $ map ignoreReduced es
         -- Andrea(s), 2014-12-05:  We return 'MissingClauses' here, since this
         -- is the most conservative reason.
         [] -> return $ NoReduction $ NotBlocked MissingClauses $ v `applyE` es
-        Clause{ namedClausePats = pats, clauseBody = body } : cls -> do
-          let n = length pats
+        cl : cls -> do
+          let pats = namedClausePats cl
+              body = clauseBody cl
+              npats = length pats
+              nvars = size $ clauseTel cl
           -- if clause is underapplied, skip to next clause
-          if length es < n then goCls cls es else do
-            let (es0, es1) = splitAt n es
+          if length es < npats then goCls cls es else do
+            let (es0, es1) = splitAt npats es
             (m, es0) <- matchCopatterns pats es0
             es <- return $ es0 ++ es1
             case m of
               No         -> goCls cls es
               DontKnow b -> return $ NoReduction $ b $> v `applyE` es
               Yes simpl vs -- vs is the subst. for the variables bound in body
-                | isJust (getBodyUnraised body)  -- clause has body?
-                                -> return $ YesReduction simpl $
+                | Just w <- body -> do -- clause has body?
                     -- TODO: let matchPatterns also return the reduced forms
                     -- of the original arguments!
                     -- Andreas, 2013-05-19 isn't this done now?
-                    app vs body EmptyS `applyE` es1
+                    let sigma = buildSubstitution __IMPOSSIBLE__ nvars vs
+                    return $ YesReduction simpl $ applySubst sigma w `applyE` es1
                 | otherwise     -> return $ NoReduction $ NotBlocked AbsurdMatch $ v `applyE` es
-
-    -- Build an explicit substitution from arguments
-    -- and execute it using parallel substitution.
-    -- Calculating the de Bruijn indices: ;-) for the Bind case
-    --   Simply-typed version
-    --   (we are not interested in types, only in de Bruijn indices here)
-    --   Γ ⊢ σ : Δ
-    --   Γ ⊢ v : A
-    --   Γ ⊢ (σ,v) : Δ.A
-    --   Δ ⊢ λ b : A → B
-    --   Δ.A ⊢ b : B
-    app :: Args -> ClauseBody -> Substitution -> Term
-    app []       (Body v)           sigma = applySubst sigma v
-    app (v : vs) (Bind (Abs   _ b)) sigma = app vs b $ consS (unArg v) sigma -- CBN
-    app (v : vs) (Bind (NoAbs _ b)) sigma = app vs b sigma
-    app  _        NoBody            sigma = __IMPOSSIBLE__
-    app (_ : _)  (Body _)           sigma = __IMPOSSIBLE__
-    app []       (Bind _)           sigma = __IMPOSSIBLE__
 
 instance Reduce a => Reduce (Closure a) where
     reduce' cl = do
@@ -696,7 +682,7 @@ instance Simplify Type where
 
 instance Simplify Elim where
   simplify' (Apply v) = Apply <$> simplify' v
-  simplify' (Proj f)  = pure $ Proj f
+  simplify' (Proj o f)= pure $ Proj o f
 
 instance Simplify Sort where
     simplify' s = do
@@ -797,11 +783,6 @@ instance Simplify Bool where
 --     DotP v       -> DotP <$> simplify' v
 --     ProjP _      -> return p
 
-instance Simplify ClauseBody where
-    simplify' (Body   t) = Body   <$> simplify' t
-    simplify' (Bind   b) = Bind   <$> simplify' b
-    simplify'  NoBody   = return NoBody
-
 instance Simplify DisplayForm where
   simplify' (Display n ps v) = Display n <$> simplify' ps <*> return v
 
@@ -858,7 +839,7 @@ instance Normalise Term where
 
 instance Normalise Elim where
   normalise' (Apply v) = Apply <$> normalise' v
-  normalise' (Proj f)  = pure $ Proj f
+  normalise' (Proj o f)= pure $ Proj o f
 
 instance Normalise Level where
   normalise' (Max as) = levelMax <$> normalise' as
@@ -875,11 +856,6 @@ instance Normalise LevelAtom where
       BlockedLevel m v -> BlockedLevel m <$> normalise' v
       NeutralLevel r v -> NeutralLevel r <$> normalise' v
       UnreducedLevel{} -> __IMPOSSIBLE__    -- I hope
-
-instance Normalise ClauseBody where
-    normalise' (Body   t) = Body   <$> normalise' t
-    normalise' (Bind   b) = Bind   <$> normalise' b
-    normalise'  NoBody   = return NoBody
 
 instance (Subst t a, Normalise a) => Normalise (Abs a) where
     normalise' a@(Abs x _) = Abs x <$> underAbstraction_ a normalise'
@@ -955,7 +931,7 @@ instance Normalise a => Normalise (Pattern' a) where
     LitP _       -> return p
     ConP c mt ps -> ConP c <$> normalise' mt <*> normalise' ps
     DotP v       -> DotP <$> normalise' v
-    ProjP _      -> return p
+    ProjP{}      -> return p
 
 instance Normalise DisplayForm where
   normalise' (Display n ps v) = Display n <$> normalise' ps <*> return v
@@ -1077,11 +1053,6 @@ instance InstantiateFull a => InstantiateFull (Pattern' a) where
     instantiateFull' l@LitP{}       = return l
     instantiateFull' p@ProjP{}      = return p
 
-instance InstantiateFull ClauseBody where
-    instantiateFull' (Body   t) = Body   <$> instantiateFull' t
-    instantiateFull' (Bind   b) = Bind   <$> instantiateFull' b
-    instantiateFull'  NoBody    = return NoBody
-
 instance (Subst t a, InstantiateFull a) => InstantiateFull (Abs a) where
     instantiateFull' a@(Abs x _) = Abs x <$> underAbstraction_ a instantiateFull'
     instantiateFull' (NoAbs x a) = NoAbs x <$> instantiateFull' a
@@ -1133,7 +1104,7 @@ instance InstantiateFull Constraint where
 
 instance (InstantiateFull a) => InstantiateFull (Elim' a) where
   instantiateFull' (Apply v) = Apply <$> instantiateFull' v
-  instantiateFull' (Proj f)  = pure $ Proj f
+  instantiateFull' (Proj o f)= pure $ Proj o f
 
 instance InstantiateFull e => InstantiateFull (Map k e) where
     instantiateFull' = traverse instantiateFull'

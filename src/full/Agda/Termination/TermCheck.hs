@@ -545,26 +545,17 @@ maskNonDataArgs ps = zipWith mask ps <$> terGetMaskArgs
     mask p@ProjDBP{} _ = Masked False p
     mask p           d = Masked d     p
 
--- | cf. 'TypeChecking.Coverage.Match.buildMPatterns'
-openClause :: Permutation -> [DeBruijnPattern] -> ClauseBody -> TerM ([DeBruijnPat], Maybe Term)
-openClause perm ps body = do
-  -- invariant: xs has enough variables for the body
-  unless (permRange perm == genericLength xs) __IMPOSSIBLE__
-  dbps <- mapM build ps
-  return . (dbps,) $ case body `applys` map var xs of
-    NoBody -> Nothing
-    Body v -> Just v
-    _      -> __IMPOSSIBLE__
+-- | Convert patterns to the format used by the termination checker
+--   TODO: refactor termination checking to use regular patterns
+convertPatterns :: [DeBruijnPattern] -> TerM [DeBruijnPat]
+convertPatterns ps = mapM build ps
   where
-    -- the variables as a map from the body variables to the clause telescope
-    xs   = permPicks $ flipP $ invertP __IMPOSSIBLE__ perm
-
     build :: DeBruijnPattern -> TerM DeBruijnPat
     build (VarP x)        = return $ VarDBP $ dbPatVarIndex x
     build (ConP con _ ps) = ConDBP (conName con) <$> mapM (build . namedArg) ps
     build (DotP t)        = termToDBP t
     build (LitP l)        = return $ LitDBP l
-    build (ProjP d)       = return $ ProjDBP d
+    build (ProjP o d)     = return $ ProjDBP o d
 
 -- | Extract recursive calls from one clause.
 termClause :: Clause -> TerM Calls
@@ -576,9 +567,10 @@ termClause clause = do
 
 termClause' :: Clause -> TerM Calls
 termClause' clause = do
-  cl @ Clause { clauseTel  = tel
-              , clauseBody = body } <- introHiddenLambdas clause
-  let argPats' = clausePats cl
+  cl <- introHiddenLambdas clause
+  let tel      = clauseTel cl
+      argPats' = clausePats cl
+      body     = clauseBody cl
       perm     = fromMaybe __IMPOSSIBLE__ $ clausePerm cl
   liftTCM $ reportSDoc "term.check.clause" 25 $ vcat
     [ text "termClause"
@@ -589,8 +581,8 @@ termClause' clause = do
     ]
   addContext tel $ do
     ps <- liftTCM $ normalise $ map unArg argPats'
-    (dbpats, res) <- openClause perm ps body
-    case res of
+    dbpats <- convertPatterns ps
+    case body of
       Nothing -> return empty
       Just v -> do
         dbpats <- mapM stripCoConstructors dbpats
@@ -629,8 +621,10 @@ termClause' clause = do
 introHiddenLambdas :: MonadTCM tcm => Clause -> tcm Clause
 introHiddenLambdas clause = liftTCM $ do
   case clause of
-    Clause range ctel ps body Nothing catchall  -> return clause
-    Clause range ctel ps body (Just t) catchall -> do
+    Clause range ctel ps body        Nothing  catchall -> return clause
+
+    Clause range ctel ps Nothing     (Just t) catchall -> return clause
+    Clause range ctel ps (Just body) (Just t) catchall -> do
       case removeHiddenLambdas body of
         -- nobody or no hidden lambdas
         ([], _) -> return clause
@@ -644,26 +638,19 @@ introHiddenLambdas clause = liftTCM $ do
           -- join with lhs telescope
           let ctel' = telFromList $ telToList ctel ++ telToList ttel
               ps'   = raise n ps ++ zipWith toPat (downFrom $ size axs) axs
-          return $ Clause range ctel' ps' body' (Just (t $> t')) catchall
+              perm' = fromMaybe __IMPOSSIBLE__ $ dbPatPerm ps'
+          return $ Clause range ctel' ps' (Just body') (Just (t $> t')) catchall
   where
+    perm = fromMaybe __IMPOSSIBLE__ $ clausePerm clause
     toPat i (Arg info x) = Arg info $ namedDBVarP i x
-    removeHiddenLambdas :: ClauseBody -> ([Arg ArgName], ClauseBody)
-    removeHiddenLambdas = underBinds $ hlamsToBinds
 
-    hlamsToBinds :: Term -> ([Arg ArgName], ClauseBody)
-    hlamsToBinds v =
+    removeHiddenLambdas :: Term -> ([Arg ArgName], Term)
+    removeHiddenLambdas v =
       case ignoreSharing v of
         Lam info b | getHiding info == Hidden ->
-          let (xs, b') = hlamsToBinds $ unAbs b
-          in  (Arg info (absName b) : xs, Bind $ b' <$ b)
-        _ -> ([], Body v)
-    underBinds :: (Term -> ([a], ClauseBody)) -> ClauseBody -> ([a], ClauseBody)
-    underBinds k body = loop body where
-      loop (Bind b) =
-        let (res, b') = loop $ unAbs b
-        in  (res, Bind $ b' <$ b)
-      loop NoBody = ([], NoBody)
-      loop (Body v) = k v
+          let (xs, b') = removeHiddenLambdas $ unAbs b
+          in  (Arg info (absName b) : xs, b')
+        _ -> ([], v)
 
 -- | Extract recursive calls from expressions.
 class ExtractCalls a where
@@ -1019,9 +1006,9 @@ compareArgs es = do
   -- Count the number of coinductive projection(pattern)s in caller and callee.
   -- Only recursive coinductive projections are eligible (Issue 1209).
   projsCaller <- genericLength <$> do
-    filterM (isCoinductiveProjection True) $ mapMaybe (fmap (head . unAmbQ) . isProjP . getMasked) pats
+    filterM (isCoinductiveProjection True) $ mapMaybe (fmap (head . unAmbQ . snd) . isProjP . getMasked) pats
   projsCallee <- genericLength <$> do
-    filterM (isCoinductiveProjection True) $ mapMaybe isProjElim es
+    filterM (isCoinductiveProjection True) $ mapMaybe (fmap snd . isProjElim) es
   cutoff <- terGetCutOff
   let ?cutoff = cutoff
   let guardedness = decr $ projsCaller - projsCallee
@@ -1043,7 +1030,7 @@ compareArgs es = do
 annotatePatsWithUseSizeLt :: [DeBruijnPat] -> TerM [(Bool,DeBruijnPat)]
 annotatePatsWithUseSizeLt = loop where
   loop [] = return []
-  loop (p@(ProjDBP q) : pats) = ((False,p) :) <$> do projUseSizeLt q $ loop pats
+  loop (p@(ProjDBP _ q) : pats) = ((False,p) :) <$> do projUseSizeLt q $ loop pats
   loop (p : pats) = (\ b ps -> (b,p) : ps) <$> terGetUseSizeLt <*> loop pats
 
 
@@ -1062,7 +1049,7 @@ compareElim e p = do
       , nest 2 $ text $ "p = " ++ show p
       ]
   case (e, getMasked p) of
-    (Proj d, ProjDBP d')           -> compareProj d d'
+    (Proj _ d, ProjDBP _ d')       -> compareProj d d'
     (Proj{}, _         )           -> return Order.unknown
     (Apply{}, ProjDBP{})           -> return Order.unknown
     (Apply arg, _)                 -> compareTerm (unArg arg) p
@@ -1137,7 +1124,7 @@ subPatterns p = case p of
   VarDBP _    -> []
   LitDBP _    -> []
   TermDBP _   -> []
-  ProjDBP _   -> []
+  ProjDBP{}   -> []
 
 compareTerm :: Term -> Masked DeBruijnPat -> TerM Order
 compareTerm t p = do
@@ -1181,9 +1168,9 @@ instance StripAllProjections Elims where
       []             -> return []
       (Apply a : es) -> do
         (:) <$> (Apply <$> stripAllProjections a) <*> stripAllProjections es
-      (Proj p  : es) -> do
+      (Proj o p  : es) -> do
         isP <- isProjectionButNotCoinductive p
-        applyUnless isP (Proj p :) <$> stripAllProjections es
+        applyUnless isP (Proj o p :) <$> stripAllProjections es
 
 instance StripAllProjections Args where
   stripAllProjections = mapM stripAllProjections

@@ -171,7 +171,7 @@ updateInPatterns as ps qs = do
         A.AsP         _ _ _ -> __IMPOSSIBLE__
         A.ConP        _ _ _ -> __IMPOSSIBLE__
         A.RecP        _ _   -> __IMPOSSIBLE__
-        A.ProjP       _ _   -> __IMPOSSIBLE__
+        A.ProjP       _ _ _ -> __IMPOSSIBLE__
         A.DefP        _ _ _ -> __IMPOSSIBLE__
         A.AbsurdP     _     -> __IMPOSSIBLE__
         A.LitP        _     -> __IMPOSSIBLE__
@@ -196,7 +196,7 @@ updateInPatterns as ps qs = do
         second (dpi++) <$>
           updates as (projectInPat p fs) (map (fmap namedThing) qs)
       LitP _     -> __IMPOSSIBLE__
-      ProjP f    -> __IMPOSSIBLE__
+      ProjP{}    -> __IMPOSSIBLE__
 
     projectInPat :: NamedArg A.Pattern -> [Arg QName] -> [NamedArg A.Pattern]
     projectInPat p fs = case namedThing (unArg p) of
@@ -204,7 +204,7 @@ updateInPatterns as ps qs = do
       A.ConP cpi _ nps    -> nps
       A.WildP pi          -> map (makeWildField pi) fs
       A.DotP pi e         -> map (makeDotField pi) fs
-      A.ProjP _ _         -> __IMPOSSIBLE__
+      A.ProjP _ _ _       -> __IMPOSSIBLE__
       A.DefP _ _ _        -> __IMPOSSIBLE__
       A.AsP _ _ _         -> __IMPOSSIBLE__
       A.AbsurdP _         -> __IMPOSSIBLE__
@@ -332,6 +332,10 @@ checkDotPattern (DPI _ (Just e) v (Dom info a)) =
     noConstraints $ equalTerm a u v
 checkDotPattern (DPI _ Nothing _ _) = return ()
 
+-- | Temporary data structure for 'checkLeftoverPatterns'
+type Projectn  = (ProjOrigin, QName)
+type Projectns = [Projectn]
+
 -- | Checks whether the dot patterns left over after splitting can be covered
 --   by shuffling around the dots from implicit positions. Returns the updated
 --   user patterns (without dot patterns).
@@ -348,13 +352,13 @@ checkLeftoverDotPatterns ps vs as dpi = do
            traverse gatherImplicitDotVars dpi
   reportSDoc "tc.lhs.dot" 30 $ nest 2 $
     text "implicit dotted variables:" <+>
-    prettyList (map (\(i,fs) -> prettyTCM $ Var i (map Proj fs)) idv)
+    prettyList (map (\(i,fs) -> prettyTCM $ Var i (map (uncurry Proj) fs)) idv)
   checkUserDots ps vs as idv
   reportSDoc "tc.lhs.dot" 15 $ text "all leftover dot patterns ok!"
 
   where
     checkUserDots :: [NamedArg A.Pattern] -> [Int] -> [Dom Type]
-                  -> [(Int,[QName])]
+                  -> [(Int,Projectns)]
                   -> TCM ()
     checkUserDots []     []     []     idv = return ()
     checkUserDots []     (_:_)  _      idv = __IMPOSSIBLE__
@@ -366,8 +370,8 @@ checkLeftoverDotPatterns ps vs as dpi = do
       checkUserDots ps vs as idv'
 
     checkUserDot :: NamedArg A.Pattern -> Int -> Dom Type
-                 -> [(Int,[QName])]
-                 -> TCM [(Int,[QName])]
+                 -> [(Int,Projectns)]
+                 -> TCM [(Int,Projectns)]
     checkUserDot p v a idv = case namedArg p of
       A.DotP i e   -> do
         reportSDoc "tc.lhs.dot" 30 $ nest 2 $
@@ -386,17 +390,17 @@ checkLeftoverDotPatterns ps vs as dpi = do
       A.AbsurdP _  -> return idv
       A.ConP _ _ _ -> __IMPOSSIBLE__
       A.LitP _     -> __IMPOSSIBLE__
-      A.ProjP _ _  -> __IMPOSSIBLE__
+      A.ProjP _ _ _-> __IMPOSSIBLE__
       A.DefP _ _ _ -> __IMPOSSIBLE__
       A.RecP _ _   -> __IMPOSSIBLE__
       A.AsP  _ _ _ -> __IMPOSSIBLE__
       A.PatternSynP _ _ _ -> __IMPOSSIBLE__
 
-    gatherImplicitDotVars :: DotPatternInst -> TCM [(Int,[QName])]
+    gatherImplicitDotVars :: DotPatternInst -> TCM [(Int,Projectns)]
     gatherImplicitDotVars (DPI _ (Just _) _ _) = return [] -- Not implicit
     gatherImplicitDotVars (DPI _ Nothing u _)  = gatherVars u
       where
-        gatherVars :: Term -> TCM [(Int,[QName])]
+        gatherVars :: Term -> TCM [(Int,Projectns)]
         gatherVars u = case ignoreSharing u of
           Var i es -> return $ (i,) <$> maybeToList (allProjElims es)
           Con c us -> ifM (isEtaCon $ conName c)
@@ -404,27 +408,27 @@ checkLeftoverDotPatterns ps vs as dpi = do
                       {-else-} (return [])
           _        -> return []
 
-    lookupImplicitDotVar :: (Int,[QName]) -> [(Int,[QName])] -> Maybe [QName]
+    lookupImplicitDotVar :: (Int,Projectns) -> [(Int,Projectns)] -> Maybe Projectns
     lookupImplicitDotVar (i,fs) [] = Nothing
     lookupImplicitDotVar (i,fs) ((j,gs):js)
      | i == j , Just hs <- stripPrefix fs gs = Just hs
      | otherwise = lookupImplicitDotVar (i,fs) js
 
-    undotImplicitVar :: (Int,[QName],Type) -> [(Int,[QName])]
-                     -> TCM (Maybe [(Int,[QName])])
+    undotImplicitVar :: (Int,Projectns,Type) -> [(Int,Projectns)]
+                     -> TCM (Maybe [(Int,Projectns)])
     undotImplicitVar (i,fs,a) idv = case lookupImplicitDotVar (i,fs) idv of
       Nothing -> return Nothing
       Just [] -> return $ Just $ delete (i,fs) idv
       Just rs -> caseMaybeM (isEtaRecordType a) (return Nothing) $ \(d,pars) -> do
         gs <- recFields . theDef <$> getConstInfo d
-        let u = Var i (map Proj fs)
+        let u = Var i (map (uncurry Proj) fs)
         is <- forM gs $ \(Arg _ g) -> do
-                (_,_,b) <- fromMaybe __IMPOSSIBLE__ <$> projectTyped u a g
-                return (i,fs++[g],b)
+                (_,_,b) <- fromMaybe __IMPOSSIBLE__ <$> projectTyped u a ProjSystem g
+                return (i,fs++[(ProjSystem,g)],b)
         undotImplicitVars is idv
 
-    undotImplicitVars :: [(Int,[QName],Type)] -> [(Int,[QName])]
-                      -> TCM (Maybe [(Int,[QName])])
+    undotImplicitVars :: [(Int,Projectns,Type)] -> [(Int,Projectns)]
+                      -> TCM (Maybe [(Int,Projectns)])
     undotImplicitVars []     idv = return $ Just idv
     undotImplicitVars (i:is) idv =
       caseMaybeM (undotImplicitVar i idv)
@@ -498,17 +502,13 @@ data LHSResult = LHSResult
   , lhsBodyType     :: Arg Type
     -- ^ The type of the body. Is @bσ@ if @Γ@ is defined.
     -- 'Irrelevant' to indicate the rhs must be checked in irrelevant mode.
-  , lhsPermutation  :: Permutation
-    -- ^ The permutation from pattern vars to @Δ@.
-    -- Corresponds to 'clausePerm'.
   }
 
 instance InstantiateFull LHSResult where
-  instantiateFull' (LHSResult n tel ps t perm) = LHSResult n
+  instantiateFull' (LHSResult n tel ps t) = LHSResult n
     <$> instantiateFull' tel
     <*> instantiateFull' ps
     <*> instantiateFull' t
-    <*> return perm
 
 -- | Check a LHS. Main function.
 --
@@ -598,14 +598,13 @@ checkLeftHandSide c f ps a withSub' ret = Bench.billTo [Bench.Typing, Bench.Chec
       reportSDoc "tc.lhs.top" 10 $ nest 2 $ text "type  = " <+> prettyTCM b'
       reportSDoc "tc.lhs.top" 60 $ nest 2 $ text "type  = " <+> text (show b')
 
-      let perm = fromMaybe __IMPOSSIBLE__ $ dbPatPerm qs
-          notProj ProjP{} = False
+      let notProj ProjP{} = False
           notProj _       = True
                       -- Note: This works because we can't change the number of
                       --       arguments in the lhs of a with-function relative to
                       --       the parent function.
           numPats   = length $ takeWhile (notProj . namedArg) qs
-          lhsResult = LHSResult (length cxt) delta qs b' perm
+          lhsResult = LHSResult (length cxt) delta qs b'
           -- In the case of a non-with function the pattern substitution
           -- should be weakened by the number of non-parameter patterns to
           -- get the paramSub.
@@ -614,7 +613,6 @@ checkLeftHandSide c f ps a withSub' ret = Bench.billTo [Bench.Typing, Bench.Chec
           -- parent modules.
           patSub   = (map (patternToTerm . namedArg) $ reverse $ take numPats qs) ++# EmptyS
           paramSub = composeS patSub withSub
-      reportSDoc "tc.lhs.top" 20 $ nest 2 $ text "perm  = " <+> text (show perm)
       reportSDoc "tc.lhs.top" 20 $ nest 2 $ text "patSub   = " <+> text (show patSub)
       reportSDoc "tc.lhs.top" 20 $ nest 2 $ text "withSub  = " <+> text (show withSub)
       reportSDoc "tc.lhs.top" 20 $ nest 2 $ text "paramSub = " <+> text (show paramSub)
@@ -658,14 +656,14 @@ checkLHS f st@(LHSState problem sigma dpi) = do
 
     -- Split problem rest (projection pattern, does not fail as there is no call to unifier)
 
-    trySplit (SplitRest projPat projType) _ = do
+    trySplit (SplitRest projPat o projType) _ = do
 
       -- Compute the new problem
       let Problem ps1 ip delta (ProblemRest (p:ps2) b) = problem
           -- ps'      = ps1 ++ [p]
           ps'      = ps1 -- drop the projection pattern (already splitted)
           rest     = ProblemRest ps2 (projPat $> projType)
-          ip'      = ip ++ [fmap (Named Nothing . ProjP) projPat]
+          ip'      = ip ++ [fmap (Named Nothing . ProjP o) projPat]
           problem' = Problem ps' ip' delta rest
       -- Jump the trampolin
       st' <- updateProblemRest (LHSState problem' sigma dpi)
