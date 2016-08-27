@@ -65,18 +65,10 @@ type Stack = [Frame]
 
 match' :: Stack -> ReduceM (Reduced (Blocked Elims) Term)
 match' ((c, es, patch) : stack) = do
-  let debug = do
-       traceSDoc "reduce.compiled" 95 $ vcat $
-         [ text "reducing case" <+> do
-             caseMaybeM (asks envAppDef) __IMPOSSIBLE__ $ \ f -> do
-               sep $ prettyTCM f : map prettyTCM es
-         , text $ "trying clause " ++ show c
-         ]
   let no blocking es = return $ NoReduction $ blocking $ patch $ map ignoreReduced es
       yes t          = flip YesReduction t <$> asks envSimplification
 
-  -- traceSLn "reduce.compiled" 95 "CompiledClause.Match.match'" $ do
-  debug $ do
+  do
 
     shared <- sharedFun
 
@@ -117,7 +109,7 @@ match' ((c, es, patch) : stack) = do
                     NotReduced -> unfoldCorecursionE e0
             let e = ignoreBlocking eb
                 -- replace the @n@th argument by its reduced form
-                es' = es0 ++ [MaybeRed red e] ++ es1
+                es' = es0 ++ [MaybeRed (Reduced $ () <$ eb) e] ++ es1
                 -- if a catch-all clause exists, put it on the stack
                 catchAllFrame stack = maybe stack (\c -> (c, es', patch) : stack) (catchAllBranch bs)
                 -- If our argument is @Lit l@, we push @litFrame l@ onto the stack.
@@ -131,7 +123,7 @@ match' ((c, es, patch) : stack) = do
                   case Map.lookup (conName c) (conBranches bs) of
                     Nothing -> stack
                     Just cc -> ( content cc
-                               , es0 ++ map (MaybeRed red . Apply) vs ++ es1
+                               , es0 ++ map (MaybeRed NotReduced . Apply) vs ++ es1
                                , patchCon c (length vs)
                                ) : stack
                 -- If our argument is @Proj p@, we push @projFrame p@ onto the stack.
@@ -151,7 +143,7 @@ match' ((c, es, patch) : stack) = do
                         vs          = map argFromElim es1
 
             -- Now do the matching on the @n@ths argument:
-            traceSLn "reduce.compiled" 100 ("caseing on raw " ++ show eb) $
+            id $
              case fmap ignoreSharing <$> eb of
               Blocked x _            -> no (Blocked x) es'
               NotBlocked _ (Apply (Arg info (MetaV x _))) -> no (Blocked x) es'
@@ -162,8 +154,7 @@ match' ((c, es, patch) : stack) = do
                 let cFrame stack = case ignoreSharing cv of
                       Con c vs -> conFrame c vs stack
                       _        -> stack
-                traceSLn "reduce.compiled" 100 ("constructorForm = " ++ show cv) $
-                 match' $ litFrame l $ cFrame $ catchAllFrame stack
+                match' $ litFrame l $ cFrame $ catchAllFrame stack
 
               -- In case of a constructor, push the conFrame
               NotBlocked _ (Apply (Arg info (Con c vs))) -> performedSimplification $

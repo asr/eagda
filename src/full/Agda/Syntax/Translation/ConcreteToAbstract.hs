@@ -71,6 +71,7 @@ import Agda.TypeChecking.Monad.Options
 import Agda.TypeChecking.Monad.Env (insideDotPattern, isInsideDotPattern)
 import Agda.TypeChecking.Rules.Builtin (isUntypedBuiltin, bindUntypedBuiltin)
 
+import Agda.TypeChecking.Patterns.Abstract (expandPatternSynonyms)
 import Agda.TypeChecking.Pretty hiding (pretty, prettyA)
 
 import Agda.Interaction.FindFile (checkModuleName)
@@ -1419,8 +1420,8 @@ instance ToAbstract NiceDeclaration A.Declaration where
         printScope "scope.data.def" 20 ("checking DataDef for " ++ show x)
         ensureNoLetStms pars
         -- Check for duplicate constructors
-        do let cs   = map conName cons
-               dups = nub $ cs \\ nub cs
+        do cs <- mapM conName cons
+           let dups = nub $ cs \\ nub cs
                bad  = filter (`elem` dups) cs
            unless (distinct cs) $
              setCurrentRange bad $
@@ -1440,8 +1441,8 @@ instance ToAbstract NiceDeclaration A.Declaration where
         printScope "data" 20 $ "Checked data " ++ show x
         return [ A.DataDef (mkDefInfo x f PublicAccess a r) x' pars cons ]
       where
-        conName (C.Axiom _ _ _ _ _ _ _ c _) = c
-        conName _ = __IMPOSSIBLE__
+        conName (C.Axiom _ _ _ _ _ _ _ c _) = return c
+        conName d = errorNotConstrDecl d
 
   -- Record definitions (mucho interesting)
     C.RecDef r f a _ x ind eta cm pars fields -> do
@@ -1638,7 +1639,10 @@ instance ToAbstract ConstrDecl A.Declaration where
         return $ A.Axiom NoFunSig (mkDefInfoInstance x f p a i NotMacroDef r)
                          info Nothing y t'
       C.Axiom _ _ _ _ _ _ (Just _) _ _ -> __IMPOSSIBLE__
-      _ -> typeError . GenericDocError $
+      _ -> errorNotConstrDecl d
+
+errorNotConstrDecl :: C.NiceDeclaration -> ScopeM a
+errorNotConstrDecl d = typeError . GenericDocError $
         P.text "Illegal declaration in data type definition " P.$$
         P.nest 2 (P.vcat $ map pretty (notSoNiceDeclarations d))
 
@@ -1714,15 +1718,6 @@ instance ToAbstract C.Pragma [A.Pragma] where
     case e of
       A.Def x -> return [ A.CompiledDataUHCPragma x crd crcs ]
       _       -> fail $ "Bad compiled type: " ++ show x  -- TODO: error message
-  toAbstract (C.NoSmashingPragma _ x) = do
-      e <- toAbstract $ OldQName x Nothing
-      y <- case e of
-          A.Def  x -> return x
-          A.Proj _ (AmbQ [x]) -> return x
-          A.Proj _ x -> genericError $
-            "NO_SMASHING used on ambiguous name " ++ prettyShow x
-          _        -> genericError "Target of NO_SMASHING pragma should be a function"
-      return [ A.NoSmashingPragma y ]
   toAbstract (C.StaticPragma _ x) = do
       e <- toAbstract $ OldQName x Nothing
       y <- case e of
@@ -1780,22 +1775,35 @@ instance ToAbstract C.Pragma [A.Pragma] where
 
     top <- getHead lhs
 
-    hd <- do
+    (isPatSyn, hd) <- do
       qx <- resolveName' allKindsOfNames Nothing top
       case qx of
-        VarName x'          -> return $ A.qnameFromList [x']
-        DefinedName _ d     -> return $ anameName d
-        FieldName     [d]    -> return $ anameName d
+        VarName x'          -> return . (False,) $ A.qnameFromList [x']
+        DefinedName _ d     -> return . (False,) $ anameName d
+        FieldName     [d]    -> return . (False,) $ anameName d
         FieldName ds         -> genericError $ "Ambiguous projection " ++ show top ++ ": " ++ show (map anameName ds)
-        ConstructorName [d] -> return $ anameName d
+        ConstructorName [d] -> return . (False,) $ anameName d
         ConstructorName ds  -> genericError $ "Ambiguous constructor " ++ show top ++ ": " ++ show (map anameName ds)
         UnknownName         -> notInScope top
-        PatternSynResName d -> return $ anameName d
+        PatternSynResName d -> return . (True,) $ anameName d
 
     lhs <- toAbstract $ LeftHandSide top lhs []
     ps  <- case lhs of
              A.LHS _ (A.LHSHead _ ps) [] -> return ps
              _ -> err
+
+    -- Andreas, 2016-08-08, issue #2132
+    -- Remove pattern synonyms on lhs
+    (hd, ps) <- do
+      let mkP | isPatSyn =  A.PatternSynP (PatRange $ getRange lhs) hd
+              | otherwise = A.DefP (PatRange $ getRange lhs) (A.AmbQ [hd])
+      p <- expandPatternSynonyms $ mkP ps
+      case p of
+        A.DefP _ (A.AmbQ [hd]) ps -> return (hd, ps)
+        A.ConP _ (A.AmbQ [hd]) ps -> return (hd, ps)
+        A.PatternSynP{} -> __IMPOSSIBLE__
+        _ -> err
+
     rhs <- toAbstract rhs
     return [A.DisplayPragma hd ps rhs]
 
@@ -1984,7 +1992,7 @@ data RightHandSide = RightHandSide
 data AbstractRHS
   = AbsurdRHS'
   | WithRHS' [A.Expr] [ScopeM C.Clause]  -- ^ The with clauses haven't been translated yet
-  | RHS' A.Expr
+  | RHS' A.Expr C.Expr
   | RewriteRHS' [A.Expr] AbstractRHS [A.Declaration]
 
 qualifyName_ :: A.Name -> ScopeM A.QName
@@ -1999,7 +2007,7 @@ withFunctionName s = do
 
 instance ToAbstract AbstractRHS A.RHS where
   toAbstract AbsurdRHS'            = return A.AbsurdRHS
-  toAbstract (RHS' e)              = return $ A.RHS e
+  toAbstract (RHS' e c)            = return $ A.RHS e $ Just c
   toAbstract (RewriteRHS' eqs rhs wh) = do
     auxs <- replicateM (length eqs) $ withFunctionName "rewrite-"
     rhs  <- toAbstract rhs
@@ -2028,7 +2036,7 @@ instance ToAbstract RightHandSide AbstractRHS where
 
 instance ToAbstract C.RHS AbstractRHS where
     toAbstract C.AbsurdRHS = return $ AbsurdRHS'
-    toAbstract (C.RHS e)   = RHS' <$> toAbstract e
+    toAbstract (C.RHS e)   = RHS' <$> toAbstract e <*> pure e
 
 data LeftHandSide = LeftHandSide C.QName C.Pattern [C.Pattern]
 
@@ -2133,6 +2141,7 @@ instance ToAbstract C.Pattern (A.Pattern' C.Expr) where
         getHiding p == NotHidden = do
       e <- toAbstract (OldQName x Nothing)
       let quoted (A.Def x) = return x
+          quoted (A.Macro x) = return x
           quoted (A.Proj _ (AmbQ [x])) = return x
           quoted (A.Proj _ (AmbQ xs))  = genericError $ "quote: Ambigous name: " ++ show xs
           quoted (A.Con (AmbQ [x])) = return x

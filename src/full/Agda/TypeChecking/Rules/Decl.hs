@@ -73,6 +73,7 @@ import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.Pretty (prettyShow)
 import Agda.Utils.Size
+import Agda.Utils.Lens
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -488,18 +489,6 @@ checkAxiom funSig i info0 mp x e = whenAbstractFreezeMetasAfter i $ do
     , nest 2 $ text "of sort " <+> prettyTCM (getSort t)
     ]
 
-  -- check macro type if necessary
-  when (Info.defMacro i == MacroDef) $ do
-    t' <- normalise t
-    TelV tel tr <- telView t'
-
-    let telList = telToList tel
-        resType = abstract (telFromList (drop (length telList - 1) telList)) tr
-    expectedType <- el primAgdaTerm --> el (primAgdaTCM <#> primLevelZero <@> primUnit)
-    equalType resType expectedType
-      `catchError` \ _ -> typeError . GenericDocError =<< sep [ text "Result type of a macro must be"
-                                                              , nest 2 $ prettyTCM expectedType ]
-
   -- Andreas, 2015-03-17 Issue 1428: Do not postulate sizes in parametrized
   -- modules!
   when (funSig == A.NoFunSig) $ do
@@ -527,7 +516,7 @@ checkAxiom funSig i info0 mp x e = whenAbstractFreezeMetasAfter i $ do
     useTerPragma $
       (defaultDefn info x t $
          case funSig of
-           A.FunSig   -> emptyFunction
+           A.FunSig   -> set funMacro (Info.defMacro i == MacroDef) emptyFunction
            A.NoFunSig -> Axiom Nothing [])   -- NB: used also for data and record type sigs
         { defArgOccurrences = occs
         , defPolarity       = pols
@@ -806,11 +795,6 @@ checkPragma r p =
                 addCoreType x dt'
                 sequence_ $ zipWith addCoreConstr cs cons'
             _ -> typeError $ GenericError "COMPILED_DATA_UHC on non datatype"
-        A.NoSmashingPragma x -> do
-          def <- getConstInfo x
-          case theDef def of
-            Function{} -> markNoSmashing x
-            _          -> typeError $ GenericError "NO_SMASHING directive only works on functions"
         A.StaticPragma x -> do
           def <- getConstInfo x
           case theDef def of
@@ -997,7 +981,7 @@ checkSectionApplication' i m1 (A.RecordModuleIFS x) rd rm = do
       instFinal (ExtendTel (Dom info t) (Abs n EmptyTel)) =
                  ExtendTel (Dom ifo' t) (Abs n EmptyTel)
         where ifo' = setHiding Instance info
-      -- Otherwise, keep searchinf for last parameter:
+      -- Otherwise, keep searching for last parameter:
       instFinal (ExtendTel arg (Abs n tel)) =
                  ExtendTel arg (Abs n (instFinal tel))
       -- Before instFinal is invoked, we have checked that the @tel@ is not empty.

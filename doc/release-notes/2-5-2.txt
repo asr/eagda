@@ -439,7 +439,69 @@ Language
           b : B
           test : P (Wrap.unwrap b)  -- fails
 
+* Pattern synonyms are now expanded on left hand sides of DISPLAY pragmas
+  [Issue 2132].  Example:
 
+    data D : Set where
+      C c : D
+      g : D → D
+
+    pattern C′ = C
+
+    {-# DISPLAY C′ = C′ #-}
+    {-# DISPLAY g C′ = c #-}
+
+  This now behaves as:
+
+    {-# DISPLAY C = C′ #-}
+    {-# DISPLAY g C = c #-}
+
+  Expected error for
+
+    test : C ≡ g C
+    test = refl
+
+  is thus:
+
+    C′ != c of type D
+
+Reflection
+----------
+
+* You can now use macros in reflected terms [Issue #2130].
+
+  For instance, given a macro
+
+    macro
+      some-tactic : Term → TC ⊤
+      some-tactic = ...
+
+  the term "def (quote some-tactic) []" represents a call to the macro. This
+  makes it a lot easier to compose tactics.
+
+Type checking
+=============
+
+* Files with open metas can be imported now [Issue #964].
+  This should make simultaneous interactive development on several modules
+  more pleasant.
+
+  Requires option: --allow-unsolved-metas
+
+  Internally, before serialization, open metas are turned into postulates named
+
+    unsolved#meta.<nnn>
+
+  where <nnn> is the internal meta variable number.
+
+* The performance of the compile-time evaluator has been greatly improved.
+
+  - Fixed a memory leak in evaluator (Issue #2147).
+  - Reduction speed improved by an order of magnitude and is now
+    comparable to the performance of ghci. Still call-by-name though.
+
+* The detection of types that satisfy K added in Agda 2.5.1 has been rolled
+  back (see Issue #2003).
 
 
 Emacs mode
@@ -496,10 +558,10 @@ Emacs mode
   The hidden .N and .M have been brought into scope, the visible N
   has been split upon.
 
-* Non-fatal errors/warnings window.
+* Non-fatal errors/warnings.
 
-  Non-fatal errors and warnings are now displayed in their own emacs
-  window and does not interrupt the typechecking of the file.
+  Non-fatal errors and warnings are now displayed in the info buffer
+  and does not interrupt the typechecking of the file.
 
   Currently termination errors, unsolved metavariables, unsolved
   constraints and positivity errors are non-fatal errors.

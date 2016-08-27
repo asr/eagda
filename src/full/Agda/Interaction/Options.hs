@@ -500,9 +500,6 @@ uhcTraceLevelFlag i o = return $ o { optUHCTraceLevel = read i }
 uhcFlagsFlag :: String -> Flag CommandLineOptions
 uhcFlagsFlag s o = return $ o { optUHCFlags = optUHCFlags o ++ [s] }
 
-optimNoSmashing :: Flag CommandLineOptions
-optimNoSmashing o = return $ o {optOptimSmashing = False }
-
 htmlFlag :: Flag CommandLineOptions
 htmlFlag o = return $ o { optGenerateHTML = True }
 
@@ -563,7 +560,7 @@ standardOptions =
     , Option []     ["interaction"] (NoArg ghciInteractionFlag)
                     "for use with the Emacs mode"
     , Option ['c']  ["compile", "ghc"] (NoArg compileGhcFlag)
-                    "compile program using the GHC backend (experimental)"
+                    "compile program using the GHC backend"
     , Option []     ["ghc-dont-call-ghc"] (NoArg ghcDontCallGhcFlag) "Don't call ghc, just write the GHC Haskell files."
     , Option []     ["ghc-flag"] (ReqArg ghcFlag "GHC-FLAG")
                     "give the flag GHC-FLAG to GHC when compiling using the GHC backend"
@@ -583,7 +580,6 @@ standardOptions =
     , Option []     ["uhc-gen-trace"] (ReqArg uhcTraceLevelFlag "TRACE") "Add tracing code to generated executable."
     , Option []     ["uhc-flag"] (ReqArg uhcFlagsFlag "UHC-FLAG")
                     "give the flag UHC-FLAG to UHC when compiling using the UHC backend"
-    , Option []     ["no-smashing"] (NoArg optimNoSmashing) "Don't apply the smashing optimization."
     , Option []     ["compile-dir"] (ReqArg compileDirFlag "DIR")
                     ("directory for compiler output (default: the project root)")
 

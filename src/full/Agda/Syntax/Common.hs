@@ -21,6 +21,7 @@ import qualified Data.Strict.Maybe as Strict
 import Data.Semigroup hiding (Arg)
 import Data.Traversable
 import Data.Typeable (Typeable)
+import Data.Word
 
 import GHC.Generics (Generic)
 
@@ -340,8 +341,13 @@ ignoreForced Irrelevant = Irrelevant
 -- | Irrelevant function arguments may appear non-strictly in the codomain type.
 irrToNonStrict :: Relevance -> Relevance
 irrToNonStrict Irrelevant = NonStrict
--- irrToNonStrict NonStrict  = Relevant -- TODO: is that what we want (OR: NonStrict)  -- better be more conservative
+-- irrToNonStrict NonStrict  = Relevant -- TODO: this is bad if we apply irrToNonStrict several times!
 irrToNonStrict rel        = rel
+
+-- | Applied when working on types (unless --experimental-irrelevance).
+nonStrictToRel :: Relevance -> Relevance
+nonStrictToRel NonStrict = Relevant
+nonStrictToRel rel       = rel
 
 nonStrictToIrr :: Relevance -> Relevance
 nonStrictToIrr NonStrict = Irrelevant
@@ -794,7 +800,7 @@ type Arity  = Nat
 
 -- | The unique identifier of a name. Second argument is the top-level module
 --   identifier.
-data NameId = NameId !Integer !Integer
+data NameId = NameId {-# UNPACK #-} !Word64 {-# UNPACK #-} !Word64
     deriving (Eq, Ord, Typeable, Generic)
 
 instance KillRange NameId where

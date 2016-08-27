@@ -14,6 +14,8 @@ import Data.Map (Map)
 import Data.Traversable
 import Data.Hashable
 
+import Agda.Interaction.Options
+
 import Agda.Syntax.Position
 import Agda.Syntax.Common
 import Agda.Syntax.Internal
@@ -36,6 +38,7 @@ import {-# SOURCE #-} Agda.TypeChecking.CompiledClause.Match
 import {-# SOURCE #-} Agda.TypeChecking.Patterns.Match
 import {-# SOURCE #-} Agda.TypeChecking.Pretty
 import {-# SOURCE #-} Agda.TypeChecking.Rewriting
+import {-# SOURCE #-} Agda.TypeChecking.Reduce.Fast
 
 import Agda.Utils.Function
 import Agda.Utils.Functor
@@ -93,7 +96,6 @@ instance Instantiate Term where
       OpenIFS                          -> return t
       BlockedConst _                   -> return t
       PostponedTypeCheckingProblem _ _ -> return t
-      InstS _                          -> __IMPOSSIBLE__
   instantiate' (Level l) = levelTm <$> instantiate' l
   instantiate' (Sort s) = sortTm <$> instantiate' s
   instantiate' v@Shared{} =
@@ -127,7 +129,6 @@ instance Instantiate a => Instantiate (Blocked a) where
       OpenIFS                        -> return v
       BlockedConst{}                 -> return v
       PostponedTypeCheckingProblem{} -> return v
-      InstS{}                        -> __IMPOSSIBLE__
 
 instance Instantiate Type where
     instantiate' (El s t) = El <$> instantiate' s <*> instantiate' t
@@ -306,7 +307,24 @@ instance (Reduce a, Reduce b,Reduce c) => Reduce (a,b,c) where
     reduce' (x,y,z) = (,,) <$> reduce' x <*> reduce' y <*> reduce' z
 
 instance Reduce Term where
-  reduceB' = {-# SCC "reduce'<Term>" #-} rewriteAfter $ \ v -> do
+  reduceB' = {-# SCC "reduce'<Term>" #-} maybeFastReduceTerm
+
+maybeFastReduceTerm :: Term -> ReduceM (Blocked Term)
+maybeFastReduceTerm v = do
+  let tryFast = case v of
+                  Def{} -> True
+                  Con{} -> True
+                  _     -> False
+  if not tryFast then slowReduceTerm v
+                 else do
+    r <- optRewriting <$> pragmaOptions
+    s <- optSharing   <$> commandLineOptions
+    allowed <- asks envAllowedReductions
+    let notAll = delete NonTerminatingReductions allowed /= allReductions
+    if r || s || notAll then slowReduceTerm v else fastReduce (elem NonTerminatingReductions allowed) v
+
+slowReduceTerm :: Term -> ReduceM (Blocked Term)
+slowReduceTerm = rewriteAfter $ \ v -> do
     v <- instantiate' v
     let done = return $ notBlocked v
     case v of
@@ -349,8 +367,12 @@ instance Reduce Term where
               _                -> Con c [defaultArg w]
       reduceNat v = return v
 
+{-# INLINE rewriteAfter #-}
 rewriteAfter :: (Term -> ReduceM (Blocked Term)) -> Term -> ReduceM (Blocked Term)
-rewriteAfter f = trampolineM $ rewrite <=< f
+rewriteAfter f v =
+  ifM (optRewriting <$> pragmaOptions)
+      (trampolineM (rewrite <=< f) v)
+      (f v)
 
 -- Andreas, 2013-03-20 recursive invokations of unfoldCorecursion
 -- need also to instantiate metas, see Issue 826.
@@ -367,28 +389,37 @@ unfoldCorecursion = rewriteAfter $ \ v -> do
     v@(Shared p) ->
       case derefPtr p of
         Def{} -> updateSharedFM unfoldCorecursion v
-        _     -> reduceB' v
-    _ -> reduceB' v
+        _     -> slowReduceTerm v
+    _ -> slowReduceTerm v
 
 -- | If the first argument is 'True', then a single delayed clause may
 -- be unfolded.
 unfoldDefinition ::
   Bool -> (Term -> ReduceM (Blocked Term)) ->
   Term -> QName -> Args -> ReduceM (Blocked Term)
-unfoldDefinition b keepGoing v f args = snd <$> do
-  unfoldDefinition' b (\ t -> (NoSimplification,) <$> keepGoing t) v f $
-    map Apply args
+unfoldDefinition unfoldDelayed keepGoing v f args =
+  unfoldDefinitionE unfoldDelayed keepGoing v f (map Apply args)
 
 unfoldDefinitionE ::
   Bool -> (Term -> ReduceM (Blocked Term)) ->
   Term -> QName -> Elims -> ReduceM (Blocked Term)
-unfoldDefinitionE b keepGoing v f es = snd <$>
-  unfoldDefinition' b (\ t -> (NoSimplification,) <$> keepGoing t) v f es
+unfoldDefinitionE unfoldDelayed keepGoing v f es = do
+  r <- unfoldDefinitionStep unfoldDelayed v f es
+  case r of
+    NoReduction v    -> return v
+    YesReduction _ v -> keepGoing v
 
 unfoldDefinition' ::
-  Bool -> (Term -> ReduceM (Simplification, Blocked Term)) ->
+  Bool -> (Simplification -> Term -> ReduceM (Simplification, Blocked Term)) ->
   Term -> QName -> Elims -> ReduceM (Simplification, Blocked Term)
-unfoldDefinition' unfoldDelayed keepGoing v0 f es =
+unfoldDefinition' unfoldDelayed keepGoing v0 f es = do
+  r <- unfoldDefinitionStep unfoldDelayed v0 f es
+  case r of
+    NoReduction v       -> return (NoSimplification, v)
+    YesReduction simp v -> keepGoing simp v
+
+unfoldDefinitionStep :: Bool -> Term -> QName -> Elims -> ReduceM (Reduced (Blocked Term) Term)
+unfoldDefinitionStep unfoldDelayed v0 f es =
   {-# SCC "reduceDef" #-} do
   info <- getConstInfo f
   allowed <- asks envAllowedReductions
@@ -407,30 +438,29 @@ unfoldDefinition' unfoldDelayed keepGoing v0 f es =
           _                             -> False
   case def of
     Constructor{conSrcCon = c} ->
-      retSimpl $ notBlocked $ Con (c `withRangeOf` f) [] `applyE` es
+      noReduction $ notBlocked $ Con (c `withRangeOf` f) [] `applyE` es
     Primitive{primAbstr = ConcreteDef, primName = x, primClauses = cls} -> do
       pf <- fromMaybe __IMPOSSIBLE__ <$> getPrimitive' x
       if FunctionReductions `elem` allowed
         then reducePrimitive x v0 f es pf dontUnfold
                              cls (defCompiled info)
-        else retSimpl $ notBlocked v
+        else noReduction $ notBlocked v
     _  -> do
       if FunctionReductions `elem` allowed ||
          (isJust (isProjection_ def) && ProjectionReductions `elem` allowed) || -- includes projection-like
          (isInlineFun def && InlineReductions `elem` allowed) ||
          (copatterns && CopatternReductions `elem` allowed)
         then
-          reduceNormalE keepGoing v0 f (map notReduced es)
-                       dontUnfold
+          reduceNormalE v0 f (map notReduced es) dontUnfold
                        (defClauses info) (defCompiled info)
-        else retSimpl $ notBlocked v  -- Andrea(s), 2014-12-05 OK?
+        else noReduction $ notBlocked v  -- Andrea(s), 2014-12-05 OK?
 
   where
-    retSimpl v = (,v) <$> getSimplification
-
+    noReduction    = return . NoReduction
+    yesReduction s = return . YesReduction s
     reducePrimitive x v0 f es pf dontUnfold cls mcc
       | genericLength es < ar
-                  = retSimpl $ NotBlocked Underapplied $ v0 `applyE` es -- not fully applied
+                  = noReduction $ NotBlocked Underapplied $ v0 `applyE` es -- not fully applied
       | otherwise = {-# SCC "reducePrimitive" #-} do
           let (es1,es2) = genericSplitAt ar es
               args1     = fromMaybe __IMPOSSIBLE__ $ mapM isApplyElim es1
@@ -439,42 +469,25 @@ unfoldDefinition' unfoldDelayed keepGoing v0 f es =
             NoReduction args1' -> do
               let es1' = map (fmap Apply) args1'
               if null cls then do
-                retSimpl $ applyE (Def f []) <$> do
+                noReduction $ applyE (Def f []) <$> do
                   traverse id $
                     map mredToBlocked es1' ++ map notBlocked es2
                else
-                reduceNormalE keepGoing v0 f
-                             (es1' ++ map notReduced es2)
-                             dontUnfold cls mcc
-            YesReduction simpl v -> performedSimplification' simpl $
-              keepGoing $ v `applyE` es2
+                reduceNormalE v0 f (es1' ++ map notReduced es2) dontUnfold cls mcc
+            YesReduction simpl v -> yesReduction simpl $ v `applyE` es2
       where
           ar  = primFunArity pf
           mredToBlocked :: MaybeReduced a -> Blocked a
           mredToBlocked (MaybeRed NotReduced  x) = notBlocked x
           mredToBlocked (MaybeRed (Reduced b) x) = x <$ b
 
-    reduceNormalE :: (Term -> ReduceM (Simplification, Blocked Term)) -> Term -> QName -> [MaybeReduced Elim] -> Bool -> [Clause] -> Maybe CompiledClauses -> ReduceM (Simplification, Blocked Term)
-    reduceNormalE keepGoing v0 f es dontUnfold def mcc = {-# SCC "reduceNormal" #-} do
+    reduceNormalE :: Term -> QName -> [MaybeReduced Elim] -> Bool -> [Clause] -> Maybe CompiledClauses -> ReduceM (Reduced (Blocked Term) Term)
+    reduceNormalE v0 f es dontUnfold def mcc = {-# SCC "reduceNormal" #-} do
       case def of
         _ | dontUnfold -> defaultResult -- non-terminating or delayed
-        [] -> defaultResult -- no definition for head
-        cls -> do
-            ev <- appDefE_ f v0 cls mcc es
-            case ev of
-              NoReduction v -> do
-                traceSDoc "tc.reduce'" 90 (vcat
-                  [ text "*** tried to reduce' " <+> prettyTCM f
-                  , text "    es =  " <+> sep (map (prettyTCM . ignoreReduced) es)
---                  [ text "*** tried to reduce' " <+> prettyTCM vfull
-                  , text "    stuck on" <+> prettyTCM (ignoreBlocking v) ]) $ do
-                  retSimpl v
-              YesReduction simpl v -> performedSimplification' simpl $ do
-                traceSDoc "tc.reduce'"  90 (text "*** reduced definition: " <+> prettyTCM f) $ do
-                  traceSDoc "tc.reduce'"  95 (text "    result" <+> prettyTCM v) $ do
-                    traceSDoc "tc.reduce'" 100 (text "    raw   " <+> text (show v)) $ do
-                      keepGoing v
-      where defaultResult = retSimpl $ NotBlocked AbsurdMatch vfull
+        []             -> defaultResult -- no definition for head
+        cls            -> appDefE_ f v0 cls mcc es
+      where defaultResult = noReduction $ NotBlocked AbsurdMatch vfull
             vfull         = v0 `applyE` map ignoreReduced es
 
 -- | Reduce a non-primitive definition if it is a copy linking to another def.
@@ -567,7 +580,6 @@ appDefE' v cls es = goCls cls $ map ignoreReduced es
   where
     goCls :: [Clause] -> [Elim] -> ReduceM (Reduced (Blocked Term) Term)
     goCls cl es = do
-      traceSLn "tc.reduce'" 95 ("Reduce.goCls tries reduction, #clauses = " ++ show (length cl)) $ do
       case cl of
         -- Andreas, 2013-10-26  In case of an incomplete match,
         -- we just do not reduce.  This allows adding single function
@@ -654,7 +666,7 @@ instance Simplify Term where
     v <- instantiate' v
     case v of
       Def f vs   -> do
-        let keepGoing v = (,notBlocked v) <$> getSimplification  -- Andrea(s), 2014-12-05 OK?
+        let keepGoing simp v = return (simp, notBlocked v)
         (simpl, v) <- unfoldDefinition' False keepGoing (Def f []) f vs
         traceSDoc "tc.simplify'" 20 (
           text ("simplify': unfolding definition returns " ++ show simpl)

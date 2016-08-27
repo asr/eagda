@@ -569,7 +569,7 @@ instance ToConcrete A.TypedBinding C.TypedBinding where
 instance ToConcrete LetBinding [C.Declaration] where
     bindToConcrete (LetBind i info x t e) ret =
         bindToConcrete x $ \x ->
-        do (t,(e, [], [], [])) <- toConcrete (t, A.RHS e)
+        do (t,(e, [], [], [])) <- toConcrete (t, A.RHS e Nothing)
            ret $ addInstanceB (getHiding info == Instance) $
                [ C.TypeSig info x t
                , C.FunClause (C.LHS (C.IdentP $ C.QName x) [] [] [])
@@ -638,7 +638,8 @@ declsToConcrete :: [A.Declaration] -> AbsToCon [C.Declaration]
 declsToConcrete ds = mergeSigAndDef . concat <$> toConcrete ds
 
 instance ToConcrete A.RHS (C.RHS, [C.Expr], [C.Expr], [C.Declaration]) where
-    toConcrete (A.RHS e) = do
+    toConcrete (A.RHS e (Just c)) = return (C.RHS c, [], [], [])
+    toConcrete (A.RHS e Nothing) = do
       e <- toConcrete e
       return (C.RHS e, [], [], [])
     toConcrete A.AbsurdRHS = return (C.AbsurdRHS, [], [], [])
@@ -840,7 +841,6 @@ instance ToConcrete RangeAndPragma C.Pragma where
     A.CompiledDataUHCPragma x crd crcs -> do
       x <- toConcrete x
       return $ C.CompiledDataUHCPragma r x crd crcs
-    A.NoSmashingPragma x -> C.NoSmashingPragma r <$> toConcrete x
     A.StaticPragma x -> C.StaticPragma r <$> toConcrete x
     A.InlinePragma x -> C.InlinePragma r <$> toConcrete x
     A.DisplayPragma f ps rhs ->

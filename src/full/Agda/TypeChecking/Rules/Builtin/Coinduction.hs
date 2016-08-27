@@ -9,6 +9,7 @@ module Agda.TypeChecking.Rules.Builtin.Coinduction where
 import Control.Applicative
 
 import qualified Data.Map as Map
+import qualified Data.Set as Set
 
 import qualified Agda.Syntax.Abstract as A
 import Agda.Syntax.Common
@@ -98,6 +99,7 @@ bindBuiltinSharp e =
                     , conData     = defName infDefn
                     , conAbstr    = ConcreteDef
                     , conInd      = CoInductive
+                    , conErased   = []
                     , conTPTPRole = Nothing
                     }
                 }
@@ -150,21 +152,11 @@ bindBuiltinFlat e =
     addConstant flat $
       flatDefn { defPolarity       = []
                , defArgOccurrences = [StrictPos]  -- changing that to [Mixed] destroys monotonicity of 'Rec' in test/succeed/GuardednessPreservingTypeConstructors
-               , theDef = Function
-                   { funClauses    = [clause]
-                   , funCompiled   = Just $ cc
-                   , funTreeless   = Nothing
-                   , funInv        = NotInjective
-                   , funMutual     = []
-                   , funAbstr      = ConcreteDef
-                   , funDelayed    = NotDelayed
-                   , funProjection = Just projection
-                   , funSmashable  = False
-                   , funStatic     = False
-                   , funInline     = False
-                   , funTerminates = Just True
-                   , funExtLam     = Nothing
-                   , funWith       = Nothing
+               , theDef = emptyFunction
+                   { funClauses      = [clause]
+                   , funCompiled     = Just $ cc
+                   , funProjection   = Just projection
+                   , funTerminates   = Just True
                    , funCopatternLHS = isCopatternLHS [clause]
                    , funTPTPRole     = Nothing
                    }

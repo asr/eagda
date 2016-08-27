@@ -46,6 +46,7 @@ import Agda.Utils.Maybe
 import Agda.Utils.Permutation
 import Agda.Utils.Size
 import Agda.Utils.Tuple
+import Agda.Utils.HashMap (HashMap)
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -320,16 +321,52 @@ instance Apply PrimFun where
     apply (PrimFun x ar def) args   = PrimFun x (ar - size args) $ \vs -> def (args ++ vs)
 
 instance Apply Clause where
-    apply (Clause r tel ps b t catchall) args =
+    apply (Clause r tel ps b t catchall) args
+      | length args > length ps = __IMPOSSIBLE__
+      | otherwise =
       Clause r
-             (apply tel args)
-             (apply ps args)
+             tel'
+             (applySubst rhoP $ drop (length args) ps)
              (applySubst rho b)
              (applySubst rho t)
              catchall
       where
-        m = size tel - size args
-        rho = liftS m $ parallelS $ reverse $ map unArg args
+        rargs = map unArg $ reverse args
+        rps   = reverse $ take (length args) ps
+
+        rhoP :: PatternSubstitution
+        tel' = newTel tel rps rargs
+        rhoP = mkSub DotP rps rargs
+        rho  = mkSub id   rps rargs
+
+        substP :: Nat -> Term -> [NamedArg DeBruijnPattern] -> [NamedArg DeBruijnPattern]
+        substP i v = subst i (DotP v)
+
+        -- from tel to newTel
+        mkSub :: Subst a a => (Term -> a) -> [NamedArg DeBruijnPattern] -> [Term] -> Substitution' a
+        mkSub _ [] [] = idS
+        mkSub tm (p : ps) (v : vs) =
+          case namedArg p of
+            VarP{}  -> tm v `consS` mkSub tm ps vs
+            DotP{}  -> mkSub tm ps vs
+            LitP{}  -> __IMPOSSIBLE__
+            ConP{}  -> __IMPOSSIBLE__
+            ProjP{} -> __IMPOSSIBLE__
+        mkSub _ _ _ = __IMPOSSIBLE__
+
+        newTel tel [] [] = tel
+        newTel tel (p : ps) (v : vs) =
+          case namedArg p of
+            VarP (DBPatVar _ i) -> newTel (subTel (size tel - 1 - i) v tel) (substP i v ps) vs
+            DotP{}              -> newTel tel ps vs
+            LitP{}              -> __IMPOSSIBLE__
+            ConP{}              -> __IMPOSSIBLE__
+            ProjP{}             -> __IMPOSSIBLE__
+        newTel tel _ _ = __IMPOSSIBLE__
+
+        subTel i v EmptyTel = __IMPOSSIBLE__
+        subTel 0 v (ExtendTel _ tel) = absApp tel v
+        subTel i v (ExtendTel a tel) = ExtendTel a $ subTel (i - 1) (raise 1 v) <$> tel
 
 instance Apply CompiledClauses where
   apply cc args = case cc of
@@ -390,6 +427,10 @@ instance Apply t => Apply (Maybe t) where
   applyE x es   = fmap (`applyE` es) x
 
 instance Apply v => Apply (Map k v) where
+  apply  x args = fmap (`apply` args) x
+  applyE x es   = fmap (`applyE` es) x
+
+instance Apply v => Apply (HashMap k v) where
   apply  x args = fmap (`apply` args) x
   applyE x es   = fmap (`applyE` es) x
 
@@ -581,6 +622,9 @@ instance Abstract t => Abstract (Maybe t) where
 instance Abstract v => Abstract (Map k v) where
   abstract tel m = fmap (abstract tel) m
 
+instance Abstract v => Abstract (HashMap k v) where
+  abstract tel m = fmap (abstract tel) m
+
 abstractArgs :: Abstract a => Args -> a -> a
 abstractArgs args x = abstract tel x
     where
@@ -629,6 +673,14 @@ consS u rho = seq u (u :# rho)
 singletonS :: DeBruijn a => Int -> a -> Substitution' a
 singletonS n u = map debruijnVar [0..n-1] ++# consS u (raiseS n)
   -- ALT: foldl (\ s i -> debruijnVar i `consS` s) (consS u $ raiseS n) $ downFrom n
+
+-- | Single substitution without disturbing any deBruijn indices.
+--   @
+--             Γ, A, Δ ⊢ u : A
+--    ---------------------------------
+--   @Γ, A, Δ ⊢ inplace |Δ| u : Γ, A, Δ
+inplaceS :: Subst a a => Int -> a -> Substitution' a
+inplaceS k u = singletonS k u `composeS` liftS (k + 1) (raiseS 1)
 
 -- | Lift a substitution under k binders.
 liftS :: Int -> Substitution' a -> Substitution' a
@@ -936,6 +988,30 @@ instance Subst Term EqualityView where
     (applySubst rho t)
     (applySubst rho a)
     (applySubst rho b)
+
+instance DeBruijn DeBruijnPattern where
+  debruijnNamedVar n i  = VarP $ DBPatVar n i
+  debruijnView (VarP x) = Just $ dbPatVarIndex x
+  debruijnView _        = Nothing
+
+fromPatternSubstitution :: PatternSubstitution -> Substitution
+fromPatternSubstitution = fmap patternToTerm
+
+applyPatSubst :: (Subst Term a) => PatternSubstitution -> a -> a
+applyPatSubst = applySubst . fromPatternSubstitution
+
+instance Subst DeBruijnPattern DeBruijnPattern where
+  applySubst IdS p = p
+  applySubst rho p = case p of
+    VarP x       -> useName (dbPatVarName x) $ lookupS rho $ dbPatVarIndex x
+    DotP u       -> DotP $ applyPatSubst rho u
+    ConP c ci ps -> ConP c ci $ applySubst rho ps
+    LitP x       -> p
+    ProjP{}      -> p
+    where
+      useName :: PatVarName -> DeBruijnPattern -> DeBruijnPattern
+      useName n (VarP x) | isUnderscore (dbPatVarName x) = debruijnNamedVar n (dbPatVarIndex x)
+      useName _ x = x
 
 ---------------------------------------------------------------------------
 -- * Projections

@@ -923,7 +923,6 @@ data Frozen
 
 data MetaInstantiation
         = InstV [Arg String] Term -- ^ solved by term (abstracted over some free variables)
-        | InstS Term         -- ^ solved by @Lam .. Sort s@
         | Open               -- ^ unsolved
         | OpenIFS            -- ^ open, to be instantiated as "implicit from scope"
         | BlockedConst Term  -- ^ solution blocked by unsolved constraints
@@ -946,7 +945,6 @@ data TypeCheckingProblem
 
 instance Show MetaInstantiation where
   show (InstV tel t) = "InstV " ++ show tel ++ " (" ++ show t ++ ")"
-  show (InstS s) = "InstS (" ++ show s ++ ")"
   show Open      = "Open"
   show OpenIFS   = "OpenIFS"
   show (BlockedConst t) = "BlockedConst (" ++ show t ++ ")"
@@ -1266,6 +1264,9 @@ data Definition = Defn
   }
     deriving (Typeable, Show)
 
+theDefLens :: Lens' Defn Definition
+theDefLens f d = f (theDef d) <&> \ df -> d { theDef = df }
+
 -- | Create a definition with sensible defaults.
 defaultDefn :: ArgInfo -> QName -> Type -> Defn -> Definition
 defaultDefn info x t def = Defn
@@ -1386,6 +1387,11 @@ setEtaEquality :: EtaEquality -> Bool -> EtaEquality
 setEtaEquality e@Specified{} _ = e
 setEtaEquality _ b = Inferred b
 
+data FunctionFlag = FunStatic       -- ^ Should calls to this function be normalised at compile-time?
+                  | FunInline       -- ^ Should calls to this function be inlined by the compiler?
+                  | FunMacro        -- ^ Is this function a macro?
+  deriving (Typeable, Eq, Ord, Enum, Show)
+
 data Defn = Axiom
             { axTPTPRole  :: Maybe TPTPRole
               -- ^ TPTP axiom or conjecture
@@ -1414,12 +1420,7 @@ data Defn = Axiom
               --   it is already applied to the record. (Can happen in module
               --   instantiation.) This information is used in the termination
               --   checker.
-            , funStatic         :: Bool
-              -- ^ Should calls to this function be normalised at compile-time?
-            , funInline         :: Bool
-              -- ^ Should calls to this function be inlined by the compiler?
-            , funSmashable      :: Bool
-              -- ^ Are we allowed to smash this function?
+            , funFlags          :: Set FunctionFlag
             , funTerminates     :: Maybe Bool
               -- ^ Has this function been termination checked?  Did it pass?
             , funExtLam         :: Maybe ExtLamInfo
@@ -1470,6 +1471,7 @@ data Defn = Axiom
             , conData     :: QName       -- ^ Name of datatype or record type.
             , conAbstr    :: IsAbstract
             , conInd      :: Induction   -- ^ Inductive or coinductive?
+            , conErased   :: [Bool]      -- ^ Which arguments are erased at runtime (computed during compilation to treeless)
             , conTPTPRole :: Maybe TPTPRole  -- ^ TPTP axiom?
             }
           | Primitive
@@ -1498,15 +1500,27 @@ emptyFunction = Function
   , funAbstr       = ConcreteDef
   , funDelayed     = NotDelayed
   , funProjection  = Nothing
-  , funStatic      = False
-  , funInline      = False
-  , funSmashable   = True
+  , funFlags       = Set.empty
   , funTerminates  = Nothing
   , funExtLam      = Nothing
   , funWith        = Nothing
   , funCopatternLHS = False
   , funTPTPRole     = Nothing
   }
+
+funFlag :: FunctionFlag -> Lens' Bool Defn
+funFlag flag f def@Function{ funFlags = flags } =
+  f (Set.member flag flags) <&>
+  \ b -> def{ funFlags = (if b then Set.insert else Set.delete) flag flags }
+funFlag _ f def = f False <&> const def
+
+funStatic, funInline, funMacro :: Lens' Bool Defn
+funStatic       = funFlag FunStatic
+funInline       = funFlag FunInline
+funMacro        = funFlag FunMacro
+
+isMacro :: Defn -> Bool
+isMacro = (^. funMacro)
 
 -- | Checking whether we are dealing with a function yet to be defined.
 isEmptyFunction :: Defn -> Bool
@@ -2557,16 +2571,29 @@ mapRedEnvSt f g (ReduceEnv e s) = ReduceEnv (f e) (g s)
 newtype ReduceM a = ReduceM { unReduceM :: ReduceEnv -> a }
 --  deriving (Functor, Applicative, Monad)
 
+fmapReduce :: (a -> b) -> ReduceM a -> ReduceM b
+fmapReduce f (ReduceM m) = ReduceM $ \ e -> f $! m e
+{-# INLINE fmapReduce #-}
+
+apReduce :: ReduceM (a -> b) -> ReduceM a -> ReduceM b
+apReduce (ReduceM f) (ReduceM x) = ReduceM $ \ e -> f e $! x e
+{-# INLINE apReduce #-}
+
+bindReduce :: ReduceM a -> (a -> ReduceM b) -> ReduceM b
+bindReduce (ReduceM m) f = ReduceM $ \ e -> unReduceM (f $! m e) e
+{-# INLINE bindReduce #-}
+
 instance Functor ReduceM where
-  fmap f (ReduceM m) = ReduceM $ \ e -> f $! m e
+  fmap = fmapReduce
 
 instance Applicative ReduceM where
   pure x = ReduceM (const x)
-  ReduceM f <*> ReduceM x = ReduceM $ \ e -> f e $! x e
+  (<*>) = apReduce
 
 instance Monad ReduceM where
   return = pure
-  ReduceM m >>= f = ReduceM $ \ e -> unReduceM (f $! m e) e
+  (>>=) = bindReduce
+  (>>) = (*>)
 
 instance ReadTCState ReduceM where
   getTCState = ReduceM redSt
@@ -2920,15 +2947,18 @@ instance KillRange EtaEquality where
 instance KillRange ExtLamInfo where
   killRange = id
 
+instance KillRange FunctionFlag where
+  killRange = id
+
 instance KillRange Defn where
   killRange def =
     case def of
       Axiom role hints -> killRange2 Axiom role hints
-      Function cls comp tt inv mut isAbs delayed proj static inline smash term extlam with cop role ->
-        killRange16 Function cls comp tt inv mut isAbs delayed proj static inline smash term extlam with cop role
+      Function cls comp tt inv mut isAbs delayed proj flags term extlam with copat role ->
+        killRange14 Function cls comp tt inv mut isAbs delayed proj flags term extlam with copat role
       Datatype a b c d e f g h i j k -> killRange11 Datatype a b c d e f g h i j k
       Record a b c d e f g h i j k   -> killRange11 Record a b c d e f g h i j k
-      Constructor a b c d e f        -> killRange6 Constructor a b c d e f
+      Constructor a b c d e f g      -> killRange7 Constructor a b c d e f g
       Primitive a b c d              -> killRange4 Primitive a b c d
 
 instance KillRange MutualId where

@@ -315,7 +315,7 @@ instance ExprLike a => ExprLike (Clause' a) where
 instance ExprLike RHS where
   recurseExpr f rhs =
     case rhs of
-      RHS e                   -> RHS <$> rec e
+      RHS e c                 -> RHS <$> rec e <*> pure c
       AbsurdRHS{}             -> pure rhs
       WithRHS x es cs         -> WithRHS x <$> rec es <*> rec cs
       RewriteRHS xes rhs ds   -> RewriteRHS <$> rec xes <*> rec rhs <*> rec ds
@@ -344,7 +344,6 @@ instance ExprLike Pragma where
       CompiledJSPragma{}          -> pure p
       CompiledUHCPragma{}         -> pure p
       CompiledDataUHCPragma{}     -> pure p
-      NoSmashingPragma{}          -> pure p
       StaticPragma{}              -> pure p
       InlinePragma{}              -> pure p
       DisplayPragma f xs e        -> DisplayPragma f <$> rec xs <*> rec e

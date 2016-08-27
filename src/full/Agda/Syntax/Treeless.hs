@@ -11,7 +11,7 @@ module Agda.Syntax.Treeless
     , module Agda.Syntax.Treeless
     ) where
 
-import Prelude
+import Control.Arrow (first, second)
 
 import Data.Map (Map)
 import Data.Typeable (Typeable)
@@ -72,6 +72,18 @@ tAppView = view
       TApp a bs -> view a ++ bs
       _         -> [t]
 
+tLetView :: TTerm -> ([TTerm], TTerm)
+tLetView (TLet e b) = first (e :) $ tLetView b
+tLetView e          = ([], e)
+
+tLamView :: TTerm -> (Int, TTerm)
+tLamView = go 0
+  where go n (TLam b) = go (n + 1) b
+        go n t        = (n, t)
+
+mkTLam :: Int -> TTerm -> TTerm
+mkTLam n b = foldr ($) b $ replicate n TLam
+
 -- | Introduces a new binding
 mkLet :: TTerm -> TTerm -> TTerm
 mkLet x body = TLet x body
@@ -94,6 +106,7 @@ tNegPlusK k n = tOp PSub (tInt (-k)) n
 
 plusKView :: TTerm -> Maybe (Integer, TTerm)
 plusKView (TApp (TPrim PAdd) [k, n]) | Just k <- intView k = Just (k, n)
+plusKView (TApp (TPrim PSub) [n, k]) | Just k <- intView k = Just (-k, n)
 plusKView _ = Nothing
 
 negPlusKView :: TTerm -> Maybe (Integer, TTerm)
@@ -108,6 +121,8 @@ tUnreachable = TError TUnreachable
 
 data CaseType
   = CTData QName -- case on datatype
+  | CTNat
+  | CTInt
   | CTChar
   | CTString
   | CTQName

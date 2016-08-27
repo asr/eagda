@@ -241,7 +241,7 @@ checkConstructor d tel nofIxs s con@(A.Axiom _ i ai Nothing c e) =
         escapeContext (size tel) $
           addConstant c $
             defaultDefn defaultArgInfo c (telePi tel t') $
-              Constructor (size tel) con d (Info.defAbstract i) Inductive Nothing
+              Constructor (size tel) con d (Info.defAbstract i) Inductive [] Nothing
 
         -- Add the constructor to the instance table, if needed
         when (Info.defInstance i == InstanceDef) $ do

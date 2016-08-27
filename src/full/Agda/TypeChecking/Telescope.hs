@@ -22,7 +22,6 @@ import Agda.Syntax.Position
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Substitute
-import Agda.TypeChecking.Substitute.Pattern
 import Agda.TypeChecking.Free
 
 import Agda.Utils.Functor
@@ -243,8 +242,8 @@ instantiateTelescope tel k u = guard ok $> (tel', sigma, rho)
     perm  = Perm n $ is    -- works on de Bruijn indices
     rho   = reverseP perm  -- works on de Bruijn levels
 
-    u'    = renameP __IMPOSSIBLE__ perm u -- Γ' ⊢ u' : A'
-    us    = map (\i -> fromMaybe (DotP u') (debruijnVar <$> findIndex (i ==) is)) [ 0 .. n-1 ]
+    u1    = renameP __IMPOSSIBLE__ perm u -- Γ' ⊢ u1 : A'
+    us    = map (\i -> fromMaybe (DotP u1) (debruijnVar <$> findIndex (i ==) is)) [ 0 .. n-1 ]
     sigma = us ++# raiseS (n-1)
 
     ts1   = permute rho $ applyPatSubst sigma ts0

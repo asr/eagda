@@ -229,6 +229,7 @@ library
                     Agda.Compiler.Treeless.Compare
                     Agda.Compiler.Treeless.Erase
                     Agda.Compiler.Treeless.GuardsToPrims
+                    Agda.Compiler.Treeless.Identity
                     Agda.Compiler.Treeless.NormalizeNames
                     Agda.Compiler.Treeless.Pretty
                     Agda.Compiler.Treeless.Simplify
@@ -243,7 +244,6 @@ library
                     Agda.Compiler.UHC.Pragmas.Base
                     Agda.Compiler.UHC.Pragmas.Parse
                     Agda.Compiler.UHC.Primitives
-                    Agda.Compiler.UHC.Smashing
                     Agda.ImpossibleTest
                     Agda.Interaction.BasicOps
                     Agda.Interaction.SearchAbout
@@ -393,6 +393,7 @@ library
                     Agda.TypeChecking.RecordPatterns
                     Agda.TypeChecking.Records
                     Agda.TypeChecking.Reduce
+                    Agda.TypeChecking.Reduce.Fast
                     Agda.TypeChecking.Reduce.Monad
                     Agda.TypeChecking.Rewriting
                     Agda.TypeChecking.Rewriting.NonLinMatch
@@ -426,7 +427,6 @@ library
                     Agda.TypeChecking.SizedTypes.Utils
                     Agda.TypeChecking.SizedTypes.WarshallSolver
                     Agda.TypeChecking.Substitute
-                    Agda.TypeChecking.Substitute.Pattern
                     Agda.TypeChecking.SyntacticEquality
                     Agda.TypeChecking.Telescope
                     Agda.TypeChecking.Unquote

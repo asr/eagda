@@ -489,20 +489,7 @@ reifyTerm expandAnonDefs0 v = do
         toppars <- size <$> do lookupSection $ qnameModule x
         let extLam = case def of
              Function{ funExtLam = Just{}, funProjection = Just{} } -> __IMPOSSIBLE__
-             Function{ funExtLam = Just (ExtLamInfo h nh) } ->
-               let npars = toppars + h + nh
-               -- Andreas, 2016-07-06 Issue #2047
-               -- Check that we can actually drop the parameters
-               -- of the extended lambda.
-               -- This is only possible if the first @npars@ patterns
-               -- are variable patterns.
-               -- If we encounter a non-variable pattern, fall back
-               -- to printing without nice extended lambda syntax.
-                   ps = map namedArg $ take npars $ namedClausePats $
-                     fromMaybe __IMPOSSIBLE__ $ headMaybe (defClauses defn)
-                   isVarP I.VarP{} = True
-                   isVarP _ = False
-               in  if all isVarP ps then Just npars else Nothing
+             Function{ funExtLam = Just (ExtLamInfo h nh) } -> Just (toppars + h + nh)
              _ -> Nothing
         case extLam of
           Just pars | df -> reifyExtLam x pars (defClauses defn) es
@@ -780,7 +767,7 @@ instance BlankVars A.ModuleName where
   blank bound = id
 
 instance BlankVars RHS where
-  blank bound (RHS e)                = RHS $ blank bound e
+  blank bound (RHS e mc)             = RHS (blank bound e) mc
   blank bound AbsurdRHS              = AbsurdRHS
   blank bound (WithRHS _ es clauses) = __IMPOSSIBLE__ -- NZ
   blank bound (RewriteRHS xes rhs _) = __IMPOSSIBLE__ -- NZ
@@ -921,7 +908,8 @@ instance Reify NamedClause A.Clause where
       return $ dropParams nfv lhs
     lhs <- stripImps lhs
     reportSLn "reify.clause" 60 $ "reifying NamedClause, lhs = " ++ show lhs
-    rhs <- maybe (return AbsurdRHS) (RHS <.> reify) $ clauseBody cl
+    rhs <- caseMaybe (clauseBody cl) (return AbsurdRHS) $ \ e -> do
+       RHS <$> reify e <*> pure Nothing
     reportSLn "reify.clause" 60 $ "reifying NamedClause, rhs = " ++ show rhs
     let result = A.Clause (spineToLhs lhs) [] rhs [] (I.clauseCatchall cl)
     reportSLn "reify.clause" 60 $ "reified NamedClause, result = " ++ show result

@@ -49,7 +49,7 @@ import Agda.TypeChecking.Positivity.Occurrence hiding (tests)
 
 import Agda.Utils.Either hiding (tests)
 import Agda.Utils.Hash
-import Agda.Utils.List (spanJust)
+import Agda.Utils.List ( spanJust, chopWhen )
 import Agda.Utils.Monad
 import Agda.Utils.Pretty
 import Agda.Utils.Singleton
@@ -146,7 +146,6 @@ import Agda.Utils.Impossible
     'IMPOSSIBLE'              { TokKeyword KwIMPOSSIBLE $$ }
     'INLINE'                  { TokKeyword KwINLINE $$ }
     'MEASURE'                 { TokKeyword KwMEASURE $$ }
-    'NO_SMASHING'             { TokKeyword KwNO_SMASHING $$ }
     'NO_TERMINATION_CHECK'    { TokKeyword KwNO_TERMINATION_CHECK $$ }
     'NO_POSITIVITY_CHECK'     { TokKeyword KwNO_POSITIVITY_CHECK $$ }
     'NON_TERMINATING'         { TokKeyword KwNON_TERMINATING $$ }
@@ -277,7 +276,6 @@ Token
     | 'IMPOSSIBLE'              { TokKeyword KwIMPOSSIBLE $1 }
     | 'INLINE'                  { TokKeyword KwINLINE $1 }
     | 'MEASURE'                 { TokKeyword KwMEASURE $1 }
-    | 'NO_SMASHING'             { TokKeyword KwNO_SMASHING $1 }
     | 'NO_TERMINATION_CHECK'    { TokKeyword KwNO_TERMINATION_CHECK $1 }
     | 'NO_POSITIVITY_CHECK'     { TokKeyword KwNO_POSITIVITY_CHECK $1 }
     | 'NON_TERMINATING'         { TokKeyword KwNON_TERMINATING $1 }
@@ -413,8 +411,9 @@ DoubleCloseBrace
 -- A possibly dotted identifier.
 MaybeDottedId :: { Arg Name }
 MaybeDottedId
-  : '.' Id { setRelevance Irrelevant $ defaultArg $2 }
-  | Id     { defaultArg $1 }
+  : '..' Id { setRelevance NonStrict $ defaultArg $2 }
+  | '.'  Id { setRelevance Irrelevant $ defaultArg $2 }
+  | Id      { defaultArg $1 }
 
 -- Space separated list of one or more possibly dotted identifiers.
 MaybeDottedIds :: { [Arg Name] }
@@ -571,7 +570,7 @@ PragmaName :: { Name }
 PragmaName : string {% mkName $1 }
 
 PragmaQName :: { QName }
-PragmaQName : string {% fmap QName (mkName $1) }
+PragmaQName : string {% pragmaQName $1 }  -- Issue 2125. WAS: string {% fmap QName (mkName $1) }
 
 -- Space separated list of QNames in a pragma.
 PragmaQNames :: { [QName] }
@@ -1383,7 +1382,6 @@ DeclarationPragma
   | CompiledUHCPragma        { $1 }
   | CompiledDataUHCPragma    { $1 }
   | HaskellPragma            { $1 }
-  | NoSmashingPragma         { $1 }
   | StaticPragma             { $1 }
   | InlinePragma             { $1 }
   | ImportPragma             { $1 }
@@ -1497,11 +1495,6 @@ CompiledDataUHCPragma
 HaskellPragma :: { Pragma }
 HaskellPragma
   : '{-#' 'HASKELL' Strings '#-}' { HaskellCodePragma (getRange ($1, $2, $4)) (recoverLayout $3) }
-
-NoSmashingPragma :: { Pragma }
-NoSmashingPragma
-  : '{-#' 'NO_SMASHING' PragmaQName '#-}'
-    { NoSmashingPragma (getRange ($1,$2,$3,$4)) $3 }
 
 StaticPragma :: { Pragma }
 StaticPragma
@@ -1754,6 +1747,15 @@ mkQName :: [(Interval, String)] -> Parser QName
 mkQName ss = do
     xs <- mapM mkName ss
     return $ foldr Qual (QName $ last xs) (init xs)
+
+-- | Create a qualified name from a string (used in pragmas).
+--   Range of each name component is range of whole string.
+--   TODO: precise ranges!
+
+pragmaQName :: (Interval, String) -> Parser QName
+pragmaQName (r, s) = do
+  let ss = chopWhen (== '.') s
+  mkQName $ map (r,) ss
 
 -- | Polarity parser.
 

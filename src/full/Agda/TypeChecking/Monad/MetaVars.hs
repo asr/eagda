@@ -152,7 +152,6 @@ isInstantiatedMeta' m = do
   mv <- lookupMeta m
   return $ case mvInstantiation mv of
     InstV tel v -> Just $ foldr mkLam v tel
-    InstS v     -> Just v
     _           -> Nothing
 
 -- | Create 'MetaInfo' in the current environment.
@@ -343,19 +342,18 @@ getInstantiatedMetas = do
         isInst BlockedConst{}                 = False
         isInst PostponedTypeCheckingProblem{} = False
         isInst InstV{}                        = True
-        isInst InstS{}                        = True
 
 getOpenMetas :: TCM [MetaId]
 getOpenMetas = do
     store <- getMetaStore
-    return [ i | (i, MetaVar{ mvInstantiation = mi }) <- Map.assocs store, isOpen mi ]
-    where
-        isOpen Open                           = True
-        isOpen OpenIFS                        = True
-        isOpen BlockedConst{}                 = True
-        isOpen PostponedTypeCheckingProblem{} = True
-        isOpen InstV{}                        = False
-        isOpen InstS{}                        = False
+    return [ i | (i, MetaVar{ mvInstantiation = mi }) <- Map.assocs store, isOpenMeta mi ]
+
+isOpenMeta :: MetaInstantiation -> Bool
+isOpenMeta Open                           = True
+isOpenMeta OpenIFS                        = True
+isOpenMeta BlockedConst{}                 = True
+isOpenMeta PostponedTypeCheckingProblem{} = True
+isOpenMeta InstV{}                        = False
 
 -- | @listenToMeta l m@: register @l@ as a listener to @m@. This is done
 --   when the type of l is blocked by @m@.

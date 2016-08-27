@@ -5,6 +5,7 @@ module Agda.TypeChecking.Rules.Record where
 import Control.Applicative
 import Control.Monad
 import Data.Maybe
+import qualified Data.Set as Set
 
 import qualified Agda.Syntax.Abstract as A
 import Agda.Syntax.Common
@@ -178,11 +179,12 @@ checkRecDef i name ind eta con ps contel fields =
         addConstant conName $
           defaultDefn defaultArgInfo conName (telh `abstract` contype) $
             Constructor
-              { conPars     = npars
-              , conSrcCon   = con
-              , conData     = name
-              , conAbstr    = Info.defAbstract conInfo
-              , conInd      = conInduction
+              { conPars   = npars
+              , conSrcCon = con
+              , conData   = name
+              , conAbstr  = Info.defAbstract conInfo
+              , conInd    = conInduction
+              , conErased = []
               , conTPTPRole = Nothing
               }
 
@@ -373,6 +375,7 @@ checkRecordProjections m r con tel ftel fs = do
         -- compute body modification for irrelevant projections
         let bodyMod = case rel of
               Relevant   -> id
+              NonStrict  -> id
               Irrelevant -> DontCare
               _          -> __IMPOSSIBLE__
 
@@ -433,23 +436,13 @@ checkRecordProjections m r con tel ftel fs = do
         escapeContext (size tel) $ do
           addConstant projname $
             (defaultDefn ai projname (killRange finalt)
-              Function { funClauses        = [clause]
-                       , funCompiled       = Just cc
-                       , funTreeless       = Nothing
-                       , funDelayed        = NotDelayed
-                       , funInv            = NotInjective
-                       , funAbstr          = ConcreteDef
-                       , funMutual         = []
-                       , funProjection     = Just projection
-                       , funSmashable      = True
-                       , funStatic         = False
-                       , funInline         = False
-                       , funTerminates     = Just True
-                       , funExtLam         = Nothing
-                       , funWith           = Nothing
-                       , funCopatternLHS   = isCopatternLHS [clause]
-                       , funTPTPRole       = Nothing
-                       })
+              emptyFunction
+                { funClauses        = [clause]
+                , funCompiled       = Just cc
+                , funProjection     = Just projection
+                , funTerminates     = Just True
+                , funCopatternLHS   = isCopatternLHS [clause]
+                })
               { defArgOccurrences = [StrictPos] }
           computePolarity projname
           when (Info.defInstance info == InstanceDef) $

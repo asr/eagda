@@ -18,6 +18,7 @@ import Data.Either (partitionEithers)
 import Data.Monoid (mappend)
 import Data.List hiding (sort, null)
 import qualified Data.Map as Map
+import qualified Data.Set as Set
 import Data.Traversable (sequenceA)
 import Data.Void
 
@@ -266,9 +267,9 @@ checkTypedBinding lamOrPi info (A.TBind i xs e) ret = do
     -- Andreas, 2011-04-26 irrelevant function arguments may appear
     -- non-strictly in the codomain type
     -- 2011-10-04 if flag --experimental-irrelevance is set
-    allowed <- optExperimentalIrrelevance <$> pragmaOptions
-    t <- modEnv lamOrPi allowed $ isType_ e
-    let info' = mapRelevance (modRel lamOrPi allowed) info
+    experimental <- optExperimentalIrrelevance <$> pragmaOptions
+    t <- modEnv lamOrPi $ isType_ e
+    let info' = mapRelevance (modRel lamOrPi experimental) info
     addContext' (xs, Dom info' t) $
       ret $ bindsWithHidingToTel xs (Dom info t)
     where
@@ -276,10 +277,10 @@ checkTypedBinding lamOrPi info (A.TBind i xs e) ret = do
         -- types, but do not modify the new context entries
         -- otherwise, if we are checking a pi, we do not resurrect, but
         -- modify the new context entries
-        modEnv LamNotPi True = doWorkOnTypes
-        modEnv _        _    = id
-        modRel PiNotLam True = irrToNonStrict
-        modRel _        _    = id
+        modEnv LamNotPi = workOnTypes
+        modEnv _        = id
+        modRel PiNotLam xp = if xp then irrToNonStrict else nonStrictToRel
+        modRel _        _  = id
 checkTypedBinding lamOrPi info (A.TLet _ lbs) ret = do
     checkLetBindings lbs (ret [])
 
@@ -459,7 +460,7 @@ checkAbsurdLambda i h e t = do
             (\ d -> (defaultDefn (setRelevance rel info') aux t' d)
                     { defPolarity       = [Nonvariant]
                     , defArgOccurrences = [Unused] })
-            $ Function
+            $ emptyFunction
               { funClauses        =
                   [Clause
                     { clauseRange     = getRange e
@@ -471,20 +472,7 @@ checkAbsurdLambda i h e t = do
                     }
                   ]
               , funCompiled       = Just Fail
-              , funTreeless       = Nothing
-              , funDelayed        = NotDelayed
-              , funInv            = NotInjective
-              , funAbstr          = ConcreteDef
-              , funMutual         = []
-              , funProjection     = Nothing
-              , funSmashable      = False -- there is no body anyway, smashing doesn't make sense
-              , funStatic         = False
-              , funInline         = False
               , funTerminates     = Just True
-              , funExtLam         = Nothing
-              , funWith           = Nothing
-              , funCopatternLHS   = False
-              , funTPTPRole        = Nothing
               }
           -- Andreas 2012-01-30: since aux is lifted to toplevel
           -- it needs to be applied to the current telescope (issue 557)
@@ -558,7 +546,6 @@ checkExtendedLambda i di qname cs e t = do
              throwError err
            -- Case: we know the meta here.
            Just InstV{} -> __IMPOSSIBLE__  -- It cannot be instantiated yet.
-           Just InstS{} -> __IMPOSSIBLE__
            Just{} -> do
              -- It has to be blocked on some meta, so we can postpone,
              -- being sure it will be retired when a meta is solved
@@ -875,6 +862,7 @@ checkExpr e t0 =
         e0@(A.App i q (Arg ai e))
           | A.Quote _ <- unScope q, visible ai -> do
           let quoted (A.Def x) = return x
+              quoted (A.Macro x) = return x
               quoted (A.Proj o (AmbQ [x])) = return x
               quoted (A.Proj o (AmbQ xs))  = typeError $ GenericError $ "quote: Ambigous name: " ++ show xs
               quoted (A.Con (AmbQ [x])) = return x
@@ -1158,7 +1146,21 @@ inferOrCheckProjApp e o ds args mt = do
 --   and resolves pattern synonyms.
 checkApplication :: A.Expr -> A.Args -> A.Expr -> Type -> TCM Term
 checkApplication hd args e t = do
-  case hd of
+  reportSDoc "tc.check.app" 20 $ vcat
+    [ text "checkApplication"
+    , nest 2 $ text "hd   = " <+> prettyA hd
+    , nest 2 $ text "args = " <+> sep (map prettyA args)
+    , nest 2 $ text "e    = " <+> prettyA e
+    , nest 2 $ text "t    = " <+> prettyTCM t
+    ]
+  reportSDoc "tc.check.app" 70 $ vcat
+    [ text "checkApplication (raw)"
+    , nest 2 $ text $ "hd   = " ++ show hd
+    , nest 2 $ text $ "args = " ++ show args
+    , nest 2 $ text $ "e    = " ++ show e
+    , nest 2 $ text $ "t    = " ++ show t
+    ]
+  case unScope hd of
     A.Proj _ (AmbQ []) -> __IMPOSSIBLE__
 
     -- Subcase: unambiguous projection
@@ -1653,7 +1655,7 @@ checkHeadApplication e t hd args = do
                                , A.lhsFocus      = defaultNamedArg $ A.LHSHead c' []
                                , A.lhsPatsRight  = [] }
             clause = A.Clause (A.LHS (A.LHSRange noRange) core []) []
-                              (A.RHS arg)
+                              (A.RHS arg Nothing)
                               [] False
 
         i <- currentOrFreshMutualBlock

@@ -9,6 +9,7 @@ import Control.Arrow (first, second, (***))
 import Control.Applicative hiding (empty)
 import Control.Monad.State
 import Control.Monad.Reader
+import Control.Monad.Trans.Maybe
 
 import Data.List hiding (null)
 import Data.Set (Set)
@@ -163,26 +164,14 @@ addCoreType q crTy = modifySignature $ updateDefinition q $ updateDefCompiledRep
   where
     addCr crep = crep { compiledCore = Just $ CrType crTy }
 
-markNoSmashing :: QName -> TCM ()
-markNoSmashing q = modifySignature $ updateDefinition q $ mark
-  where
-    mark def@Defn{theDef = fun@Function{}} =
-      def{theDef = fun{funSmashable = False}}
-    mark def = def
+setFunctionFlag :: FunctionFlag -> Bool -> QName -> TCM ()
+setFunctionFlag flag val q = modifyGlobalDefinition q $ set (theDefLens . funFlag flag) val
 
 markStatic :: QName -> TCM ()
-markStatic q = modifySignature $ updateDefinition q $ mark
-  where
-    mark def@Defn{theDef = fun@Function{}} =
-      def{theDef = fun{funStatic = True}}
-    mark def = def
+markStatic = setFunctionFlag FunStatic True
 
 markInline :: QName -> TCM ()
-markInline q = modifySignature $ updateDefinition q $ mark
-  where
-    mark def@Defn{theDef = fun@Function{}} =
-      def{theDef = fun{funInline = True}}
-    mark def = def
+markInline = setFunctionFlag FunInline True
 
 -- | Add the information of an ATP-pragma to the signature.
 addATPPragma :: TPTPRole -> QName -> [QName] -> TCM ()
@@ -501,18 +490,15 @@ applySection' new ptel old ts rd rm = do
                          }
                 _ -> do
                   cc <- compileClauses Nothing [cl] -- Andreas, 2012-10-07 non need for record pattern translation
-                  let newDef = Function
+                  let newDef =
+                        set funMacro  (oldDef ^. funMacro) $
+                        set funStatic (oldDef ^. funStatic) $
+                        set funInline True $
+                        emptyFunction
                         { funClauses        = [cl]
-                        , funCompiled       = Just $ cc
-                        , funTreeless       = Nothing
-                        , funDelayed        = NotDelayed
-                        , funInv            = NotInjective
+                        , funCompiled       = Just cc
                         , funMutual         = mutual
-                        , funAbstr          = ConcreteDef -- OR: abstr -- ?!
                         , funProjection     = proj
-                        , funStatic         = False
-                        , funInline         = False
-                        , funSmashable      = True
                         , funTerminates     = Just True
                         , funExtLam         = extlam
                         , funWith           = with
@@ -704,6 +690,10 @@ instance HasConstInfo (TCMT IO) where
           dropLastModule q@QName{ qnameModule = m } =
             q{ qnameModule = mnameFromList $ ifNull (mnameToList m) __IMPOSSIBLE__ init }
 
+instance (HasConstInfo m) => HasConstInfo (MaybeT m) where
+  getConstInfo = lift . getConstInfo
+  getRewriteRulesFor = lift . getRewriteRulesFor
+
 instance (HasConstInfo m, Error err) => HasConstInfo (ExceptionT err m) where
   getConstInfo = lift . getConstInfo
   getRewriteRulesFor = lift . getRewriteRulesFor
@@ -766,6 +756,27 @@ getCompiled q = do
   return $ case def of
     Function{ funTreeless = t } -> t
     _                           -> Nothing
+
+getErasedConArgs :: QName -> TCM [Bool]
+getErasedConArgs q = do
+  def <- getConstInfo q
+  case theDef def of
+    Constructor{ conData = d, conPars = np, conErased = es } -> do
+      ddef <- getConstInfo d
+      case compiledHaskell $ defCompiledRep ddef of
+        Nothing -> return es
+        Just _  -> do
+          -- Can't erase arguments of COMPILED_DATA constructors yet
+          TelV tel _ <- telView $ defType def
+          return $ replicate (size tel - np) False
+    _ -> __IMPOSSIBLE__
+
+setErasedConArgs :: QName -> [Bool] -> TCM ()
+setErasedConArgs q args = modifyGlobalDefinition q setArgs
+  where
+    setArgs def@Defn{theDef = con@Constructor{}} =
+      def{ theDef = con{ conErased = args } }
+    setArgs def = def   -- no-op for non-constructors
 
 getTreeless :: QName -> TCM (Maybe TTerm)
 getTreeless q = fmap cTreeless <$> getCompiled q
@@ -1028,13 +1039,11 @@ isProjection_ def =
 
 -- | Is it a function marked STATIC?
 isStaticFun :: Defn -> Bool
-isStaticFun Function{ funStatic = b } = b
-isStaticFun _ = False
+isStaticFun = (^. funStatic)
 
 -- | Is it a function marked INLINE?
 isInlineFun :: Defn -> Bool
-isInlineFun Function{ funInline = b } = b
-isInlineFun _ = False
+isInlineFun = (^. funInline)
 
 -- | Returns @True@ if we are dealing with a proper projection,
 --   i.e., not a projection-like function nor a record field value
