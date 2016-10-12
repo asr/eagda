@@ -179,6 +179,7 @@ translateDefn (n, defini) = do
         (Just expr) -> do
                 expr' <- expr
                 return [mkBind1 crName expr']
+    AbstractDefn -> __IMPOSSIBLE__
   where
     -- | Produces an identity function, optionally ignoring the first n arguments.
     mkIdentityFun :: QName
@@ -277,6 +278,7 @@ compileTerm term = do
           C.CTChar -> mkVar $ primFunNm "primCharEquality"
           C.CTString -> mkVar $ primFunNm "primStringEquality"
           C.CTQName -> mkVar $ primFunNm "primQNameEquality"
+          C.CTFloat -> mkVar $ primFunNm "primFloatEquality"
           C.CTNat -> mkVar $ primFunNm "primIntegerEquality"
           C.CTInt -> mkVar $ primFunNm "primIntegerEquality"
           _ -> __IMPOSSIBLE__
@@ -364,8 +366,9 @@ compilePrim C.PMul = mkVar $ primFunNm "primIntegerTimes"
 compilePrim C.PIf  = mkVar $ primFunNm "primIfThenElse"
 compilePrim C.PGeq = mkVar $ primFunNm "primIntegerGreaterOrEqual"
 compilePrim C.PLt  = mkVar $ primFunNm "primIntegerLess"
-compilePrim C.PEq  = mkVar $ primFunNm "primIntegerEquality"
+compilePrim p | C.isPrimEq p = mkVar $ primFunNm "primIntegerEquality"
 compilePrim C.PSeq = mkVar $ primFunNm "primSeq"
+compilePrim _ = __IMPOSSIBLE__
 
 
 createMainModule :: ModuleName -> HsName -> CModule

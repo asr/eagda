@@ -81,10 +81,20 @@ disabledTests =
     -- Disable UHC backend tests if the backend is also disabled.
   , RFInclude "Compiler/UHC/"
 #endif
-  -- JS backend tests are whitelisted for now
-  , RFInclude "Compiler/JS/.*"
-  , RFExclude "Compiler/JS/simple/HelloWorld"
-  , RFExclude "Compiler/JS/simple/String$"
+    -- primQNameFixity not yet implemented for UHC and JS
+  , RFInclude "Compiler/UHC/simple/Issue1664"
+  , RFInclude "Compiler/JS/simple/Issue1664"
+  , RFInclude "Compiler/JS/simple/CopatternStreamSized"
+  , RFInclude "Compiler/JS/simple/Issue1486"
+  , RFInclude "Compiler/JS/simple/Issue326"
+  , RFInclude "Compiler/JS/simple/VecReverse"
+  , RFInclude "Compiler/JS/simple/VecReverseIrr"
+  -- primQNameLess not implemented for JS
+  , RFInclude "Compiler/JS/simple/QNameOrder"
+  -- Floats
+  , RFInclude "Compiler/JS/simple/FloatsOnlyUHC"
+  , RFInclude "Compiler/MAlonzo/simple/FloatsOnlyUHC"
+  , RFInclude "Compiler/UHC/simple/FloatsUHCFails"
   ]
 
 tests :: IO TestTree

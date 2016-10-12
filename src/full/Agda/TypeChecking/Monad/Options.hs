@@ -106,6 +106,7 @@ setLibraryIncludes o = do
 addDefaultLibraries :: RelativeTo -> CommandLineOptions -> TCM CommandLineOptions
 addDefaultLibraries rel o
   | or [ not $ null $ optLibraries o
+       , not $ optUseLibs o
        , optShowVersion o ] = pure o
   | otherwise = do
   root <- getProjectRoot rel
@@ -133,41 +134,6 @@ setOptionsFromPragma ps = do
     case z of
       Left err    -> typeError $ GenericError err
       Right opts' -> setPragmaOptions opts'
-
--- | Disable display forms.
-enableDisplayForms :: TCM a -> TCM a
-enableDisplayForms =
-  local $ \e -> e { envDisplayFormsEnabled = True }
-
--- | Disable display forms.
-disableDisplayForms :: TCM a -> TCM a
-disableDisplayForms =
-  local $ \e -> e { envDisplayFormsEnabled = False }
-
--- | Check if display forms are enabled.
-displayFormsEnabled :: TCM Bool
-displayFormsEnabled = asks envDisplayFormsEnabled
-
--- | Don't eta contract implicit
-dontEtaContractImplicit :: TCM a -> TCM a
-dontEtaContractImplicit = local $ \e -> e { envEtaContractImplicit = False }
-
--- | Do eta contract implicit
-{-# SPECIALIZE doEtaContractImplicit :: TCM a -> TCM a #-}
-doEtaContractImplicit :: MonadTCM tcm => tcm a -> tcm a
-doEtaContractImplicit = local $ \e -> e { envEtaContractImplicit = True }
-
-{-# SPECIALIZE shouldEtaContractImplicit :: TCM Bool #-}
-shouldEtaContractImplicit :: MonadReader TCEnv m => m Bool
-shouldEtaContractImplicit = asks envEtaContractImplicit
-
--- | Don't reify interaction points
-dontReifyInteractionPoints :: TCM a -> TCM a
-dontReifyInteractionPoints =
-  local $ \e -> e { envReifyInteractionPoints = False }
-
-shouldReifyInteractionPoints :: TCM Bool
-shouldReifyInteractionPoints = asks envReifyInteractionPoints
 
 -- | Gets the include directories.
 --

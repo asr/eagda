@@ -57,6 +57,7 @@ import Agda.Utils.Functor
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.Null
+import Agda.Utils.Singleton
 import Agda.Utils.Tuple
 import Agda.Utils.Pretty (prettyShow)
 
@@ -151,6 +152,12 @@ lookupQName ambCon x = do
         -- this is what happens for names that are not in scope (private names)
 
 lookupModule :: A.ModuleName -> AbsToCon C.QName
+lookupModule (A.MName []) = return $ C.QName $ C.Name noRange [Id "-1"]
+  -- Andreas, 2016-10-10 it can happen that we have an empty module name
+  -- for instance when we query the current module inside the
+  -- frontmatter or module telescope of the top level module.
+  -- In this case, we print it as an invalid module name.
+  -- (Should only affect debug printing.)
 lookupModule x =
     do  scope <- asks currentScope
         case inverseScopeLookupModule x scope of
@@ -580,7 +587,7 @@ instance ToConcrete LetBinding [C.Declaration] where
         p <- toConcrete p
         e <- toConcrete e
         ret [ C.FunClause (C.LHS p [] [] []) (C.RHS e) NoWhere False ]
-    bindToConcrete (LetApply i x modapp _ _ _) ret = do
+    bindToConcrete (LetApply i x modapp _ _) ret = do
       x' <- unqualify <$> toConcrete x
       modapp <- toConcrete modapp
       let r = getRange modapp
@@ -763,7 +770,7 @@ instance ToConcrete A.Declaration [C.Declaration] where
       ds <- declsToConcrete ds
       return [ C.Module (getRange i) x (concat tel) ds ]
 
-  toConcrete (A.Apply i x modapp _ _ _) = do
+  toConcrete (A.Apply i x modapp _ _) = do
     x  <- unsafeQNameToName <$> toConcrete x
     modapp <- toConcrete modapp
     let r = getRange modapp
@@ -813,7 +820,7 @@ instance ToConcrete RangeAndPragma C.Pragma where
     A.BuiltinPragma b e      -> C.BuiltinPragma r b <$> toConcrete e
     A.BuiltinNoDefPragma b x -> C.BuiltinPragma r b . C.Ident <$>
       toConcrete x
-    A.RewritePragma x        -> C.RewritePragma r <$> toConcrete x
+    A.RewritePragma x        -> C.RewritePragma r . singleton <$> toConcrete x
     A.CompiledTypePragma x hs -> do
       x <- toConcrete x
       return $ C.CompiledTypePragma r x hs

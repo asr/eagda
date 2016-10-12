@@ -22,6 +22,8 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Traversable hiding (for)
 
+import Numeric.IEEE
+
 import qualified Language.Haskell.Exts.Extension as HS
 import qualified Language.Haskell.Exts.Parser as HS
 import qualified Language.Haskell.Exts.Pretty as HS
@@ -44,6 +46,7 @@ import Agda.Interaction.Imports
 import Agda.Interaction.Options
 
 import Agda.Syntax.Common
+import Agda.Syntax.Fixity
 import qualified Agda.Syntax.Abstract.Name as A
 import qualified Agda.Syntax.Concrete.Name as C
 import Agda.Syntax.Internal as I
@@ -120,7 +123,7 @@ imports = (++) <$> hsImps <*> imps where
   unqualRTE = HS.ImportDecl dummy mazRTE False False False Nothing Nothing $ Just $
               (False, [ HS.IVar $ HS.Ident x
                       | x <- [mazCoerceName, mazErasedName] ++
-                             map treelessPrimName [T.PAdd, T.PSub, T.PMul, T.PQuot, T.PRem, T.PGeq, T.PLt, T.PEq] ])
+                             map treelessPrimName [T.PAdd, T.PSub, T.PMul, T.PQuot, T.PRem, T.PGeq, T.PLt, T.PEqI, T.PEqF] ])
 
   imps :: TCM [HS.ImportDecl]
   imps = List.map decl . uniq <$>
@@ -253,6 +256,7 @@ definition kit Defn{defName = q, defType = ty, defCompiledRep = compiled, theDef
   --         Nothing -> return $ cdecl q noFields
   --         Just c  -> snd <$> condecl c
         return $ tvaldecl q Inductive noFields ar [cd] cl
+      AbstractDefn -> __IMPOSSIBLE__
   where
   function :: Maybe HaskellExport -> TCM [HS.Decl] -> TCM [HS.Decl]
   function mhe fun = do
@@ -445,7 +449,7 @@ term tm0 = case tm0 of
 
     return $ HS.Case (hsCast sc') (alts' ++ [defAlt])
 
-  T.TLit l -> lift $ literal l
+  T.TLit l -> return $ literal l
   T.TDef q -> do
     HS.Var <$> (lift $ xhqn "d" q)
   T.TCon q   -> term (T.TApp (T.TCon q) [])
@@ -479,33 +483,52 @@ alt sc a = do
       return $ HS.Alt dummy HS.PWildCard
                       (HS.GuardedRhss [HS.GuardedRhs dummy [HS.Qualifier g] b])
                       emptyBinds
-    T.TALit { T.aLit = (LitQName _ q) } -> mkAlt (litqnamepat q)
-    T.TALit { T.aLit = (LitString _ s) , T.aBody = b } -> do
-      b <- term b
+    T.TALit { T.aLit = LitQName _ q } -> mkAlt (litqnamepat q)
+    T.TALit { T.aLit = l@LitFloat{},   T.aBody = b } -> mkGuarded (treelessPrimName T.PEqF) (literal l) b
+    T.TALit { T.aLit = LitString _ s , T.aBody = b } -> mkGuarded "(==)" (litString s) b
+    T.TALit {} -> mkAlt (HS.PLit HS.Signless $ hslit $ T.aLit a)
+  where
+    mkGuarded eq lit b = do
+      b  <- term b
       sc <- term (T.TVar sc)
       let guard =
-            HS.Var (HS.UnQual (HS.Ident "(==)")) `HS.App`
-              sc`HS.App`
-              litString s
+            HS.Var (HS.UnQual (HS.Ident eq)) `HS.App`
+              sc `HS.App` lit
       return $ HS.Alt dummy HS.PWildCard
                       (HS.GuardedRhss [HS.GuardedRhs dummy [HS.Qualifier guard] b])
                       emptyBinds
-    T.TALit {} -> mkAlt (HS.PLit HS.Signless $ hslit $ T.aLit a)
-  where
+
     mkAlt :: HS.Pat -> CC HS.Alt
     mkAlt pat = do
         body' <- term $ T.aBody a
         return $ HS.Alt dummy pat (HS.UnGuardedRhs $ hsCast body') emptyBinds
 
-literal :: Literal -> TCM HS.Exp
+literal :: Literal -> HS.Exp
 literal l = case l of
-  LitNat    _ _   -> return $ typed "Integer"
-  LitFloat  _ _   -> return $ typed "Double"
-  LitQName  _ x   -> return $ litqname x
-  LitString _ s   -> return $ litString s
-  _               -> return $ l'
-  where l'    = HS.Lit $ hslit l
-        typed = HS.ExpTypeSig dummy l' . HS.TyCon . rtmQual
+  LitNat    _ _   -> typed "Integer"
+  LitFloat  _ x   -> floatExp x "Double"
+  LitQName  _ x   -> litqname x
+  LitString _ s   -> litString s
+  _               -> l'
+  where
+    l'    = HS.Lit $ hslit l
+    typed = HS.ExpTypeSig dummy l' . HS.TyCon . rtmQual
+
+    -- ASR (2016-09-14): See Issue #2169.
+    -- Ulf, 2016-09-28: and #2218.
+    floatExp :: Double -> String -> HS.Exp
+    floatExp x s
+      | isNegativeZero x = rte "negativeZero"
+      | isNegativeInf  x = rte "negativeInfinity"
+      | isInfinite x     = rte "positiveInfinity"
+      | isNegativeNaN x  = rte "negativeNaN"
+      | isNaN x          = rte "positiveNaN"
+      | otherwise        = typed s
+
+    rte = HS.Var . HS.Qual mazRTE . HS.Ident
+
+    isNegativeInf x = isInfinite x && x < 0.0
+    isNegativeNaN x = isNaN x && not (identicalIEEE x (0.0 / 0.0))
 
 hslit :: Literal -> HS.Literal
 hslit l = case l of LitNat    _ x -> HS.Int    x
@@ -522,19 +545,32 @@ litString s =
 
 litqname :: QName -> HS.Exp
 litqname x =
-  HS.Con (HS.Qual mazRTE $ HS.Ident "QName") `HS.App`
-  hsTypedInt n `HS.App`
-  hsTypedInt m `HS.App`
-  HS.Lit (HS.String $ show x )
+  rteCon "QName" `apps`
+  [ hsTypedInt n
+  , hsTypedInt m
+  , HS.Lit $ HS.String $ show x
+  , rteCon "Fixity" `apps`
+    [ litAssoc (fixityAssoc fx)
+    , litPrec  (fixityLevel fx) ] ]
   where
+    apps = foldl HS.App
+    rteCon name = HS.Con $ HS.Qual mazRTE $ HS.Ident name
     NameId n m = nameId $ qnameName x
+    fx = theFixity $ nameFixity $ qnameName x
+
+    litAssoc NonAssoc   = rteCon "NonAssoc"
+    litAssoc LeftAssoc  = rteCon "LeftAssoc"
+    litAssoc RightAssoc = rteCon "RightAssoc"
+
+    litPrec Unrelated   = rteCon "Unrelated"
+    litPrec (Related l) = rteCon "Related" `HS.App` hsTypedInt l
 
 litqnamepat :: QName -> HS.Pat
 litqnamepat x =
   HS.PApp (HS.Qual mazRTE $ HS.Ident "QName")
           [ HS.PLit HS.Signless (HS.Int $ fromIntegral n)
           , HS.PLit HS.Signless (HS.Int $ fromIntegral m)
-          , HS.PWildCard]
+          , HS.PWildCard, HS.PWildCard ]
   where
     NameId n m = nameId $ qnameName x
 

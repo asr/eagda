@@ -18,7 +18,7 @@ import qualified Agda.Syntax.Abstract.Name as AN
 import qualified Agda.Syntax.Abstract as A
 import qualified Agda.Syntax.Position as SP
 import qualified Agda.TypeChecking.Monad.Base as MB
-import Agda.TypeChecking.Monad.Signature (getConstInfo, getDefFreeVars)
+import Agda.TypeChecking.Monad.Signature (getConstInfo, getDefFreeVars, ignoreAbstractMode)
 import Agda.Utils.Permutation (Permutation(Perm), permute, takeP, compactP)
 import Agda.TypeChecking.Level (reallyUnLevelView)
 import Agda.TypeChecking.Monad.Base (mvJudgement, mvPermutation, getMetaInfo, ctxEntry, envContext, clEnv)
@@ -108,6 +108,7 @@ tomy imi icns typs = do
            return (Def narg clauses' Nothing Nothing, [])
      (cont, projfcns2) <- case defn of
       MB.Axiom {} -> return (Postulate, [])
+      MB.AbstractDefn -> return (Postulate, [])
       MB.Function {MB.funClauses = clauses} -> clausesToDef clauses
       -- MB.Primitive {MB.primClauses = []} -> throwError $ strMsg "Auto: Primitive functions are not supported" -- Andreas, 2013-06-17 breaks interaction/AutoMisc
       MB.Primitive {MB.primClauses = clauses} -> clausesToDef clauses
@@ -735,7 +736,7 @@ negtype ee = f (0 :: Int)
 -- ---------------------------------------
 
 findClauseDeep :: Common.InteractionId -> MB.TCM (Maybe (AN.QName, I.Clause, Bool))
-findClauseDeep ii = do
+findClauseDeep ii = ignoreAbstractMode $ do  -- Andreas, 2016-09-04, issue #2162
   MB.InteractionPoint { MB.ipClause = ipCl} <- lookupInteractionPoint ii
   (f, clauseNo) <- case ipCl of
     MB.IPClause f clauseNo _ -> return (f, clauseNo)

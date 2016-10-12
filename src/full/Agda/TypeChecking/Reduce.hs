@@ -191,7 +191,7 @@ instance Instantiate e => Instantiate (Map k e) where
     instantiate' = traverse instantiate'
 
 instance Instantiate Candidate where
-  instantiate' (Candidate u t eti) = Candidate <$> instantiate' u <*> instantiate' t <*> return eti
+  instantiate' (Candidate u t eti ov) = Candidate <$> instantiate' u <*> instantiate' t <*> pure eti <*> pure ov
 
 instance Instantiate EqualityView where
   instantiate' (OtherType t)            = OtherType
@@ -317,11 +317,10 @@ maybeFastReduceTerm v = do
                   _     -> False
   if not tryFast then slowReduceTerm v
                  else do
-    r <- optRewriting <$> pragmaOptions
     s <- optSharing   <$> commandLineOptions
     allowed <- asks envAllowedReductions
     let notAll = delete NonTerminatingReductions allowed /= allReductions
-    if r || s || notAll then slowReduceTerm v else fastReduce (elem NonTerminatingReductions allowed) v
+    if s || notAll then slowReduceTerm v else fastReduce (elem NonTerminatingReductions allowed) v
 
 slowReduceTerm :: Term -> ReduceM (Blocked Term)
 slowReduceTerm = rewriteAfter $ \ v -> do
@@ -639,7 +638,7 @@ instance Reduce e => Reduce (Map k e) where
     reduce' = traverse reduce'
 
 instance Reduce Candidate where
-  reduce' (Candidate u t eti) = Candidate <$> reduce' u <*> reduce' t <*> return eti
+  reduce' (Candidate u t eti ov) = Candidate <$> reduce' u <*> reduce' t <*> pure eti <*> pure ov
 
 instance Reduce EqualityView where
   reduce' (OtherType t)            = OtherType
@@ -799,7 +798,7 @@ instance Simplify DisplayForm where
   simplify' (Display n ps v) = Display n <$> simplify' ps <*> return v
 
 instance Simplify Candidate where
-  simplify' (Candidate u t eti) = Candidate <$> simplify' u <*> simplify' t <*> return eti
+  simplify' (Candidate u t eti ov) = Candidate <$> simplify' u <*> simplify' t <*> pure eti <*> pure ov
 
 instance Simplify EqualityView where
   simplify' (OtherType t)            = OtherType
@@ -955,7 +954,7 @@ instance Normalise a => Normalise (Maybe a) where
     normalise' = traverse normalise'
 
 instance Normalise Candidate where
-  normalise' (Candidate u t eti) = Candidate <$> normalise' u <*> normalise' t <*> return eti
+  normalise' (Candidate u t eti ov) = Candidate <$> normalise' u <*> normalise' t <*> pure eti <*> pure ov
 
 instance Normalise EqualityView where
   normalise' (OtherType t)            = OtherType
@@ -1186,6 +1185,7 @@ instance InstantiateFull DisplayTerm where
 instance InstantiateFull Defn where
     instantiateFull' d = case d of
       Axiom{} -> return d
+      AbstractDefn -> return d
       Function{ funClauses = cs, funCompiled = cc, funInv = inv } -> do
         (cs, cc, inv) <- instantiateFull' (cs, cc, inv)
         return $ d { funClauses = cs, funCompiled = cc, funInv = inv }
@@ -1254,7 +1254,8 @@ instance InstantiateFull a => InstantiateFull (Maybe a) where
   instantiateFull' = mapM instantiateFull'
 
 instance InstantiateFull Candidate where
-  instantiateFull' (Candidate u t eti) = Candidate <$> instantiateFull' u <*> instantiateFull' t <*> return eti
+  instantiateFull' (Candidate u t eti ov) =
+    Candidate <$> instantiateFull' u <*> instantiateFull' t <*> pure eti <*> pure ov
 
 instance InstantiateFull EqualityView where
   instantiateFull' (OtherType t)            = OtherType

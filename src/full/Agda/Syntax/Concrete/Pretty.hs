@@ -303,13 +303,16 @@ instance Pretty Declaration where
                     ]
             Field inst x (Arg i e) ->
                 sep [ text "field"
-                    , nest 2 $ mkInst inst $
+                    , nest 2 $ mkInst inst $ mkOverlap i $
                       prettyRelevance i $ prettyHiding i id $
                         pretty $ TypeSig (i {argInfoRelevance = Relevant}) x e
                     ]
                 where
                   mkInst InstanceDef    d = sep [ text "instance", nest 2 d ]
                   mkInst NotInstanceDef d = d
+
+                  mkOverlap i d | argInfoOverlappable i = text "overlap" <+> d
+                                | otherwise             = d
             FunClause lhs rhs wh _ ->
                 sep [ pretty lhs
                     , nest 2 $ pretty rhs
@@ -431,8 +434,8 @@ instance Pretty Pragma where
       hsep $ [ text "ATP", pretty role] ++ map pretty qs
     pretty (OptionsPragma _ opts) = fsep $ map text $ "OPTIONS" : opts
     pretty (BuiltinPragma _ b x)  = hsep [ text "BUILTIN", text b, pretty x ]
-    pretty (RewritePragma _ x)    =
-      hsep [ text "REWRITE", pretty x ]
+    pretty (RewritePragma _ xs)    =
+      hsep [ text "REWRITE", hsep $ map pretty xs ]
     pretty (CompiledPragma _ x hs) =
       hsep [ text "COMPILED", pretty x, text hs ]
     pretty (CompiledExportPragma _ x hs) =
@@ -506,20 +509,20 @@ instance Pretty Notation where
     pretty = hcat . map pretty
 
 instance Pretty Fixity' where
-    pretty (Fixity' fix nota)
+    pretty (Fixity' fix nota _)
       | nota == noNotation = pretty fix
       | otherwise          = text "syntax" <+> pretty nota
 
-instance Pretty e => Pretty (Arg e) where
  -- Andreas 2010-09-21: do not print relevance in general, only in function types!
  -- Andreas 2010-09-24: and in record fields
-    pretty a = -- pRelevance r $
-               -- TODO guilhem: print colors
-               prettyHiding (argInfo a) id $ pretty $ unArg a
+instance Pretty a => Pretty (Arg a) where
+  prettyPrec p (Arg ai e) = prettyHiding ai id $ prettyPrec p' e
+      where p' | getHiding ai == NotHidden = p
+               | otherwise                 = 0
 
 instance Pretty e => Pretty (Named_ e) where
-    pretty (Named Nothing e) = pretty e
-    pretty (Named (Just s) e) = sep [ text (rawNameToString $ rangedThing s) <+> text "=", pretty e ]
+    prettyPrec p (Named Nothing e) = prettyPrec p e
+    prettyPrec p (Named (Just s) e) = mparens (p > 0) $ sep [ text (rawNameToString $ rangedThing s) <+> text "=", pretty e ]
 
 instance Pretty [Pattern] where
     pretty = fsep . map pretty

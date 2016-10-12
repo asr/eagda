@@ -61,11 +61,13 @@ module UHC.Agda.Builtins
   , primShowFloat
   , primMkFloat
   , primFloatEquality
-  , primFloatLess
+  , primFloatNumericalEquality
+  , primFloatNumericalLess
   , primNatToFloat
   , primFloatPlus
   , primFloatMinus
   , primFloatTimes
+  , primFloatNegate
   , primFloatDiv
   , primFloatSqrt
   , primRound
@@ -74,12 +76,19 @@ module UHC.Agda.Builtins
   , primExp
   , primLog
   , primSin
+  , primCos
+  , primTan
+  , primASin
+  , primACos
+  , primATan
+  , primATan2
     -- Reflection
   , QName (..)
   , primMkQName
   , primQNameEquality
   , primQNameLess
   , primShowQName
+  , primQNameFixity
   , primMetaEquality
   , primMetaLess
   , primShowMeta
@@ -100,11 +109,17 @@ import Debug.Trace
 import UHC.OldException (onException)
 import System.IO (openFile, IOMode (ReadMode), hClose, hFileSize, hGetContents)
 
+------------------------------------------------------------------------------
+-- Adapted from the ieee754 package. See the LICENSE file.
+foreign import ccall "double.h identical" c_identical :: Double -> Double -> Int
+
+identicalIEEE :: Double -> Double -> Bool
+identicalIEEE x y = c_identical x y /= 0
+------------------------------------------------------------------------------
 
 -- internal helper for this file
 notImplError :: String -> a
 notImplError f = error $ "Feature " ++ f ++ " is not implemented in the UHC backend!"
-
 
 -- ====================
 -- Integer
@@ -304,9 +319,11 @@ primToLower     = C.toLower
 -- Float
 -- ====================
 
+positiveNaN :: Double
+positiveNaN = 0.0 / 0.0
+
 primShowFloat :: Double -> String
 primShowFloat x
-  | isNegativeZero x = "0.0"
   | isNaN x          = "NaN"
   | isInfinite x     = if x < 0 then "-Infinity" else "Infinity"
   | otherwise        = reverse . dropZeroes . reverse $ show x
@@ -319,19 +336,33 @@ primShowFloat x
 primMkFloat :: String -> Double
 primMkFloat = read
 
+-- ASR (2016-09-29). We use bitwise equality for comparing Double
+-- because Haskell's Eq, which equates 0.0 and -0.0, allows to prove a
+-- contradiction (see Issue #2169).
 primFloatEquality :: Double -> Double -> Bool
-primFloatEquality x y
-  | isNaN x && isNaN y = True
-  | otherwise          = x == y
+primFloatEquality x y = identicalIEEE x y || (isNaN x && isNaN y)
 
-primFloatLess :: Double -> Double -> Bool
-primFloatLess x y
-  | isNegInf y = False
-  | isNegInf x = True
-  | isNaN x    = True
-  | otherwise  = x < y
+primFloatNumericalEquality :: Double -> Double -> Bool
+primFloatNumericalEquality = (==)
+
+-- Adapted from the same function on Agda.Syntax.Literal.
+compareFloat :: Double -> Double -> Ordering
+compareFloat x y
+  | identicalIEEE x y          = EQ
+  | isNegInf x                 = LT
+  | isNegInf y                 = GT
+  | isNaN x && isNaN y         = EQ
+  | isNaN x                    = LT
+  | isNaN y                    = GT
+  | otherwise                  = compare x y
   where
     isNegInf z = z < 0 && isInfinite z
+
+primFloatNumericalLess :: Double -> Double -> Bool
+primFloatNumericalLess x y =
+  case compareFloat x y of
+    LT -> True
+    _  -> False
 
 primNatToFloat :: Nat -> Double
 primNatToFloat n = fromIntegral (unNat n)
@@ -344,6 +375,9 @@ primFloatMinus = (-)
 
 primFloatTimes :: Double -> Double -> Double
 primFloatTimes = (*)
+
+primFloatNegate :: Double -> Double
+primFloatNegate = negate
 
 primFloatDiv :: Double -> Double -> Double
 primFloatDiv = (/)
@@ -369,6 +403,24 @@ primLog = log
 primSin :: Double -> Double
 primSin = sin
 
+primCos :: Double -> Double
+primCos = cos
+
+primTan :: Double -> Double
+primTan = tan
+
+primASin :: Double -> Double
+primASin = asin
+
+primACos :: Double -> Double
+primACos = acos
+
+primATan :: Double -> Double
+primATan = atan
+
+primATan2 :: Double -> Double -> Double
+primATan2 = atan2
+
 -- ====================
 -- Reflection
 -- ====================
@@ -390,6 +442,9 @@ primQNameLess = (<)
 
 primShowQName :: QName -> String
 primShowQName = qnameString
+
+primQNameFixity :: QName -> a
+primQNameFixity = error "TODO: primQNameFixity"
 
 type Meta = Integer
 

@@ -45,6 +45,7 @@ import Agda.Syntax.Fixity
 import Agda.Syntax.Position
 import Agda.Syntax.Parser
 import Agda.Syntax.Common
+import Agda.Syntax.Literal
 import Agda.Syntax.Concrete as C
 import Agda.Syntax.Concrete.Generic as C
 import Agda.Syntax.Concrete.Pretty ()
@@ -63,13 +64,14 @@ import Agda.Interaction.SearchAbout
 import Agda.Interaction.Response hiding (Function, ExtendedLambda)
 import qualified Agda.Interaction.Response as R
 import qualified Agda.Interaction.BasicOps as B
+import Agda.Interaction.BasicOps hiding (whyInScope)
 import Agda.Interaction.Highlighting.Precise hiding (Postulate)
 import qualified Agda.Interaction.Imports as Imp
 import Agda.Interaction.Highlighting.Generate
+import qualified Agda.Interaction.Highlighting.LaTeX as LaTeX
 import qualified Agda.Interaction.Highlighting.Range as H
 
 import Agda.Compiler.Common (IsMain (..))
-import qualified Agda.Compiler.Epic.Compiler as Epic
 import qualified Agda.Compiler.MAlonzo.Compiler as MAlonzo
 import qualified Agda.Compiler.JS.Compiler as JS
 
@@ -83,6 +85,7 @@ import Agda.Utils.Except
   )
 
 import Agda.Utils.FileName
+import Agda.Utils.Function
 import Agda.Utils.Hash
 import qualified Agda.Utils.HashMap as HMap
 import Agda.Utils.Lens
@@ -140,6 +143,22 @@ initCommandState = CommandState
 
 type CommandM = StateT CommandState TCM
 
+-- | Restore both 'TCState' and 'CommandState'.
+
+localStateCommandM :: CommandM a -> CommandM a
+localStateCommandM m = do
+  cSt <- get
+  tcSt <- lift $ get
+  x <- m
+  lift $ put tcSt
+  put cSt
+  return x
+
+-- | Restore 'TCState', do not touch 'CommandState'.
+
+liftLocalState :: TCM a -> CommandM a
+liftLocalState = lift . localState
+
 -- | Build an opposite action to 'lift' for state monads.
 
 revLift
@@ -163,6 +182,11 @@ commandMToIO ci_i = revLift runStateT lift $ \ct -> revLift runSafeTCM liftIO $ 
 
 liftCommandMT :: (forall a . TCM a -> TCM a) -> CommandM a -> CommandM a
 liftCommandMT f m = revLift runStateT lift $ f . ($ m)
+
+-- | Ditto, but restore state.
+
+liftCommandMTLocalState :: (forall a . TCM a -> TCM a) -> CommandM a -> CommandM a
+liftCommandMTLocalState f = liftCommandMT f . localStateCommandM
 
 -- | Put a response by the callback function given by 'stInteractionOutputCallback'.
 
@@ -326,7 +350,7 @@ data Interaction' range
 
     -- | Parse and type check the given expression (as if it were defined
     -- at the top-level of the current module) and normalise it.
-  | Cmd_compute_toplevel Bool -- Ignore abstract?
+  | Cmd_compute_toplevel B.ComputeMode
                          String
 
     ------------------------------------------------------------------------
@@ -403,7 +427,7 @@ data Interaction' range
 
   | Cmd_make_case       InteractionId range String
 
-  | Cmd_compute         Bool -- Ignore abstract?
+  | Cmd_compute         B.ComputeMode
                         InteractionId range String
 
   | Cmd_why_in_scope    InteractionId range String
@@ -523,10 +547,10 @@ interpret (Cmd_compile b file argv) =
     case mw of
       Imp.NoWarnings -> do
         lift $ case b of
-          MAlonzo -> MAlonzo.compilerMain IsMain i
-          MAlonzoNoMain -> MAlonzo.compilerMain NotMain i
-          Epic    -> Epic.compilerMain i
-          JS      -> JS.compilerMain i
+          GHC       -> MAlonzo.compilerMain IsMain i
+          GHCNoMain -> MAlonzo.compilerMain NotMain i
+          JS        -> JS.compilerMain i
+          LaTeX     -> LaTeX.generateLaTeX i
         display_info $ Info_CompilationOk
       Imp.SomeWarnings w ->
         display_info $ Info_Error $ unlines
@@ -540,8 +564,8 @@ interpret Cmd_constraints =
 interpret Cmd_metas = do -- CL.showMetas []
   unsolvedNotOK <- lift $ not . optAllowUnsolved <$> pragmaOptions
   ms <- lift showOpenMetas
-  pws <- interpretWarnings
-  display_info $ Info_AllGoalsWarnings (unlines ms) pws
+  (pwe, pwa) <- interpretWarnings
+  display_info $ Info_AllGoalsWarnings (unlines ms) pwa pwe
 
 interpret Cmd_warnings = do
   -- Ulf, 2016-08-09: Warnings are now printed in the info buffer by Cmd_metas.
@@ -568,13 +592,13 @@ interpret Cmd_solveAll = do
 interpret (Cmd_infer_toplevel norm s) =
   parseAndDoAtToplevel (B.typeInCurrent norm) Info_InferredType s
 
-interpret (Cmd_compute_toplevel ignore s) =
-  parseAndDoAtToplevel (allowNonTerminatingReductions .
-                        if ignore then ignoreAbstractMode . c
-                                  else inConcreteMode . c)
-                       Info_NormalForm
-                       s
-  where c = B.evalInCurrent
+interpret (Cmd_compute_toplevel cmode s) =
+  parseAndDoAtToplevel' action Info_NormalForm $ computeWrapInput cmode s
+  where
+  action = allowNonTerminatingReductions
+         . (if computeIgnoreAbstract cmode then ignoreAbstractMode else inConcreteMode)
+         . (B.showComputed cmode <=< B.evalInCurrent)
+
 
 interpret (ShowImplicitArgs showImpl) = do
   opts <- lift commandLineOptions
@@ -673,7 +697,7 @@ interpret (Cmd_auto ii rng s) = do
       -- For highlighting, Resp_GiveAction needs to access
       -- the @oldInteractionScope@s of the interaction points solved by Auto.
       -- We dig them out from the state before Auto was invoked.
-      insertOldInteractionScope ii =<< lift (localState (put st >> getInteractionScope ii))
+      insertOldInteractionScope ii =<< liftLocalState (put st >> getInteractionScope ii)
       -- Andreas, 2014-07-07: NOT TRUE:
       -- -- Andreas, 2014-07-05: The following should be obsolete,
       -- -- as Auto has removed the interaction points already:
@@ -692,19 +716,19 @@ interpret (Cmd_auto ii rng s) = do
    Right (Right s) -> give_gen ii rng s Refine
 
 interpret (Cmd_context norm ii _ _) =
-  display_info . Info_Context =<< lift (prettyContext norm False ii)
+  display_info . Info_Context =<< liftLocalState (prettyContext norm False ii)
 
 interpret (Cmd_helper_function norm ii rng s) =
-  display_info . Info_HelperFunction =<< lift (cmd_helper_function norm ii rng s)
+  display_info . Info_HelperFunction =<< liftLocalState (cmd_helper_function norm ii rng s)
 
 interpret (Cmd_infer norm ii rng s) =
   display_info . Info_InferredType
-    =<< lift (B.withInteractionId ii
+    =<< liftLocalState (B.withInteractionId ii
           (prettyATop =<< B.typeInMeta ii norm =<< B.parseExprIn ii rng s))
 
 interpret (Cmd_goal_type norm ii _ _) =
   display_info . Info_CurrentGoal
-    =<< lift (B.withInteractionId ii $ prettyTypeOfMeta norm ii)
+    =<< liftLocalState (B.withInteractionId ii $ prettyTypeOfMeta norm ii)
 
 interpret (Cmd_goal_type_context norm ii rng s) =
   cmd_goal_type_context_and empty norm ii rng s
@@ -713,8 +737,8 @@ interpret (Cmd_goal_type_context_infer norm ii rng s) = do
   -- In case of the empty expression to type, don't fail with
   -- a stupid parse error, but just fall back to
   -- Cmd_goal_type_context.
-  have <- if all Char.isSpace s then return empty else do
-    typ <- lift $ B.withInteractionId ii $
+  have <- if all Char.isSpace s then return empty else liftLocalState $ do
+    typ <- B.withInteractionId ii $
       prettyATop =<< B.typeInMeta ii norm =<< B.parseExprIn ii rng s
     return $ text "Have:" <+> typ
   cmd_goal_type_context_and have norm ii rng s
@@ -762,29 +786,30 @@ interpret (Cmd_make_case ii rng s) = do
         in
          (A.Clause (A.LHS info (A.LHSHead name (drop n nps)) ps) dots rhs decl catchall)
 
-interpret (Cmd_compute ignore ii rng s) = do
-  e <- lift $ B.parseExprIn ii rng s
-  d <- lift $ B.withInteractionId ii $ do
-         let c = B.evalInCurrent e
-         v <- if ignore then ignoreAbstractMode c else c
-         prettyATop v
-  display_info $ Info_NormalForm d
+interpret (Cmd_compute cmode ii rng s) = display_info . Info_NormalForm =<< do
+  liftLocalState $ do
+    e <- B.parseExprIn ii rng $ computeWrapInput cmode s
+    B.withInteractionId ii $ do
+      showComputed cmode =<< do applyWhen (computeIgnoreAbstract cmode) ignoreAbstractMode $ B.evalInCurrent e
+
 
 interpret Cmd_show_version = display_info Info_Version
 
 -- | Show warnings
-interpretWarnings :: CommandM String
+interpretWarnings :: CommandM (String, String)
 interpretWarnings = do
-  mws <- lift $ Imp.getAllWarnings RespectFlags
-  case removeMetas <$> mws of
+  mws <- lift $ Imp.getAllWarnings Imp.AllWarnings RespectFlags
+  case filter isNotMeta <$> mws of
     Imp.SomeWarnings ws@(_:_) -> do
-      pws <- lift $ prettyWarnings ws
-      return pws
-    _ -> return ""
-   where removeMetas = filter $ \ w -> case w of
-                                        UnsolvedInteractionMetas{} -> False
-                                        UnsolvedMetaVariables{}    -> False
-                                        _                          -> True
+      let (we, wa) = Imp.classifyWarnings ws
+      pwe <- lift $ prettyTCWarnings we
+      pwa <- lift $ prettyTCWarnings wa
+      return (pwe, pwa)
+    _ -> return ("", "")
+   where isNotMeta w = case tcWarning w of
+                         UnsolvedInteractionMetas{} -> False
+                         UnsolvedMetaVariables{}    -> False
+                         _                          -> True
 
 -- | Print open metas nicely.
 showOpenMetas :: TCM [String]
@@ -885,9 +910,10 @@ withCurrentFile m = do
 
 -- | Available backends.
 
-data Backend = MAlonzo
-             | MAlonzoNoMain
-             | Epic | JS
+data Backend = GHC
+             | GHCNoMain
+             | JS
+             | LaTeX
     deriving (Show, Read)
 
 data GiveRefine = Give | Refine | Intro
@@ -1009,8 +1035,8 @@ prettyContext norm rev ii = B.withInteractionId ii $ do
   ctx <- B.contextOfMeta ii norm
   es  <- mapM (prettyATop . B.ofExpr) ctx
   ns  <- mapM (showATop   . B.ofName) ctx
-  let shuffle = if rev then reverse else id
-  return $ align 10 $ filter (not . null. fst) $ shuffle $ zip ns (map (text ":" <+>) es)
+  return $ align 10 $ applyWhen rev reverse $
+    filter (not . null . fst) $ zip ns $ map (text ":" <+>) es
 
 -- | Create type of application of new helper function that would solve the goal.
 
@@ -1019,33 +1045,39 @@ cmd_helper_function norm ii r s = B.withInteractionId ii $ inTopContext $
   prettyATop =<< B.metaHelperType norm ii r s
 
 -- | Displays the current goal, the given document, and the current
--- context.
+--   context.
+--
+--   Should not modify the state.
 
 cmd_goal_type_context_and :: Doc -> B.Rewrite -> InteractionId -> Range ->
                              String -> StateT CommandState (TCMT IO) ()
-cmd_goal_type_context_and doc norm ii _ _ = do
-  goal <- lift $ B.withInteractionId ii $ prettyTypeOfMeta norm ii
-  ctx  <- lift $ prettyContext norm True ii
-  display_info $ Info_GoalType
-                (text "Goal:" <+> goal $+$
-                 doc $+$
-                 text (replicate 60 '\x2014') $+$
-                 ctx)
+cmd_goal_type_context_and doc norm ii _ _ = display_info . Info_GoalType =<< do
+  lift $ do
+    goal <- B.withInteractionId ii $ prettyTypeOfMeta norm ii
+    ctx  <- prettyContext norm True ii
+    return $ vcat
+      [ text "Goal:" <+> goal
+      , doc
+      , text (replicate 60 '\x2014')
+      , ctx
+      ]
 
 -- | Shows all the top-level names in the given module, along with
 -- their types.
 
 showModuleContents :: B.Rewrite -> Range -> String -> CommandM ()
-showModuleContents norm rng s = do
-  (modules, types) <- lift $ B.moduleContents norm rng s
-  types' <- lift $ forM types $ \ (x, t) -> do
-     t <- TCP.prettyTCM t
-     return (show x, text ":" <+> t)
-  display_info $ Info_ModuleContents $
-    text "Modules" $$
-    nest 2 (vcat $ map (text . show) modules) $$
-    text "Names" $$
-    nest 2 (align 10 types')
+showModuleContents norm rng s = display_info . Info_ModuleContents =<< do
+  liftLocalState $ do
+    (modules, types) <- B.moduleContents norm rng s
+    types' <- forM types $ \ (x, t) -> do
+      t <- TCP.prettyTCM t
+      return (show x, text ":" <+> t)
+    return $ vcat
+      [ text "Modules"
+      , nest 2 $ vcat $ map (text . show) modules
+      , text "Names"
+      , nest 2 $ align 10 types'
+      ]
 
 -- | Shows all the top-level names in scope which mention all the given
 -- identifiers in their type.
@@ -1066,12 +1098,12 @@ searchAbout norm rg nm = do
 -- | Explain why something is in scope.
 
 whyInScope :: String -> CommandM ()
-whyInScope s = do
-  (v, xs, ms) <- lift $ B.whyInScope s
-  cwd <- do
-    Just (file, _) <- gets $ theCurrentFile
-    return $ takeDirectory $ filePath file
-  display_info . Info_WhyInScope =<< do lift $ explanation cwd v xs ms
+whyInScope s = display_info . Info_WhyInScope =<< do
+  Just (file, _) <- gets theCurrentFile
+  let cwd = takeDirectory $ filePath file
+  liftLocalState $ do
+    (v, xs, ms) <- B.whyInScope s
+    explanation cwd v xs ms
   where
     explanation _ Nothing [] [] = TCP.text (s ++ " is not in scope.")
     explanation cwd v xs ms = TCP.vcat
@@ -1151,6 +1183,8 @@ setCommandLineOpts opts = do
 
 
 -- | Computes some status information.
+--
+--   Does not change the state.
 
 status :: CommandM Status
 status = do
@@ -1176,15 +1210,17 @@ status = do
                   , sChecked               = checked
                   }
 
--- | Displays\/updates status information.
+-- | Displays or updates status information.
+--
+--   Does not change the state.
 
 displayStatus :: CommandM ()
 displayStatus =
   putResponse . Resp_Status  =<< status
 
 -- | @display_info@ does what @'display_info'' False@ does, but
--- additionally displays some status information (see 'status' and
--- 'displayStatus').
+--   additionally displays some status information (see 'status' and
+--   'displayStatus').
 
 display_info :: DisplayInfo -> CommandM ()
 display_info info = do
@@ -1223,20 +1259,23 @@ lowerMeta = C.mapExpr kill where
 -- as the scope), performs the given command with the expression as
 -- input, and displays the result.
 
-parseAndDoAtToplevel
-  :: (A.Expr -> TCM A.Expr)
+parseAndDoAtToplevel'
+  :: (A.Expr -> TCM Doc)
      -- ^ The command to perform.
   -> (Doc -> DisplayInfo)
      -- ^ The name to use for the buffer displaying the output.
   -> String
      -- ^ The expression to parse.
   -> CommandM ()
-parseAndDoAtToplevel cmd title s = do
-  e   <- liftIO $ parse exprParser s
-  (time, res) <-
+parseAndDoAtToplevel' cmd title s = do
+  (time, res) <- localStateCommandM $ do
+    e <- liftIO $ parse exprParser s
     maybeTimed (lift $ B.atTopLevel $
-                prettyA =<< cmd =<< concreteToAbstract_ e)
+                cmd =<< concreteToAbstract_ e)
   display_info (title $ fromMaybe empty time $$ res)
+
+parseAndDoAtToplevel :: (A.Expr -> TCM A.Expr) -> (Doc -> DisplayInfo) -> String -> CommandM ()
+parseAndDoAtToplevel cmd = parseAndDoAtToplevel' (prettyA <=< cmd)
 
 maybeTimed :: CommandM a -> CommandM (Maybe Doc, a)
 maybeTimed work = do

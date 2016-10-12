@@ -170,6 +170,7 @@ tokens :-
 <0,code> abstract       { keyword KwAbstract }
 <0,code> private        { keyword KwPrivate }
 <0,code> instance       { keyword KwInstance }
+<0,code> overlap        { keyword KwOverlap }
 <0,code> macro          { keyword KwMacro }
 <0,code> Set            { keyword KwSet }
 <0,code> forall         { keyword KwForall }
@@ -207,7 +208,7 @@ tokens :-
 <0,code> "_"            { symbol SymUnderscore }
 <0,code> "?"            { symbol SymQuestionMark }
 <0,code> "|"            { symbol SymBar }
-<0,code> "(|"           { symbol SymOpenIdiomBracket }
+<0,code> "(|" /[$white] { symbol SymOpenIdiomBracket }
 <0,code> "|)"           { symbol SymCloseIdiomBracket }
 <0,code> "("            { symbol SymOpenParen }
 <0,code> ")"            { symbol SymCloseParen }

@@ -378,7 +378,7 @@ data Pragma
   -- avoiding conflicts when merging master.
   | ATPPragma Range TPTPRole [QName]
   | BuiltinPragma             Range String Expr
-  | RewritePragma             Range QName
+  | RewritePragma             Range [QName]
   | CompiledDataPragma        Range QName String [String]
   | CompiledDeclareDataPragma Range QName String
   | CompiledTypePragma        Range QName String
@@ -828,7 +828,7 @@ instance KillRange Pragma where
   killRange (ATPPragma _ role qs)             = ATPPragma noRange role (killRange qs)
   killRange (OptionsPragma _ s)               = OptionsPragma noRange s
   killRange (BuiltinPragma _ s e)             = killRange1 (BuiltinPragma noRange s) e
-  killRange (RewritePragma _ q)               = killRange1 (RewritePragma noRange) q
+  killRange (RewritePragma _ qs)              = killRange1 (RewritePragma noRange) qs
   killRange (CompiledDataPragma _ q s ss)     = killRange1 (\q -> CompiledDataPragma noRange q s ss) q
   killRange (CompiledDeclareDataPragma _ q s) = killRange1 (\q -> CompiledDeclareDataPragma noRange q s) q
   killRange (CompiledTypePragma _ q s)        = killRange1 (\q -> CompiledTypePragma noRange q s) q

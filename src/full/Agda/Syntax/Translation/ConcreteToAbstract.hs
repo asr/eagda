@@ -56,12 +56,7 @@ import Agda.Syntax.Scope.Monad
 import Agda.Syntax.Translation.AbstractToConcrete (ToConcrete)
 import Agda.Syntax.IdiomBrackets
 
-import Agda.TypeChecking.Monad.Base
-  ( TypeError(..) , Call(..) , typeError , genericError , TCErr(..)
-  , fresh , freshName , freshName_ , freshNoName , extendedLambdaName
-  , envAbstractMode , AbstractMode(..)
-  , TCM
-  )
+import Agda.TypeChecking.Monad.Base hiding (ModuleInfo, MetaInfo)
 import qualified Agda.TypeChecking.Monad.Benchmark as Bench
 import Agda.TypeChecking.Monad.Builtin
 import Agda.TypeChecking.Monad.Trace (traceCall, setCurrentRange)
@@ -272,16 +267,12 @@ recordConstructorType fields = build <$> mapM validForLet fs
     lets [] c = c
     lets ds c = C.Let (getRange ds) ds c
 
--- | @checkModuleApplication modapp m0 x dir = return (modapp', renD, renM)@
---
---   @m0@ is the new (abstract) module name and
---   @x@ its concrete form (used for error messages).
 checkModuleApplication
   :: C.ModuleApplication
   -> ModuleName
   -> C.Name
   -> C.ImportDirective
-  -> ScopeM (A.ModuleApplication, Ren A.QName, Ren ModuleName, A.ImportDirective)
+  -> ScopeM (A.ModuleApplication, ScopeCopyInfo, A.ImportDirective)
 
 checkModuleApplication (C.SectionApp _ tel e) m0 x dir' = do
   reportSDoc "scope.decl" 70 $ vcat $
@@ -302,11 +293,11 @@ checkModuleApplication (C.SectionApp _ tel e) m0 x dir' = do
                     | otherwise = removeOnlyQualified
     -- Copy the scope associated with m and take the parts actually imported.
     (adir, s) <- applyImportDirectiveM (C.QName x) dir' =<< getNamedScope m1
-    (s', (renM, renD)) <- copyScope m m0 (noRecConstr s)
+    (s', copyInfo) <- copyScope m m0 (noRecConstr s)
     -- Set the current scope to @s'@
     modifyCurrentScope $ const s'
     printScope "mod.inst" 20 "copied source module"
-    reportSLn "scope.mod.inst" 30 $ "renamings:\n  " ++ show renD ++ "\n  " ++ show renM
+    reportSLn "scope.mod.inst" 30 $ show (pretty copyInfo)
     let amodapp = A.SectionApp tel' m1 args'
     reportSDoc "scope.decl" 70 $ vcat $
       [ text $ "scope checked ModuleApplication " ++ prettyShow x
@@ -314,18 +305,18 @@ checkModuleApplication (C.SectionApp _ tel e) m0 x dir' = do
     reportSDoc "scope.decl" 70 $ vcat $
       [ nest 2 $ prettyA amodapp
       ]
-    return (amodapp, renD, renM, adir)
+    return (amodapp, copyInfo, adir)
 
 checkModuleApplication (C.RecordModuleIFS _ recN) m0 x dir' =
   withCurrentModule m0 $ do
     m1 <- toAbstract $ OldModuleName recN
     s <- getNamedScope m1
     (adir, s) <- applyImportDirectiveM recN dir' s
-    (s', (renM, renD)) <- copyScope recN m0 (removeOnlyQualified s)
+    (s', copyInfo) <- copyScope recN m0 (removeOnlyQualified s)
     modifyCurrentScope $ const s'
 
     printScope "mod.inst" 20 "copied record module"
-    return (A.RecordModuleIFS m1, renD, renM, adir)
+    return (A.RecordModuleIFS m1, copyInfo, adir)
 
 -- | @checkModuleMacro mkApply range access concreteName modapp open dir@
 --
@@ -336,8 +327,7 @@ checkModuleMacro
   => (ModuleInfo
       -> ModuleName
       -> A.ModuleApplication
-      -> Ren A.QName
-      -> Ren ModuleName
+      -> ScopeCopyInfo
       -> A.ImportDirective
       -> a)
   -> Range
@@ -369,7 +359,7 @@ checkModuleMacro apply r p x modapp open dir = do
           (DontOpen, _)     -> (dir, defaultImportDir)
 
     -- Restore the locals after module application has been checked.
-    (modapp', renD, renM, adir') <- withLocalVars $ checkModuleApplication modapp m0 x moduleDir
+    (modapp', copyInfo, adir') <- withLocalVars $ checkModuleApplication modapp m0 x moduleDir
     printScope "mod.inst.app" 20 "checkModuleMacro, after checkModuleApplication"
 
     reportSDoc "scope.decl" 90 $ text "after mod app: trying to print m0 ..."
@@ -393,7 +383,7 @@ checkModuleMacro apply r p x modapp open dir = do
     reportSDoc "scope.decl" 90 $ text "after stripNo: m0 =" <+> prettyA m0
 
     let m      = m0 `withRangesOf` [x]
-        adecls = [ apply info m modapp' renD renM adir ]
+        adecls = [ apply info m modapp' copyInfo adir ]
 
     reportSDoc "scope.decl" 70 $ vcat $
       [ text $ "scope checked ModuleMacro " ++ prettyShow x
@@ -401,8 +391,7 @@ checkModuleMacro apply r p x modapp open dir = do
     reportSLn  "scope.decl" 90 $ "info    = " ++ show info
     reportSLn  "scope.decl" 90 $ "m       = " ++ show m
     reportSLn  "scope.decl" 90 $ "modapp' = " ++ show modapp'
-    reportSLn  "scope.decl" 90 $ "renD    = " ++ show renD
-    reportSLn  "scope.decl" 90 $ "renM    = " ++ show renM
+    reportSLn  "scope.decl" 90 $ show $ pretty copyInfo
     reportSDoc "scope.decl" 70 $ vcat $
       map (nest 2 . prettyA) adecls
     return adecls
@@ -916,7 +905,7 @@ instance ToAbstract C.ModuleAssignment (A.ModuleName, [A.LetBinding]) where
                           (C.SectionApp (getRange (m , es)) [] (RawApp (fuseRange m es) (Ident m : es)))
                           DontOpen i
         case r of
-          (LetApply _ m' _ _ _ _ : _) -> return (m', r)
+          (LetApply _ m' _ _ _ : _) -> return (m', r)
           _ -> __IMPOSSIBLE__
 
 instance ToAbstract c a => ToAbstract (FieldAssignment' c) (FieldAssignment' a) where
@@ -972,7 +961,7 @@ scopeCheckNiceModule r p name tel checkDs
 
       -- Check whether we are dealing with an anonymous module.
       -- This corresponds to a Coq/LEGO section.
-      (name, p, open) <- do
+      (name, p', open) <- do
         if isNoName name then do
           (i :: NameId) <- fresh
           return (C.NoName (getRange name) i, PrivateAccess Inserted, True)
@@ -982,13 +971,14 @@ scopeCheckNiceModule r p name tel checkDs
       aname <- toAbstract (NewModuleName name)
       ds <- snd <$> do
         scopeCheckModule r (C.QName name) aname tel checkDs
-      bindModule p name aname
+      bindModule p' name aname
 
-      -- If the module was anonymous open it public.
+      -- If the module was anonymous open it public
+      -- unless it's private, in which case we just open it (#2099)
       when open $
        void $ -- We can discard the returned default A.ImportDirective.
         openModule_ (C.QName name) $
-          defaultImportDir { publicOpen = True }
+          defaultImportDir { publicOpen = p == PublicAccess }
       return ds
 
 -- | Check whether a telescope has open declarations or module macros.
@@ -1315,15 +1305,6 @@ newtype Blind a = Blind { unBlind :: a }
 instance ToAbstract (Blind a) (Blind a) where
   toAbstract = return
 
-aDefToMode :: IsAbstract -> AbstractMode
-aDefToMode AbstractDef = AbstractMode
-aDefToMode ConcreteDef = ConcreteMode
-
-aModeToDef :: AbstractMode -> IsAbstract
-aModeToDef AbstractMode = AbstractDef
-aModeToDef ConcreteMode = ConcreteDef
-aModeToDef _ = __IMPOSSIBLE__
-
 -- The only reason why we return a list is that open declarations disappears.
 -- For every other declaration we get a singleton list.
 instance ToAbstract NiceDeclaration A.Declaration where
@@ -1362,6 +1343,8 @@ instance ToAbstract NiceDeclaration A.Declaration where
         -- this ensures that projections out of irrelevant fields cannot occur
         -- Ulf: unless you turn on --irrelevant-projections
         bindName p FldName x y
+      when (getHiding t /= Instance && argInfoOverlappable (argInfo t)) $
+        genericError "The 'overlap' keyword only applies to instance fields (fields marked with {{ }})"
       return [ A.Field (mkDefInfoInstance x f p a i NotMacroDef r) y t' ]
 
   -- Primitive function
@@ -1649,7 +1632,9 @@ errorNotConstrDecl d = typeError . GenericDocError $
 instance ToAbstract C.Pragma [A.Pragma] where
   toAbstract (C.ImpossiblePragma _) = impossibleTest
   toAbstract (C.OptionsPragma _ opts) = return [ A.OptionsPragma opts ]
-  toAbstract (C.RewritePragma _ x) = do
+  toAbstract (C.RewritePragma _ []) = [] <$ warning EmptyRewritePragma
+  toAbstract (C.RewritePragma _ xs) = concat <$> do
+   forM xs $ \ x -> do
     e <- toAbstract $ OldQName x Nothing
     case e of
       A.Def x          -> return [ A.RewritePragma x ]

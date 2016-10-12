@@ -97,6 +97,7 @@ import Agda.Utils.Impossible
     'infixl'                  { TokKeyword KwInfixL $$ }
     'infixr'                  { TokKeyword KwInfixR $$ }
     'instance'                { TokKeyword KwInstance $$ }
+    'overlap'                 { TokKeyword KwOverlap $$ }
     'let'                     { TokKeyword KwLet $$ }
     'macro'                   { TokKeyword KwMacro $$ }
     'module'                  { TokKeyword KwModule $$ }
@@ -227,6 +228,7 @@ Token
     | 'infixl'                  { TokKeyword KwInfixL $1 }
     | 'infixr'                  { TokKeyword KwInfixR $1 }
     | 'instance'                { TokKeyword KwInstance $1 }
+    | 'overlap'                 { TokKeyword KwOverlap $1 }
     | 'let'                     { TokKeyword KwLet $1 }
     | 'macro'                   { TokKeyword KwMacro $1 }
     | 'module'                  { TokKeyword KwModule $1 }
@@ -572,11 +574,8 @@ PragmaName : string {% mkName $1 }
 PragmaQName :: { QName }
 PragmaQName : string {% pragmaQName $1 }  -- Issue 2125. WAS: string {% fmap QName (mkName $1) }
 
--- Space separated list of QNames in a pragma.
 PragmaQNames :: { [QName] }
-PragmaQNames
-    : {- empty -}               { [] }
-    | PragmaQName PragmaQNames  { $1 : $2 }
+PragmaQNames : Strings {% mapM pragmaQName $1 }
 
 {--------------------------------------------------------------------------
     Expressions (terms and types)
@@ -1085,6 +1084,9 @@ TypeSigs : SpaceIds ':' Expr { map (\ x -> TypeSig defaultArgInfo x $3) $1 }
 ArgTypeSigs :: { [Arg Declaration] }
 ArgTypeSigs
   : ArgIds ':' Expr { map (fmap (\ x -> TypeSig defaultArgInfo x $3)) $1 }
+  | 'overlap' ArgIds ':' Expr {
+      let setOverlap (Arg i x) = Arg i{ argInfoOverlappable = True } x in
+      map (setOverlap . fmap (\ x -> TypeSig defaultArgInfo x $4)) $2 }
   | 'instance' ArgTypeSignatures {
     let
       setInstance (TypeSig info x t) = TypeSig (setHiding Instance info) x t
@@ -1444,7 +1446,7 @@ BuiltinPragma
 
 RewritePragma :: { Pragma }
 RewritePragma
-    : '{-#' 'REWRITE' PragmaQName '#-}'
+    : '{-#' 'REWRITE' PragmaQNames '#-}'
       { RewritePragma (getRange ($1,$2,$3,$4)) $3 }
 
 CompiledPragma :: { Pragma }

@@ -166,7 +166,7 @@ checkDecl d = setCurrentRange d $ do
       A.Primitive i x e        -> meta $ checkPrimitive i x e
       A.Mutual i ds            -> mutual i ds $ checkMutual i ds
       A.Section i x tel ds     -> meta $ checkSection i x tel ds
-      A.Apply i x modapp rd rm _adir -> meta $ checkSectionApplication i x modapp rd rm
+      A.Apply i x modapp ci _adir -> meta $ checkSectionApplication i x modapp ci
       A.Import i x _adir       -> none $ checkImport i x
       A.Pragma i p             -> none $ checkPragma i p
       A.ScopedDecl scope ds    -> none $ setScope scope >> mapM_ checkDeclCached ds
@@ -175,6 +175,19 @@ checkDecl d = setCurrentRange d $ do
       A.RecDef i x ind eta c ps tel cs -> mutual mi [d] $ check x i $ do
                                     checkRecDef i x ind eta c ps tel cs
                                     blockId <- mutualBlockOf x
+
+                                    -- Andreas, 2016-10-01 testing whether
+                                    -- envMutualBlock is set correctly.
+                                    -- Apparently not.
+                                    verboseS "tc.decl.mutual" 70 $ do
+                                      current <- asks envMutualBlock
+                                      unless (Just blockId == current) $ do
+                                        reportSLn "" 0 $ unlines
+                                          [ "mutual block id discrepancy for " ++ show x
+                                          , "  current    mut. bl. = " ++ show current
+                                          , "  calculated mut. bl. = " ++ show blockId
+                                          ]
+
                                     return (blockId, Set.singleton x)
       A.DataSig i x ps t       -> impossible $ checkSig i x ps t
       A.RecSig i x ps t        -> none $ checkSig i x ps t
@@ -235,7 +248,7 @@ mutualChecks mi d ds mid names = do
   mapM_ instantiateDefinitionType $ Set.toList names
   -- Andreas, 2013-02-27: check termination before injectivity,
   -- to avoid making the injectivity checker loop.
-  checkTermination_        mid d
+  local (\ e -> e { envMutualBlock = Just mid }) $ checkTermination_ d
   checkPositivity_         mi names
   -- Andreas, 2015-03-26 Issue 1470:
   -- Restricting coinduction to recursive does not solve the
@@ -355,21 +368,20 @@ highlight_ d = do
         "do not highlight construct(ed/or) type"
 
 -- | Termination check a declaration.
-checkTermination_ :: MutualId -> A.Declaration -> TCM ()
-checkTermination_ mid d = Bench.billTo [Bench.Termination] $ do
+checkTermination_ :: A.Declaration -> TCM ()
+checkTermination_ d = Bench.billTo [Bench.Termination] $ do
   reportSLn "tc.decl" 20 $ "checkDecl: checking termination..."
   whenM (optTerminationCheck <$> pragmaOptions) $ do
     case d of
       -- Record module definitions should not be termination-checked twice.
       A.RecDef {} -> return ()
       _ -> disableDestructiveUpdate $ do
-        termErrs <- termDecl mid d
+        termErrs <- termDecl d
         -- If there are some termination errors, we collect them in
         -- the state and mark the definition as non-terminating so
         -- that it does not get unfolded
         unless (null termErrs) $ do
-          termIssue <- TerminationIssue <$> get <*> buildClosure termErrs
-          warning termIssue
+          warning $ TerminationIssue termErrs
           case Seq.viewl (A.allNames d) of
             nm Seq.:< _ -> setTerminates nm False
             _           -> return ()
@@ -403,7 +415,7 @@ checkInjectivity_ names = Bench.billTo [Bench.Injectivity] $ do
   -- Andreas, 2015-07-01, see Issue1366b:
   -- Injectivity check needs also to be run for abstract definitions.
   -- Fold.forM_ names $ \ q -> ignoreAbstractMode $ do -- NOT NECESSARY after all
-  Fold.forM_ names $ \ q -> inConcreteOrAbstractMode q $ do
+  Fold.forM_ names $ \ q -> inConcreteOrAbstractMode q $ \ def -> do
     -- For abstract q, we should be inAbstractMode,
     -- otherwise getConstInfo returns Axiom.
     --
@@ -415,7 +427,6 @@ checkInjectivity_ names = Bench.billTo [Bench.Injectivity] $ do
     -- or super modules inAbstractMode.
     -- I changed that in Monad.Signature.treatAbstractly', so we can see
     -- our own local definitions.
-    def <- getConstInfo q
     case theDef def of
       d@Function{ funClauses = cs, funTerminates = term } -> do
         case term of
@@ -832,6 +843,7 @@ checkTypeSignature (A.ScopedDecl scope ds) = do
   setScope scope
   mapM_ checkTypeSignature ds
 checkTypeSignature (A.Axiom funSig i info mp x e) =
+  Bench.billTo [Bench.Typing, Bench.TypeSig] $
     case Info.defAccess i of
         PublicAccess  -> inConcreteMode $ checkAxiom funSig i info mp x e
         PrivateAccess{} -> inAbstractMode $ checkAxiom funSig i info mp x e
@@ -890,22 +902,20 @@ checkSectionApplication
   :: Info.ModuleInfo
   -> ModuleName          -- ^ Name @m1@ of module defined by the module macro.
   -> A.ModuleApplication -- ^ The module macro @λ tel → m2 args@.
-  -> A.Ren QName         -- ^ Imported names (given as renaming).
-  -> A.Ren ModuleName    -- ^ Imported modules (given as renaming).
+  -> A.ScopeCopyInfo     -- ^ Imported names and modules
   -> TCM ()
-checkSectionApplication i m1 modapp rd rm =
+checkSectionApplication i m1 modapp copyInfo =
   traceCall (CheckSectionApplication (getRange i) m1 modapp) $
-  checkSectionApplication' i m1 modapp rd rm
+  checkSectionApplication' i m1 modapp copyInfo
 
 -- | Check an application of a section.
 checkSectionApplication'
   :: Info.ModuleInfo
   -> ModuleName          -- ^ Name @m1@ of module defined by the module macro.
   -> A.ModuleApplication -- ^ The module macro @λ tel → m2 args@.
-  -> A.Ren QName         -- ^ Imported names (given as renaming).
-  -> A.Ren ModuleName    -- ^ Imported modules (given as renaming).
+  -> A.ScopeCopyInfo     -- ^ Imported names and modules
   -> TCM ()
-checkSectionApplication' i m1 (A.SectionApp ptel m2 args) rd rm = do
+checkSectionApplication' i m1 (A.SectionApp ptel m2 args) copyInfo = do
   -- Module applications can appear in lets, in which case we treat
   -- lambda-bound variables as additional parameters to the module.
   extraParams <- do
@@ -954,16 +964,15 @@ checkSectionApplication' i m1 (A.SectionApp ptel m2 args) rd rm = do
 
     reportSDoc "tc.mod.apply" 20 $ vcat
       [ sep [ text "applySection", prettyTCM m1, text "=", prettyTCM m2, fsep $ map prettyTCM (vs ++ ts) ]
-      , nest 2 $ text "  defs:" <+> text (show rd)
-      , nest 2 $ text "  mods:" <+> text (show rm)
+      , nest 2 $ pretty copyInfo
       ]
     args <- instantiateFull $ vs ++ ts
     let n = size aTel
     etaArgs <- inTopContext $ addContext aTel getContextArgs
     addContext' aTel $
-      applySection m1 (ptel `abstract` aTel) m2 (raise n args ++ etaArgs) rd rm
+      applySection m1 (ptel `abstract` aTel) m2 (raise n args ++ etaArgs) copyInfo
 
-checkSectionApplication' i m1 (A.RecordModuleIFS x) rd rm = do
+checkSectionApplication' i m1 (A.RecordModuleIFS x) copyInfo = do
   let name = mnameToQName x
   tel' <- lookupSection x
   vs   <- freeVarsToApply name
@@ -1014,7 +1023,7 @@ checkSectionApplication' i m1 (A.RecordModuleIFS x) rd rm = do
       , nest 2 $ text "args    =" <+> text (show args)
       ]
     addSection m1
-    applySection m1 telInst x (vs ++ args) rd rm
+    applySection m1 telInst x (vs ++ args) copyInfo
 
 -- | Type check an import declaration. Actually doesn't do anything, since all
 --   the work is done when scope checking.

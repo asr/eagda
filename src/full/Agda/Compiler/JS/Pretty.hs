@@ -7,10 +7,7 @@ import Data.Map ( Map, toAscList, empty, null )
 
 import Agda.Syntax.Common ( Nat )
 
-import Agda.Compiler.JS.Syntax
-  ( Exp(Self,Local,Global,Undefined,String,Char,Integer,Double,Lambda,Object,Apply,Lookup,If,BinOp,PreOp,Const),
-    LocalId(LocalId), GlobalId(GlobalId), MemberId(MemberId), Module(Module), Export(Export),
-    globals )
+import Agda.Compiler.JS.Syntax hiding (exports)
 
 -- Pretty-print a lambda-calculus expression as ECMAScript.
 
@@ -73,7 +70,7 @@ instance Pretty Exp where
   pretty n i (Undefined)            = "undefined"
   pretty n i (String s)             = "\"" ++ unescapes s ++ "\""
   pretty n i (Char c)               = "\"" ++ unescape c ++ "\""
-  pretty n i (Integer x)            = show x
+  pretty n i (Integer x)            = "agdaRTS.primIntegerFromString(\"" ++ show x ++ "\")"
   pretty n i (Double x)             = show x
   pretty n i (Lambda x e)           =
     "function (" ++
@@ -89,6 +86,7 @@ instance Pretty Exp where
   pretty n i (PreOp op e)           = "(" ++ op ++ " " ++ pretty n i e ++ ")"
   pretty n i (BinOp e op f)         = "(" ++ pretty n i e ++ " " ++ op ++ " " ++ pretty n i f ++ ")"
   pretty n i (Const c)              = c
+  pretty n i (PlainJS js)           = "(" ++ js ++ ")"
 
 block :: Nat -> Int -> Exp -> String
 block n i (If e f g) = "{" ++ br (i+1) ++ block' n (i+1) (If e f g) ++ br i ++ "}"
@@ -103,14 +101,20 @@ modname (GlobalId ms) = "\"" ++ intercalate "." ms ++ "\""
 
 exports :: Nat -> Int -> Set [MemberId] -> [Export] -> String
 exports n i lss [] = ""
-exports n i lss (Export ls e : es) | member (init ls) lss =
+exports n i lss (Export ls _ e : es) | member (init ls) lss =
   "exports[" ++ intercalate "][" (pretties n i ls) ++ "] = " ++ pretty n (i+1) e ++ ";" ++ br i ++
   exports n i (insert ls lss) es
-exports n i lss (Export ls e : es) | otherwise =
-  exports n i lss (Export (init ls) (Object empty) : Export ls e : es)
+exports n i lss (Export ls isCoind e : es) | otherwise =
+  exports n i lss (Export (init ls) False (Object empty) : Export ls isCoind e : es)
 
 instance Pretty Module where
-  pretty n i (Module m es) =
-    unlines ["var " ++ pretty n (i+1) e ++ " = require(" ++ modname e ++ ");"
-            | e <- js] ++ br i ++ exports n i (singleton []) es
-    where js = toList (globals es)
+  pretty n i (Module m es ex) =
+    imports ++ br i
+      ++ exports n i (singleton []) es ++ br i
+      ++ maybe "" (pretty n i) ex
+    where
+      js = toList (globals es)
+      imports = unlines $
+            ["var agdaRTS = require(\"agda-rts\");"] ++
+            ["var " ++ pretty n (i+1) e ++ " = require(" ++ modname e ++ ");"
+            | e <- js]

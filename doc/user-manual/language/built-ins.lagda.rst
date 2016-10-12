@@ -245,36 +245,64 @@ Floating point numbers are bound with the ``FLOAT`` built-in::
   {-# BUILTIN FLOAT Float #-}
 
 This lets you use :ref:`floating point literals <lexical-structure-float-literals>`.
-Floats are represented by the type checker as Haskell Doubles. The following
+Floats are represented by the type checker as IEEE 754 binary64 double precision floats, with the restriction
+that there is exactly one NaN value. The following
 primitive functions are available (with suitable bindings for `Nat <Natural
 numbers_>`_, `Bool <Booleans_>`_, `String <Strings_>`_ and `Int
 <Integers_>`_)::
 
   primitive
-    primNatToFloat    : Nat → Float
-    primFloatPlus     : Float → Float → Float
-    primFloatMinus    : Float → Float → Float
-    primFloatTimes    : Float → Float → Float
-    primFloatDiv      : Float → Float → Float
-    primFloatEquality : Float → Float → Bool
-    primFloatLess     : Float → Float → Bool
-    primRound         : Float → Int
-    primFloor         : Float → Int
-    primCeiling       : Float → Int
-    primExp           : Float → Float
-    primLog           : Float → Float
-    primSin           : Float → Float
-    primShowFloat     : Float → String
+    primNatToFloat             : Nat → Float
+    primFloatPlus              : Float → Float → Float
+    primFloatMinus             : Float → Float → Float
+    primFloatTimes             : Float → Float → Float
+    primFloatNegate            : Float → Float
+    primFloatDiv               : Float → Float → Float
+    primFloatEquality          : Float → Float → Bool
+    primFloatNumericalEquality : Float → Float → Bool
+    primFloatNumericalLess     : Float → Float → Bool
+    primRound                  : Float → Int
+    primFloor                  : Float → Int
+    primCeiling                : Float → Int
+    primExp                    : Float → Float
+    primLog                    : Float → Float
+    primSin                    : Float → Float
+    primCos                    : Float → Float
+    primTan                    : Float → Float
+    primASin                   : Float → Float
+    primACos                   : Float → Float
+    primATan                   : Float → Float
+    primATan2                  : Float → Float → Float
+    primShowFloat              : Float → String
 
-These are implemented by the corresponding Haskell functions with a few
-exceptions:
+The ``primFloatEquality`` primitive is intended to be used for decidable
+propositional equality. To enable proof carrying comparisons while preserving
+consisteny, the following laws apply:
 
 - ``primFloatEquality NaN NaN`` returns ``true``.
-- ``primFloatLess`` sorts ``NaN`` below everything but negative infinity.
-- ``primShowFloat`` returns ``"0.0"`` on negative zero.
+- ``primFloatEquality NaN (primFloatNegate NaN)`` returns ``true``.
+- ``primFloatEquality 0.0 -0.0`` returns ``false``.
 
-This is to allow decidable equality and proof carrying comparisons on floating
-point numbers.
+
+For numerical comparisons, use the ``primFloatNumericalEquality`` and
+``primFloatNumericalLess`` primitives. These are implemented by the
+corresponding Haskell functions with the following behaviour and
+exceptions:
+
+- ``primFloatNumericalEquality 0.0 -0.0`` returns ``true``.
+- ``primFloatNumericalEquality NaN NaN`` returns ``false``.
+- ``primFloatNumericalLess NaN NaN`` returns ``false``.
+- ``primFloatNumericalLess (primFloatNegate NaN) (primFloatNegate NaN)`` returns ``false``.
+- ``primFloatNumericalLess NaN (primFloatNegate NaN)`` returns ``false``.
+- ``primFloatNumericalLess (primFloatNegate NaN) NaN`` returns ``false``.
+- ``primFloatNumericalLess`` sorts ``NaN`` below everything but negative infinity.
+- ``primFloatNumericalLess -0.0 0.0`` returns ``false``.
+
+.. warning::
+
+   Do not use ``primFloatNumericalEquality`` to establish decidable
+   propositional equality. Doing so makes Agda inconsistent, see
+   Issue `#2169 <https://github.com/agda/agda/issues/2169>`_.
 
 Lists
 -----

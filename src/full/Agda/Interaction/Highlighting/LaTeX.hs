@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE ViewPatterns #-}
 
@@ -12,7 +13,7 @@ import Prelude hiding (log)
 import Data.Char
 import Data.Maybe
 import Data.Function
-import Control.Monad.RWS
+import Control.Monad.RWS.Strict
 import System.Directory
 import System.FilePath
 import Data.Text (Text)
@@ -26,11 +27,13 @@ import qualified Data.List   as List
 
 import Paths_Agda
 
+import Agda.Syntax.Abstract (toTopLevelModuleName)
 import Agda.Syntax.Common
-import Agda.Syntax.Concrete (TopLevelModuleName, moduleNameParts)
+import Agda.Syntax.Concrete
+  (TopLevelModuleName, moduleNameParts, projectRoot)
 import qualified Agda.Interaction.FindFile as Find
 import Agda.Interaction.Highlighting.Precise
-import Agda.TypeChecking.Monad (TCM)
+import Agda.TypeChecking.Monad (TCM, Interface(..))
 import qualified Agda.TypeChecking.Monad as TCM
 import Agda.Interaction.Options
 import Agda.Compiler.CallCompiler
@@ -54,20 +57,19 @@ type LaTeX = ExceptT String (RWST () Text State IO)
 
 data State = State
   { tokens     :: Tokens
-  , column     :: Int     -- ^ Column number, used for polytable alignment.
-  , indent     :: Int     -- ^ Indentation level, also for alignment.
-  , indentPrev :: Int
-  , inCode     :: Bool    -- ^ Keeps track of whether we are in a code
+  , column     :: !Int    -- ^ Column number, used for polytable alignment.
+  , indent     :: !Int    -- ^ Indentation level, also for alignment.
+  , indentPrev :: !Int
+  , inCode     :: !Bool   -- ^ Keeps track of whether we are in a code
                           -- block or not.
-  , debugs     :: [Debug] -- ^ Says what debug information should printed.
   }
 
 type Tokens = [Token]
 
 data Token = Token
-  { text     :: Text
+  { text     :: !Text
   , info     :: Aspects
-  , position :: Int      -- ^ Is not used currently, but could
+  , position :: !Int     -- ^ Is not used currently, but could
                          -- potentially be used for hyperlinks as in
                          -- the HTML output?
   }
@@ -75,6 +77,11 @@ data Token = Token
 
 data Debug = MoveColumn | NonCode | Code | Spaces | Output
   deriving (Eq, Show)
+
+-- | Says what debug information should printed.
+
+debugs :: [Debug]
+debugs = []
 
 -- | Run function for the @LaTeX@ monad.
 runLaTeX :: LaTeX a -> () -> State -> IO (Either String a, State, Text)
@@ -87,7 +94,6 @@ emptyState = State
   , indent     = 0
   , indentPrev = 0
   , inCode     = False
-  , debugs     = []
   }
 
 ------------------------------------------------------------------------
@@ -99,9 +105,9 @@ emptyState = State
 isInfixOf' :: Text -> Text -> Maybe (Text, Text)
 isInfixOf' needle haystack = go (T.tails haystack) 0
   where
-  go []                                         n = Nothing
-  go ((T.stripPrefix needle -> Just suf) : xss) n = Just (T.take n haystack, suf)
-  go (_                                  : xss) n = go xss (n + 1)
+  go []                                         !n = Nothing
+  go ((T.stripPrefix needle -> Just suf) : xss)  n = Just (T.take n haystack, suf)
+  go (_                                  : xss)  n = go xss (n + 1)
 
 -- Same as above, but starts searching from the back rather than the
 -- front.
@@ -214,8 +220,7 @@ unsetInCode :: LaTeX ()
 unsetInCode = modify $ \s -> s { inCode = False }
 
 logHelper :: Debug -> Text -> [String] -> LaTeX ()
-logHelper debug text extra = do
-  debugs <- gets debugs
+logHelper debug text extra =
   when (debug `elem` debugs) $ do
     lift $ lift $ T.putStrLn $ T.pack (show debug ++ ": ") <+>
       T.pack "'" <+> text <+> T.pack "' " <+>
@@ -277,10 +282,15 @@ cmdIndent :: Show a => a -> Text
 cmdIndent i = cmdPrefix <+> T.pack "Indent" <+>
                   cmdArg (T.pack (show i)) <+> cmdArg T.empty
 
-infixl', infix', infixr' :: Text
-infixl' = T.pack "infixl"
-infix'  = T.pack "infix"
-infixr' = T.pack "infixr"
+
+-- Andreas, 2016-09-08, issue #2140:
+-- The following special treatment of infix declarations seems
+-- superfluous (and does the wrong thing with the fix for #2140):
+
+-- infixl', infix', infixr' :: Text
+-- infixl' = T.pack "infixl"
+-- infix'  = T.pack "infix"
+-- infixr' = T.pack "infixr"
 
 ------------------------------------------------------------------------
 -- * Automaton.
@@ -327,10 +337,14 @@ code = do
     unsetInCode
     nonCode
 
-  when (tok `elem` [ infixl', infix', infixr' ]) $ do
-    output $ cmdPrefix <+> T.pack "Keyword" <+> cmdArg tok
-    fixity
-    code
+  -- Andreas, 2016-09-08, issue #2140:
+  -- The following special treatment of infix declarations seems
+  -- superfluous (and does the wrong thing with the fix for #2140):
+
+  -- when (tok `elem` [ infixl', infix', infixr' ]) $ do
+  --   output $ cmdPrefix <+> T.pack "Keyword" <+> cmdArg tok
+  --   fixity
+  --   code
 
   when (isSpaces tok) $ do
     spaces $ T.group tok
@@ -391,34 +405,39 @@ escape (T.uncons -> Just (c, s)) = T.pack (replace c) <+> escape s
     _    -> [ c ]
 escape _                         = __IMPOSSIBLE__
 
--- | Fixity declarations need a special treatment. The operations in
--- declarations like:
---
---     infix num op1 op2 op3
---
--- are treated as comments and thus grouped together with the newlines
--- that follow, which results incorrect LaTeX output -- the following
--- state remedies the problem by breaking on newlines.
-fixity :: LaTeX ()
-fixity = do
-  tok <- nextToken
 
-  case T.breakOn (T.pack "\n") tok of
+-- Andreas, 2016-09-08, issue #2140:
+-- The following special treatment of infix declarations seems
+-- superfluous (and does the wrong thing with the fix for #2140):
 
-    -- Spaces.
-    (sps, nls) | nls == T.empty && isSpaces sps -> do
-        spaces $ T.group sps
-        fixity
+-- -- | Fixity declarations need a special treatment. The operations in
+-- -- declarations like:
+-- --
+-- --     infix num op1 op2 op3
+-- --
+-- -- are treated as comments and thus grouped together with the newlines
+-- -- that follow, which results incorrect LaTeX output -- the following
+-- -- state remedies the problem by breaking on newlines.
+-- fixity :: LaTeX ()
+-- fixity = do
+--   tok <- nextToken
 
-    -- Fixity level.
-    (num, nls) | nls == T.empty -> do
-        output $ cmdPrefix <+> T.pack "Number" <+> cmdArg num
-        fixity
+--   case T.breakOn (T.pack "\n") tok of
 
-    -- Operations followed by newlines.
-    (ops, nls) | otherwise      -> do
-        output $ (T.pack " " <+>) $ T.unwords $ map ((cmdPrefix <+> T.pack "FixityOp" <+>) . cmdArg . escape) $ T.words ops
-        spaces (T.group nls)
+--     -- Spaces.
+--     (sps, nls) | nls == T.empty && isSpaces sps -> do
+--         spaces $ T.group sps
+--         fixity
+
+--     -- Fixity level.
+--     (num, nls) | nls == T.empty -> do
+--         output $ cmdPrefix <+> T.pack "Number" <+> cmdArg num
+--         fixity
+
+--     -- Operations followed by newlines.
+--     (ops, nls) | otherwise      -> do
+--         output $ (T.pack " " <+>) $ T.unwords $ map ((cmdPrefix <+> T.pack "FixityOp" <+>) . cmdArg . escape) $ T.words ops
+--         spaces (T.group nls)
 
 
 -- | Spaces are grouped before processed, because multiple consecutive
@@ -504,14 +523,20 @@ spaces (_ : ss) = __IMPOSSIBLE__
 defaultStyFile :: String
 defaultStyFile = "agda.sty"
 
--- | The only exported function. It's (only) called in @Main.hs@.
-generateLaTeX :: TopLevelModuleName -> HighlightingInfo -> TCM ()
-generateLaTeX mod hi = do
+-- | The only exported function.
+generateLaTeX :: Interface -> TCM ()
+generateLaTeX i = do
+  let mod = toTopLevelModuleName $ iModuleName i
+      hi  = iHighlighting i
 
   options <- TCM.commandLineOptions
 
-  -- There is a default directory given by 'defaultLaTeXDir'.
-  let dir = optLaTeXDir options
+  dir <- case optGHCiInteraction options of
+    False -> return $ optLaTeXDir options
+    True  -> do
+      sourceFile <- Find.findFile mod
+      return $ filePath (projectRoot sourceFile mod)
+                 </> optLaTeXDir options
   liftIO $ createDirectoryIfMissing True dir
 
   TCM.reportSLn "latex" 1 $ unlines

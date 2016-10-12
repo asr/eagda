@@ -74,7 +74,12 @@ treelessPrimName p =
     PMul  -> "mulInt"
     PGeq  -> "geqInt"
     PLt   -> "ltInt"
-    PEq   -> "eqInt"
+    PEqI  -> "eqInt"
+    PEqF  -> "eqFloat"
+    -- MAlonzo uses literal patterns, so we don't need equality for the other primitive types
+    PEqC  -> __IMPOSSIBLE__
+    PEqS  -> __IMPOSSIBLE__
+    PEqQ  -> __IMPOSSIBLE__
     PSeq  -> "seq"
     -- primitives only used by GuardsToPrims transformation, which MAlonzo doesn't use
     PIf   -> __IMPOSSIBLE__
@@ -85,18 +90,17 @@ importsForPrim =
   fmap (++ [HS.ModuleName "Data.Text"]) $
   xForPrim $
   L.map (\(s, ms) -> (s, return (L.map HS.ModuleName ms))) $
-  [ "CHAR"           |-> ["Data.Char"]
-  , "primIsDigit"    |-> ["Data.Char"]
-  , "primIsLower"    |-> ["Data.Char"]
-  , "primIsDigit"    |-> ["Data.Char"]
-  , "primIsAlpha"    |-> ["Data.Char"]
-  , "primIsSpace"    |-> ["Data.Char"]
-  , "primIsAscii"    |-> ["Data.Char"]
-  , "primIsLatin1"   |-> ["Data.Char"]
-  , "primIsPrint"    |-> ["Data.Char"]
-  , "primIsHexDigit" |-> ["Data.Char"]
-  , "primToUpper"    |-> ["Data.Char"]
-  , "primToLower"    |-> ["Data.Char"]
+  [ "CHAR"              |-> ["Data.Char"]
+  , "primIsAlpha"       |-> ["Data.Char"]
+  , "primIsAscii"       |-> ["Data.Char"]
+  , "primIsDigit"       |-> ["Data.Char"]
+  , "primIsHexDigit"    |-> ["Data.Char"]
+  , "primIsLatin1"      |-> ["Data.Char"]
+  , "primIsLower"       |-> ["Data.Char"]
+  , "primIsPrint"       |-> ["Data.Char"]
+  , "primIsSpace"       |-> ["Data.Char"]
+  , "primToLower"       |-> ["Data.Char"]
+  , "primToUpper"       |-> ["Data.Char"]
   ]
   where (|->) = (,)
 
@@ -149,18 +153,17 @@ primBody s = maybe unimplemented (either (hsVarUQ . HS.Ident) id <$>) $
 
   -- Floating point functions
   , "primNatToFloat"        |-> return "(fromIntegral :: Integer -> Double)"
-  , "primFloatPlus"         |-> return "((+) :: Double -> Double -> Double)"
-  , "primFloatMinus"        |-> return "((-) :: Double -> Double -> Double)"
-  , "primFloatTimes"        |-> return "((*) :: Double -> Double -> Double)"
-  , "primFloatDiv"          |-> return "((/) :: Double -> Double -> Double)"
-  , "primFloatEquality"     |-> return "((\\ x y -> if isNaN x && isNaN y then True else x == y) :: Double -> Double -> Bool)"
-  , "primFloatLess"         |-> return (unwords
-                                  [ "((\\ x y ->"
-                                  , "let isNegInf z = z < 0 && isInfinite z in"
-                                  , "if isNegInf y then False else"
-                                  , "if isNegInf x then True  else"
-                                  , "if isNaN x    then True  else"
-                                  , "x < y) :: Double -> Double -> Bool)" ])
+  , "primFloatPlus"         |-> return "((+)          :: Double -> Double -> Double)"
+  , "primFloatMinus"        |-> return "((-)          :: Double -> Double -> Double)"
+  , "primFloatTimes"        |-> return "((*)          :: Double -> Double -> Double)"
+  , "primFloatNegate"       |-> return "(negate       :: Double -> Double)"
+  , "primFloatDiv"          |-> return "((/)          :: Double -> Double -> Double)"
+  -- ASR (2016-09-14). We use bitwise equality for comparing Double
+  -- because Haskell's Eq, which equates 0.0 and -0.0, allows to prove
+  -- a contradiction (see Issue #2169).
+  , "primFloatEquality"     |-> return "MAlonzo.RTE.eqFloat"
+  , "primFloatNumericalEquality" |-> return "MAlonzo.RTE.eqNumFloat"
+  , "primFloatNumericalLess" |-> return "MAlonzo.RTE.ltNumFloat"
   , "primFloatSqrt"         |-> return "(sqrt :: Double -> Double)"
   , "primRound"             |-> return "(round :: Double -> Integer)"
   , "primFloor"             |-> return "(floor :: Double -> Integer)"
@@ -168,7 +171,13 @@ primBody s = maybe unimplemented (either (hsVarUQ . HS.Ident) id <$>) $
   , "primExp"               |-> return "(exp :: Double -> Double)"
   , "primLog"               |-> return "(log :: Double -> Double)"
   , "primSin"               |-> return "(sin :: Double -> Double)"
-  , "primShowFloat"         |-> return "(Data.Text.pack . (\\ x -> if isNegativeZero x then \"0.0\" else show x) :: Double -> Data.Text.Text)"
+  , "primCos"               |-> return "(cos :: Double -> Double)"
+  , "primTan"               |-> return "(tan :: Double -> Double)"
+  , "primASin"              |-> return "(asin :: Double -> Double)"
+  , "primACos"              |-> return "(acos :: Double -> Double)"
+  , "primATan"              |-> return "(atan :: Double -> Double)"
+  , "primATan2"             |-> return "(atan2 :: Double -> Double -> Double)"
+  , "primShowFloat"         |-> return "(Data.Text.pack . show :: Double -> Data.Text.Text)"
 
   -- Character functions
   , "primCharEquality"   |-> rel "(==)" "Char"
@@ -197,6 +206,7 @@ primBody s = maybe unimplemented (either (hsVarUQ . HS.Ident) id <$>) $
   , "primQNameEquality"   |-> rel "(==)" "MAlonzo.RTE.QName"
   , "primQNameLess"       |-> rel "(<)" "MAlonzo.RTE.QName"
   , "primShowQName"       |-> return "Data.Text.pack . MAlonzo.RTE.qnameString"
+  , "primQNameFixity"     |-> return "MAlonzo.RTE.qnameFixity"
   , "primMetaEquality"    |-> rel "(==)" "Integer"
   , "primMetaLess"        |-> rel "(<)" "Integer"
   , "primShowMeta"        |-> return "\\ x -> Data.Text.pack (\"_\" ++ show (x :: Integer))"

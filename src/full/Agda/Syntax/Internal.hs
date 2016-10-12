@@ -21,6 +21,7 @@ import Prelude hiding (foldr, mapM, null)
 
 import Control.Applicative hiding (empty)
 import Control.Monad.Identity hiding (mapM)
+import Control.DeepSeq
 
 import Data.Foldable ( Foldable, foldMap )
 import Data.Function
@@ -39,7 +40,7 @@ import Data.Typeable (Typeable)
 import Agda.Syntax.Position
 import Agda.Syntax.Common
 import Agda.Syntax.Literal
-import Agda.Syntax.Concrete.Pretty ()
+import Agda.Syntax.Concrete.Pretty (prettyHiding)
 import Agda.Syntax.Abstract.Name
 
 import Agda.Utils.Empty
@@ -1129,9 +1130,9 @@ instance Pretty Term where
   prettyPrec p v =
     case ignoreSharing v of
       Var x els -> text ("@" ++ show x) `pApp` els
-      Lam _ b   ->
+      Lam ai b   ->
         mparens (p > 0) $
-        sep [ text ("λ " ++ show (absName b) ++ " ->")
+        sep [ text "λ" <+> prettyHiding ai id (text . show . absName $ b) <+> text "->"
             , nest 2 $ pretty (unAbs b) ]
       Lit l                -> pretty l
       Def q els            -> text (show q) `pApp` els
@@ -1142,20 +1143,37 @@ instance Pretty Term where
       Pi a b               -> mparens (p > 0) $
         sep [ pDom (domInfo a) (text (absName b) <+> text ":" <+> pretty (unDom a)) <+> text "->"
             , nest 2 $ pretty (unAbs b) ]
-      Sort s      -> pretty s
-      Level l     -> pretty l
+      Sort s      -> prettyPrec p s
+      Level l     -> prettyPrec p l
       MetaV x els -> pretty x `pApp` els
-      DontCare v  -> pretty v
+      DontCare v  -> prettyPrec p v
       Shared{}    -> __IMPOSSIBLE__
     where
       pApp d els = mparens (not (null els) && p > 9) $
-                   d <+> fsep (map (prettyPrec 10) els)
+                   sep [d, nest 2 $ fsep (map (prettyPrec 10) els)]
 
-      pDom i =
-        case getHiding i of
-          NotHidden -> parens
-          Hidden    -> braces
-          Instance  -> braces . braces
+pDom :: LensHiding a => a -> Doc -> Doc
+pDom i =
+  case getHiding i of
+    NotHidden -> parens
+    Hidden    -> braces
+    Instance  -> braces . braces
+
+instance Pretty Clause where
+  pretty Clause{clauseTel = tel, namedClausePats = ps, clauseBody = b, clauseType = t} =
+    sep [ pretty tel <+> text "|-"
+        , nest 2 $ sep [ fsep (map (prettyPrec 10) ps) <+> text "="
+                       , nest 2 $ pBody b t ] ]
+    where
+      pBody Nothing _ = text "(absurd)"
+      pBody (Just b) Nothing  = pretty b
+      pBody (Just b) (Just t) = sep [ pretty b <+> text ":", nest 2 $ pretty t ]
+
+instance Pretty a => Pretty (Tele (Dom a)) where
+  pretty tel = fsep [ pDom a (text x <+> text ":" <+> pretty (unDom a)) | (x, a) <- telToList tel ]
+    where
+      telToList EmptyTel = []
+      telToList (ExtendTel a tel) = (absName tel, a) : telToList (unAbs tel)
 
 instance Pretty Level where
   prettyPrec p (Max as) =
@@ -1199,17 +1217,18 @@ instance Pretty Type where
   prettyPrec p (El _ a) = prettyPrec p a
 
 instance Pretty Elim where
-  prettyPrec p (Apply v) = prettyPrec p v
+  prettyPrec p (Apply v)    = prettyPrec p v
   prettyPrec _ (Proj _o x)  = text ("." ++ show x)
 
 instance Pretty DBPatVar where
-  prettyPrec _ x = text $ show (dbPatVarName x) ++ "@" ++ show (dbPatVarIndex x)
+  prettyPrec _ x = text $ patVarNameToString (dbPatVarName x) ++ "@" ++ show (dbPatVarIndex x)
 
 instance Pretty a => Pretty (Pattern' a) where
   prettyPrec n (VarP x)      = prettyPrec n x
   prettyPrec _ (DotP t)      = text "." P.<> prettyPrec 10 t
-  prettyPrec n (ConP c i ps) = mparens (n > 0) $
-    text (show $ conName c) <+> fsep (map (pretty . namedArg) ps)
+  prettyPrec n (ConP c i nps)= mparens (n > 0) $
+    text (show $ conName c) <+> fsep (map pretty ps)
+    where ps = map (fmap namedThing) nps
   -- -- Version with printing record type:
   -- prettyPrec _ (ConP c i ps) = (if b then braces else parens) $ prTy $
   --   text (show $ conName c) <+> fsep (map (pretty . namedArg) ps)
@@ -1218,3 +1237,51 @@ instance Pretty a => Pretty (Pattern' a) where
   --     prTy d = caseMaybe (conPType i) d $ \ t -> d  <+> text ":" <+> pretty t
   prettyPrec _ (LitP l)      = text (show l)
   prettyPrec _ (ProjP _o q)  = text ("." ++ show q)
+
+-----------------------------------------------------------------------------
+-- * NFData instances
+-----------------------------------------------------------------------------
+
+-- Note: only strict in the shape of the terms.
+
+instance NFData Term where
+  rnf v = case v of
+    Var _ es   -> rnf es
+    Lam _ b    -> rnf (unAbs b)
+    Lit l      -> rnf l
+    Def q es   -> rnf es
+    Con c vs   -> rnf vs
+    Pi a b     -> rnf (unDom a, unAbs b)
+    Sort s     -> rnf s
+    Level l    -> rnf l
+    MetaV _ es -> rnf es
+    DontCare v -> rnf v
+    Shared{}   -> ()
+
+instance NFData Type where
+  rnf (El s v) = rnf (s, v)
+
+instance NFData Sort where
+  rnf s = case s of
+    Type l   -> rnf l
+    Prop     -> ()
+    Inf      -> ()
+    SizeUniv -> ()
+    DLub a b -> rnf (a, unAbs b)
+
+instance NFData Level where
+  rnf (Max as) = rnf as
+
+instance NFData PlusLevel where
+  rnf (ClosedLevel n) = rnf n
+  rnf (Plus n l) = rnf (n, l)
+
+instance NFData LevelAtom where
+  rnf (MetaLevel _ es)   = rnf es
+  rnf (BlockedLevel _ v) = rnf v
+  rnf (NeutralLevel _ v) = rnf v
+  rnf (UnreducedLevel v) = rnf v
+
+instance NFData a => NFData (Elim' a) where
+  rnf (Apply x) = rnf x
+  rnf Proj{}    = ()

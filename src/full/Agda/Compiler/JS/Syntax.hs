@@ -27,7 +27,8 @@ data Exp =
   If Exp Exp Exp |
   BinOp Exp String Exp |
   PreOp String Exp |
-  Const String
+  Const String |
+  PlainJS String -- ^ Arbitrary JS code.
   deriving (Typeable, Show)
 
 -- Local identifiers are named by De Bruijn indices.
@@ -46,10 +47,10 @@ newtype MemberId = MemberId String
 -- The top-level compilation unit is a module, which names
 -- the GId of its exports, and a list of definitions
 
-data Export = Export { expName :: [MemberId], defn :: Exp }
+data Export = Export { expName :: [MemberId], isCoind :: Bool, defn :: Exp }
   deriving (Typeable, Show)
 
-data Module = Module { modName :: GlobalId, exports :: [Export] }
+data Module = Module { modName :: GlobalId, exports :: [Export], postscript :: Maybe Exp }
   deriving (Typeable, Show)
 
 -- Note that modules are allowed to be recursive, via the Self expression,
@@ -79,7 +80,7 @@ instance Uses Exp where
   uses e              = empty
 
 instance Uses Export where
-  uses (Export ls e) = uses e
+  uses (Export _ _ e) = uses e
 
 -- All global ids
 
@@ -104,7 +105,7 @@ instance Globals Exp where
   globals _ = empty
 
 instance Globals Export where
-  globals (Export ls e) = globals e
+  globals (Export _ _ e) = globals e
 
 instance Globals Module where
-  globals (Module m es) = globals es
+  globals (Module m es _) = globals es

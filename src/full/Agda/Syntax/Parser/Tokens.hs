@@ -14,6 +14,7 @@ data Keyword
         -- here for avoiding conflicts when merging master.
         | KwATP
         | KwPostulate | KwMutual | KwAbstract | KwPrivate | KwInstance
+        | KwOverlap
         | KwOpen | KwImport | KwModule | KwPrimitive | KwMacro
         | KwInfix | KwInfixL | KwInfixR | KwWith | KwRewrite
         | KwSet | KwProp | KwForall | KwRecord | KwConstructor | KwField

@@ -36,7 +36,7 @@ import Agda.TypeChecking.Monad.Builtin
 import Agda.TypeChecking.Monad.Exception
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Reduce
-import Agda.TypeChecking.Reduce.Monad hiding (reportSDoc)
+import Agda.TypeChecking.Reduce.Monad
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.Quote
@@ -189,7 +189,7 @@ instance Unquote ArgInfo where
     case ignoreSharing t of
       Con c [h,r] -> do
         choice
-          [(c `isCon` primArgArgInfo, ArgInfo <$> unquoteN h <*> unquoteN r <*> return Reflected)]
+          [(c `isCon` primArgArgInfo, ArgInfo <$> unquoteN h <*> unquoteN r <*> pure Reflected <*> pure False)]
           __IMPOSSIBLE__
       Con c _ -> __IMPOSSIBLE__
       _ -> throwException $ NonCanonical "arg info" t
@@ -478,8 +478,10 @@ evalTCM v = do
     I.Def f [u] ->
       choice [ (f `isDef` primAgdaTCMInferType,          tcFun1 tcInferType          u)
              , (f `isDef` primAgdaTCMNormalise,          tcFun1 tcNormalise          u)
+             , (f `isDef` primAgdaTCMReduce,             tcFun1 tcReduce             u)
              , (f `isDef` primAgdaTCMGetType,            tcFun1 tcGetType            u)
              , (f `isDef` primAgdaTCMGetDefinition,      tcFun1 tcGetDefinition      u)
+             , (f `isDef` primAgdaTCMIsMacro,            tcFun1 tcIsMacro            u)
              , (f `isDef` primAgdaTCMFreshName,          tcFun1 tcFreshName          u) ]
              failEval
     I.Def f [u, v] ->
@@ -566,17 +568,17 @@ evalTCM v = do
     tcInferType :: R.Term -> TCM Term
     tcInferType v = do
       (_, a) <- inferExpr =<< toAbstract_ v
-      quoteType =<< normalise a
+      quoteType =<< instantiateFull a
 
     tcCheckType :: R.Term -> R.Type -> TCM Term
     tcCheckType v a = do
       a <- isType_ =<< toAbstract_ a
       e <- toAbstract_ v
       v <- checkExpr e a
-      quoteTerm =<< normalise v
+      quoteTerm =<< instantiateFull v
 
     tcQuoteTerm :: Term -> UnquoteM Term
-    tcQuoteTerm v = liftU $ quoteTerm =<< normalise v
+    tcQuoteTerm v = liftU $ quoteTerm =<< instantiateFull v
 
     tcUnquoteTerm :: Type -> R.Term -> TCM Term
     tcUnquoteTerm a v = do
@@ -589,10 +591,15 @@ evalTCM v = do
       (v, _) <- inferExpr =<< toAbstract_ v
       quoteTerm =<< normalise v
 
+    tcReduce :: R.Term -> TCM Term
+    tcReduce v = do
+      (v, _) <- inferExpr =<< toAbstract_ v
+      quoteTerm =<< reduce =<< instantiateFull v
+
     tcGetContext :: UnquoteM Term
     tcGetContext = liftU $ do
       as <- map (fmap snd) <$> getContext
-      as <- etaContract =<< normalise as
+      as <- etaContract =<< instantiateFull as
       buildList <*> mapM quoteDom as
 
     extendCxt :: Arg R.Type -> UnquoteM a -> UnquoteM a
@@ -620,6 +627,14 @@ evalTCM v = do
 
     tcGetType :: QName -> TCM Term
     tcGetType x = quoteType . defType =<< constInfo x
+
+    tcIsMacro :: QName -> TCM Term
+    tcIsMacro x = do
+      true  <- primTrue
+      false <- primFalse
+      let qBool True  = true
+          qBool False = false
+      qBool . isMacro . theDef <$> constInfo x
 
     tcGetDefinition :: QName -> TCM Term
     tcGetDefinition x = quoteDefn =<< constInfo x

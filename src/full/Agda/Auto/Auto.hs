@@ -371,7 +371,7 @@ auto ii rng argstr = do
                  -- Normalise the dot patterns
                  ps <- addContext tel $ normalise ps
                  body <- etaContract body
-                 liftM modifyAbstractClause $ inContext [] $ reify $ AN.QNamed def $ I.Clause noRange tel ps body t catchall
+                 liftM modifyAbstractClause $ inTopContext $ reify $ AN.QNamed def $ I.Clause noRange tel ps body t catchall
               pcs <- withInteractionId ii $ mapM prettyA cls''
               ticks <- liftIO $ readIORef ticks
 
@@ -460,6 +460,7 @@ autohints AHMModule mi (Just def) = do
       c <- getConstInfo n
       case theDef c of
         Axiom{}    -> return True
+        AbstractDefn{} -> return True
         Function{} -> return True
         _          -> return False
 

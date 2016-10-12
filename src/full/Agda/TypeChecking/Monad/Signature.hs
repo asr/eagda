@@ -20,14 +20,13 @@ import Data.Maybe
 import Data.Monoid
 
 import Agda.Syntax.Abstract.Name
-import Agda.Syntax.Abstract (Ren)
+import Agda.Syntax.Abstract (Ren, ScopeCopyInfo(..))
 import Agda.Syntax.Common
 import Agda.Syntax.Internal as I
 import Agda.Syntax.Internal.Names
 import Agda.Syntax.Position
 import Agda.Syntax.Treeless (Compiled(..), TTerm)
 
-import qualified Agda.Compiler.JS.Parser as JS
 import qualified Agda.Compiler.UHC.Pragmas.Base as CR
 
 import Agda.TypeChecking.Monad.Base
@@ -139,14 +138,9 @@ addEpicCode q epDef = modifySignature $ updateDefinition q $ updateDefCompiledRe
     addEp crep = crep { compiledEpic = Just epDef }
 
 addJSCode :: QName -> String -> TCM ()
-addJSCode q jsDef =
-  case JS.parse jsDef of
-    Left e ->
-      modifySignature $ updateDefinition q $ updateDefCompiledRep $ addJS (Just e)
-    Right s ->
-      typeError (CompilationError ("Failed to parse ECMAScript (..." ++ s ++ ") for " ++ show q))
+addJSCode q jsDef = modifySignature $ updateDefinition q $ updateDefCompiledRep $ addJS
   where
-    addJS e crep = crep { compiledJS = e }
+    addJS crep = crep { compiledJS = Just jsDef }
 
 addCoreCode :: QName -> CR.CoreExpr -> TCM ()
 addCoreCode q crDef =  modifySignature $ updateDefinition q $ updateDefCompiledRep $ addCore crDef
@@ -290,8 +284,8 @@ lookupSection m = maybe EmptyTel (^. secTelescope) <$> getSection m
 addDisplayForms :: QName -> TCM ()
 addDisplayForms x = do
   def  <- getConstInfo x
-  args <- getContextArgs
-  add (drop (projectionArgs $ theDef def) args) x x []
+  args <- drop (projectionArgs $ theDef def) <$> getContextArgs
+  add args x x $ map Apply args
   where
     add args top x es0 = do
       def <- getConstInfo x
@@ -303,11 +297,21 @@ addDisplayForms x = do
             then noDispForm x "not a copy" else do
           if not $ all (isVar . namedArg) $ namedClausePats cl
             then noDispForm x "properly matching patterns" else do
-          let n   = size $ namedClausePats cl
-              m   = n - size es0
-              vs0 = map unArg $ fromMaybe __IMPOSSIBLE__ $ allApplyElims es0
-              sub = parallelS $ reverse $ vs0 ++ replicate m (var 0)
-          case unSpine <$> applySubst sub (compiledClauseBody cl) of
+          -- We have
+          --    x ps = e
+          -- and we're trying to generate a display form
+          --    x es0 <-- e[es0/ps]
+          -- Of course x es0 might be an over- or underapplication, hence the
+          -- n/m arithmetic.
+          let n          = size $ namedClausePats cl
+              (es1, es2) = splitAt n es0
+              m          = n - size es1
+              vs1 = map unArg $ fromMaybe __IMPOSSIBLE__ $ allApplyElims es1
+                    -- Display patterns use a single var 0 for all pattern variables,
+                    -- so raise the terms that should match exactly by 1.
+              sub = parallelS $ reverse $ raise 1 vs1 ++ replicate m (var 0)
+              body = applySubst sub (compiledClauseBody cl) `applyE` es2
+          case unSpine <$> body of
             Just (Def y es) -> do
               let df = Display m es $ DTerm $ Def top $ map Apply args
               reportSLn "tc.display.section" 20 $ "adding display form " ++ show y ++ " --> " ++ show top
@@ -337,12 +341,11 @@ applySection
   -> Telescope      -- ^ Parameters of new module.
   -> ModuleName     -- ^ Name of old module applied to arguments.
   -> Args           -- ^ Arguments of module application.
-  -> Ren QName      -- ^ Imported names (given as renaming).
-  -> Ren ModuleName -- ^ Imported modules (given as renaming).
+  -> ScopeCopyInfo  -- ^ Imported names and modules
   -> TCM ()
-applySection new ptel old ts rd rm = do
+applySection new ptel old ts ScopeCopyInfo{ renModules = rm, renNames = rd } = do
   rd <- closeConstructors rd
-  applySection' new ptel old ts rd rm
+  applySection' new ptel old ts ScopeCopyInfo{ renModules = rm, renNames = rd }
   where
     -- If a datatype is being copied, all its constructors need to be copied,
     -- and if a constructor is copied its datatype needs to be.
@@ -372,8 +375,8 @@ applySection new ptel old ts rd rm = do
             Record{ recConHead = h }      -> [conName h]
             _                         -> []
 
-applySection' :: ModuleName -> Telescope -> ModuleName -> Args -> Ren QName -> Ren ModuleName -> TCM ()
-applySection' new ptel old ts rd rm = do
+applySection' :: ModuleName -> Telescope -> ModuleName -> Args -> ScopeCopyInfo -> TCM ()
+applySection' new ptel old ts ScopeCopyInfo{ renNames = rd, renModules = rm } = do
   reportSLn "tc.mod.apply" 10 $ render $ vcat
     [ text "applySection"
     , text "new  =" <+> text (show new)
@@ -410,7 +413,7 @@ applySection' new ptel old ts rd rm = do
       copyDef' np def
       where
         copyDef' np d = do
-          reportSLn "tc.mod.apply" 60 $ "making new def for " ++ show y ++ " from " ++ show x ++ " with " ++ show np ++ " args " ++ show abstr
+          reportSLn "tc.mod.apply" 60 $ "making new def for " ++ show y ++ " from " ++ show x ++ " with " ++ show np ++ " args " ++ show (defAbstract d)
           reportSLn "tc.mod.apply" 80 $
             "args = " ++ show ts' ++ "\n" ++
             "old type = " ++ prettyShow (defType d)
@@ -439,7 +442,6 @@ applySection' new ptel old ts rd rm = do
             pol = defPolarity d `apply` ts'
             occ = defArgOccurrences d `apply` ts'
             inst = defInstance d
-            abstr = defAbstract d
             -- the name is set by the addConstant function
             nd :: QName -> TCM Definition
             nd y = for def $ \ df -> Defn
@@ -856,16 +858,19 @@ moduleParamsToApply :: ModuleName -> TCM Args
 moduleParamsToApply m = do
   -- Get the correct number of free variables (correctly raised) of @m@.
 
-  reportSLn "tc.sig.param" 90 $ "compupting module parameters of " ++ show m
+  reportSLn "tc.sig.param" 90 $ "computing module parameters of " ++ show m
   cxt <- getContext
   n   <- getModuleFreeVars m
   tel <- take n . telToList <$> lookupSection m
   sub <- getModuleParameterSub m
-  reportSLn "tc.sig.param" 20 $ "  n    = " ++ show n ++
-                                "\n  cxt  = " ++ show cxt ++
-                                "\n  sub  = " ++ show sub
-  let args = applySubst sub $ zipWith (\ i a -> Var i [] <$ argFromDom a) (downFrom (length tel)) tel
-  reportSLn "tc.sig.param" 20 $ "  args = " ++ show args
+  reportSLn "tc.sig.param" 60 $ unlines $
+    [ "  n    = " ++ show n
+    , "  cxt  = " ++ show cxt
+    , "  sub  = " ++ show sub
+    ]
+  unless (size tel == n) __IMPOSSIBLE__
+  let args = applySubst sub $ zipWith (\ i a -> var i <$ argFromDom a) (downFrom n) tel
+  reportSLn "tc.sig.param" 60 $ "  args = " ++ show args
 
   -- Apply the original ArgInfo, as the hiding information in the current
   -- context might be different from the hiding information expected by @m@.
@@ -878,14 +883,14 @@ moduleParamsToApply m = do
       -- unless (null args) __IMPOSSIBLE__
       -- No, this invariant is violated by private modules, see Issue1701a.
       return args
-    Just (Section tel) -> do
+    Just (Section stel) -> do
       -- The section telescope of @m@ should be as least
       -- as long as the number of free vars @m@ is applied to.
       -- We still check here as in no case, we want @zipWith@ to silently
       -- drop some @args@.
       -- And there are also anonymous modules, thus, the invariant is not trivial.
-      when (size tel < size args) __IMPOSSIBLE__
-      return $ zipWith (\ (Dom ai _) (Arg _ v) -> Arg ai v) (telToList tel) args
+      when (size stel < size args) __IMPOSSIBLE__
+      return $ zipWith (\ (Dom ai _) (Arg _ v) -> Arg ai v) (telToList stel) args
 
 -- | Unless all variables in the context are module parameters, create a fresh
 --   module to capture the non-module parameters. Used when unquoting to make
@@ -925,23 +930,26 @@ makeAbstract d =
                , theDef = def
                }
   where
-    makeAbs Datatype   {} = Just $ Axiom Nothing []
-    makeAbs Function   {} = Just $ Axiom Nothing []
+    makeAbs Axiom{}       = Just $ Axiom Nothing []
+    makeAbs Datatype   {} = Just AbstractDefn
+    makeAbs Function   {} = Just AbstractDefn
     makeAbs Constructor{} = Nothing
     -- Andreas, 2012-11-18:  Make record constructor and projections abstract.
-    makeAbs d@Record{}    = Just $ Axiom Nothing []
-    -- Q: what about primitive?
-    makeAbs d             = Just d
+    makeAbs d@Record{}    = Just AbstractDefn
+    makeAbs Primitive{}   = __IMPOSSIBLE__
+    makeAbs AbstractDefn  = __IMPOSSIBLE__
 
 -- | Enter abstract mode. Abstract definition in the current module are transparent.
-inAbstractMode :: TCM a -> TCM a
+{-# SPECIALIZE inAbstractMode :: TCM a -> TCM a #-}
+inAbstractMode :: MonadReader TCEnv m => m a -> m a
 inAbstractMode = local $ \e -> e { envAbstractMode = AbstractMode,
                                    envAllowDestructiveUpdate = False }
                                     -- Allowing destructive updates when seeing through
                                     -- abstract may break the abstraction.
 
 -- | Not in abstract mode. All abstract definitions are opaque.
-inConcreteMode :: TCM a -> TCM a
+{-# SPECIALIZE inConcreteMode :: TCM a -> TCM a #-}
+inConcreteMode :: MonadReader TCEnv m => m a -> m a
 inConcreteMode = local $ \e -> e { envAbstractMode = ConcreteMode }
 
 -- | Ignore abstract mode. All abstract definitions are transparent.
@@ -953,14 +961,15 @@ ignoreAbstractMode = local $ \e -> e { envAbstractMode = IgnoreAbstractMode,
 
 -- | Enter concrete or abstract mode depending on whether the given identifier
 --   is concrete or abstract.
-inConcreteOrAbstractMode :: QName -> TCM a -> TCM a
+{-# SPECIALIZE inConcreteOrAbstractMode :: QName -> (Definition -> TCM a) -> TCM a #-}
+inConcreteOrAbstractMode :: (MonadReader TCEnv m, HasConstInfo m) => QName -> (Definition -> m a) -> m a
 inConcreteOrAbstractMode q cont = do
   -- Andreas, 2015-07-01: If we do not ignoreAbstractMode here,
   -- we will get ConcreteDef for abstract things, as they are turned into axioms.
-  a <- ignoreAbstractMode $ defAbstract <$> getConstInfo q
-  case a of
-    AbstractDef -> inAbstractMode cont
-    ConcreteDef -> inConcreteMode cont
+  def <- ignoreAbstractMode $ getConstInfo q
+  case defAbstract def of
+    AbstractDef -> inAbstractMode $ cont def
+    ConcreteDef -> inConcreteMode $ cont def
 
 -- | Check whether a name might have to be treated abstractly (either if we're
 --   'inAbstractMode' or it's not a local name). Returns true for things not
@@ -1005,16 +1014,6 @@ sortOfConst q =
             Datatype{dataSort = s} -> return s
             _                      -> fail $ "Expected " ++ show q ++ " to be a datatype."
 
--- | The number of parameters of a definition.
-defPars :: Definition -> Int
-defPars d = case theDef d of
-    Axiom{}                  -> 0
-    def@Function{}           -> projectionArgs def
-    Datatype  {dataPars = n} -> n
-    Record     {recPars = n} -> n
-    Constructor{conPars = n} -> n
-    Primitive{}              -> 0
-
 -- | The number of dropped parameters for a definition.
 --   0 except for projection(-like) functions and constructors.
 droppedPars :: Definition -> Int
@@ -1025,6 +1024,7 @@ droppedPars d = case theDef d of
     Record     {recPars = _} -> 0  -- not dropped
     Constructor{conPars = n} -> n
     Primitive{}              -> 0
+    AbstractDefn             -> __IMPOSSIBLE__
 
 -- | Is it the name of a record projection?
 {-# SPECIALIZE isProjection :: QName -> TCM (Maybe Projection) #-}

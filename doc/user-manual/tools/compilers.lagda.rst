@@ -18,8 +18,7 @@ Backends
 GHC Backend
 ~~~~~~~~~~~
 
-.. note::
-  The Agda GHC backend translates Agda programs into GHC programs.
+The GHC backend translates Agda programs into GHC Haskell programs.
 
 Usage
 ^^^^^
@@ -38,7 +37,7 @@ Example
 ^^^^^^^
 
 The following "Hello, World!" example requires some :ref:`built-ins`
-and `Pragmas`_:
+and uses the :ref:`foreign-function-interface`:
 
 ::
 
@@ -77,6 +76,12 @@ After compiling the example
   agda --compile HelloWorld.agda
 
 you can run the HelloWorld program which prints ``Hello, World!``.
+
+Required libraries for the :ref:`built-ins`
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- ``primFloatEquality`` requires the `ieee754
+  <http://hackage.haskell.org/package/ieee754>`_ library.
 
 
 UHC Backend
@@ -130,8 +135,18 @@ The UHC backend currently does not support Unicode strings. See issue `1857 <htt
 JavaScript Backend
 ~~~~~~~~~~~~~~~~~~
 
-.. note::
-   This is a stub.
+The JavaScript backend translates Agda code to JavaScript code.
+
+Usage
+^^^^^
+
+The backend can be invoked from the command line using the flag
+``--js``:
+
+.. code-block:: bash
+
+  agda --js [--compile-dir=<DIR>] <FILE>.agda
+
 
 Optimizations
 -------------
@@ -141,12 +156,9 @@ Optimizations
 Builtin natural numbers
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-.. note::
-   GHC/UHC backend only.
-
-Builtin natural numbers are now properly represented as Haskell
-Integers, and the builtin functions on natural numbers are compiled to
-their corresponding Haskell functions.
+Builtin natural numbers are represented as arbitrary-precision integers.
+The builtin functions on natural numbers are compiled to the corresponding
+arbitrary-precision integer functions.
 
 Note that pattern matching on an Integer is slower than on an unary
 natural number. Code that does a lot of unary manipulations

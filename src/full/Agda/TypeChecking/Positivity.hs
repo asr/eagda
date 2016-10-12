@@ -33,7 +33,7 @@ import qualified Agda.Syntax.Info as Info
 import Agda.Syntax.Internal
 import Agda.Syntax.Internal.Pattern
 import Agda.TypeChecking.Datatypes (isDataOrRecordType, DataOrRecord(..))
-import Agda.TypeChecking.Records (unguardedRecord, recursiveRecord)
+import Agda.TypeChecking.Records
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Monad.Builtin (primInf, CoinductionKit(..), coinductionKit)
 import Agda.TypeChecking.Reduce
@@ -109,7 +109,7 @@ checkStrictlyPositive mi qset = disableDestructiveUpdate $ do
     checkPos :: Graph Node Edge ->
                 Graph Node Occurrence ->
                 QName -> TCM ()
-    checkPos g gstar q = inConcreteOrAbstractMode q $ do
+    checkPos g gstar q = inConcreteOrAbstractMode q $ \ _def -> do
       -- we check positivity only for data or record definitions
       whenJustM (isDatatype q) $ \ dr -> do
         reportSDoc "tc.pos.check" 10 $ text "Checking positivity of" <+> prettyTCM q
@@ -142,9 +142,8 @@ checkStrictlyPositive mi qset = disableDestructiveUpdate $ do
         when (Info.mutualPositivityCheck mi) $
           whenM positivityCheckEnabled $
             case loop of
-            Just o | o <= JustPos -> do
-              tcst <- get
-              warning $ NotStrictlyPositive tcst q (reason JustPos)
+            Just o | o <= JustPos ->
+              warning $ NotStrictlyPositive q (reason JustPos)
             _ -> return ()
 
         -- if we find an unguarded record, mark it as such
@@ -159,6 +158,13 @@ checkStrictlyPositive mi qset = disableDestructiveUpdate $ do
               reportSDoc "tc.pos.record" 5 $ how "recursive" GuardPos
               recursiveRecord q
               checkInduction q
+            -- If the record is not recursive, switch on eta
+            -- unless it is coinductive or a no-eta-equality record.
+            Nothing -> do
+              reportSDoc "tc.pos.record" 10 $
+                text "record type " <+> prettyTCM q <+>
+                text "is not recursive"
+              nonRecursiveRecord q
             _ -> return ()
 
     checkInduction :: QName -> TCM ()
@@ -204,9 +210,9 @@ checkStrictlyPositive mi qset = disableDestructiveUpdate $ do
       -- Compute a map from each name in q to the maximal argument index
       let maxs = Map.fromListWith max
            [ (q, i) | ArgNode q i <- Set.toList $ Graph.sourceNodes g, q `Set.member` qset ]
-      forM_ qs $ \ q -> inConcreteOrAbstractMode q $ do
+      forM_ qs $ \ q -> inConcreteOrAbstractMode q $ \ def -> do
         reportSDoc "tc.pos.args" 10 $ text "checking args of" <+> prettyTCM q
-        n <- getDefArity =<< getConstInfo q
+        n <- getDefArity def
         -- If there is no outgoing edge @ArgNode q i@, all @n@ arguments are @Unused@.
         -- Otherwise, we obtain the occurrences from the Graph.
         let findOcc i = fromMaybe Unused $ Graph.lookup (ArgNode q i) (DefNode q) g
@@ -543,12 +549,13 @@ computeOccurrences q = flatten <$> computeOccurrences' q
 
 -- | Computes the occurrences in the given definition.
 computeOccurrences' :: QName -> TCM OccurrencesBuilder
-computeOccurrences' q = inConcreteOrAbstractMode q $ do
+computeOccurrences' q = inConcreteOrAbstractMode q $ \ def -> do
   reportSDoc "tc.pos" 25 $ do
-    a <- defAbstract <$> getConstInfo q
+    let a = defAbstract def
     m <- asks envAbstractMode
+    cur <- asks envCurrentModule
     text "computeOccurrences" <+> prettyTCM q <+> text (show a) <+> text (show m)
-  def <- getConstInfo q
+      <+> prettyTCM cur
   OccursAs (InDefOf q) <$> case theDef def of
     Function{funClauses = cs} -> do
       n  <- getDefArity def
@@ -583,6 +590,7 @@ computeOccurrences' q = inConcreteOrAbstractMode q $ do
     Constructor{} -> return emptyOB
     Axiom{}       -> return emptyOB
     Primitive{}   -> return emptyOB
+    AbstractDefn  -> __IMPOSSIBLE__
 
 -- | Eta expand a clause to have the given number of variables.
 --   Warning: doesn't put correct types in telescope!
@@ -673,7 +681,7 @@ buildOccurrenceGraph qs =
     mapM defGraph (Set.toList qs)
   where
     defGraph :: QName -> TCM [Graph.Edge Node Node Edge]
-    defGraph q = do
+    defGraph q = inConcreteOrAbstractMode q $ \ _def -> do
       occs <- computeOccurrences' q
 
       reportSDoc "tc.pos.occs" 40 $

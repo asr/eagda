@@ -63,6 +63,7 @@ headSymbol v = do -- ignoreAbstractMode $ do
         Function{}    -> return Nothing
         Primitive{}   -> return Nothing
         Constructor{} -> __IMPOSSIBLE__
+        AbstractDefn  -> __IMPOSSIBLE__
     Con c _ -> return (Just $ ConsHead $ conName c)
     Sort _  -> return (Just SortHead)
     Pi _ _  -> return (Just PiHead)
@@ -85,7 +86,7 @@ checkInjectivity f cs
     -- Is it pointless to use injectivity for this function?
     pointLess []      = True
     pointLess (_:_:_) = False
-    pointLess [cl] = not $ any (properlyMatching . unArg) $ clausePats cl
+    pointLess [cl] = not $ any (properlyMatching . namedArg) $ namedClausePats cl
         -- Andreas, 2014-06-12
         -- If we only have record patterns, it is also pointless.
         -- We need at least one proper match.
@@ -104,7 +105,7 @@ checkInjectivity f cs = do
       reportSDoc "tc.inj.check" 30 $ nest 2 $ vcat $
         for (Map.toList inv) $ \ (h, c) ->
           text (show h) <+> text "-->" <+>
-          fsep (punctuate comma $ map (prettyTCM . unArg) $ clausePats c)
+          fsep (punctuate comma $ map (prettyTCM . namedArg) $ namedClausePats c)
       return $ Inverse inv
     else return NotInjective
 
