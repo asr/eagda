@@ -1,5 +1,4 @@
 {-# LANGUAGE CPP                   #-}
-{-# LANGUAGE DeriveFunctor         #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
 {-# LANGUAGE UndecidableInstances  #-}
 
@@ -57,6 +56,8 @@ import Agda.TypeChecking.CheckInternal
 import Agda.TypeChecking.SizedTypes.Solve
 import qualified Agda.TypeChecking.Pretty as TP
 
+import Agda.Termination.TermCheck (termMutual)
+
 import Agda.Utils.Except ( Error(strMsg), MonadError(catchError, throwError) )
 import Agda.Utils.Functor
 import Agda.Utils.Lens
@@ -89,10 +90,10 @@ parseExprIn ii rng s = do
     e   <- parseExpr rng s
     concreteToAbstract (clScope mi) e
 
-giveExpr :: MetaId -> Expr -> TCM ()
+giveExpr :: Maybe InteractionId -> MetaId -> Expr -> TCM ()
 -- When translator from internal to abstract is given, this function might return
 -- the expression returned by the type checker.
-giveExpr mi e = do
+giveExpr mii mi e = do
     mv <- lookupMeta mi
     -- In the context (incl. signature) of the meta variable,
     -- type check expression and assign meta
@@ -112,6 +113,7 @@ giveExpr mi e = do
           TP.text "give: instantiated meta type =" TP.<+> prettyTCM t'
         v <- checkExpr e t'
         case mvInstantiation mv of
+
           InstV xs v' -> unlessM ((Irrelevant ==) <$> asks envRelevance) $ do
             reportSDoc "interaction.give" 20 $ TP.sep
               [ TP.text "meta was already set to value v' = " TP.<+> prettyTCM v'
@@ -130,12 +132,34 @@ giveExpr mi e = do
               [ TP.text "in meta context, v' = " TP.<+> prettyTCM v'
               ]
             equalTerm t' v v'  -- Note: v' now lives in context of meta
-          _ -> updateMeta mi v
+
+          _ -> do -- updateMeta mi v
+            reportSLn "interaction.give" 20 "give: meta unassigned, assigning..."
+            args <- getContextArgs
+            nowSolvingConstraints $ assign DirEq mi args v
+
+        reportSDoc "interaction.give" 20 $ TP.text "give: meta variable updated!"
+        redoChecks mii
         wakeupConstraints mi
         solveSizeConstraints DontDefaultToInfty
         -- Double check.
         vfull <- instantiateFull v
         checkInternal vfull t'
+
+-- | After a give, redo termination etc. checks for function which was complemented.
+redoChecks :: Maybe InteractionId -> TCM ()
+redoChecks Nothing = return ()
+redoChecks (Just ii) = do
+  reportSLn "interaction.give" 20 $
+    "give: redoing termination check for function surrounding " ++ show ii
+  ip <- lookupInteractionPoint ii
+  case ipClause ip of
+    IPNoClause -> return ()
+    IPClause f _ _ -> do
+      mb <- mutualBlockOf f
+      terErrs <- local (\ e -> e { envMutualBlock = Just mb }) $ termMutual []
+      unless (null terErrs) $ typeError $ TerminationCheckFailed terErrs
+  -- TODO redo positivity check!
 
 -- | Try to fill hole by expression.
 --
@@ -153,7 +177,7 @@ give ii mr e = liftTCM $ do
   reportSDoc "interaction.give" 10 $ TP.text "giving expression" TP.<+> prettyTCM e
   reportSDoc "interaction.give" 50 $ TP.text $ show $ deepUnscope e
   -- Try to give mi := e
-  catchError (giveExpr mi e) $ \ err -> case err of
+  catchError (giveExpr (Just ii) mi e) $ \ err -> case err of
     -- Turn PatternErr into proper error:
     PatternErr{} -> typeError . GenericDocError =<< do
       withInteractionId ii $ TP.text "Failed to give" TP.<+> prettyTCM e
@@ -574,6 +598,18 @@ metaHelperType norm ii rng s = case words s of
           (delta1, delta2, _, a', as', vs') = splitTelForWith tel a (map OtherType as) vs
       a <- local (\e -> e { envPrintDomainFreePi = True }) $ do
         reify =<< cleanupType arity args =<< normalForm norm =<< fst <$> withFunctionType delta1 vs' as' delta2 a'
+      reportSDoc "interaction.helper" 10 $ TP.vcat
+        [ TP.text "generating helper function"
+        , TP.nest 2 $ TP.text "tel    = " TP.<+> inTopContext (prettyTCM tel)
+        , TP.nest 2 $ TP.text "a      = " TP.<+> prettyTCM a
+        , TP.nest 2 $ TP.text "vs     = " TP.<+> prettyTCM vs
+        , TP.nest 2 $ TP.text "as     = " TP.<+> prettyTCM as
+        , TP.nest 2 $ TP.text "delta1 = " TP.<+> inTopContext (prettyTCM delta1)
+        , TP.nest 2 $ TP.text "delta2 = " TP.<+> inTopContext (addContext delta1 $ prettyTCM delta2)
+        , TP.nest 2 $ TP.text "a'     = " TP.<+> inTopContext (addContext delta1 $ addContext delta2 $ prettyTCM a')
+        , TP.nest 2 $ TP.text "as'    = " TP.<+> inTopContext (addContext delta1 $ prettyTCM as')
+        , TP.nest 2 $ TP.text "vs'    = " TP.<+> inTopContext (addContext delta1 $ prettyTCM vs')
+        ]
       return (OfType' h a)
   where
     cleanupType arity args t = do
