@@ -268,7 +268,7 @@ evalInMeta ii e =
 data Rewrite =  AsIs | Instantiated | HeadNormal | Simplified | Normalised
     deriving (Read)
 
-normalForm :: Rewrite -> Type -> TCM Type
+normalForm :: (Reduce t, Simplify t, Normalise t) => Rewrite -> t -> TCM t
 normalForm AsIs         t = return t
 normalForm Instantiated t = return t   -- reify does instantiation
 normalForm HeadNormal   t = {- etaContract =<< -} reduce t
@@ -296,7 +296,7 @@ showComputed UseShowInstance e =
     _                     -> (text "Not a string:" $$) <$> prettyATop e
 showComputed _ e = prettyATop e
 
-data OutputForm a b = OutputForm Range ProblemId (OutputConstraint a b)
+data OutputForm a b = OutputForm Range [ProblemId] (OutputConstraint a b)
   deriving (Functor)
 
 data OutputConstraint a b
@@ -342,7 +342,7 @@ outputFormId (OutputForm _ _ o) = out o
       FindInScopeOF _ _ _        -> __IMPOSSIBLE__
 
 instance Reify ProblemConstraint (Closure (OutputForm Expr Expr)) where
-  reify (PConstr pids cl) = enterClosure cl $ \c -> buildClosure =<< (OutputForm (getRange c) (last pids) <$> reify c)
+  reify (PConstr pids cl) = enterClosure cl $ \c -> buildClosure =<< (OutputForm (getRange c) pids <$> reify c)
 
 reifyElimToExpr :: I.Elim -> TCM Expr
 reifyElimToExpr e = case e of
@@ -409,8 +409,8 @@ showComparison cmp = " " ++ prettyShow cmp ++ " "
 instance (Show a,Show b) => Show (OutputForm a b) where
   show o =
     case o of
-      OutputForm r 0   c -> show c ++ range r
-      OutputForm r pid c -> "[" ++ prettyShow pid ++ "] " ++ show c ++ range r
+      OutputForm r []   c -> show c ++ range r
+      OutputForm r pids c -> show pids ++ " " ++ show c ++ range r
     where
       range r | null s    = ""
               | otherwise = " [ at " ++ s ++ " ]"
@@ -487,14 +487,14 @@ getConstraints = liftTCM $ do
     cs <- forM cs $ \c -> do
             cl <- reify c
             enterClosure cl abstractToConcrete_
-    ss <- mapM toOutputForm =<< getSolvedInteractionPoints True -- get all
+    ss <- mapM toOutputForm =<< getSolvedInteractionPoints True AsIs -- get all
     return $ ss ++ cs
   where
     toOutputForm (ii, mi, e) = do
       mv <- getMetaInfo <$> lookupMeta mi
       withMetaInfo mv $ do
         let m = QuestionMark emptyMetaInfo{ metaNumber = Just $ fromIntegral ii } ii
-        abstractToConcrete_ $ OutputForm noRange 0 $ Assign m e
+        abstractToConcrete_ $ OutputForm noRange [] $ Assign m e
 
 -- | @getSolvedInteractionPoints True@ returns all solutions,
 --   even if just solved by another, non-interaction meta.
@@ -502,8 +502,8 @@ getConstraints = liftTCM $ do
 --   @getSolvedInteractionPoints False@ only returns metas that
 --   are solved by a non-meta.
 
-getSolvedInteractionPoints :: Bool -> TCM [(InteractionId, MetaId, Expr)]
-getSolvedInteractionPoints all = concat <$> do
+getSolvedInteractionPoints :: Bool -> Rewrite -> TCM [(InteractionId, MetaId, Expr)]
+getSolvedInteractionPoints all norm = concat <$> do
   mapM solution =<< getInteractionIdsAndMetas
   where
     solution (i, m) = do
@@ -516,7 +516,7 @@ getSolvedInteractionPoints all = concat <$> do
               v <- ignoreSharing <$> instantiate v
               let isMeta = case v of MetaV{} -> True; _ -> False
               if isMeta && not all then return [] else do
-                e <- reify v
+                e <- reify =<< normalForm norm v
                 return [(i, m, ScopedExpr scope e)]
             unsol = return []
         case mvInstantiation mv of

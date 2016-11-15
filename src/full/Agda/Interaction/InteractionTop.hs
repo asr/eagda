@@ -337,8 +337,10 @@ data Interaction' range
     -- identifiers in their type.
   | Cmd_search_about_toplevel B.Rewrite String
 
-    -- | Solve all goals whose values are determined by the constraints.
-  | Cmd_solveAll
+    -- | Solve (all goals / the goal at point) whose values are determined by
+    -- the constraints.
+  | Cmd_solveAll B.Rewrite
+  | Cmd_solveOne B.Rewrite InteractionId range String
 
     -- | Parse the given expression (as if it were defined at the
     -- top-level of the current module) and infer its type.
@@ -561,6 +563,7 @@ interpret Cmd_constraints =
     display_info . Info_Constraints . unlines . map show =<< lift B.getConstraints
 
 interpret Cmd_metas = do -- CL.showMetas []
+  unsolvedNotOK <- lift $ not . optAllowUnsolved <$> pragmaOptions
   ms <- lift showOpenMetas
   (pwe, pwa) <- interpretWarnings
   display_info $ Info_AllGoalsWarnings (unlines ms) pwa pwe
@@ -578,16 +581,16 @@ interpret (Cmd_show_module_contents_toplevel norm s) =
 interpret (Cmd_search_about_toplevel norm s) =
   liftCommandMT B.atTopLevel $ searchAbout norm noRange s
 
-interpret Cmd_solveAll = do
-  -- Andreas, 2016-10-23 issue #2280: throw away meta elims.
-  out <- lift $ local (\ e -> e { envPrintMetasBare = True }) $
-    mapM prt =<< B.getSolvedInteractionPoints False -- only solve metas which have a proper instantiation, i.e., not another meta
-  putResponse $ Resp_SolveAll out
-  where
-      prt (i, m, e) = do
-        mi <- getMetaInfo <$> lookupMeta m
-        e <- withMetaInfo mi $ abstractToConcreteCtx TopCtx e
-        return (i, e)
+interpret (Cmd_solveAll norm)        = solveInstantiatedGoals norm Nothing
+interpret (Cmd_solveOne norm ii _ _) = solveInstantiatedGoals norm' (Just ii)
+  -- `solveOne` is called via `agda2-maybe-normalised` which does not use
+  -- AsIs < Simplified < Normalised but rather Simplified < Instantiated < Normalised
+  -- So we remap the Rewrite modifiers to match solveAll's behaviour.
+  -- NB: instantiate is called in getSolvedInteractionPoints no matter what.
+  where norm' = case norm of
+                  Simplified   -> AsIs
+                  Instantiated -> Simplified
+                  _            -> norm
 
 interpret (Cmd_infer_toplevel norm s) =
   parseAndDoAtToplevel (B.typeInCurrent norm) Info_InferredType s
@@ -811,12 +814,30 @@ interpretWarnings = do
                          UnsolvedMetaVariables{}    -> False
                          _                          -> True
 
+
+-- | Solved goals already instantiated internally
+-- The second argument potentially limits it to one specific goal.
+solveInstantiatedGoals :: B.Rewrite -> Maybe InteractionId -> CommandM ()
+solveInstantiatedGoals norm mii = do
+  -- Andreas, 2016-10-23 issue #2280: throw away meta elims.
+  out <- lift $ local (\ e -> e { envPrintMetasBare = True }) $ do
+    sip <- B.getSolvedInteractionPoints False norm
+           -- only solve metas which have a proper instantiation, i.e., not another meta
+    maybe id (\ ii -> filter ((ii ==) . fst)) mii <$> mapM prt sip
+  putResponse $ Resp_SolveAll out
+  where
+      prt (i, m, e) = do
+        mi <- getMetaInfo <$> lookupMeta m
+        e <- withMetaInfo mi $ abstractToConcreteCtx TopCtx e
+        return (i, e)
+
+
 -- | Print open metas nicely.
 showOpenMetas :: TCM [String]
 showOpenMetas = do
   ims <- B.typesOfVisibleMetas B.AsIs
   di <- forM ims $ \ i ->
-    B.withInteractionId (B.outputFormId $ B.OutputForm noRange 0 i) $
+    B.withInteractionId (B.outputFormId $ B.OutputForm noRange [] i) $
       showATop i
   -- Show unsolved implicit arguments simplified.
   unsolvedNotOK <- not . optAllowUnsolved <$> pragmaOptions

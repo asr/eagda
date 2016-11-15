@@ -50,8 +50,9 @@ import Agda.Syntax.Internal
 import Agda.TypeChecking.EtaContract
 import Agda.TypeChecking.Free
 import Agda.TypeChecking.Level (levelView', unLevel, reallyUnLevelView, subLevel)
+import Agda.TypeChecking.MetaVars (allMetas)
 import Agda.TypeChecking.Monad
-import Agda.TypeChecking.Monad.Builtin (primLevelSuc)
+import Agda.TypeChecking.Monad.Builtin (primLevelSuc, primLevelMax)
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Records (isRecordConstructor)
 import Agda.TypeChecking.Reduce
@@ -87,14 +88,23 @@ instance (PatternFrom a b) => PatternFrom [a] [b] where
 instance (PatternFrom a b) => PatternFrom (Arg a) (Arg b) where
   patternFrom k = traverse $ patternFrom k
 
-instance (PatternFrom a b) => PatternFrom (Elim' a) (Elim' b) where
-  patternFrom k = traverse $ patternFrom k
+instance (PatternFrom a NLPat) => PatternFrom (Elim' a) (Elim' NLPat) where
+  patternFrom k (Apply u) = if isIrrelevant u then
+                              return $ Apply $ u $> PWild
+                            else
+                              Apply <$> traverse (patternFrom k) u
+  patternFrom k (Proj o f) = return $ Proj o f
 
 instance (PatternFrom a b) => PatternFrom (Dom a) (Dom b) where
   patternFrom k = traverse $ patternFrom k
 
-instance (PatternFrom a b) => PatternFrom (Type' a) (Type' b) where
-  patternFrom k = traverse $ patternFrom k
+instance PatternFrom Type NLPType where
+  patternFrom k a = do
+    s <- reduce $ getSort a
+    case s of
+      Type l -> NLPType . Just  <$> patternFrom k (Level l)
+                                <*> patternFrom k (unEl a)
+      _      -> NLPType Nothing <$> patternFrom k (unEl a)
 
 instance PatternFrom Term NLPat where
   patternFrom k v = do
@@ -124,11 +134,11 @@ instance PatternFrom Term NLPat where
       Lit{}    -> done
       Def f es -> do
         Def lsuc [] <- ignoreSharing <$> primLevelSuc
-        if f == lsuc
-        then case es of
-               [Apply arg] -> pLevelSuc <$> patternFrom k (unArg arg)
-               _           -> done
-        else PDef f <$> patternFrom k es
+        Def lmax [] <- ignoreSharing <$> primLevelMax
+        case es of
+          [Apply x] | f == lsuc -> pLevelSuc <$> patternFrom k (unArg x)
+          [x , y]   | f == lmax -> done
+          _                     -> PDef f <$> patternFrom k es
       Con c vs -> PDef (conName c) <$> patternFrom k (Apply <$> vs)
       Pi a b   -> PPi <$> patternFrom k a <*> patternFrom k b
       Sort s   -> done
@@ -243,8 +253,15 @@ instance Match a b => Match (Elim' a) (Elim' b) where
 instance Match a b => Match (Dom a) (Dom b) where
   match gamma k p v = match gamma k (C.unDom p) (C.unDom v)
 
-instance Match a b => Match (Type' a) (Type' b) where
-  match gamma k p v = match gamma k (unEl p) (unEl v)
+instance Match NLPType Type where
+  match gamma k (NLPType (Just lp) p) (El s a) = case s of
+      Type l   -> match gamma k lp l >> match gamma k p a
+      Prop     -> no
+      Inf      -> no
+      SizeUniv -> no
+      DLub _ _ -> no
+    where no = matchingBlocked $ NotBlocked ReallyNotBlocked ()
+  match gamma k (NLPType Nothing p) (El _ a) = match gamma k p a
 
 instance (Match a b, RaiseNLP a, Subst t2 b) => Match (Abs a) (Abs b) where
   match gamma k (Abs n p) (Abs _ v) = match gamma (ExtendTel dummyDom (Abs n k)) p v
@@ -421,18 +438,22 @@ nonLinMatch gamma p v = do
 
 -- | Untyped βη-equality, does not handle things like empty record types.
 --   Returns `Nothing` if the terms are equal, or `Just b` if the terms are not
---   (where b contains information about possible metas blocking the reduction)
+--   (where b contains information about possible metas blocking the comparison)
+
+-- TODO: implement a type-directed, lazy version of this function.
 equal :: Term -> Term -> ReduceM (Maybe Blocked_)
 equal u v = do
-  buv <- etaContract =<< normaliseB' (u, v)
-  let b     = void buv
-      (u,v) = ignoreBlocking buv
-      ok    = u == v
+  (u, v) <- etaContract =<< normalise' (u, v)
+  let ok    = u == v
+      metas = allMetas (u, v)
+      block = caseMaybe (headMaybe metas)
+                (NotBlocked ReallyNotBlocked ())
+                (\m -> Blocked m ())
   if ok then return Nothing else
     traceSDoc "rewriting" 80 (sep
       [ text "mismatch between " <+> prettyTCM u
       , text " and " <+> prettyTCM v
-      ]) $ return $ Just b
+      ]) $ return $ Just block
 
 -- | Normalise the given term but also preserve blocking tags
 --   TODO: implement a more efficient version of this.
@@ -450,6 +471,9 @@ class RaiseNLP a where
 instance RaiseNLP a => RaiseNLP [a] where
   raiseNLPFrom c k = fmap $ raiseNLPFrom c k
 
+instance RaiseNLP a => RaiseNLP (Maybe a) where
+  raiseNLPFrom c k = fmap $ raiseNLPFrom c k
+
 instance RaiseNLP a => RaiseNLP (Arg a) where
   raiseNLPFrom c k = fmap $ raiseNLPFrom c k
 
@@ -459,8 +483,9 @@ instance RaiseNLP a => RaiseNLP (Elim' a) where
 instance RaiseNLP a => RaiseNLP (Dom a) where
   raiseNLPFrom c k = fmap $ raiseNLPFrom c k
 
-instance RaiseNLP a => RaiseNLP (Type' a) where
-  raiseNLPFrom c k = fmap $ raiseNLPFrom c k
+instance RaiseNLP NLPType where
+  raiseNLPFrom c k (NLPType l a) =
+    NLPType (raiseNLPFrom c k l) (raiseNLPFrom c k a)
 
 instance RaiseNLP a => RaiseNLP (Abs a) where
   raiseNLPFrom c k (Abs i p)   = Abs i   $ raiseNLPFrom (c+1) k p
