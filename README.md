@@ -29,7 +29,6 @@ version is similar to the installation of Agda (see
 more information). In our setup, we run the first time the following
 commands:
 
-
 ````bash
 $ cd eagda
 $ make install-bin
