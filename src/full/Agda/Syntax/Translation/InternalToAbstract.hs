@@ -82,14 +82,17 @@ import Agda.Utils.Impossible
 
 -- Composition of reified applications ------------------------------------
 
+-- | Drops hidden arguments unless --show-implicit.
 napps :: Expr -> [NamedArg Expr] -> TCM Expr
 napps e = nelims e . map I.Apply
 
+-- | Drops hidden arguments unless --show-implicit.
 apps :: Expr -> [Arg Expr] -> TCM Expr
 apps e = elims e . map I.Apply
 
 -- Composition of reified eliminations ------------------------------------
 
+-- | Drops hidden arguments unless --show-implicit.
 nelims :: Expr -> [I.Elim' (Named_ Expr)] -> TCM Expr
 nelims e [] = return e
 nelims e (I.Apply arg : es) = do
@@ -103,6 +106,7 @@ nelims e (I.Proj o@ProjPrefix d  : es) =
 nelims e (I.Proj o d  : es) =
   nelims (A.App noExprInfo e (defaultNamedArg $ A.Proj o $ AmbQ [d])) es
 
+-- | Drops hidden arguments unless --show-implicit.
 elims :: Expr -> [I.Elim' Expr] -> TCM Expr
 elims e = nelims e . map (fmap unnamed)
 
@@ -159,7 +163,7 @@ instance Reify DisplayTerm Expr where
   reify d = case d of
     DTerm v -> reifyTerm False v
     DDot  v -> reify v
-    DCon c vs -> apps (A.Con (AmbQ [conName c])) =<< reify vs
+    DCon c ci vs -> apps (A.Con (AmbQ [conName c])) =<< reify vs
     DDef f es -> elims (A.Def f) =<< reify es
     DWithApp u us es0 -> do
       (e, es) <- reify (u, us)
@@ -250,7 +254,7 @@ reifyDisplayFormP lhs@(A.SpineLHS i f ps wps) =
     okElim (I.Proj{})  = True
 
     okTerm (I.Var _ []) = True
-    okTerm (I.Con c vs) = all okArg vs
+    okTerm (I.Con c ci vs) = all okArg vs
     okTerm (I.Def x []) = isNoName $ qnameToConcrete x -- Handling wildcards in display forms
     okTerm _            = False
 
@@ -270,8 +274,6 @@ reifyDisplayFormP lhs@(A.SpineLHS i f ps wps) =
         vs <- mapM elimToPat vs
         return $ SpineLHS i f vs (ds ++ wps)
       where
-        ci   = ConPatInfo ConPCon patNoRange
-
         argToPat arg = fmap unnamed <$> traverse termToPat arg
         elimToPat (I.Apply arg) = argToPat arg
         elimToPat (I.Proj o d)  = return $ defaultNamedArg $ A.ProjP patNoRange o $ AmbQ [d]
@@ -282,17 +284,20 @@ reifyDisplayFormP lhs@(A.SpineLHS i f ps wps) =
                                            Nothing -> __IMPOSSIBLE__
                                            Just p  -> p
 
-        termToPat (DCon c vs)          = tryRecPFromConP =<< do
-           A.ConP ci (AmbQ [conName c]) <$> mapM argToPat vs
+        termToPat (DCon c ci vs)          = tryRecPFromConP =<< do
+           A.ConP (ConPatInfo ci patNoRange) (AmbQ [conName c]) <$> mapM argToPat vs
 
-        termToPat (DTerm (I.Con c vs)) = tryRecPFromConP =<< do
-           A.ConP ci (AmbQ [conName c]) <$> mapM (argToPat . fmap DTerm) vs
+        termToPat (DTerm (I.Con c ci vs)) = tryRecPFromConP =<< do
+           A.ConP (ConPatInfo ci patNoRange) (AmbQ [conName c]) <$> mapM (argToPat . fmap DTerm) vs
 
         termToPat (DTerm (I.Def _ [])) = return $ A.WildP patNoRange
         termToPat (DDef _ [])          = return $ A.WildP patNoRange
 
-        termToPat (DDot v)             = A.DotP patNoRange <$> termToExpr v
-        termToPat v                    = A.DotP patNoRange <$> reify v -- __IMPOSSIBLE__
+        -- Currently we don't keep track of the origin of a dot pattern in the internal syntax,
+        -- so here we give __IMPOSSIBLE__. This is only used for printing purposes, the origin
+        -- should not be used anyway after this point.
+        termToPat (DDot v)             = A.DotP patNoRange __IMPOSSIBLE__ <$> termToExpr v
+        termToPat v                    = A.DotP patNoRange __IMPOSSIBLE__ <$> reify v -- __IMPOSSIBLE__
 
         len = genericLength ps
 
@@ -304,7 +309,7 @@ reifyDisplayFormP lhs@(A.SpineLHS i f ps wps) =
           reportSLn "reify.display" 60 $ "termToExpr " ++ show v
           -- After unSpine, a Proj elimination is __IMPOSSIBLE__!
           case unSpine v of
-            I.Con c vs ->
+            I.Con c ci vs ->
               apps (A.Con (AmbQ [conName c])) =<< argsToExpr vs
             I.Def f es -> do
               let vs = fromMaybe __IMPOSSIBLE__ $ mapM isApplyElim es
@@ -346,10 +351,10 @@ reifyTerm expandAnonDefs0 v = do
         elims (A.Var x) =<< reify es
     I.Def x es   -> do
       reifyDisplayForm x es $ reifyDef expandAnonDefs x es
-    I.Con c vs   -> do
+    I.Con c ci vs -> do
       let x = conName c
       isR <- isGeneratedRecordConstructor x
-      case isR of
+      case isR || ci == ConORec of
         True -> do
           showImp <- showImplicitArguments
           let keep (a, v) = showImp || notHidden a
@@ -358,8 +363,8 @@ reifyTerm expandAnonDefs0 v = do
           vs <- map unArg <$> reify vs
           return $ A.Rec noExprInfo $ map (Left . uncurry FieldAssignment . mapFst unArg) $ filter keep $ zip xs vs
         False -> reifyDisplayForm x (map I.Apply vs) $ do
-          ci <- getConstInfo x
-          let Constructor{conPars = np} = theDef ci
+          def <- getConstInfo x
+          let Constructor{conPars = np} = theDef def
           -- if we are the the module that defines constructor x
           -- then we have to drop at least the n module parameters
           n  <- getDefFreeVars x
@@ -384,15 +389,17 @@ reifyTerm expandAnonDefs0 v = do
               -- Here, we need the reducing version of @telView@
               -- because target of constructor could be a definition
               -- expanding into a function type.  See test/succeed/NameFirstIfHidden.agda.
-              TelV tel _ <- telView (defType ci)
-              case genericDrop np $ telToList tel of
+              TelV tel _ <- telView (defType def)
+              let (pars, rest) = splitAt np $ telToList tel
+              case rest of
                 -- Andreas, 2012-09-18
                 -- If the first regular constructor argument is hidden,
                 -- we keep the parameters to avoid confusion.
-                (Dom info _ : _) | isHidden info -> do
-                  let us = genericReplicate (np - n) $
-                             setRelevance Relevant $ Arg info underscore
-                  apps h $ us ++ es
+                (Dom info _ : _) | notVisible info -> do
+                  let us = for (drop n pars) $ \ (Dom ai _) ->
+                             -- setRelevance Relevant $
+                             hideOrKeepInstance $ Arg ai underscore
+                  apps h $ us ++ es  -- Note: unless --show-implicit, @apps@ will drop @us@.
                 -- otherwise, we drop all parameters
                 _ -> apps h es
 
@@ -459,7 +466,8 @@ reifyTerm expandAnonDefs0 v = do
     reifyDef _ x es = reifyDef' x es
 
     reifyDef' :: QName -> I.Elims -> TCM Expr
-    reifyDef' x@(QName _ name) es = do
+    reifyDef' x es = do
+      reportSLn "reify.def" 60 $ "reifying call to " ++ show x
       -- We should drop this many arguments from the local context.
       n <- getDefFreeVars x
       -- If the definition is not (yet) in the signature,
@@ -514,22 +522,46 @@ reifyTerm expandAnonDefs0 v = do
               -- These are the dropped projection arguments
               scope <- getScope
               let underscore = A.Underscore $ Info.emptyMetaInfo { metaScope = scope }
-              let pad = for as $ \ (Dom ai _) -> Arg ai underscore
+              let pad = for as $ \ (Dom ai (x, _)) ->
+                    Arg ai $ Named (Just $ unranged x) underscore
 
               -- Now pad' ++ es' = drop n (pad ++ es)
               let pad' = drop n pad
                   es'  = drop (max 0 (n - size pad)) es
-              -- Andreas, 2012-04-21: get rid of hidden underscores {_}
-              -- Keep non-hidden arguments of the padding
+              -- Andreas, 2012-04-21: get rid of hidden underscores {_} and {{_}}
+              -- Keep non-hidden arguments of the padding.
+              --
+              -- Andreas, 2016-12-20, issue #2348:
+              -- Let @padTail@ be the list of arguments of the padding
+              -- (*) after the last visible argument of the padding, and
+              -- (*) with the same visibility as the first regular argument.
+              -- If @padTail@ is not empty, we need to
+              -- print the first regular argument with name.
+              -- We further have to print all elements of @padTail@
+              -- which have the same name and visibility of the
+              -- first regular argument.
               showImp <- showImplicitArguments
-              return (filter visible pad',
-                if not (null pad) && showImp && notVisible (last pad)
-                   then nameFirstIfHidden dom es'
-                   else map (fmap unnamed) es')
+
+              -- Get the visible arguments of the padding and the rest
+              -- after the last visible argument.
+              let (padVisNamed, padRest) = filterAndRest visible pad'
+
+              -- Remove the names from the visible arguments.
+              let padVis  = map (fmap (unnamed . namedThing)) padVisNamed
+
+              -- Keep only the rest with the same visibility of @dom@...
+              let padTail = filter ((getHiding dom ==) . getHiding) padRest
+
+              -- ... and even the same name.
+              let padSame = filter ((Just (fst (unDom dom)) ==) . fmap rangedThing . nameOf . unArg) padTail
+
+              return $ if null padTail || not showImp
+                then (padVis           , map (fmap unnamed) es')
+                else (padVis ++ padSame, nameFirstIfHidden dom es')
 
             -- If it is not a projection(-like) function, we need no padding.
             _ -> return ([], map (fmap unnamed) $ drop n es)
-           let hd = foldl' (\ e a -> A.App noExprInfo e (fmap unnamed a)) (A.Def x) pad
+           let hd = foldl' (A.App noExprInfo) (A.Def x) pad
            nelims hd =<< reify nes
 
     -- Andreas, 2016-07-06 Issue #2047
@@ -571,7 +603,7 @@ reifyTerm expandAnonDefs0 v = do
 
 -- | @nameFirstIfHidden (x:a) ({e} es) = {x = e} es@
 nameFirstIfHidden :: Dom (ArgName, t) -> [Elim' a] -> [Elim' (Named_ a)]
-nameFirstIfHidden dom (I.Apply (Arg info e) : es) | isHidden info =
+nameFirstIfHidden dom (I.Apply (Arg info e) : es) | notVisible info =
   I.Apply (Arg info (Named (Just $ unranged $ fst $ unDom dom) e)) :
   map (fmap unnamed) es
 nameFirstIfHidden _ es =
@@ -657,7 +689,7 @@ stripImplicits (ps, wps) = do          -- v if show-implicit we don't need the n
             A.ConP i c ps -> A.ConP i c $ stripArgs True ps
             A.ProjP{}     -> p
             A.DefP _ _ _  -> p
-            A.DotP _ e    -> p
+            A.DotP _ _ e  -> p
             A.WildP _     -> p
             A.AbsurdP _   -> p
             A.LitP _      -> p
@@ -668,7 +700,7 @@ stripImplicits (ps, wps) = do          -- v if show-implicit we don't need the n
           varOrDot A.VarP{}      = True
           varOrDot A.WildP{}     = True
           varOrDot A.DotP{}      = True
-          varOrDot (A.ConP cpi _ ps) | patOrigin cpi == ConPImplicit
+          varOrDot (A.ConP cpi _ ps) | patOrigin cpi == ConOSystem
                                  = all varOrDot $ map namedArg ps
           varOrDot _             = False
 
@@ -719,7 +751,7 @@ instance BlankVars A.Pattern where
     A.ConP c i ps -> A.ConP c i $ blank bound ps
     A.ProjP{}     -> p
     A.DefP i f ps -> A.DefP i f $ blank bound ps
-    A.DotP i e    -> A.DotP i $ blank bound e
+    A.DotP i o e  -> A.DotP i o $ blank bound e
     A.WildP _     -> p
     A.AbsurdP _   -> p
     A.LitP _      -> p
@@ -867,7 +899,9 @@ reifyPatterns = mapM $ stripNameFromExplicit <.> traverse (traverse reifyPat)
       I.VarP x -> liftTCM $ A.VarP <$> nameOfBV (dbPatVarIndex x)
       I.DotP v -> do
         t <- liftTCM $ reify v
-        return $ A.DotP patNoRange t
+        -- This is only used for printing purposes, so the Origin shouldn't be
+        -- used after this point anyway.
+        return $ A.DotP patNoRange __IMPOSSIBLE__ t
       I.LitP l  -> return $ A.LitP l
       I.ProjP o d     -> return $ A.ProjP patNoRange o $ AmbQ [d]
       I.ConP c cpi ps -> do
@@ -875,7 +909,7 @@ reifyPatterns = mapM $ stripNameFromExplicit <.> traverse (traverse reifyPat)
         tryRecPFromConP =<< do A.ConP ci (AmbQ [conName c]) <$> reifyPatterns ps
         where
           ci = ConPatInfo origin patNoRange
-          origin = fromMaybe ConPCon $ I.conPRecord cpi
+          origin = fromMaybe ConOCon $ I.conPRecord cpi
 
 -- | If the record constructor is generated or the user wrote a record pattern,
 --   turn constructor pattern into record pattern.
@@ -889,7 +923,7 @@ tryRecPFromConP p = do
           -- If the record constructor is generated or the user wrote a record pattern,
           -- print record pattern.
           -- Otherwise, print constructor pattern.
-          if recNamedCon def && patOrigin ci /= ConPRec then fallback else do
+          if recNamedCon def && patOrigin ci /= ConORec then fallback else do
             fs <- liftTCM $ getRecordFieldNames r
             unless (length fs == length ps) __IMPOSSIBLE__
             return $ A.RecP patNoRange $ zipWith mkFA fs ps
@@ -902,7 +936,10 @@ instance Reify (QNamed I.Clause) A.Clause where
 
 instance Reify NamedClause A.Clause where
   reify (NamedClause f toDrop cl) = addContext (clauseTel cl) $ do
-    reportSLn "reify.clause" 60 $ "reifying NamedClause, cl = " ++ show cl
+    reportSLn "reify.clause" 60 $ "reifying NamedClause"
+      ++ "\n  f      = " ++ show f
+      ++ "\n  toDrop = " ++ show toDrop
+      ++ "\n  cl     = " ++ show cl
     ps  <- reifyPatterns $ namedClausePats cl
     lhs <- liftTCM $ reifyDisplayFormP $ SpineLHS info f ps [] -- LHS info (LHSHead f ps) []
     -- Unless @toDrop@ we have already dropped the module patterns from the clauses

@@ -111,7 +111,7 @@ xForPrim table = do
   qs <- HMap.keys <$> curDefs
   bs <- toList <$> gets stBuiltinThings
   let getName (Builtin (Def q _))    = q
-      getName (Builtin (Con q _))    = conName q
+      getName (Builtin (Con q _ _))  = conName q
       getName (Builtin (Shared p))   = getName (Builtin $ derefPtr p)
       getName (Builtin (Lam _ b))    = getName (Builtin $ unAbs b)
       getName (Builtin _)            = __IMPOSSIBLE__
@@ -200,7 +200,7 @@ primBody s = maybe unimplemented (either (hsVarUQ . HS.Ident) id <$>) $
   , "primStringFromList" |-> return "Data.Text.pack"
   , "primStringAppend"   |-> binAsis "Data.Text.append" "Data.Text.Text"
   , "primStringEquality" |-> rel "(==)" "Data.Text.Text"
-  , "primShowString"     |-> return "Data.Text.unpack"
+  , "primShowString"     |-> return "id"
 
   -- Reflection
   , "primQNameEquality"   |-> rel "(==)" "MAlonzo.RTE.QName"
@@ -250,7 +250,7 @@ noCheckCover q = (||) <$> isBuiltin q builtinNat <*> isBuiltin q builtinInteger
 
 pconName :: String -> TCM String
 pconName s = toS . ignoreSharing =<< getBuiltin s where
-  toS (Con q _) = prettyPrint <$> conhqn (conName q)
+  toS (Con q _ _) = prettyPrint <$> conhqn (conName q)
   toS (Lam _ t) = toS (unAbs t)
   toS _ = mazerror $ "pconName" ++ s
 

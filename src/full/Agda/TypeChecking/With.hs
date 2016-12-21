@@ -355,11 +355,9 @@ stripWithClausePatterns cxtNames parent f t qs npars perm ps = do
       reportSDoc "tc.with.strip" 10 $ text "warning: dropped pattern " <+> prettyA p
       reportSDoc "tc.with.strip" 60 $ text $ show p
       case namedArg p of
-        A.DotP info e -> case unScope e of
+        A.DotP info o e -> case unScope e of
           A.Underscore{} -> return ()
-          -- Dot patterns without a range are Agda-generated from a user dot pattern
-          -- so we only complain if there is a range.
-          e | getRange info /= noRange -> typeError $ GenericError $
+          e | o == UserWritten -> typeError $ GenericError $
             "This inaccessible pattern is never checked, so only _ allowed here"
           _ -> return ()
         _ -> return ()
@@ -397,7 +395,7 @@ stripWithClausePatterns cxtNames parent f t qs npars perm ps = do
     -- are implicit patterns (we inserted too many).
     strip _ _ ps      []      = do
       let implicit (A.WildP{})     = True
-          implicit (A.ConP ci _ _) = patOrigin ci == ConPImplicit
+          implicit (A.ConP ci _ _) = patOrigin ci == ConOSystem
           implicit _               = False
       unless (all (implicit . namedArg) ps) $
         typeError $ GenericError $ "Too many arguments given in with-clause"
@@ -456,7 +454,7 @@ stripWithClausePatterns cxtNames parent f t qs npars perm ps = do
           return $ p : ps
 
         DotP v  -> case namedArg p of
-          A.DotP _ _    -> ok p
+          A.DotP r o _  -> ok p
           A.WildP _     -> ok p
           -- Ulf, 2016-05-30: dot patterns are no longer mandatory so a parent
           -- dot pattern can appear as a variable in the child clause. Indeed
@@ -469,7 +467,7 @@ stripWithClausePatterns cxtNames parent f t qs npars perm ps = do
             ok p
           -- Andreas, 2013-03-21 in case the implicit A.pattern has already been eta-expanded
           -- we just fold it back.  This fixes issues 665 and 824.
-          A.ConP ci _ _ | patOrigin ci == ConPImplicit -> okFlex p
+          A.ConP ci _ _ | patOrigin ci == ConOSystem -> okFlex p
           -- Andreas, 2015-07-07 issue 1606: Same for flexible record patterns.
           -- Agda might have replaced a record of dot patterns (A.ConP) by a dot pattern (I.DotP).
           p'@A.ConP{} -> ifM (liftTCM $ isFlexiblePattern p') (okFlex p) {-else-} failDotPat
@@ -521,11 +519,11 @@ stripWithClausePatterns cxtNames parent f t qs npars perm ps = do
             cs' <- liftTCM $ mapM getConForm cs'
             unless (elem c cs') mismatch
             -- Strip the subpatterns ps' and then continue.
-            stripConP d us b c qs' ps'
+            stripConP d us b c ConOCon qs' ps'
 
           A.RecP _ fs -> caseMaybeM (liftTCM $ isRecord d) mismatch $ \ def -> do
             ps' <- liftTCM $ insertMissingFields d (const $ A.WildP empty) fs (recordFieldNames def)
-            stripConP d us b c qs' ps'
+            stripConP d us b c ConORec qs' ps'
 
           p@(A.PatternSynP pi' c' ps') -> do
              reportSDoc "impossible" 10 $
@@ -578,13 +576,15 @@ stripWithClausePatterns cxtNames parent f t qs npars perm ps = do
              -- ^ Type the remaining patterns eliminate.
           -> ConHead
              -- ^ Constructor of this pattern.
+          -> ConInfo
+             -- ^ Constructor info of this pattern (constructor/record).
           -> [NamedArg DeBruijnPattern]
              -- ^ Argument patterns (parent clause).
           -> [NamedArg A.Pattern]
              -- ^ Argument patterns (with clause).
           -> WriterT [A.NamedDotPattern] TCM [NamedArg A.Pattern]
              -- ^ Stripped patterns.
-        stripConP d us b c qs' ps' = do
+        stripConP d us b c ci qs' ps' = do
 
           -- Get the type and number of parameters of the constructor.
           Defn {defType = ct, theDef = Constructor{conPars = np}}  <- getConInfo c
@@ -601,7 +601,7 @@ stripWithClausePatterns cxtNames parent f t qs npars perm ps = do
                  ]
 
           -- Compute the new type
-          let v     = Con c [ Arg info (var i) | (i, Arg info _) <- zip (downFrom $ size qs') qs' ]
+          let v  = Con c ci [ Arg info (var i) | (i, Arg info _) <- zip (downFrom $ size qs') qs' ]
               t' = tel' `abstract` absApp (raise (size tel') b) v
               self' = tel' `abstract` apply1 (raise (size tel') self) v  -- Issue 1546
 
@@ -741,5 +741,5 @@ patsToElims = map $ toElim . fmap namedThing
       ProjP _ d   -> DDef d [] -- WRONG. TODO: convert spine to non-spine ... DDef d . defaultArg
       VarP x      -> DTerm  $ var $ dbPatVarIndex x
       DotP t      -> DDot   $ t
-      ConP c _ ps -> DCon c $ toTerms ps
+      ConP c cpi ps -> DCon c (fromConPatternInfo cpi) $ toTerms ps
       LitP l      -> DTerm  $ Lit l

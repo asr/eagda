@@ -139,10 +139,6 @@ instance LensHiding (WithHiding a) where
 mergeHiding :: LensHiding a => WithHiding a -> a
 mergeHiding (WithHiding h a) = mapHiding (mappend h) a
 
--- | @isHidden@ does not apply to 'Instance', only to 'Hidden'.
-isHidden :: LensHiding a => a -> Bool
-isHidden a = getHiding a == Hidden
-
 -- | Visible ('NotHidden') arguments are @notHidden@. (DEPRECATED, use 'visible'.)
 notHidden :: LensHiding a => a -> Bool
 notHidden a = getHiding a == NotHidden
@@ -490,17 +486,6 @@ instance LensOrigin (Arg e) where
   getOrigin = getOrigin . argInfo
   mapOrigin = mapArgInfo . mapOrigin
 
-{- RETIRED
-hide :: Arg a -> Arg a
-hide = setArgHiding Hidden
-
-makeInstance :: Arg a -> Arg a
-makeInstance = setHiding Instance
-
-isHiddenArg :: Arg a -> Bool
-isHiddenArg arg = argHiding arg /= NotHidden
--}
-
 instance LensArgInfo (Arg a) where
   getArgInfo        = argInfo
   mapArgInfo f arg  = arg { argInfo = f $ argInfo arg }
@@ -554,7 +539,7 @@ instance Underscore Doc where
 data Dom e = Dom
   { domInfo   :: ArgInfo
   , unDom     :: e
-  } deriving (Typeable, Eq, Ord, Functor, Foldable, Traversable)
+  } deriving (Typeable, Ord, Functor, Foldable, Traversable)
 
 instance Decoration Dom where
   traverseF f (Dom ai a) = Dom ai <$> f a
@@ -564,6 +549,10 @@ instance HasRange a => HasRange (Dom a) where
 
 instance KillRange a => KillRange (Dom a) where
   killRange (Dom info a) = killRange2 Dom info a
+
+instance Eq a => Eq (Dom a) where
+  Dom (ArgInfo h1 r1 _ _) x1 == Dom (ArgInfo h2 r2 _ _) x2 =
+    (h1, ignoreForced r1, x1) == (h2, ignoreForced r2, x2)
 
 instance Show a => Show (Dom a) where
   show = show . argFromDom
@@ -701,12 +690,20 @@ type RString = Ranged RawName
 -- * Further constructor and projection info
 ---------------------------------------------------------------------------
 
--- | Where does the 'ConP' come from?
-data ConPOrigin
-  = ConPImplicit  -- ^ Expanded from an implicit pattern.
-  | ConPCon       -- ^ User wrote a constructor pattern.
-  | ConPRec       -- ^ User wrote a record pattern.
+-- | Where does the 'ConP' or 'Con' come from?
+data ConOrigin
+  = ConOSystem  -- ^ Inserted by system or expanded from an implicit pattern.
+  | ConOCon     -- ^ User wrote a constructor (pattern).
+  | ConORec     -- ^ User wrote a record (pattern).
   deriving (Typeable, Show, Eq, Ord, Enum, Bounded)
+
+instance KillRange ConOrigin where
+  killRange = id
+
+-- | Prefer user-written over system-inserted.
+bestConInfo :: ConOrigin -> ConOrigin -> ConOrigin
+bestConInfo ConOSystem o = o
+bestConInfo o _ = o
 
 -- | Where does a projection come from?
 data ProjOrigin

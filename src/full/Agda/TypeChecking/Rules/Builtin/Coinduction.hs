@@ -145,7 +145,7 @@ bindBuiltinFlat e =
         projection = Projection
           { projProper   = True
           , projOrig     = flat
-          , projFromType = inf
+          , projFromType = defaultArg inf
           , projIndex    = 3
           , projLams     = ProjLams $ [ argH "a" , argH "A" , argN "x" ]
           }

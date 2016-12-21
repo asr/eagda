@@ -11,10 +11,9 @@ module Agda.Syntax.Concrete.Operators.Parser.Monad
   ( MemoKey(..)
   , Parser
   , parse
-  , token
+  , sat'
   , sat
-  , tok
-  , annotate
+  , doc
   , memoise
   , memoiseIfPrinting
   , grammar
@@ -54,10 +53,11 @@ type Parser tok a =
 parse :: forall tok a. Parser tok a -> [MaybePlaceholder tok] -> [a]
 parse = Parser.parse
 
--- | Parses a single token.
+-- | Parses a token satisfying the given predicate. The computed value
+-- is returned.
 
-token :: Parser tok (MaybePlaceholder tok)
-token = Parser.token
+sat' :: (MaybePlaceholder tok -> Maybe a) -> Parser tok a
+sat' = Parser.sat'
 
 -- | Parses a token satisfying the given predicate.
 
@@ -65,17 +65,11 @@ sat :: (MaybePlaceholder tok -> Bool) ->
        Parser tok (MaybePlaceholder tok)
 sat = Parser.sat
 
--- | Parses a given token.
+-- | Uses the given document as the printed representation of the
+-- given parser. The document's precedence is taken to be 'atomP'.
 
-tok :: (Eq tok, Show tok) =>
-       MaybePlaceholder tok -> Parser tok (MaybePlaceholder tok)
-tok = Parser.tok
-
--- | Uses the given function to modify the printed representation (if
--- any) of the given parser.
-
-annotate :: (Doc -> Doc) -> Parser tok a -> Parser tok a
-annotate = Parser.annotate
+doc :: Doc -> Parser tok a -> Parser tok a
+doc = Parser.doc
 
 -- | Memoises the given parser.
 --

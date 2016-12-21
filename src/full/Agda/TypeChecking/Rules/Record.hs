@@ -389,7 +389,7 @@ checkRecordProjections m r hasNamedCon con tel ftel fs = do
             -- (rt) which should be  R ptel
             telList = telToList tel
             (_ptel,[rt]) = splitAt (size tel - 1) telList
-            cpo    = if hasNamedCon then ConPCon else ConPRec
+            cpo    = if hasNamedCon then ConOCon else ConORec
             cpi    = ConPatternInfo (Just cpo) (Just $ argFromDom $ fmap snd rt)
             conp   = defaultArg $ ConP con cpi $
                      [ Arg info $ unnamed $ varP "x" | Dom info _ <- telToList ftel ]
@@ -407,7 +407,7 @@ checkRecordProjections m r hasNamedCon con tel ftel fs = do
               { projProper   = True
               , projOrig     = projname
               -- name of the record type:
-              , projFromType = r
+              , projFromType = defaultArg r
               -- index of the record argument (in the type),
               -- start counting with 1:
               , projIndex    = size tel -- which is @size ptel + 1@

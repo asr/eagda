@@ -772,11 +772,23 @@ interpret (Cmd_why_in_scope ii rng s) =
   liftCommandMT (B.withInteractionId ii) $ whyInScope s
 
 interpret (Cmd_make_case ii rng s) = do
-  (casectxt , cs) <- lift $ makeCase ii rng s
+  (f, casectxt, cs) <- lift $ makeCase ii rng s
   liftCommandMT (B.withInteractionId ii) $ do
     hidden <- lift $ showImplicitArguments
-    pcs <- lift $ mapM prettyA $ List.map (extlam_dropLLifted casectxt hidden) cs
-    putResponse $ Resp_MakeCase (makeCaseVariant casectxt) (List.map (extlam_dropName casectxt . render) pcs)
+    tel <- lift $ lookupSection (qnameModule f) -- don't shadow the names in this telescope
+    let cs'  :: [A.Clause] = List.map (extlam_dropLLifted casectxt hidden) cs
+    pcs      :: [Doc]     <- lift $ inTopContext $ addContext tel $ mapM prettyA cs'
+    let pcs' :: [String]   = List.map (extlam_dropName casectxt . render) pcs
+    lift $ reportSDoc "interaction.case" 60 $ TCP.vcat
+      [ TCP.text "InteractionTop.Cmd_make_case"
+      , TCP.nest 2 $ TCP.vcat
+        [ TCP.text "cs   = " TCP.<+> TCP.vcat (map prettyA cs)
+        , TCP.text "cs'  = " TCP.<+> TCP.vcat (map prettyA cs')
+        , TCP.text "pcs  = " TCP.<+> TCP.vcat (map return pcs)
+        , TCP.text "pcs' = " TCP.<+> TCP.vcat (map TCP.text pcs')
+        ]
+      ]
+    putResponse $ Resp_MakeCase (makeCaseVariant casectxt) pcs'
   where
     render = renderStyle (style { mode = OneLineMode })
 
