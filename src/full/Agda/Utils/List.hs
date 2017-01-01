@@ -1,7 +1,5 @@
-{-# LANGUAGE CPP #-}
+-- | Utility functions for lists.
 
-{-| Utitlity functions on lists.
--}
 module Agda.Utils.List where
 
 import Control.Arrow (first)
@@ -18,9 +16,6 @@ import Text.Show.Functions ()
 import qualified Agda.Utils.Bag as Bag
 
 import Agda.Utils.Tuple
-
-#include "undefined.h"
-import Agda.Utils.Impossible
 
 -- | Case distinction for lists, with list first.
 --   Cf. 'Agda.Utils.Null.ifNull'.
@@ -60,11 +55,10 @@ mcons ma as = maybe as (:as) ma
 
 -- | 'init' and 'last' in one go, safe.
 initLast :: [a] -> Maybe ([a],a)
-initLast [] = Nothing
-initLast as = Just $ loop as where
-  loop []       = __IMPOSSIBLE__
-  loop [a]      = ([], a)
-  loop (a : as) = mapFst (a:) $ loop as
+initLast []     = Nothing
+initLast (a:as) = Just $ loop a as where
+  loop a []      = ([], a)
+  loop a (b : bs) = mapFst (a:) $ loop b bs
 
 -- | Lookup function (partially safe).
 (!!!) :: [a] -> Int -> Maybe a
@@ -297,23 +291,27 @@ genericElemIndex x xs =
   map (== x) xs
 
 -- | Requires both lists to have the same length.
+--
+--   Otherwise, @Nothing@ is returned.
 
-zipWith' :: (a -> b -> c) -> [a] -> [b] -> [c]
-zipWith' f []        []      = []
-zipWith' f (x : xs) (y : ys) = f x y : zipWith' f xs ys
-zipWith' f []       (_ : _)  = {- ' -} __IMPOSSIBLE__
-zipWith' f (_ : _)  []       = {- ' -} __IMPOSSIBLE__
+zipWith' :: (a -> b -> c) -> [a] -> [b] -> Maybe [c]
+zipWith' f = loop
+  where
+  loop []        []      = Just []
+  loop (x : xs) (y : ys) = (f x y :) <$> loop xs ys
+  loop []       (_ : _)  = Nothing
+  loop (_ : _)  []       = Nothing
 
-{- UNUSED; a better type would be
-   zipWithTails :: (a -> b -> c) -> [a] -> [b] -> ([c], Either [a] [b])
+-- -- UNUSED; a better type would be
+-- -- zipWithTails :: (a -> b -> c) -> [a] -> [b] -> ([c], Either [a] [b])
 
--- | Like zipWith, but returns the leftover elements of the input lists.
-zipWithTails :: (a -> b -> c) -> [a] -> [b] -> ([c], [a] , [b])
-zipWithTails f xs       []       = ([], xs, [])
-zipWithTails f []       ys       = ([], [] , ys)
-zipWithTails f (x : xs) (y : ys) = (f x y : zs , as , bs)
-  where (zs , as , bs) = zipWithTails f xs ys
--}
+-- -- | Like zipWith, but returns the leftover elements of the input lists.
+-- zipWithTails :: (a -> b -> c) -> [a] -> [b] -> ([c], [a] , [b])
+-- zipWithTails f xs       []       = ([], xs, [])
+-- zipWithTails f []       ys       = ([], [] , ys)
+-- zipWithTails f (x : xs) (y : ys) = (f x y : zs , as , bs)
+--   where (zs , as , bs) = zipWithTails f xs ys
+
 
 -- | Efficient variant of 'nubBy' for finite lists.
 --
