@@ -158,15 +158,6 @@ addCoreType q crTy = modifySignature $ updateDefinition q $ updateDefCompiledRep
   where
     addCr crep = crep { compiledCore = Just $ CrType crTy }
 
-setFunctionFlag :: FunctionFlag -> Bool -> QName -> TCM ()
-setFunctionFlag flag val q = modifyGlobalDefinition q $ set (theDefLens . funFlag flag) val
-
-markStatic :: QName -> TCM ()
-markStatic = setFunctionFlag FunStatic True
-
-markInline :: QName -> TCM ()
-markInline = setFunctionFlag FunInline True
-
 -- | Add the information of an ATP-pragma to the signature.
 addATPPragma :: TPTPRole -> QName -> [QName] -> TCM ()
 addATPPragma role q qs = do
@@ -220,6 +211,18 @@ addATPPragma role q qs = do
                       def{ theDef = datatype{ dataTPTPRole = Just role }}
 
                     _ -> __IMPOSSIBLE__
+
+setFunctionFlag :: FunctionFlag -> Bool -> QName -> TCM ()
+setFunctionFlag flag val q = modifyGlobalDefinition q $ set (theDefLens . funFlag flag) val
+
+markStatic :: QName -> TCM ()
+markStatic = setFunctionFlag FunStatic True
+
+markInline :: QName -> TCM ()
+markInline = setFunctionFlag FunInline True
+
+markInjective :: QName -> TCM ()
+markInjective q = modifyGlobalDefinition q $ \def -> def { defInjective = True }
 
 unionSignatures :: [Signature] -> Signature
 unionSignatures ss = foldr unionSignature emptySignature ss
@@ -454,6 +457,7 @@ applySection' new ptel old ts ScopeCopyInfo{ renNames = rd, renModules = rm } = 
                     , defInstance       = inst
                     , defCopy           = True
                     , defMatchable      = False
+                    , defInjective      = False
                     , theDef            = df }
             oldDef = theDef d
             isCon  = case oldDef of { Constructor{} -> True ; _ -> False }

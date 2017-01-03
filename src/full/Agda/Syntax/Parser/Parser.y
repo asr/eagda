@@ -145,6 +145,7 @@ import Agda.Utils.Impossible
     'IMPORT'                  { TokKeyword KwIMPORT $$ }
     'IMPORT_UHC'              { TokKeyword KwIMPORT_UHC $$ }
     'IMPOSSIBLE'              { TokKeyword KwIMPOSSIBLE $$ }
+    'INJECTIVE'               { TokKeyword KwINJECTIVE $$ }
     'INLINE'                  { TokKeyword KwINLINE $$ }
     'MEASURE'                 { TokKeyword KwMEASURE $$ }
     'NO_TERMINATION_CHECK'    { TokKeyword KwNO_TERMINATION_CHECK $$ }
@@ -276,6 +277,7 @@ Token
     | 'IMPORT'                  { TokKeyword KwIMPORT $1 }
     | 'IMPORT_UHC'              { TokKeyword KwIMPORT_UHC $1 }
     | 'IMPOSSIBLE'              { TokKeyword KwIMPOSSIBLE $1 }
+    | 'INJECTIVE'               { TokKeyword KwINJECTIVE $1 }
     | 'INLINE'                  { TokKeyword KwINLINE $1 }
     | 'MEASURE'                 { TokKeyword KwMEASURE $1 }
     | 'NO_TERMINATION_CHECK'    { TokKeyword KwNO_TERMINATION_CHECK $1 }
@@ -1385,6 +1387,7 @@ DeclarationPragma
   | CompiledDataUHCPragma    { $1 }
   | HaskellPragma            { $1 }
   | StaticPragma             { $1 }
+  | InjectivePragma          { $1 }
   | InlinePragma             { $1 }
   | ImportPragma             { $1 }
   | ImportUHCPragma          { $1 }
@@ -1507,6 +1510,11 @@ InlinePragma :: { Pragma }
 InlinePragma
   : '{-#' 'INLINE' PragmaQName '#-}'
     { InlinePragma (getRange ($1,$2,$3,$4)) $3 }
+
+InjectivePragma :: { Pragma }
+InjectivePragma
+  : '{-#' 'INJECTIVE' PragmaQName '#-}'
+    { InjectivePragma (getRange ($1,$2,$3,$4)) $3 }
 
 DisplayPragma :: { Pragma }
 DisplayPragma
