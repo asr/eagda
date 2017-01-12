@@ -1,8 +1,31 @@
 Release notes for Agda version 2.5.3
 ====================================
 
+Installation and infrastructure
+-------------------------------
+
+* Added support for GHC 8.0.2.
+
+* Markdown support for literate Agda
+  \[PR [#2357](https://github.com/agda/agda/pull/2357)].
+
+  Files ending in `.lagda.md` will be parsed as literate Markdown files.
+
+  + Code blocks start with  ```` ``` ```` or ```` ```agda ```` in its own line, and end with
+    ```` ``` ````, also in its own line.
+  + Code blocks which should be type-checked by Agda but should not be visible
+    when the Markdown is rendered may be enclosed in HTML comment delimiters
+    (`<!--`  and `-->`).
+  + Code blocks which should be ignored by Agda, but rendered in the final
+    document may be indented by four spaces.
+  + Note that inline code fragments are not supported due to the difficulty of
+    interpreting their indentation level with respect to the rest of the file.
+
 Language
 --------
+
+* BUILTIN REFL is now superfluous, subsumed by BUILTIN EQUALITY
+  [Issue [#2389](https://github.com/agda/agda/issues/2389)].
 
 * With-clause patterns can be replaced by _
   [Issue [#2363](https://github.com/agda/agda/issues/2363)].
@@ -61,6 +84,14 @@ Language
   ```
   Aside from datatypes, this pragma can also be used to mark other definition
   as being injective (for example postulates).
+
+Emacs mode
+----------
+
+* New bindings: All the bold digits are now available
+
+  The Agda input method did not bind bold digits. They are now
+  available. The naming scheme is `\Bx` for digit `x`.
 
 Compiler backends
 -----------------
@@ -1103,10 +1134,12 @@ Emacs mode
   available: lowercase and uppercase. Some previous bindings had to be
   modified for consistency. The naming scheme is as follows:
 
-  * \bx for lowercase blackboard bold
-  * \bX for uppercase blackboard bold
-  * \bGx for lowercase greek blackboard bold (similar to \Gx for greeks)
-  * \bGX for uppercase greek blackboard bold (similar to \GX for uppercase greeks)
+  * `\bx` for lowercase blackboard bold
+  * `\bX` for uppercase blackboard bold
+  * `\bGx` for lowercase greek blackboard bold (similar to `\Gx` for
+    greeks)
+  * `\bGX` for uppercase greek blackboard bold (similar to `\GX` for
+    uppercase greeks)
 
 * Replaced binding for go back
 
