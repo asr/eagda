@@ -118,10 +118,25 @@ Language
 Emacs mode
 ----------
 
+* New non-fatal warning: unreachable clauses
+
 * New bindings: All the bold digits are now available
 
   The Agda input method did not bind bold digits. They are now
   available. The naming scheme is `\Bx` for digit `x`.
+
+* Case splitting now preserves underscores.
+  [Issue [#819](https://github.com/agda/agda/issues/819)]
+  ```agda
+    data ⊥ : Set where
+
+    test : {A B : Set} → A → ⊥ → B
+    test _ x = {! x !}
+  ```
+  Splitting on `x` yields
+  ```agda
+    test _ ()
+  ```
 
 Compiler backends
 -----------------
@@ -137,6 +152,11 @@ Compiler backends
   Required UHC 1.1.9.5
   [Issue [#1857](https://github.com/agda/agda/issues/1857)]
 
+* Support for stand-alone backends.
+
+  There is a new API in `Agda.Compiler.Backend` for creating stand-alone
+  backends using Agda as a library. This allows prospective backend writers to
+  experiment with new backends without having to change the Agda code base.
 
 Release notes for Agda version 2.5.2
 ====================================

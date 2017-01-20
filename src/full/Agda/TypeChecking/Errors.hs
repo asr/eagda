@@ -125,6 +125,12 @@ instance PrettyTCM Warning where
             mapM prettyTCM $ sortBy (compare `on` callInfoRange) $
             concatMap termErrCalls tes)
 
+    UnreachableClauses f pss -> fsep $
+      pwords "Unreachable" ++ pwords (plural (length pss) "clause")
+        where
+          plural 1 thing = thing
+          plural n thing = thing ++ "s"
+
     NotStrictlyPositive d ocs -> fsep $
       [prettyTCM (dropTopLevelModule d)] ++
       pwords "is not strictly positive, because it occurs"
@@ -176,6 +182,7 @@ applyFlagsToTCWarnings ifs ws = do
           EmptyRewritePragma           -> True
           UselessPublic                -> True
           ParseWarning{}               -> True
+          UnreachableClauses{}         -> True
 
   return $ filter (cleanUp . tcWarning) ws
 
@@ -252,9 +259,6 @@ errorString err = case err of
   CannotEliminateWithPattern{}             -> "CannotEliminateWithPattern"
   IllegalLetInTelescope{}                  -> "IllegalLetInTelescope"
 -- UNUSED:  IncompletePatternMatching{}              -> "IncompletePatternMatching"
-  IndexVariablesNotDistinct{}              -> "IndexVariablesNotDistinct"
-  IndicesFreeInParameters{}                -> "IndicesFreeInParameters"
-  IndicesNotConstructorApplications{}      -> "IndicesNotConstructorApplications"
   InternalError{}                          -> "InternalError"
   InvalidPattern{}                         -> "InvalidPattern"
   LocalVsImportedModuleClash{}             -> "LocalVsImportedModuleClash"
@@ -335,12 +339,10 @@ errorString err = case err of
   UnificationRecursiveEq{}                 -> "UnificationRecursiveEq"
   UnificationStuck{}                       -> "UnificationStuck"
 --  UnequalTelescopes{}                      -> "UnequalTelescopes" -- UNUSED
-  HeterogeneousEquality{}                  -> "HeterogeneousEquality"
   WithOnFreeVariable{}                     -> "WithOnFreeVariable"
   UnexpectedWithPatterns{}                 -> "UnexpectedWithPatterns"
   UninstantiatedDotPattern{}               -> "UninstantiatedDotPattern"
   UninstantiatedModule{}                   -> "UninstantiatedModule"
-  UnreachableClauses{}                     -> "UnreachableClauses"
   SolvedButOpenHoles{}                     -> "SolvedButOpenHoles"
   UnusedVariableInPatternSynonym           -> "UnusedVariableInPatternSynonym"
   UnquoteFailed{}                          -> "UnquoteFailed"
@@ -520,33 +522,6 @@ instance PrettyTCM TypeError where
       [prettyTCM c] ++ pwords "is not a constructor of the datatype"
       ++ [prettyTCM d]
 
-    IndicesNotConstructorApplications [i] ->
-      fwords "The index"
-      $$ nest 2 (prettyTCM i)
-      $$ fsep (pwords "is not a constructor (or literal) applied to variables" ++
-               pwords "(note that parameters count as constructor arguments)")
-
-    IndicesNotConstructorApplications is ->
-      fwords "The indices"
-      $$ nest 2 (vcat $ map prettyTCM is)
-      $$ fsep (pwords "are not constructors (or literals) applied to variables" ++
-               pwords "(note that parameters count as constructor arguments)")
-
-    IndexVariablesNotDistinct vs is ->
-      fwords "The variables"
-      $$ nest 2 (vcat $ map (\v -> prettyTCM (I.Var v [])) vs)
-      $$ fwords "in the indices"
-      $$ nest 2 (vcat $ map prettyTCM is)
-      $$ fwords "are not distinct (note that parameters count as constructor arguments)"
-
-    IndicesFreeInParameters vs indices pars ->
-      fwords "The variables"
-      $$ nest 2 (vcat $ map (\v -> prettyTCM (I.Var v [])) vs)
-      $$ fwords "which are used (perhaps as constructor parameters) in the index expressions"
-      $$ nest 2 (vcat $ map prettyTCM indices)
-      $$ fwords "are free in the parameters"
-      $$ nest 2 (vcat $ map prettyTCM pars)
-
     ShadowedModule x [] -> __IMPOSSIBLE__
 
     ShadowedModule x ms@(m : _) -> fsep $
@@ -624,11 +599,6 @@ instance PrettyTCM TypeError where
 
     UnequalTypes cmp a b -> prettyUnequal a (notCmp cmp) b
 --              fsep $ [prettyTCM a, notCmp cmp, prettyTCM b]
-
-    HeterogeneousEquality u a v b -> fsep $
-      pwords "Refuse to solve heterogeneous constraint" ++
-      [prettyTCM u] ++ pwords ":" ++ [prettyTCM a] ++ pwords "=?=" ++
-      [prettyTCM v] ++ pwords ":" ++ [prettyTCM b]
 
     UnequalRelevance cmp a b -> fsep $
       [prettyTCM a, notCmp cmp, prettyTCM b] ++
@@ -1089,18 +1059,12 @@ instance PrettyTCM TypeError where
       pwords "No match for" ++ map prettyTCM args
 -}
 
-    UnreachableClauses f pss -> fsep $
-      pwords "Unreachable" ++ pwords (plural (length pss) "clause")
-        where
-          plural 1 thing = thing
-          plural n thing = thing ++ "s"
-
     CoverageFailure f pss -> fsep (
       pwords "Incomplete pattern matching for" ++ [prettyTCM f <> text "."] ++
       pwords "Missing cases:") $$ nest 2 (vcat $ map display pss)
         where
         display (tel, ps) = prettyTCM $ NamedClause f True $
-          I.Clause noRange tel ps Nothing Nothing False
+          I.Clause noRange noRange tel ps Nothing Nothing False
 
     CoverageCantSplitOn c tel cIxs gIxs
       | length cIxs /= length gIxs -> __IMPOSSIBLE__
@@ -1150,7 +1114,7 @@ instance PrettyTCM TypeError where
       pwords " of type " ++ [prettyTCM a] ++
       pwords " with solution " ++ [prettyTCM u] ++
       pwords " because the variable occurs in the solution," ++
-      pwords " or in the type one of the variables in the solution"
+      pwords " or in the type of one of the variables in the solution"
 
     UnificationStuck tel us vs -> fsep $
       pwords "I got stuck on unifying" ++ [prettyList (map prettyTCM us)] ++
