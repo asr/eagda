@@ -1444,8 +1444,8 @@ projArgInfo (Projection _ _ _ _ lams) =
 
 -- | Should a record type admit eta-equality?
 data EtaEquality
-  = Specified !Bool  -- ^ User specifed 'eta-equality' or 'no-eta-equality'
-  | Inferred !Bool   -- ^ Positivity checker inferred whether eta is safe/
+  = Specified !Bool  -- ^ User specifed 'eta-equality' or 'no-eta-equality'.
+  | Inferred !Bool   -- ^ Positivity checker inferred whether eta is safe.
   deriving (Typeable, Show, Eq)
 
 etaEqualityToBool :: EtaEquality -> Bool
@@ -1540,7 +1540,8 @@ data Defn = Axiom
             , recAbstr          :: IsAbstract
             }
           | Constructor
-            { conPars     :: Nat         -- ^ Number of parameters.
+            { conPars     :: Int         -- ^ Number of parameters.
+            , conArity    :: Int         -- ^ Number of arguments (excluding parameters).
             , conSrcCon   :: ConHead     -- ^ Name of (original) constructor and fields. (This might be in a module instance.)
             , conData     :: QName       -- ^ Name of datatype or record type.
             , conAbstr    :: IsAbstract
@@ -3124,7 +3125,7 @@ instance KillRange Defn where
         killRange14 Function cls comp tt inv mut isAbs delayed proj flags term extlam with copat role
       Datatype a b c d e f g h i j k -> killRange11 Datatype a b c d e f g h i j k
       Record a b c d e f g h i j k   -> killRange11 Record a b c d e f g h i j k
-      Constructor a b c d e f g      -> killRange7 Constructor a b c d e f g
+      Constructor a b c d e f g h    -> killRange8 Constructor a b c d e f g h
       Primitive a b c d              -> killRange4 Primitive a b c d
 
 instance KillRange MutualId where

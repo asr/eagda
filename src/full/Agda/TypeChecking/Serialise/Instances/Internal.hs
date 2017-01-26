@@ -313,7 +313,7 @@ instance EmbPrj Defn where
   icod_ (Function    a b _ c d e f g h i j k m n) = icode13 1 a b c d e f g h i j k m n
   icod_ (Datatype    a b c d e f g h i j k)       = icode11 2 a b c d e f g h i j k
   icod_ (Record      a b c d e f g h i j k)       = icode11 3 a b c d e f g h i j k
-  icod_ (Constructor a b c d e f g)               = icode7 4 a b c d e f g
+  icod_ (Constructor a b c d e f g h)             = icode8 4 a b c d e f g h
   icod_ (Primitive   a b c d)                     = icode4 5 a b c d
   icod_ AbstractDefn                              = __IMPOSSIBLE__
 
@@ -322,7 +322,7 @@ instance EmbPrj Defn where
     valu [1, a, b, c, d, e, f, g, h, i, j, k, m, n] = valu13 (\ a b -> Function a b Nothing) a b c d e f g h i j k m n
     valu [2, a, b, c, d, e, f, g, h, i, j, k]       = valu11 Datatype a b c d e f g h i j k
     valu [3, a, b, c, d, e, f, g, h, i, j, k]       = valu11 Record  a b c d e f g h i j k
-    valu [4, a, b, c, d, e, f, g]                   = valu7 Constructor a b c d e f g
+    valu [4, a, b, c, d, e, f, g, h]                = valu8 Constructor a b c d e f g h
     valu [5, a, b, c, d]                            = valu4 Primitive   a b c d
     valu _                                          = malformed
 
