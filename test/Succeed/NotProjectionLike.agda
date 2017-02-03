@@ -12,28 +12,27 @@ record ⊤ : Set where
 data Bool : Set where
   true false : Bool
 
-data List (A : Set) : Set where
-  []  : List A
-  _∷_ : (x : A) (xs : List A) → List A
+open import Common.List
+
 
 -- Not projection-like because recursive.
 -- (Could be changed).
 
-id' : ∀{A} (xs : List A) → List A
+id' : ∀{A : Set} (xs : List A) → List A
 id' [] = []
 id' (x ∷ xs) = x ∷ id' xs
 
 -- Not projection-like because constructor-headed.
 -- (Could this be changed?)
 
-NonEmpty : ∀{A} (xs : List A) → Set
+NonEmpty : ∀{A : Set} (xs : List A) → Set
 NonEmpty []       = ⊥
 NonEmpty (x ∷ xs) = ⊤
 
 -- Not projection-like because of absurd match.
 -- Reason: we cannot infer the value of @A@ for stuck @head [] p@.
 
-head : ∀{A} (xs : List A) (p : NonEmpty xs) → A
+head : ∀{A : Set} (xs : List A) (p : NonEmpty xs) → A
 head []       ()
 head (x ∷ xs) _ = x
 
@@ -41,14 +40,14 @@ head (x ∷ xs) _ = x
 -- Reason: we cannot infer the value of @A@ for @dropHeadIf (x ∷ xs) b@.
 -- (Constructor applications are not inferable in general.)
 
-dropHeadIf : ∀{A} (xs : List A) (b : Bool) → List A
+dropHeadIf : ∀{A : Set} (xs : List A) (b : Bool) → List A
 dropHeadIf (_ ∷ xs) true = xs
 dropHeadIf xs _ = xs
 
 -- Not projection-like because of deep matching.
 -- Reason: we cannot infer @A@ for @drop2 (x ∷ xs)@.
 
-drop2 : ∀{A} (xs : List A) → List A
+drop2 : ∀{A : Set} (xs : List A) → List A
 drop2 (_ ∷ (_ ∷ xs)) = xs
 drop2 xs = xs
 
@@ -56,19 +55,19 @@ drop2 xs = xs
 -- Reason: @tail []@ is stuck outside of the abstract block.
 
 abstract
-  tail : ∀{A} (xs : List A) → List A
+  tail : ∀{A : Set} (xs : List A) → List A
   tail [] = []
   tail (_ ∷ xs) = xs
 
 -- Not projection-like because mutually defined.
 
 mutual
-  odds : ∀{A} (xs : List A) → List A
+  odds : ∀{A : Set} (xs : List A) → List A
   odds []       = []
   odds (x ∷ xs) = evens xs
 
   postulate
-    evens : ∀{A} (xs : List A) → List A
+    evens : ∀{A : Set} (xs : List A) → List A
     -- evens [] = []
     -- evens (x ∷ xs) = x ∷ odds xs
 

@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns      #-}
 {-# LANGUAGE CPP                      #-}
 {-# LANGUAGE NondecreasingIndentation #-}
 
@@ -30,6 +31,7 @@ import Agda.Syntax.Treeless (Compiled(..), TTerm)
 import qualified Agda.Compiler.UHC.Pragmas.Base as CR
 
 import Agda.TypeChecking.Monad.Base
+import Agda.TypeChecking.Monad.Builtin
 import Agda.TypeChecking.Monad.Context
 import Agda.TypeChecking.Monad.Options
 import Agda.TypeChecking.Monad.Env
@@ -41,6 +43,7 @@ import Agda.TypeChecking.Monad.State
 import Agda.TypeChecking.Positivity.Occurrence
 import Agda.TypeChecking.Substitute
 import {-# SOURCE #-} Agda.TypeChecking.Telescope
+import Agda.TypeChecking.CompiledClause
 import {-# SOURCE #-} Agda.TypeChecking.CompiledClause.Compile
 import {-# SOURCE #-} Agda.TypeChecking.Polarity
 import {-# SOURCE #-} Agda.TypeChecking.ProjectionLike
@@ -90,6 +93,13 @@ setTerminates :: QName -> Bool -> TCM ()
 setTerminates q b = modifySignature $ updateDefinition q $ updateTheDef $ \case
     def@Function{} -> def { funTerminates = Just b }
     def -> def
+
+-- | Set CompiledClauses of a defined function symbol.
+setCompiledClauses :: QName -> CompiledClauses -> TCM ()
+setCompiledClauses q cc = modifySignature $ updateDefinition q $ updateTheDef $ setT
+  where
+    setT def@Function{} = def { funCompiled = Just cc }
+    setT def            = def
 
 -- | Modify the clauses of a function.
 modifyFunClauses :: QName -> ([Clause] -> [Clause]) -> TCM ()
@@ -450,6 +460,7 @@ applySection' new ptel old ts ScopeCopyInfo{ renNames = rd, renModules = rm } = 
                     , defInstance       = inst
                     , defCopy           = True
                     , defMatchable      = False
+                    , defNoCompilation  = defNoCompilation d
                     , defInjective      = False
                     , theDef            = df }
             oldDef = theDef d
@@ -621,11 +632,15 @@ sameDef d1 d2 = do
 whatInduction :: MonadTCM tcm => QName -> tcm Induction
 whatInduction c = liftTCM $ do
   def <- theDef <$> getConstInfo c
+  mz <- getBuiltinName' builtinIZero
+  mo <- getBuiltinName' builtinIOne
   case def of
     Datatype{ dataInduction = i } -> return i
     Record{ recRecursive = False} -> return Inductive
     Record{ recInduction = i    } -> return $ fromMaybe Inductive i
     Constructor{ conInd = i }     -> return i
+    _ | Just c == mz || Just c == mo
+                                  -> return Inductive
     _                             -> __IMPOSSIBLE__
 
 -- | Does the given constructor come from a single-constructor type?
@@ -888,7 +903,7 @@ moduleParamsToApply m = do
       -- drop some @args@.
       -- And there are also anonymous modules, thus, the invariant is not trivial.
       when (size stel < size args) __IMPOSSIBLE__
-      return $ zipWith (\ (Dom ai _) (Arg _ v) -> Arg ai v) (telToList stel) args
+      return $ zipWith (\ !dom (Arg _ v) -> v <$ argFromDom dom) (telToList stel) args
 
 -- | Unless all variables in the context are module parameters, create a fresh
 --   module to capture the non-module parameters. Used when unquoting to make

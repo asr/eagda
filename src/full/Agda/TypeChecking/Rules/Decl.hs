@@ -920,7 +920,7 @@ checkModuleArity m tel args = check tel args
 
     check tel []             = return tel
     check EmptyTel (_:_)     = bad
-    check (ExtendTel (Dom info _) btel) args0@(Arg info' (Named rname _) : args) =
+    check (ExtendTel (Dom{domInfo = info}) btel) args0@(Arg info' (Named rname _) : args) =
       let name = fmap rangedThing rname
           y    = absName btel
           tel  = absBody btel in
@@ -992,7 +992,8 @@ checkSectionApplication' i m1 (A.SectionApp ptel m2 args) copyInfo = do
       ]
     -- Now, type check arguments.
     ts <- (noConstraints $ checkArguments_ DontExpandLast (getRange i) args tel') >>= \case
-      (ts, etaTel') | (size etaTel == size etaTel') -> return ts
+      (ts', etaTel') | (size etaTel == size etaTel')
+                     , Just ts <- allApplyElims ts' -> return ts
       _ -> __IMPOSSIBLE__
     -- Perform the application of the module parameters.
     let aTel = tel' `apply` ts
@@ -1031,10 +1032,10 @@ checkSectionApplication' i m1 (A.RecordModuleIFS x) copyInfo = do
       -- Telescopes do not have @NoAbs@.
       instFinal (ExtendTel _ NoAbs{}) = __IMPOSSIBLE__
       -- Found last parameter: switch it to @Instance@.
-      instFinal (ExtendTel (Dom info t) (Abs n EmptyTel)) =
-                 ExtendTel (Dom ifo' t) (Abs n EmptyTel)
-        where ifo' = setHiding Instance info
-      -- Otherwise, keep searching for last parameter:
+      instFinal (ExtendTel dom (Abs n EmptyTel)) =
+                 ExtendTel do' (Abs n EmptyTel)
+        where do' = setHiding Instance dom
+      -- Otherwise, keep searchinf for last parameter:
       instFinal (ExtendTel arg (Abs n tel)) =
                  ExtendTel arg (Abs n (instFinal tel))
       -- Before instFinal is invoked, we have checked that the @tel@ is not empty.

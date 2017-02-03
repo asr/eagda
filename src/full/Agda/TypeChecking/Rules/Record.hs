@@ -17,8 +17,13 @@ import Agda.Syntax.Internal
 import Agda.Syntax.Internal.Pattern
 import Agda.Syntax.Position
 import qualified Agda.Syntax.Info as Info
+import Agda.Syntax.Scope.Monad (freshAbstractQName)
+import Agda.Syntax.Fixity
 
 import Agda.TypeChecking.Monad
+import Agda.TypeChecking.Monad.Builtin
+import Agda.TypeChecking.Names
+import Agda.TypeChecking.Primitive
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.Reduce
@@ -28,7 +33,7 @@ import Agda.TypeChecking.Polarity
 import Agda.TypeChecking.Irrelevance
 import Agda.TypeChecking.CompiledClause.Compile
 
-import Agda.TypeChecking.Rules.Data ( bindParameters, fitsIn, forceSort)
+import Agda.TypeChecking.Rules.Data ( bindParameters, fitsIn, forceSort, defineCompData, defineCompForFields )
 import Agda.TypeChecking.Rules.Term ( isType_ )
 import {-# SOURCE #-} Agda.TypeChecking.Rules.Decl (checkDecl)
 
@@ -186,6 +191,7 @@ checkRecDef i name ind eta con ps contel fields =
               -- Determined by positivity checker:
               , recRecursive      = False
               , recMutual         = []
+              , recComp           = Nothing -- filled in later
               }
 
         -- Add record constructor to signature
@@ -198,6 +204,7 @@ checkRecDef i name ind eta con ps contel fields =
               , conData   = name
               , conAbstr  = Info.defAbstract conInfo
               , conInd    = conInduction
+              , conComp   = Nothing -- filled in later
               , conErased = []
               , conTPTPRole = Nothing
               }
@@ -244,7 +251,7 @@ checkRecDef i name ind eta con ps contel fields =
 -}
 
       let info = setRelevance recordRelevance defaultArgInfo
-          addRecordVar = addContext' ("", Dom info rect)
+          addRecordVar = addContext' ("", setArgInfo info $ defaultDom rect)
           -- the record variable has the empty name by intention, see issue 208
 
       let m = qnameToMName name  -- Name of record module.
@@ -289,7 +296,90 @@ checkRecDef i name ind eta con ps contel fields =
         -- Andreas 2012-02-13: postpone polarity computation until after positivity check
         -- computePolarity name
 
+      -- we define composition here so that the projections are already in the signature.
+      escapeContext npars $ do
+        addCompositionForRecord name con tel fs ftel rect
+
       return ()
+
+
+addCompositionForRecord
+  :: QName      -- datatype name
+               -> ConHead
+               -> Telescope   -- Γ parameters
+               -> [Arg QName] -- projection names
+               -> Telescope   -- Γ ⊢ Φ field types
+               -> Type        -- Γ ⊢ T target type
+               -> TCM ()
+addCompositionForRecord name con tel fs ftel rect = do
+  compWays <- do
+    cxt <- getContextTelescope
+    escapeContext (size cxt) $
+      if null fs then Left . fmap (,[]) <$> defineCompData name con (abstract cxt tel) [] ftel rect
+                 else Right <$>
+                      ifM (return (any (== Irrelevant) $ map getRelevance fs) `and2M` do not . optIrrelevantProjections <$> pragmaOptions)
+                          (return Nothing) (defineCompR    name     (abstract cxt tel) ftel fs rect)
+  case compWays of
+    Right x -> do
+      modifySignature $ updateDefinition name $ updateTheDef $ \ d ->
+        case d of
+          r@Record{} -> r { recComp = x }
+          _          -> __IMPOSSIBLE__
+    Left y -> do
+      modifySignature $ updateDefinition (conName con) $ updateTheDef $ \ d ->
+        case d of
+          r@Constructor{} -> r { conComp = y }
+          _          -> __IMPOSSIBLE__
+
+defineCompR name params fsT fns rect = do
+  i  <- getBuiltin' builtinInterval
+  iz <- getBuiltin' builtinIZero
+  io <- getBuiltin' builtinIOne
+  imin <- getPrimitiveTerm' "primIMin"
+  imax <- getPrimitiveTerm' "primIMax"
+  ineg <- getPrimitiveTerm' "primINeg"
+  comp <- getPrimitiveTerm' "primComp"
+  por <- getPrimitiveTerm' "primPOr"
+  one <- getBuiltin' builtinItIsOne
+  reportSDoc "tc.rec.cxt" 30 $ prettyTCM params
+  reportSDoc "tc.rec.cxt" 30 $ prettyTCM fsT
+  reportSDoc "tc.rec.cxt" 30 $ text $ show rect
+  if all isJust [i,iz,io,imin,imax,ineg,comp,por,one]
+    then defineCompR' name params fsT fns rect
+    else return Nothing
+
+defineCompR , defineCompR' ::
+  QName          -- ^ some name, e.g. record name
+  -> Telescope   -- ^ param types Δ
+  -> Telescope   -- ^ fields' types Δ ⊢ Φ
+  -> [Arg QName] -- ^ fields' names
+  -> Type        -- ^ record type Δ ⊢ T
+  -> TCM (Maybe QName)
+defineCompR' name params fsT fns rect = do
+  (compName, gamma, _, clause_types, bodies) <-
+    defineCompForFields (\ t fn -> t `applyE` [Proj ProjSystem fn]) name params fsT fns rect
+  cs <- flip mapM (zip3 fns clause_types bodies) $ \ (fname, clause_ty, body) -> do
+          let
+              pats = teleNamedArgs gamma ++ [defaultNamedArg $ ProjP ProjSystem $ unArg fname]
+              c = Clause { clauseTel       = gamma
+                         , clauseType      = Just $ argN (unDom clause_ty)
+                         , namedClausePats = pats
+                         , clauseFullRange = noRange
+                         , clauseLHSRange  = noRange
+                         , clauseCatchall  = False
+                         , clauseBody      = Just body -- abstract gamma $ Body $ body
+                         }
+          reportSDoc "comp.rec" 17 $ text $ show c
+--          reportSDoc "comp.rec" 10 $ text $ show (clauseType c)
+          reportSDoc "comp.rec" 15 $ prettyTCM $ abstract gamma (unDom clause_ty)
+--          reportSDoc "comp.rec" 10 $ prettyTCM (clauseBody c)
+          return c
+  addClauses compName cs
+  reportSDoc "comp.rec" 15 $ text $ "compiling clauses for " ++ show compName
+  setCompiledClauses compName =<< inTopContext (compileClauses Nothing cs)
+  reportSDoc "comp.rec" 15 $ text $ "compiled"
+  return $ Just compName
+
 
 {-| @checkRecordProjections m r q tel ftel fs@.
 
@@ -319,7 +409,7 @@ checkRecordProjections m r hasNamedCon con tel ftel fs = do
     checkProjs ftel1 ftel2 (A.ScopedDecl scope fs' : fs) =
       setScope scope >> checkProjs ftel1 ftel2 (fs' ++ fs)
 
-    checkProjs ftel1 (ExtendTel (Dom ai t) ftel2) (A.Field info x _ : fs) =
+    checkProjs ftel1 (ExtendTel (dom@Dom{domInfo = ai,unDom = t}) ftel2) (A.Field info x _ : fs) =
       traceCall (CheckProjection (getRange info) x t) $ do
       -- Andreas, 2012-06-07:
       -- Issue 387: It is wrong to just type check field types again
@@ -360,7 +450,7 @@ checkRecordProjections m r hasNamedCon con tel ftel fs = do
           projcall o = Var 0 [Proj o projname]
           rel      = getRelevance ai
           -- the recursive call
-          recurse  = checkProjs (abstract ftel1 $ ExtendTel (Dom ai t)
+          recurse  = checkProjs (abstract ftel1 $ ExtendTel dom
                                  $ Abs (nameToArgName $ qnameName projname) EmptyTel)
                                 (ftel2 `absApp` projcall ProjSystem) fs
 
@@ -399,9 +489,9 @@ checkRecordProjections m r hasNamedCon con tel ftel fs = do
             telList = telToList tel
             (_ptel,[rt]) = splitAt (size tel - 1) telList
             cpo    = if hasNamedCon then ConOCon else ConORec
-            cpi    = ConPatternInfo (Just cpo) (Just $ argFromDom $ fmap snd rt)
+            cpi    = ConPatternInfo (Just cpo) False (Just $ argFromDom $ fmap snd rt)
             conp   = defaultArg $ ConP con cpi $
-                     [ Arg info $ unnamed $ varP "x" | Dom info _ <- telToList ftel ]
+                     [ Arg info $ unnamed $ varP "x" | Dom{domInfo = info} <- telToList ftel ]
             body   = Just $ bodyMod $ var (size ftel2)
             cltel  = ftel
             clause = Clause { clauseLHSRange  = getRange info
@@ -421,7 +511,7 @@ checkRecordProjections m r hasNamedCon con tel ftel fs = do
               -- index of the record argument (in the type),
               -- start counting with 1:
               , projIndex    = size tel -- which is @size ptel + 1@
-              , projLams     = ProjLams $ map (\ (Dom ai (x,_)) -> Arg ai x) telList
+              , projLams     = ProjLams $ map (argFromDom . fmap fst) telList
               }
 
         reportSDoc "tc.rec.proj" 80 $ sep

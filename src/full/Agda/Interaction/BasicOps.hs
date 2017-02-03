@@ -1,5 +1,7 @@
+{-# LANGUAGE BangPatterns          #-}
 {-# LANGUAGE CPP                   #-}
 {-# LANGUAGE UndecidableInstances  #-}
+{-# LANGUAGE NondecreasingIndentation #-}
 
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
@@ -19,6 +21,7 @@ import Data.Maybe
 import Data.Traversable hiding (mapM, forM, for)
 import Data.Monoid
 
+import Agda.Interaction.Options
 import qualified Agda.Syntax.Concrete as C -- ToDo: Remove with instance of ToConcrete
 import Agda.Syntax.Position
 import Agda.Syntax.Abstract as A hiding (Open, Apply, Assign)
@@ -141,6 +144,9 @@ giveExpr mii mi e = do
         redoChecks mii
         wakeupConstraints mi
         solveSizeConstraints DontDefaultToInfty
+
+        cubical <- optCubical <$> pragmaOptions
+        if cubical then return () else do -- don't double check with cubical, because it gets in the way too often.
         -- Double check.
         reportSDoc "interaction.give" 20 $ TP.text "give: double checking"
         vfull <- instantiateFull v
@@ -346,6 +352,7 @@ instance Reify ProblemConstraint (Closure (OutputForm Expr Expr)) where
 
 reifyElimToExpr :: I.Elim -> TCM Expr
 reifyElimToExpr e = case e of
+    I.IApply _ _ v -> appl "iapply" <$> reify (defaultArg $ v) -- TODO Andrea: endpoints?
     I.Apply v -> appl "apply" <$> reify v
     I.Proj _o f -> appl "proj" <$> reify ((defaultArg $ I.Def f []) :: Arg Term)
   where
@@ -708,15 +715,15 @@ contextOfMeta ii norm = do
     let n         = length cxt
         localVars = zipWith raise [1..] cxt
         mkLet (x, lb) = do
-          (tm, Dom c ty) <- getOpen lb
-          return $ Dom c (x, ty)
+          (tm, !dom) <- getOpen lb
+          return $ (,) x <$> dom
     letVars <- mapM mkLet . Map.toDescList =<< asks envLetBindings
     gfilter visible . reverse <$> mapM out (letVars ++ localVars)
   where gfilter p = catMaybes . map p
         visible (OfType x y) | not (isNoName x) = Just (OfType' x y)
                              | otherwise        = Nothing
         visible _            = __IMPOSSIBLE__
-        out (Dom _ (x, t)) = do
+        out (Dom{unDom = (x, t)}) = do
           t' <- reify =<< normalForm norm t
           return $ OfType x t'
 

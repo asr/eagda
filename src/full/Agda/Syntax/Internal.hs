@@ -139,6 +139,7 @@ type ConInfo = ConOrigin
 data Elim' a
   = Apply (Arg a)         -- ^ Application.
   | Proj ProjOrigin QName -- ^ Projection.  'QName' is name of a record projection.
+  | IApply a a a -- ^ IApply x y r, x and y are the endpoints
   deriving (Typeable, Show, Functor, Foldable, Traversable)
 
 type Elim = Elim' Term
@@ -146,11 +147,14 @@ type Elims = [Elim]  -- ^ eliminations ordered left-to-right.
 
 -- | This instance cheats on 'Proj', use with care.
 --   'Proj's are always assumed to be 'UserWritten', since they have no 'ArgInfo'.
+--   Same for IApply
 instance LensOrigin (Elim' a) where
   getOrigin (Apply a)   = getOrigin a
   getOrigin Proj{}      = UserWritten
+  getOrigin IApply{}    = UserWritten
   mapOrigin f (Apply a) = Apply $ mapOrigin f a
   mapOrigin f e@Proj{}  = e
+  mapOrigin f e@IApply{} = e
 
 -- | Names in binders and arguments.
 type ArgName = String
@@ -471,6 +475,9 @@ data ConPatternInfo = ConPatternInfo
   { conPRecord :: Maybe ConOrigin
     -- ^ @Nothing@ if data constructor.
     --   @Just@ if record constructor.
+  , conPFallThrough :: Bool
+    -- ^ Should the match block on non-canonical terms or can it
+    --   proceed to the catch-all clause?
   , conPType   :: Maybe (Arg Type)
     -- ^ The type of the whole constructor pattern.
     --   Should be present (@Just@) if constructor pattern is
@@ -478,15 +485,16 @@ data ConPatternInfo = ConPatternInfo
     --   Could be absent (@Nothing@) if pattern comes from some
     --   plugin (like Agsy).
     --   Needed e.g. for with-clause stripping.
+
   }
   deriving (Typeable, Show)
 
 noConPatternInfo :: ConPatternInfo
-noConPatternInfo = ConPatternInfo Nothing Nothing
+noConPatternInfo = ConPatternInfo Nothing False Nothing
 
 -- | Build partial 'ConPatternInfo' from 'ConInfo'
 toConPatternInfo :: ConInfo -> ConPatternInfo
-toConPatternInfo ConORec = ConPatternInfo (Just ConORec) Nothing
+toConPatternInfo ConORec = noConPatternInfo {conPRecord = Just ConORec}
 toConPatternInfo _ = noConPatternInfo
 
 -- | Build 'ConInfo' from 'ConPatternInfo'.
@@ -612,6 +620,32 @@ isEqualityType :: EqualityView -> Bool
 isEqualityType EqualityType{} = True
 isEqualityType OtherType{}    = False
 
+-- | View type as path type.
+
+data PathView
+  = PathType
+    { pathSort  :: Sort     -- ^ Sort of this type.
+    , pathName  :: QName    -- ^ Builtin PATH.
+    , pathLevel :: Arg Term -- ^ Hidden
+    , pathType  :: Arg Term -- ^ Hidden
+    , pathLhs   :: Arg Term -- ^ NotHidden
+    , pathRhs   :: Arg Term -- ^ NotHidden
+    }
+  | OType Type -- ^ reduced
+
+isPathType :: PathView -> Bool
+isPathType PathType{} = True
+isPathType OType{}    = False
+
+data IntervalView
+      = IZero
+      | IOne
+      | IMin (Arg Term) (Arg Term)
+      | IMax (Arg Term) (Arg Term)
+      | INeg (Arg Term)
+      | OTerm Term
+      deriving Show
+
 ---------------------------------------------------------------------------
 -- * Absurd Lambda
 ---------------------------------------------------------------------------
@@ -730,6 +764,9 @@ sort s = El (sSuc s) $ Sort s
 varSort :: Int -> Sort
 varSort n = Type $ Max [Plus 0 $ NeutralLevel mempty $ var n]
 
+tmSort :: Term -> Sort
+tmSort t = Type $ Max [Plus 0 $ UnreducedLevel t]
+
 -- | Get the next higher sort.
 sSuc :: Sort -> Sort
 sSuc Prop            = mkType 1
@@ -798,7 +835,7 @@ type ListTel = ListTel' ArgName
 telFromList' :: (a -> ArgName) -> ListTel' a -> Telescope
 telFromList' f = List.foldr extTel EmptyTel
   where
-    extTel (Dom info (x, a)) = ExtendTel (Dom info a) . Abs (f x)
+    extTel dom@(Dom{unDom = (x, a)}) = ExtendTel (dom{unDom = a}) . Abs (f x)
 
 -- | Convert a list telescope to a telescope.
 telFromList :: ListTel -> Telescope
@@ -825,10 +862,10 @@ class SgTel a where
   sgTel :: a -> Telescope
 
 instance SgTel (ArgName, Dom Type) where
-  sgTel (x, dom) = ExtendTel dom $ Abs x EmptyTel
+  sgTel (x, !dom) = ExtendTel dom $ Abs x EmptyTel
 
 instance SgTel (Dom (ArgName, Type)) where
-  sgTel (Dom ai (x, t)) = ExtendTel (Dom ai t) $ Abs x EmptyTel
+  sgTel dom = ExtendTel (snd <$> dom) $ Abs (fst $ unDom dom) EmptyTel
 
 instance SgTel (Dom Type) where
   sgTel dom = sgTel (stringToArgName "_", dom)
@@ -941,11 +978,13 @@ getElims v = maybe default id $ hasElims v
 argFromElim :: Elim' a -> Arg a
 argFromElim (Apply u) = u
 argFromElim Proj{}    = __IMPOSSIBLE__
+argFromElim (IApply _ _ r) = defaultArg r -- losing information
 
 -- | Drop 'Apply' constructor. (Safe)
 isApplyElim :: Elim' a -> Maybe (Arg a)
 isApplyElim (Apply u) = Just u
 isApplyElim Proj{}    = Nothing
+isApplyElim (IApply _ _ r)    = Just (defaultArg r)  -- losing information
 
 -- | Drop 'Apply' constructors. (Safe)
 allApplyElims :: [Elim' a] -> Maybe [Arg a]
@@ -962,6 +1001,7 @@ class IsProjElim e where
 instance IsProjElim Elim where
   isProjElim (Proj o d) = Just (o, d)
   isProjElim Apply{}    = Nothing
+  isProjElim IApply{} = Nothing
 
 -- | Discard @Proj f@ entries.
 dropProjElims :: IsProjElim e => [e] -> [e]
@@ -1141,7 +1181,7 @@ instance KillRange Substitution where
   killRange (Lift n rho)         = killRange1 (Lift n) rho
 
 instance KillRange ConPatternInfo where
-  killRange (ConPatternInfo mr mt) = killRange1 (ConPatternInfo mr) mt
+  killRange (ConPatternInfo mr b mt) = killRange1 (ConPatternInfo mr b) mt
 
 instance KillRange DBPatVar where
   killRange (DBPatVar x i) = killRange2 DBPatVar x i
@@ -1291,6 +1331,7 @@ instance Pretty Type where
 instance Pretty Elim where
   prettyPrec p (Apply v)    = prettyPrec p v
   prettyPrec _ (Proj _o x)  = text ("." ++ show x)
+  prettyPrec p (IApply x y r) = prettyPrec p r
 
 instance Pretty DBPatVar where
   prettyPrec _ x = text $ patVarNameToString (dbPatVarName x) ++ "@" ++ show (dbPatVarIndex x)
@@ -1357,3 +1398,4 @@ instance NFData LevelAtom where
 instance NFData a => NFData (Elim' a) where
   rnf (Apply x) = rnf x
   rnf Proj{}    = ()
+  rnf (IApply x y r) = rnf x `seq` rnf y `seq` rnf r

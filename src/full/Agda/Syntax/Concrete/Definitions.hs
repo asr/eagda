@@ -1082,6 +1082,7 @@ niceDeclarations ds = do
       AbsurdP{} -> p
       AsP r n p -> AsP r n (setInserted p)
       DotP r _ e -> DotP r Inserted e
+      EqualP{}   -> p
       LitP{} -> p
       RecP r fs -> RecP r (map (fmap setInserted) fs)
 

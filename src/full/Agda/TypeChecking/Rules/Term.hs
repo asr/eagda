@@ -39,7 +39,7 @@ import qualified Agda.Syntax.Reflected as R
 import Agda.Syntax.Scope.Base ( ThingsInScope, AbstractName
                               , emptyScopeInfo
                               , exportedNamesInScope)
-import Agda.Syntax.Scope.Monad (getNamedScope)
+import Agda.Syntax.Scope.Monad (getNamedScope, freshAbstractQName)
 import Agda.Syntax.Translation.InternalToAbstract (reify)
 import Agda.Syntax.Translation.ReflectedToAbstract (toAbstract_)
 
@@ -56,6 +56,7 @@ import Agda.TypeChecking.InstanceArguments
 import Agda.TypeChecking.Irrelevance
 import Agda.TypeChecking.Level
 import Agda.TypeChecking.MetaVars
+import Agda.TypeChecking.Names
 import Agda.TypeChecking.Patterns.Abstract
 import Agda.TypeChecking.Positivity.Occurrence
 import Agda.TypeChecking.Pretty
@@ -113,7 +114,7 @@ isType_ e =
   let fallback = isType e =<< do workOnTypes $ newSortMeta
   case unScope e of
     A.Fun i (Arg info t) b -> do
-      a <- Dom info <$> isType_ t
+      a <- setArgInfo info . defaultDom <$> isType_ t
       b <- isType_ b
       s <- ptsRule a b
       let t' = El s $ Pi a $ NoAbs underscore b
@@ -282,8 +283,8 @@ checkTypedBinding lamOrPi info (A.TBind i xs e) ret = do
     experimental <- optExperimentalIrrelevance <$> pragmaOptions
     t <- modEnv lamOrPi $ isType_ e
     let info' = mapRelevance (modRel lamOrPi experimental) info
-    addContext' (xs, Dom info' t) $
-      ret $ bindsWithHidingToTel xs (Dom info t)
+    addContext' (xs, setArgInfo info' $ defaultDom t) $
+      ret $ bindsWithHidingToTel xs (setArgInfo info $ defaultDom t)
     where
         -- if we are checking a typed lambda, we resurrect before we check the
         -- types, but do not modify the new context entries
@@ -296,6 +297,29 @@ checkTypedBinding lamOrPi info (A.TBind i xs e) ret = do
 checkTypedBinding lamOrPi info (A.TLet _ lbs) ret = do
     checkLetBindings lbs (ret [])
 
+ifPath :: Type -> TCM a -> TCM a -> TCM a
+ifPath ty fallback work = do
+  pv <- pathView ty
+  if isPathType pv then work else fallback
+
+checkPath :: Arg A.TypedBinding -> A.Expr -> Type -> TCM Term
+checkPath b@(Arg info (A.TBind _ xs typ)) body ty = do
+    PathType s path level typ lhs rhs <- pathView ty
+    interval <- elInf primInterval
+    v <- addContext' (xs, defaultDom interval) $ checkExpr body (El (raise 1 s) (raise 1 (unArg typ) `apply` [argN $ var 0]))
+    iZero <- primIZero
+    iOne  <- primIOne
+    let lhs' = subst 0 iZero v
+        rhs' = subst 0 iOne  v
+    let t = Lam info $ Abs (nameToArgName x) v
+    let btyp i = El s (unArg typ `apply` [argN i])
+    blockTerm ty $ do
+      equalTerm (btyp iZero) lhs' (unArg lhs)
+      equalTerm (btyp iOne) rhs' (unArg rhs)
+      return t
+  where
+    [WithHiding h x] = xs
+checkPath b body ty = __IMPOSSIBLE__
 ---------------------------------------------------------------------------
 -- * Lambda abstractions
 ---------------------------------------------------------------------------
@@ -305,21 +329,35 @@ checkTypedBinding lamOrPi info (A.TLet _ lbs) ret = do
 checkLambda :: Arg A.TypedBinding -> A.Expr -> Type -> TCM Term
 checkLambda (Arg _ (A.TLet _ lbs)) body target =
   checkLetBindings lbs (checkExpr body target)
-checkLambda (Arg info (A.TBind _ xs typ)) body target = do
+checkLambda b@(Arg info (A.TBind _ xs typ)) body target = do
   reportSLn "tc.term.lambda" 60 $ "checkLambda   xs = " ++ show xs
-
+  cubical <- optCubical <$> pragmaOptions
   let numbinds = length xs
+      possiblePath = cubical && numbinds == 1
+                   && (case unScope typ of
+                         A.Underscore{} -> True
+                         _              -> False)
+                   && isRelevant info && visible info
+  reportSLn "tc.term.lambda" 60 $ "possiblePath = " ++ show (possiblePath, numbinds, unScope typ, info)
   TelV tel btyp <- telViewUpTo numbinds target
   if size tel < numbinds || numbinds /= 1
-    then dontUseTargetType
+    then (if possiblePath then trySeeingIfPath else dontUseTargetType)
     else useTargetType tel btyp
   where
+    trySeeingIfPath = do
+      reportSLn "tc.term.lambda" 60 $ "trySeeingIfPath for " ++ show xs
+
+      ifBlockedType target postpone $ \tgt -> do
+          let t = ignoreSharing <$> tgt
+              fallback = dontUseTargetType
+          ifPath t fallback $ checkPath b body t
+    postpone = \ m tgt -> postponeTypeCheckingProblem_ $ CheckExpr (A.Lam A.exprNoRange (A.DomainFull (A.TypedBindings noRange b)) body) tgt
     dontUseTargetType = do
       -- Checking λ (xs : argsT) → body : target
       verboseS "tc.term.lambda" 5 $ tick "lambda-no-target-type"
 
       -- First check that argsT is a valid type
-      argsT <- workOnTypes $ Dom info <$> isType_ typ
+      argsT <- workOnTypes $ setArgInfo info . defaultDom <$> isType_ typ
       -- Andreas, 2015-05-28 Issue 1523
       -- If argsT is a SizeLt, it must be non-empty to avoid non-termination.
       -- TODO: do we need to block checkExpr?
@@ -370,7 +408,7 @@ checkLambda (Arg info (A.TBind _ xs typ)) body target = do
         -- check.
         (pid, argT) <- newProblem $ isTypeEqualTo typ a
         -- Andreas, Issue 630: take name from function type if lambda name is "_"
-        v <- lambdaAddContext x y (Dom info argT) $ checkExpr body btyp
+        v <- lambdaAddContext x y (defaultArgDom info argT) $ checkExpr body btyp
         blockTermOnProblem target (Lam info $ Abs (nameToArgName x) v) pid
 
     useTargetType _ _ = __IMPOSSIBLE__
@@ -471,7 +509,7 @@ checkAbsurdLambda i h e t = do
   t <- instantiateFull t
   ifBlockedType t (\ m t' -> postponeTypeCheckingProblem_ $ CheckExpr e t') $ \ t' -> do
     case ignoreSharing $ unEl t' of
-      Pi dom@(Dom info' a) b
+      Pi dom@(Dom{domInfo = info', unDom = a}) b
         | h /= getHiding info' -> typeError $ WrongHidingInLambda t'
         | not (null $ allMetas a) ->
             postponeTypeCheckingProblem (CheckExpr e t') $
@@ -685,7 +723,8 @@ checkRecordExpression mfs e t = do
       es <- insertMissingFields r meta fs axs
 
       args <- checkArguments_ ExpandLast re es (recTel def `apply` vs) >>= \case
-        (args, remainingTel) | null remainingTel -> return args
+        (elims, remainingTel) | null remainingTel
+                              , Just args <- allApplyElims elims -> return args
         _ -> __IMPOSSIBLE__
       -- Don't need to block here!
       reportSDoc "tc.term.rec" 20 $ text $ "finished record expression"
@@ -787,7 +826,7 @@ checkLiteral lit t = do
 -- Checks @e := ((_ : t0) args) : t@.
 checkArguments' ::
   ExpandHidden -> Range -> [NamedArg A.Expr] -> Type -> Type ->
-  (Args -> Type -> TCM Term) -> TCM Term
+  (Elims -> Type -> TCM Term) -> TCM Term
 checkArguments' exph r args t0 t k = do
   z <- runExceptT $ checkArguments exph r args t0 t
   case z of
@@ -919,7 +958,7 @@ checkExpr e t0 =
             a' <- isType_ a
             b' <- isType_ b
             s <- ptsRule a' b'
-            let v = Pi (Dom info a') (NoAbs underscore b')
+            let v = Pi (defaultArgDom info a') (NoAbs underscore b')
             noFunctionsIntoSize b' $ El s v
             coerce v (sort s) t
         A.Set _ n    -> do
@@ -980,7 +1019,7 @@ checkExpr e t0 =
   tryInsertHiddenLambda e t fallback
     -- Insert hidden lambda if all of the following conditions are met:
         -- type is a hidden function type, {x : A} -> B or {{x : A}} -> B
-    | Pi (Dom info a) b <- ignoreSharing $ unEl t
+    | Pi (Dom{domInfo = info, unDom = a}) b <- ignoreSharing $ unEl t
         , let h = getHiding info
         , notVisible h
         -- expression is not a matching hidden lambda or question mark
@@ -1266,7 +1305,7 @@ inferOrCheckProjApp e o ds args mt = do
               let r  = getRange e
               z <- runExceptT $ checkArguments ExpandLast r (drop (k+1) args) tb tc
               case z of
-                Right (us, trest) -> return (u `apply` us, trest)
+                Right (us, trest) -> return (u `applyE` us, trest)
                 -- We managed to check a part of es and got us1, but es2 remain.
                 Left (us1, es2, trest1) -> do
                   -- In the inference case:
@@ -1275,7 +1314,7 @@ inferOrCheckProjApp e o ds args mt = do
                   tc <- caseMaybe mt newTypeMeta_ return
                   v <- postponeTypeCheckingProblem_ $
                     CheckArgs ExpandLast r es2 trest1 tc $ \ us2 trest ->
-                      coerce (u `apply` us1 `apply` us2) trest tc
+                      coerce (u `applyE` us1 `applyE` us2) trest tc
                   return (v, tc)
 
 
@@ -1422,7 +1461,7 @@ checkApplication hd args e t = do
           tel    <- metaTel args                    -- (x : X) (y : Y x)
           target <- addContext' tel newTypeMeta_      -- Z x y
           let holeType = telePi_ tel target         -- (x : X) (y : Y x) → Z x y
-          (vs, EmptyTel) <- checkArguments_ ExpandLast (getRange args) args tel
+          (Just vs, EmptyTel) <- mapFst allApplyElims <$> checkArguments_ ExpandLast (getRange args) args tel
                                                     -- a b : (x : X) (y : Y x)
           let rho = reverse (map unArg vs) ++# IdS  -- [x := a, y := b]
           equalType (applySubst rho target) t       -- Z a b == A
@@ -1474,8 +1513,8 @@ checkMeta newMeta t i = fst <$> checkOrInferMeta newMeta (Just t) i
 
 -- | Infer the type of a meta variable.
 --   If it is a new one, we create a new meta for its type.
-inferMeta :: (Type -> TCM (MetaId, Term)) -> A.MetaInfo -> TCM (Args -> Term, Type)
-inferMeta newMeta i = mapFst apply <$> checkOrInferMeta newMeta Nothing i
+inferMeta :: (Type -> TCM (MetaId, Term)) -> A.MetaInfo -> TCM (Elims -> Term, Type)
+inferMeta newMeta i = mapFst applyE <$> checkOrInferMeta newMeta Nothing i
 
 -- | Type check a meta variable.
 --   If its type is not given, we return its type, or a fresh one, if it is a new meta.
@@ -1516,19 +1555,19 @@ domainFree info x =
 -- * Applications
 ---------------------------------------------------------------------------
 
-inferHeadDef :: ProjOrigin -> QName -> TCM (Args -> Term, Type)
+inferHeadDef :: ProjOrigin -> QName -> TCM (Elims -> Term, Type)
 inferHeadDef o x = do
   proj <- isProjection x
   let app =
         case proj of
           Nothing -> \ args -> Def x $ map Apply args
           Just p  -> \ args -> projDropParsApply p o args
-  mapFst apply <$> inferDef app x
+  mapFst applyE <$> inferDef app x
 
 -- | Infer the type of a head thing (variable, function symbol, or constructor).
 --   We return a function that applies the head to arguments.
 --   This is because in case of a constructor we want to drop the parameters.
-inferHead :: A.Expr -> TCM (Args -> Term, Type)
+inferHead :: A.Expr -> TCM (Elims -> Term, Type)
 inferHead e = do
   case e of
     (A.Var x) -> do -- traceCall (InferVar x) $ do
@@ -1540,7 +1579,7 @@ inferHead e = do
         ]
       when (unusableRelevance $ getRelevance a) $
         typeError $ VariableIsIrrelevant x
-      return (apply u, unDom a)
+      return (applyE u, unDom a)
     (A.Def x) -> inferHeadDef ProjPrefix x
     (A.Proj o (AmbQ [d])) -> inferHeadDef o d
     (A.Proj{}) -> __IMPOSSIBLE__ -- inferHead will only be called on unambiguous projections
@@ -1561,13 +1600,13 @@ inferHead e = do
       reportSLn "tc.term.con" 7 $ unwords [show c, "has", show n, "parameters."]
 
       -- So when applying the constructor throw away the parameters.
-      return (apply u . genericDrop n, a)
+      return (applyE u . genericDrop n, a)
     (A.Con _) -> __IMPOSSIBLE__  -- inferHead will only be called on unambiguous constructors
     (A.QuestionMark i ii) -> inferMeta (newQuestionMark ii) i
     (A.Underscore i)   -> inferMeta (newValueMeta RunMetaOccursCheck) i
     e -> do
       (term, t) <- inferExpr e
-      return (apply term, t)
+      return (applyE term, t)
 
 inferDef :: (Args -> Term) -> QName -> TCM (Term, Type)
 inferDef mkTerm x =
@@ -1649,7 +1688,8 @@ checkConstructorApplication org t c args = do
                args' = dropArgs pnames args
            -- check the non-parameter arguments
            expandLast <- asks envExpandLast
-           checkArguments' expandLast (getRange c) args' ctype' t $ \us t' -> do
+           checkArguments' expandLast (getRange c) args' ctype' t $ \es t' -> do
+             let us = fromMaybe __IMPOSSIBLE__ (allApplyElims es)
              reportSDoc "tc.term.con" 20 $ nest 2 $ vcat
                [ text "us     =" <+> prettyTCM us
                , text "t'     =" <+> prettyTCM t' ]
@@ -1692,6 +1732,13 @@ checkConstructorApplication org t c args = do
         dropPar _ [] = Nothing
 
 
+-- | "pathAbs (PathView s _ l a x y) t" builds "(\ t) : pv"
+--   Preconditions: PathView is PathType, and t[i0] = x, t[i1] = y
+pathAbs :: PathView -> Abs Term -> TCM Term
+pathAbs (OType _) t = __IMPOSSIBLE__
+pathAbs (PathType s path l a x y) t = do
+  return $ Lam defaultArgInfo t
+
 {- UNUSED CODE, BUT DON'T REMOVE (2012-04-18)
 
     -- Split the arguments to a constructor into those corresponding
@@ -1727,6 +1774,10 @@ checkConstructorApplication org t c args = do
 checkHeadApplication :: A.Expr -> Type -> A.Expr -> [NamedArg A.Expr] -> TCM Term
 checkHeadApplication e t hd args = do
   kit       <- coinductionKit
+  conId     <- fmap getPrimName <$> getBuiltin' builtinConId
+  pOr       <- fmap primFunName <$> getPrimitive' "primPOr"
+  pComp       <- fmap primFunName <$> getPrimitive' "primComp"
+  mglue     <- getPrimitiveName' builtin_glue
   case hd of
     A.Con (AmbQ [c]) | Just c == (nameOfSharp <$> kit) -> do
       -- Type checking # generated #-wrapper. The # that the user can write will be a Def,
@@ -1760,6 +1811,64 @@ checkHeadApplication e t hd args = do
         blockTerm t $ f vs <$ workOnTypes (do
           addContext' eTel $ leqType fType eType
           compareTel t t1 CmpLeq eTel fTel)
+    (A.Def c) | Just c == pComp -> do
+        defaultResult' $ Just $ \ vs t1 -> do
+          case vs of
+            [l,a,phi,u,a0] -> do
+              iz <- Arg defaultArgInfo <$> intervalUnview IZero
+              ty <- elInf $ primPartial <#> (pure $ unArg l `apply` [iz]) <@> (pure $ unArg a `apply` [iz]) <@> (pure $ unArg phi)
+              equalTerm ty -- (El (getSort t1) (apply (unArg a) [iz]))
+                  (Lam defaultArgInfo $ NoAbs "_" $ unArg a0)
+                  (apply (unArg u) [iz])
+            _ -> typeError $ GenericError $ show c ++ " must be fully applied"
+
+
+    (A.Def c) | Just c == conId -> do
+                    defaultResult' $ Just $ \ vs t1 -> do
+                      case vs of
+                       [_,_,_,_,phi,p] -> do
+                          iv@(PathType s _ l a x y) <- idViewAsPath t1
+                          let ty = pathUnview iv
+                          -- the following duplicates reduction of phi
+                          const_x <- blockTerm ty $ do
+                              equalTermOnFace (unArg phi) (El s (unArg a)) (unArg x) (unArg y)
+                              pathAbs iv (NoAbs (stringToArgName "_") (unArg x))
+                          equalTermOnFace (unArg phi) ty (unArg p) const_x   -- G,phi |- p = \ i . x
+
+                          -- phi <- reduce phi
+                          -- forallFaceMaps (unArg phi) $ \ alpha -> do
+                          --   iv@(PathType s _ l a x y) <- idViewAsPath (applySubst alpha t1)
+                          --   let ty = pathUnview iv
+                          --   equalTerm (El s (unArg a)) (unArg x) (unArg y) -- precondition for cx being well-typed at ty
+                          --   cx <- pathAbs iv (NoAbs (stringToArgName "_") (applySubst alpha (unArg x)))
+                          --   equalTerm ty (applySubst alpha (unArg p)) cx   -- G,phi |- p = \ i . x
+                       _ -> typeError $ GenericError $ show c ++ " must be fully applied"
+    (A.Def c) | Just c == pOr -> do
+                    defaultResult' $ Just $ \ vs t1 -> do
+                      case vs of
+                       [l,phi1,phi2,a,u,v] -> do
+                          phi <- intervalUnview (IMin phi1 phi2)
+                          reportSDoc "tc.term.por" 10 $ text (show phi)
+                          -- phi <- reduce phi
+                          -- alphas <- toFaceMaps phi
+                          -- reportSDoc "tc.term.por" 10 $ text (show alphas)
+                          equalTermOnFace phi t1 (unArg u) (unArg v)
+                       _ -> typeError $ GenericError $ show c ++ " must be fully applied"
+    (A.Def c) | Just c == mglue -> do
+                    defaultResult' $ Just $ \ vs t1 -> do
+                      case vs of
+                       [la,lb,bA,phi,bT,f,pf,t,a] -> do
+                          let iinfo = setRelevance Irrelevant defaultArgInfo
+                          v <- runNamesT [] $ do
+                                [f,t] <- mapM (open . unArg) [f,t]
+                                glam iinfo "o" $ \ o -> f <..> o <@> (t <..> o)
+                          ty <- runNamesT [] $ do
+                                [lb,phi,bA] <- mapM (open . unArg) [lb,phi,bA]
+                                elInf $ cl primPartialP <#> lb <@> phi <@> (glam iinfo "o" $ \ _ -> bA)
+                          let a' = Lam iinfo (NoAbs "o" $ unArg a)
+                          equalTerm ty a' v
+
+                       _ -> typeError $ GenericError $ show c ++ " must be fully applied"
 
     (A.Def c) | Just c == (nameOfSharp <$> kit) -> do
       arg <- case args of
@@ -1842,11 +1951,16 @@ checkHeadApplication e t hd args = do
     A.Con _  -> __IMPOSSIBLE__
     _ -> defaultResult
   where
-  defaultResult = do
+  defaultResult = defaultResult' Nothing
+  defaultResult' mk = do
     (f, t0) <- inferHead hd
     expandLast <- asks envExpandLast
     checkArguments' expandLast (getRange hd) args t0 t $ \vs t1 -> do
-      coerce (f vs) t1 t
+      let check = do
+           k <- mk
+           as <- allApplyElims vs
+           pure $ k as t1
+      maybe id (\ ck m -> blockTerm t $ ck >> m) check $ coerce (f vs) t1 t
 
 traceCallE ::
 #if !MIN_VERSION_transformers(0,4,1)
@@ -1886,7 +2000,7 @@ checkKnownArgument
 checkKnownArgument arg [] _ = genericDocError =<< do
   text "Invalid projection parameter " <+> prettyA arg
 checkKnownArgument arg@(Arg info e) (Arg _infov v : vs) t = do
-  (Dom info' a, b) <- mustBePi t
+  (Dom{domInfo = info',unDom = a}, b) <- mustBePi t
   -- Skip the arguments from vs that do not correspond to e
   if not (getHiding info == getHiding info'
           && (notHidden info || maybe True ((absName b ==) . rangedThing) (nameOf e)))
@@ -1912,7 +2026,7 @@ checkNamedArg arg@(Arg info e0) t0 = do
     reportSLn "tc.term.args.named" 75 $ "  arg = " ++ show (deepUnscope arg)
     let checkU = checkMeta (newMetaArg info x) t0
     let checkQ = checkQuestionMark (newInteractionMetaArg info x) t0
-    if not $ isHole e then checkExpr e t0 else localScope $ do
+    if (not $ isHole e) then checkExpr e t0 else localScope $ do
       -- Note: we need localScope here,
       -- as scopedExpr manipulates the scope in the state.
       -- However, we may not pull localScope over checkExpr!
@@ -1936,7 +2050,7 @@ checkNamedArg arg@(Arg info e0) t0 = do
 --   that have to be solved for everything to be well-formed.
 
 checkArguments :: ExpandHidden -> Range -> [NamedArg A.Expr] -> Type -> Type ->
-                  ExceptT (Args, [NamedArg A.Expr], Type) TCM (Args, Type)
+                  ExceptT (Elims, [NamedArg A.Expr], Type) TCM (Elims, Type)
 
 -- Case: no arguments, do not insert trailing hidden arguments: We are done.
 checkArguments DontExpandLast _ [] t0 t1 = return ([], t0)
@@ -1945,12 +2059,12 @@ checkArguments DontExpandLast _ [] t0 t1 = return ([], t0)
 checkArguments exh r [] t0 t1 =
     traceCallE (CheckArguments r [] t0 t1) $ lift $ do
       t1' <- unEl <$> reduce t1
-      implicitArgs (-1) (expand t1') t0
+      mapFst (map Apply) <$> implicitArgs (-1) (expand t1') t0
     where
-      expand (Pi (Dom info _) _)   Hidden = getHiding info /= Hidden &&
+      expand (Pi (Dom{domInfo = info}) _)   Hidden = getHiding info /= Hidden &&
                                             exh == ExpandLast
       expand _                     Hidden = exh == ExpandLast
-      expand (Pi (Dom info _) _) Instance = getHiding info /= Instance
+      expand (Pi (Dom{domInfo = info}) _) Instance = getHiding info /= Instance
       expand _                   Instance = True
       expand _                  NotHidden = False
 
@@ -1976,7 +2090,7 @@ checkArguments exh r args0@(arg@(Arg info e) : args) t0 t1 =
           expand hy        y = hy /= hx || maybe False (y /=) mx
       (nargs, t) <- lift $ implicitNamedArgs (-1) expand t0
       -- Separate names from args.
-      let (mxs, us) = unzip $ map (\ (Arg ai (Named mx u)) -> (mx, Arg ai u)) nargs
+      let (mxs, us) = unzip $ map (\ (Arg ai (Named mx u)) -> (mx, Apply $ Arg ai u)) nargs
           xs        = catMaybes mxs
       -- We are done inserting implicit args.  Now, try to check @arg@.
       ifBlockedType t (\ m t -> throwError (us, args0, t)) $ \ t0' -> do
@@ -2003,9 +2117,10 @@ checkArguments exh r args0@(arg@(Arg info e) : args) t0 t1 =
               -- c) We inserted implicits, but did not find his one.
               | otherwise = lift $ typeError $ WrongNamedArgument arg
 
+        viewPath <- lift pathView'
         -- t0' <- lift $ forcePi (getHiding info) (maybe "_" rangedThing $ nameOf e) t0'
         case ignoreSharing $ unEl t0' of
-          Pi (Dom info' a) b
+          Pi (Dom{domInfo = info', unDom = a}) b
             | getHiding info == getHiding info'
               && (notHidden info || maybe True ((absName b ==) . rangedThing) (nameOf e)) -> do
                 u <- lift $ applyRelevanceToContext (getRelevance info') $ do
@@ -2025,7 +2140,7 @@ checkArguments exh r args0@(arg@(Arg info e) : args) t0 t1 =
                   let e' = e { nameOf = maybe (Just $ unranged $ absName b) Just (nameOf e) }
                   checkNamedArg (Arg info' e') a
                 -- save relevance info' from domain in argument
-                addCheckedArgs us (Arg info' u) $
+                addCheckedArgs us (Apply $ Arg info' u) $
                   checkArguments exh (fuseRange r e) args (absApp b u) t1
             | otherwise -> do
                 reportSDoc "error" 10 $ nest 2 $ vcat
@@ -2035,6 +2150,13 @@ checkArguments exh r args0@(arg@(Arg info e) : args) t0 t1 =
                   , text $ "nameOf e  = " ++ show (nameOf e)
                   ]
                 wrongPi
+          _
+            | notHidden info
+            , PathType s _ _ bA x y <- viewPath $ ignoreSharingType t0' -> do
+                lift $ reportSDoc "tc.term.args" 30 $ text $ show bA
+                u <- lift $ checkExpr (namedThing e) =<< elInf primInterval
+                addCheckedArgs us (IApply (unArg x) (unArg y) u) $
+                  checkArguments exh (fuseRange r e) args (El s $ unArg bA `apply` [argN u]) t1
           _ -> shouldBePi
   where
     addCheckedArgs us u rec =
@@ -2050,7 +2172,7 @@ checkArguments_
   -> Range                -- ^ Range of application.
   -> [NamedArg A.Expr]    -- ^ Arguments to check.
   -> Telescope            -- ^ Telescope to check arguments against.
-  -> TCM (Args, Telescope)
+  -> TCM (Elims, Telescope)
      -- ^ Checked arguments and remaining telescope if successful.
 checkArguments_ exh r args tel = do
     z <- runExceptT $
@@ -2185,7 +2307,7 @@ checkLetBinding b@(A.LetPatBind i p e) ret =
     p <- expandPatternSynonyms p
     (v, t) <- inferExpr' ExpandLast e
     let -- construct a type  t -> dummy  for use in checkLeftHandSide
-        t0 = El (getSort t) $ Pi (Dom defaultArgInfo t) (NoAbs underscore typeDontCare)
+        t0 = El (getSort t) $ Pi (defaultDom t) (NoAbs underscore typeDontCare)
         p0 = Arg defaultArgInfo (Named Nothing p)
     reportSDoc "tc.term.let.pattern" 10 $ vcat
       [ text "let-binding pattern p at type t"
@@ -2195,7 +2317,7 @@ checkLetBinding b@(A.LetPatBind i p e) ret =
         ]
       ]
     fvs <- getContextSize
-    checkLeftHandSide (CheckPattern p EmptyTel t) Nothing [p0] t0 Nothing $ \ (LHSResult _ delta0 ps _t _ asb) -> bindAsPatterns asb $ do
+    checkLeftHandSide (CheckPattern p EmptyTel t) Nothing [p0] t0 Nothing $ \ (LHSResult _ delta0 ps _t _ asb _) -> bindAsPatterns asb $ do
           -- After dropping the free variable patterns there should be a single pattern left.
       let p = case drop fvs ps of [p] -> namedArg p; _ -> __IMPOSSIBLE__
           -- Also strip the context variables from the telescope

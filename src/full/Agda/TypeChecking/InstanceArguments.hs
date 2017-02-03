@@ -58,7 +58,7 @@ initialIFSCandidates t = do
     getContextVars = do
       ctx <- getContext
       let vars = [ Candidate (var i) (raise (i + 1) t) ExplicitStayExplicit (argInfoOverlappable info)
-                 | (Dom info (x, t), i) <- zip ctx [0..]
+                 | (Dom{domInfo = info, unDom = (x, t)}, i) <- zip ctx [0..]
                  , getHiding info == Instance
                  , not (unusableRelevance $ argInfoRelevance info)
                  ]
@@ -80,7 +80,7 @@ initialIFSCandidates t = do
       env <- asks envLetBindings
       env <- mapM (getOpen . snd) $ Map.toList env
       let lets = [ Candidate v t ExplicitStayExplicit False
-                 | (v, Dom info t) <- env
+                 | (v, Dom{domInfo = info, unDom = t}) <- env
                  , getHiding info == Instance
                  , not (unusableRelevance $ argInfoRelevance info)
                  ]
@@ -345,6 +345,8 @@ areThereNonRigidMetaArguments t = case ignoreSharing t of
     areThereNonRigidMetaArgs (Proj{}  : xs) = areThereNonRigidMetaArgs xs
     areThereNonRigidMetaArgs (Apply x : xs) = do
       ifJustM (isNonRigidMeta $ unArg x) (return . Just) (areThereNonRigidMetaArgs xs)
+    areThereNonRigidMetaArgs (IApply x y v : xs) = areThereNonRigidMetaArgs $ map (Apply . defaultArg) [x, y, v] ++ xs -- TODO Andrea HACK
+
 
     isNonRigidMeta :: Term -> TCM (Maybe MetaId)
     isNonRigidMeta v =

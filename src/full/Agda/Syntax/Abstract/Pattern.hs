@@ -26,6 +26,7 @@ instance MapNamedArgPattern NAP where
       VarP{}    -> f p
       WildP{}   -> f p
       DotP{}    -> f p
+      EqualP{}  -> f p
       LitP{}    -> f p
       AbsurdP{} -> f p
       ProjP{}   -> f p

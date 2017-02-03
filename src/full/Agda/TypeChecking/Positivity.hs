@@ -526,7 +526,7 @@ instance ComputeOccurrences a => ComputeOccurrences (Abs a) where
 instance ComputeOccurrences a => ComputeOccurrences (Elim' a) where
   occurrences Proj{}    = __IMPOSSIBLE__
   occurrences (Apply a) = occurrences a
-
+  occurrences (IApply x y a) = occurrences (x,(y,a)) -- TODO Andrea: conservative
 instance ComputeOccurrences a => ComputeOccurrences (Arg a) where
   occurrences = occurrences . unArg
 

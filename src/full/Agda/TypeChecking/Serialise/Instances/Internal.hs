@@ -62,10 +62,12 @@ instance EmbPrj a => EmbPrj (Drop a) where
 
 instance EmbPrj a => EmbPrj (Elim' a) where
   icod_ (Apply a)  = icode1' a
+  icod_ (IApply x y a) = icode3 0 x y a
   icod_ (Proj a b) = icode2 0 a b
 
   value = vcase valu where
     valu [a]       = valu1 Apply a
+    valu [0,x,y,a] = valu3 IApply x y a
     valu [0, a, b] = valu2 Proj a b
     valu _         = malformed
 
@@ -211,10 +213,10 @@ instance EmbPrj MutualId where
   value n         = MutId `fmap` value n
 
 instance EmbPrj Definition where
-  icod_ (Defn a b c d e f g h i j k l m) = icode13' a b (P.killRange c) d e f g h i j k l m
+  icod_ (Defn a b c d e f g h i j k l m n) = icode14' a b (P.killRange c) d e f g h i j k l m n
 
   value = vcase valu where
-    valu [a, b, c, d, e, f, g, h, i, j, k, l, m] = valu13 Defn a b c d e f g h i j k l m
+    valu [a, b, c, d, e, f, g, h, i, j, k, l, m, n] = valu14 Defn a b c d e f g h i j k l m n
     valu _                                       = malformed
 
 instance EmbPrj NLPat where
@@ -312,8 +314,8 @@ instance EmbPrj Defn where
   icod_ (Axiom       a b)                         = icode2 0 a b
   icod_ (Function    a b _ c d e f g h i j k m n) = icode13 1 a b c d e f g h i j k m n
   icod_ (Datatype    a b c d e f g h i j k)       = icode11 2 a b c d e f g h i j k
-  icod_ (Record      a b c d e f g h i j k)       = icode11 3 a b c d e f g h i j k
-  icod_ (Constructor a b c d e f g h)             = icode8 4 a b c d e f g h
+  icod_ (Record      a b c d e f g h i j k l)     = icode12 3 a b c d e f g h i j k l
+  icod_ (Constructor a b c d e f g h i)           = icode9 4 a b c d e f g h i
   icod_ (Primitive   a b c d)                     = icode4 5 a b c d
   icod_ AbstractDefn                              = __IMPOSSIBLE__
 
@@ -321,8 +323,8 @@ instance EmbPrj Defn where
     valu [0, a, b]                                  = valu2 Axiom a b
     valu [1, a, b, c, d, e, f, g, h, i, j, k, m, n] = valu13 (\ a b -> Function a b Nothing) a b c d e f g h i j k m n
     valu [2, a, b, c, d, e, f, g, h, i, j, k]       = valu11 Datatype a b c d e f g h i j k
-    valu [3, a, b, c, d, e, f, g, h, i, j, k]       = valu11 Record  a b c d e f g h i j k
-    valu [4, a, b, c, d, e, f, g, h]                = valu8 Constructor a b c d e f g h
+    valu [3, a, b, c, d, e, f, g, h, i, j, k, l]    = valu12 Record  a b c d e f g h i j k l
+    valu [4, a, b, c, d, e, f, g, h, i]             = valu9 Constructor a b c d e f g h i
     valu [5, a, b, c, d]                            = valu4 Primitive   a b c d
     valu _                                          = malformed
 
@@ -345,10 +347,10 @@ instance EmbPrj a => EmbPrj (WithArity a) where
     valu _      = malformed
 
 instance EmbPrj a => EmbPrj (Case a) where
-  icod_ (Branches a b c d) = icode4' a b c d
+  icod_ (Branches a b c d e) = icode5' a b c d e
 
   value = vcase valu where
-    valu [a, b, c, d] = valu4 Branches a b c d
+    valu [a, b, c, d, e] = valu5 Branches a b c d e
     valu _            = malformed
 
 instance EmbPrj CompiledClauses where
@@ -390,10 +392,10 @@ instance EmbPrj I.Clause where
     valu _                     = malformed
 
 instance EmbPrj I.ConPatternInfo where
-  icod_ (ConPatternInfo a b) = icode2' a b
+  icod_ (ConPatternInfo a b c) = icode3' a b c
 
   value = vcase valu where
-    valu [a, b] = valu2 ConPatternInfo a b
+    valu [a, b, c] = valu3 ConPatternInfo a b c
     valu _      = malformed
 
 instance EmbPrj I.DBPatVar where

@@ -86,6 +86,19 @@ getPrimitive :: String -> TCM PrimFun
 getPrimitive x =
   fromMaybeM (typeError $ NoSuchPrimitiveFunction x) $ getPrimitive' x
 
+getPrimitiveTerm :: String -> TCM Term
+getPrimitiveTerm x = (`Def` []) <$> primFunName <$> getPrimitive x
+
+getPrimitiveTerm' :: HasBuiltins m => String -> m (Maybe Term)
+getPrimitiveTerm' x = fmap (`Def` []) <$> getPrimitiveName' x
+
+getTerm' :: HasBuiltins m => String -> m (Maybe Term)
+getTerm' x = mplus <$> getBuiltin' x <*> getPrimitiveTerm' x
+
+getName' :: HasBuiltins m => String -> m (Maybe QName)
+getName' x = mplus <$> getBuiltinName' x <*> getPrimitiveName' x
+
+
 -- | Rewrite a literal to constructor form if possible.
 constructorForm :: Term -> TCM Term
 constructorForm v = constructorForm' primZero primSuc v
@@ -106,6 +119,13 @@ constructorForm' pZero pSuc v =
 primInteger, primIntegerPos, primIntegerNegSuc,
     primFloat, primChar, primString, primUnit, primUnitUnit, primBool, primTrue, primFalse,
     primList, primNil, primCons, primIO, primNat, primSuc, primZero,
+    primPath, primPathP, primInterval, primPathAbs, primIZero, primIOne, primPartial, primPartialP,
+    primIMin, primIMax, primINeg,
+    primIsOne, primItIsOne, primIsOne1, primIsOne2, primIsOneEmpty,
+    primSub, primSubIn, primSubOut,
+    primId, primConId, primIdElim,
+    primIsEquiv, primPathToEquiv, primGlue, prim_glue, prim_unglue,
+    primCompGlue, primFaceForall,
     primNatPlus, primNatMinus, primNatTimes, primNatDivSucAux, primNatModSucAux,
     primNatEquality, primNatLess,
     primSizeUniv, primSize, primSizeLt, primSizeSuc, primSizeInf, primSizeMax,
@@ -159,6 +179,35 @@ primList         = getBuiltin builtinList
 primNil          = getBuiltin builtinNil
 primCons         = getBuiltin builtinCons
 primIO           = getBuiltin builtinIO
+primId           = getBuiltin builtinId
+primConId        = getBuiltin builtinConId
+primIdElim       = getPrimitiveTerm builtinIdElim
+primPath         = getBuiltin builtinPath
+primPathP        = getBuiltin builtinPathP
+primInterval     = getBuiltin builtinInterval
+primPathAbs      = getPrimitiveTerm "primPathAbs"
+primIZero        = getBuiltin builtinIZero
+primIOne         = getBuiltin builtinIOne
+primIMin         = getPrimitiveTerm builtinIMin
+primIMax         = getPrimitiveTerm builtinIMax
+primINeg         = getPrimitiveTerm builtinINeg
+primPartial      = getPrimitiveTerm "primPartial"
+primPartialP     = getPrimitiveTerm "primPartialP"
+primIsOne        = getBuiltin builtinIsOne
+primItIsOne      = getBuiltin builtinItIsOne
+primIsEquiv      = getBuiltin builtinIsEquiv
+primPathToEquiv  = getBuiltin builtinPathToEquiv
+primGlue         = getPrimitiveTerm builtinGlue
+prim_glue        = getPrimitiveTerm builtin_glue
+prim_unglue      = getPrimitiveTerm builtin_unglue
+primCompGlue     = getPrimitiveTerm builtinCompGlue
+primFaceForall   = getPrimitiveTerm builtinFaceForall
+primIsOne1       = getBuiltin builtinIsOne1
+primIsOne2       = getBuiltin builtinIsOne2
+primIsOneEmpty   = getBuiltin builtinIsOneEmpty
+primSub          = getBuiltin builtinSub
+primSubIn        = getBuiltin builtinSubIn
+primSubOut       = getPrimitiveTerm builtinSubOut
 primNat          = getBuiltin builtinNat
 primSuc          = getBuiltin builtinSuc
 primZero         = getBuiltin builtinZero
@@ -286,6 +335,13 @@ builtinNat, builtinSuc, builtinZero, builtinNatPlus, builtinNatMinus,
   builtinFloat, builtinChar, builtinString, builtinUnit, builtinUnitUnit,
   builtinBool, builtinTrue, builtinFalse,
   builtinList, builtinNil, builtinCons, builtinIO,
+  builtinPath, builtinPathP, builtinInterval, builtinPathAbs, builtinIZero, builtinIOne, builtinPartial, builtinPartialP,
+  builtinIMin, builtinIMax, builtinINeg,
+  builtinIsOne,  builtinItIsOne, builtinIsOne1, builtinIsOne2, builtinIsOneEmpty,
+  builtinSub, builtinSubIn, builtinSubOut,
+  builtinIsEquiv, builtinPathToEquiv, builtinGlue, builtin_glue, builtin_unglue,
+  builtinCompGlue, builtinFaceForall,
+  builtinId, builtinConId, builtinIdElim,
   builtinSizeUniv, builtinSize, builtinSizeLt,
   builtinSizeSuc, builtinSizeInf, builtinSizeMax,
   builtinInf, builtinSharp, builtinFlat,
@@ -352,6 +408,35 @@ builtinList                          = "LIST"
 builtinNil                           = "NIL"
 builtinCons                          = "CONS"
 builtinIO                            = "IO"
+builtinId                            = "ID"
+builtinConId                         = "CONID"
+builtinIdElim                        = "primIdElim"
+builtinPath                          = "PATH"
+builtinPathP                         = "PATHP"
+builtinInterval                      = "INTERVAL"
+builtinIMin                          = "primIMin"
+builtinIMax                          = "primIMax"
+builtinINeg                          = "primINeg"
+builtinPathAbs                       = "PATHABS"
+builtinIZero                         = "IZERO"
+builtinIOne                          = "IONE"
+builtinPartial                       = "PARTIAL"
+builtinPartialP                      = "PARTIALP"
+builtinIsOne                         = "ISONE"
+builtinItIsOne                       = "ITISONE"
+builtinIsEquiv                       = "ISEQUIV"
+builtinPathToEquiv                   = "PATHTOEQUIV"
+builtinGlue                          = "primGlue"
+builtin_glue                         = "prim^glue"
+builtin_unglue                       = "prim^unglue"
+builtinCompGlue                      = "COMPGLUE"
+builtinFaceForall                    = "primFaceForall"
+builtinIsOne1                        = "ISONE1"
+builtinIsOne2                        = "ISONE2"
+builtinIsOneEmpty                    = "ISONEEMPTY"
+builtinSub                           = "SUB"
+builtinSubIn                         = "SUBIN"
+builtinSubOut                        = "primSubOut"
 builtinSizeUniv                      = "SIZEUNIV"
 builtinSize                          = "SIZE"
 builtinSizeLt                        = "SIZELT"
@@ -482,6 +567,14 @@ builtinsNoDef =
   , builtinSizeSuc
   , builtinSizeInf
   , builtinSizeMax
+  , builtinConId
+  , builtinInterval
+  , builtinPartial
+  , builtinPartialP
+  , builtinIsOne
+  , builtinSub
+  , builtinIZero
+  , builtinIOne
   ]
 
 -- | The coinductive primitives.
@@ -507,6 +600,152 @@ coinductionKit' = do
 
 coinductionKit :: TCM (Maybe CoinductionKit)
 coinductionKit = tryMaybe coinductionKit'
+
+
+------------------------------------------------------------------------
+-- * Path equality
+------------------------------------------------------------------------
+
+getPrimName :: Term -> QName
+getPrimName ty = do
+  let lamV (Lam i b)  = mapFst (getHiding i :) $ lamV (unAbs b)
+      lamV (Pi _ b)   = lamV (unEl $ unAbs b)
+      lamV (Shared p) = lamV (derefPtr p)
+      lamV v          = ([], v)
+  case lamV ty of
+            (_, Def path _) -> path
+            (_, Con nm _ _)   -> conName nm
+            (_, _)          -> __IMPOSSIBLE__
+
+getBuiltinName', getPrimitiveName' :: HasBuiltins m => String -> m (Maybe QName)
+getBuiltinName' n = fmap getPrimName <$> getBuiltin' n
+getPrimitiveName' n = fmap primFunName <$> getPrimitive' n
+
+isPrimitive :: HasBuiltins m => String -> QName -> m Bool
+isPrimitive n q = (Just q ==) <$> getPrimitiveName' n
+
+intervalView' :: HasBuiltins m => m (Term -> IntervalView)
+intervalView' = do
+  iz <- getBuiltinName' builtinIZero
+  io <- getBuiltinName' builtinIOne
+  imax <- getPrimitiveName' "primIMax"
+  imin <- getPrimitiveName' "primIMin"
+  ineg <- getPrimitiveName' "primINeg"
+  return $ \ t ->
+    case ignoreSharing t of
+      Def q es ->
+        case es of
+          [Apply x,Apply y] | Just q == imin -> IMin x y
+          [Apply x,Apply y] | Just q == imax -> IMax x y
+          [Apply x]         | Just q == ineg -> INeg x
+          _                 -> OTerm t
+      Con q _ [] | Just (conName q) == iz -> IZero
+                 | Just (conName q) == io -> IOne
+      _ -> OTerm t
+
+intervalView :: HasBuiltins m => Term -> m IntervalView
+intervalView t = do
+  f <- intervalView'
+  return (f t)
+
+intervalUnview :: HasBuiltins m => IntervalView -> m Term
+intervalUnview t = do
+  f <- intervalUnview'
+  return (f t)
+
+intervalUnview' :: HasBuiltins m => m (IntervalView -> Term)
+intervalUnview' = do
+  iz <- fromMaybe __IMPOSSIBLE__ <$> getBuiltin' builtinIZero -- should it be a type error instead?
+  io <- fromMaybe __IMPOSSIBLE__ <$> getBuiltin' builtinIOne
+  imin <- (`Def` []) <$> fromMaybe __IMPOSSIBLE__ <$> getPrimitiveName' "primIMin"
+  imax <- (`Def` []) <$> fromMaybe __IMPOSSIBLE__ <$> getPrimitiveName' "primIMax"
+  ineg <- (`Def` []) <$> fromMaybe __IMPOSSIBLE__ <$> getPrimitiveName' "primINeg"
+  return $ \ v -> case v of
+             IZero -> iz
+             IOne  -> io
+             IMin x y -> apply imin [x,y]
+             IMax x y -> apply imax [x,y]
+             INeg x   -> apply ineg [x]
+             OTerm t -> t
+
+------------------------------------------------------------------------
+-- * Path equality
+------------------------------------------------------------------------
+
+-- | Get the name of the equality type.
+primPathName :: TCM QName
+primPathName = do
+  ty <- primPath
+  let lamV (Lam i b)  = mapFst (getHiding i :) $ lamV (unAbs b)
+      lamV (Shared p) = lamV (derefPtr p)
+      lamV v          = ([], v)
+  return $ case lamV ty of
+            (_, Def path _) -> path
+            (_, _)          -> __IMPOSSIBLE__
+
+-- | Get the name of the equality type.
+primPathName' :: TCM (Maybe QName)
+primPathName' = do
+  mty <- getBuiltin' builtinPath
+  let lamV (Lam i b)  = mapFst (getHiding i :) $ lamV (unAbs b)
+      lamV (Shared p) = lamV (derefPtr p)
+      lamV v          = ([], v)
+  case mty of
+   Nothing -> return Nothing
+   Just ty -> return $ case lamV ty of
+                (_, Def path _) -> Just path
+                (_, _)          -> __IMPOSSIBLE__
+
+-- | Check whether the type is actually an path (lhs ≡ rhs)
+--   and extract lhs, rhs, and their type.
+--
+--   Precondition: type is reduced.
+
+pathView :: Type -> TCM PathView
+pathView t0 = do
+  view <- pathView'
+  return $ view t0
+
+pathView' :: TCM (Type -> PathView)
+pathView' = do
+ mpath <- primPathName'
+ mpathp <- getBuiltinName' builtinPathP
+ return $ \ t0@(El s t) ->
+  case ignoreSharing t of
+    Def path' [ Apply level , Apply typ , Apply lhs , Apply rhs ]
+      | Just path' == mpath, Just path <- mpathp -> PathType s path level (lam_i <$> typ) lhs rhs
+      where lam_i = Lam defaultArgInfo . NoAbs "_"
+    Def path' [ Apply level , Apply typ , Apply lhs , Apply rhs ]
+      | Just path' == mpathp, Just path <- mpathp -> PathType s path level typ lhs rhs
+    _ -> OType t0
+
+-- | Non dependent Path
+idViewAsPath :: Type -> TCM PathView
+idViewAsPath t0@(El s t) = do
+  mid <- fmap getPrimName <$> getBuiltin' builtinId
+  mpath <- fmap getPrimName <$> getBuiltin' builtinPath
+  case mid of
+   Just path | isJust mpath -> case ignoreSharing t of
+    Def path' [ Apply level , Apply typ , Apply lhs , Apply rhs ]
+      | path' == path -> return $ PathType s (fromJust mpath) level typ lhs rhs
+    _ -> return $ OType t0
+   _ -> return $ OType t0
+
+boldPathView :: Type -> PathView
+boldPathView t0@(El s t) = do
+  case ignoreSharing t of
+    Def path' [ Apply level , Apply typ , Apply lhs , Apply rhs ]
+      -> PathType s path' level typ lhs rhs
+    _ -> OType t0
+
+-- | Revert the 'PathView'.
+--
+--   Postcondition: type is reduced.
+
+pathUnview :: PathView -> Type
+pathUnview (OType t) = t
+pathUnview (PathType s path l t lhs rhs) =
+  El s $ Def path $ map Apply [l, t, lhs, rhs]
 
 ------------------------------------------------------------------------
 -- * Builtin equality

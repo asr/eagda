@@ -48,17 +48,20 @@ instance PrettyTCM ElimType where
   prettyTCM (ProjT a) = text "." <> prettyTCM a
   prettyTCM (ArgT a)  = prettyTCM a
 
+-- prerequisite: no IApply elims
 smashType :: Type -> Term -> Elims -> TCM [ElimType]
 smashType a _ [] = return []
 smashType a self (e : es) =
   case e of
     Apply v -> do
-      Pi a b <- ignoreSharing <$> reduce (unEl a)
+      TelV (ExtendTel a (Abs x EmptyTel)) b' <- telViewUpToPath 1 =<< reduce a
+      let b = Abs x b'
       (ArgT (unDom a) :) <$> smashType (absApp b $ unArg v) (self `applyE` [e]) es
     Proj o f -> do
       a <- reduce a
       Just (_, self, a) <- projectTyped self a o f
       (ProjT a :) <$> smashType a self es
+    IApply{} -> __IMPOSSIBLE__
 
 smashTel :: Telescope -> [Term] -> [Type]
 smashTel _ []                       = []
@@ -110,6 +113,7 @@ noAsPatterns p =
     A.ProjP{}       -> True
     A.WildP{}       -> True
     A.DotP{}        -> True
+    A.EqualP{}      -> True
     A.AbsurdP{}     -> True
     A.LitP{}        -> True
     A.PatternSynP{} -> __IMPOSSIBLE__

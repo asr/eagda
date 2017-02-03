@@ -30,6 +30,7 @@ import Agda.TypeChecking.Constraints
 import Agda.TypeChecking.EtaContract
 import Agda.TypeChecking.Functions
 import Agda.TypeChecking.Irrelevance
+import Agda.TypeChecking.Names
 import Agda.TypeChecking.Primitive
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Substitute
@@ -45,6 +46,7 @@ import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.Null
 import Agda.Utils.Size
+import Agda.Utils.Permutation
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -86,6 +88,64 @@ coreBuiltins =
   , (builtinQName              |-> builtinPostulate tset)
   , (builtinAgdaMeta           |-> builtinPostulate tset)
   , (builtinIO                 |-> builtinPostulate (tset --> tset))
+  , (builtinPath               |-> builtinPostulate (hPi "a" (el primLevel) $
+                                                hPi "A" (return $ sort $ varSort 0) $
+                                                (El (varSort 1) <$> varM 0) -->
+                                                (El (varSort 1) <$> varM 0) -->
+                                                return (sort $ varSort 1)))
+  , (builtinPathP              |-> builtinPostulate (hPi "a" (el primLevel) $
+                                                nPi "A" (tinterval --> (return $ sort $ varSort 0)) $
+                                                (El (varSort 1) <$> varM 0 <@> primIZero) -->
+                                                (El (varSort 1) <$> varM 0 <@> primIOne) -->
+                                                return (sort $ varSort 1)))
+  , (builtinInterval           |-> BuiltinData tSetOmega [builtinIZero,builtinIOne])
+  , (builtinSub                |-> builtinPostulate (runNamesT [] $ hPi' "a" (el $ cl primLevel) $ \ a ->
+                                                     hPi' "A" (el' (cl primLevelSuc <@> a) (Sort . tmSort <$> a)) $ \ bA ->
+                                                     nPi' "φ" (elInf $ cl primInterval) $ \ phi ->
+                                                     elInf (cl primPartial <#> a <@> bA <@> phi) --> (return $ sort Inf)
+                                                    ))
+  , (builtinSubIn              |-> builtinPostulate (runNamesT [] $
+                                                     hPi' "a" (el $ cl primLevel) $ \ a ->
+                                                     hPi' "A" (el' (cl primLevelSuc <@> a) (Sort . tmSort <$> a)) $ \ bA ->
+                                                     hPi' "φ" (elInf $ cl primInterval) $ \ phi ->
+                                                     nPi' "x" (el' (Sort . tmSort <$> a) bA) $ \ x ->
+                                                     elInf $ cl primSub <#> a <#> bA <@> phi <@> (lam "o" $ \ _ -> x)))
+  , (builtinIZero              |-> BuiltinDataCons (elInf primInterval))
+  , (builtinIOne               |-> BuiltinDataCons (elInf primInterval))
+  , (builtinPartial            |-> BuiltinPrim "primPartial" (const $ return ()))
+  , (builtinPartialP           |-> BuiltinPrim "primPartialP" (const $ return ()))
+  , (builtinIsOne              |-> builtinPostulate (tinterval --> return (sort $ Inf)))
+  , (builtinItIsOne            |-> builtinPostulate (elInf $ primIsOne <@> primIOne))
+  , (builtinIsOne1             |-> builtinPostulate (runNamesT [] $
+                                                     nPi' "i" (cl tinterval) $ \ i ->
+                                                     nPi' "j" (cl tinterval) $ \ j ->
+                                                     nPi' "i1" (elInf $ cl primIsOne <@> i) $ \ i1 ->
+                                                     (elInf $ cl primIsOne <@> (cl (getPrimitiveTerm "primIMax") <@> i <@> j))))
+  , (builtinIsOne2             |-> builtinPostulate (runNamesT [] $
+                                                     nPi' "i" (cl tinterval) $ \ i ->
+                                                     nPi' "j" (cl tinterval) $ \ j ->
+                                                     nPi' "j1" (elInf $ cl primIsOne <@> j) $ \ j1 ->
+                                                     (elInf $ cl primIsOne <@> (cl (getPrimitiveTerm "primIMax") <@> i <@> j))))
+  , (builtinIsOneEmpty         |-> builtinPostulate (runNamesT [] $
+                                                     hPi' "l" (el $ cl primLevel) $ \ l ->
+                                                     hPi' "A" (pPi' "o" (cl primIZero) $ \ _ ->
+                                                                    el' (cl primLevelSuc <@> l) (Sort . tmSort <$> l)) $ \ bA ->
+                                                     pPi' "o" (cl primIZero) (\ o -> el' l $ gApply' (setRelevance Irrelevant defaultArgInfo) bA o)))
+
+  , (builtinId                 |-> builtinPostulate (hPi "a" (el primLevel) $
+                                                hPi "A" (return $ sort $ varSort 0) $
+                                                (El (varSort 1) <$> varM 0) -->
+                                                (El (varSort 1) <$> varM 0) -->
+                                                return (sort $ varSort 1)))
+  , (builtinConId                 |-> builtinPostulate (hPi "a" (el primLevel) $
+                                                hPi "A" (return $ sort $ varSort 0) $
+                                                hPi "x" (El (varSort 1) <$> varM 0) $
+                                                hPi "y" (El (varSort 2) <$> varM 1) $
+                                                tinterval --> (El (varSort 3) <$> primPath <#> varM 3 <#> varM 2 <@> varM 1 <@> varM 0) -->
+                                                (El (varSort 3) <$> primId <#> varM 3 <#> varM 2 <@> varM 1 <@> varM 0)))
+  , (builtinIsEquiv            |-> BuiltinUnknown Nothing (const $ const $ return ()))
+  , (builtinPathToEquiv        |-> BuiltinUnknown Nothing (const $ const $ return ()))
+  , (builtinCompGlue           |-> BuiltinUnknown Nothing (const $ const $ return ()))
   , (builtinAgdaSort           |-> BuiltinData tset [builtinAgdaSortSet, builtinAgdaSortLit, builtinAgdaSortUnsupported])
   , (builtinAgdaTerm           |-> BuiltinData tset
                                      [ builtinAgdaTermVar, builtinAgdaTermLam, builtinAgdaTermExtLam
@@ -225,6 +285,7 @@ coreBuiltins =
   where
         (|->) = BuiltinInfo
 
+        v0,v1,v2,v3 :: TCM Term
         v0 = varM 0
         v1 = varM 1
         v2 = varM 2
@@ -275,6 +336,7 @@ coreBuiltins =
         tclause    = el primAgdaClause
         tTCM l a   = elV l (primAgdaTCM <#> varM l <@> a)
         tTCM_ a    = el (primAgdaTCM <#> primLevelZero <@> a)
+        tinterval  = El Inf <$> primInterval
 
         verifyPlus plus =
             verify ["n","m"] $ \(@@) zero suc (==) (===) choice -> do
@@ -672,6 +734,39 @@ bindBuiltinNoDef b q = do
                 , funTerminates = Just True
                 }
             | otherwise = Axiom Nothing []
-
+    Just (BuiltinPrim s _verify) -> do
+      PrimImpl t pf <- lookupPrimitiveFunction s
+      bindPrimitive s (pf {primFunName = q})
+      addConstant q $
+        defaultDefn defaultArgInfo q t $
+          Primitive ConcreteDef -- TODO fix (Info.defAbstract i)
+              s []
+              (Just (CC.Done [] $ Def q []))
+    Just (BuiltinDataCons mt) -> do
+      t <- mt
+      d <- return $! getPrimName $ unEl t
+      let
+        ch = ConHead q Inductive []
+        def = Constructor 0 0 ch d ConcreteDef Inductive Nothing [] Nothing -- Andrea TODO: fix zeros
+      addConstant q $ defaultDefn defaultArgInfo q t def
+      bindBuiltinName b $ Con ch ConOSystem []
+    Just (BuiltinData mt cs) -> do
+      t <- mt
+      addConstant q $ defaultDefn defaultArgInfo q t def
+      bindBuiltinName b $ Def q []
+      where
+        def = Datatype
+              { dataPars       = 0
+              , dataSmallPars  = Perm 0 []
+              , dataNonLinPars = Drop 0 $ Perm 0 []
+              , dataIxs        = 0
+              , dataInduction  = Inductive
+              , dataClause     = Nothing
+              , dataCons       = []     -- Constructors are added later
+              , dataSort       = Inf
+              , dataAbstr      = ConcreteDef
+              , dataMutual     = []
+              , dataTPTPRole   = Nothing
+              }
     Just{}  -> __IMPOSSIBLE__
     Nothing -> __IMPOSSIBLE__ -- typeError $ NoSuchBuiltinName b

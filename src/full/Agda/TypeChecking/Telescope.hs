@@ -18,6 +18,7 @@ import Agda.Syntax.Internal
 import Agda.Syntax.Internal.Pattern
 import Agda.Syntax.Position
 
+import Agda.TypeChecking.Monad.Builtin
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Substitute
@@ -104,13 +105,13 @@ teleArgNames = map (argFromDom . fmap fst) . telToList
 teleArgs :: (DeBruijn a) => Telescope -> [Arg a]
 teleArgs tel =
   [ Arg info (debruijnNamedVar n i)
-  | (i, Dom info (n,_)) <- zip (downFrom $ size l) l ]
+  | (i, Dom {domInfo = info, unDom = (n,_)}) <- zip (downFrom $ size l) l ]
   where l = telToList tel
 
 teleNamedArgs :: (DeBruijn a) => Telescope -> [NamedArg a]
 teleNamedArgs tel =
   [ Arg info (Named (Just $ Ranged noRange $ argNameToString name) (debruijnNamedVar name i))
-  | (i, Dom info (name,_)) <- zip (downFrom $ size l) l ]
+  | (i, Dom {domInfo = info, unDom = (name,_)}) <- zip (downFrom $ size l) l ]
   where l = telToList tel
 
 -- | A variant of `teleNamedArgs` which takes the argument names (and the argument info)
@@ -120,7 +121,7 @@ teleNamedArgs tel =
 tele2NamedArgs :: (DeBruijn a) => Telescope -> Telescope -> [NamedArg a]
 tele2NamedArgs tel0 tel =
   [ Arg info (Named (Just $ Ranged noRange $ argNameToString argName) (debruijnNamedVar varName i))
-  | (i, Dom info (argName,_), Dom _ (varName,_)) <- zip3 (downFrom $ size l) l0 l ]
+  | (i, Dom{domInfo = info, unDom = (argName,_)}, Dom{unDom = (varName,_)}) <- zip3 (downFrom $ size l) l0 l ]
   where
   l  = telToList tel
   l0 = telToList tel0
@@ -235,6 +236,17 @@ splitTelescopeExact is tel = guard ok $> SplitTel tel1 tel2 perm
     m     = size is
     (tel1, tel2) = telFromList -*- telFromList $ splitAt m $ telToList tel'
 
+instantiateTelescopeN
+  :: Telescope    -- ^ ⊢ Γ
+  -> [(Int,Term)] -- ^ Γ ⊢ var k_i : A_i ascending order, Γ ⊢ u_i : A_i
+  -> Maybe (Telescope,    -- ⊢ Γ'
+            Substitution) -- Γ' ⊢ σ : Γ
+instantiateTelescopeN tel []         = return (tel, IdS)
+instantiateTelescopeN tel ((k,t):xs) = do
+  (tel', sigma, _) <- instantiateTelescope tel k t
+  (tel'', sigma')  <- instantiateTelescopeN tel' (map (subtract 1 -*- applyPatSubst sigma) xs)
+  return (tel'', applyPatSubst sigma sigma')
+
 -- | Try to instantiate one variable in the telescope (given by its de Bruijn
 --   level) with the given value, returning the new telescope and a
 --   substitution to the old one. Returns Nothing if the given value depends
@@ -288,7 +300,7 @@ expandTelescopeVar gamma k delta c = (tel', rho)
     (ts1,a:ts2) = fromMaybe __IMPOSSIBLE__ $
                     splitExactlyAt k $ telToList gamma
 
-    cpi         = ConPatternInfo
+    cpi         = noConPatternInfo
       { conPRecord = Just ConOSystem
       , conPType   = Just $ snd <$> argFromDom a
       }
@@ -323,6 +335,41 @@ telViewUpTo' n p t = do
     _            -> return $ TelV EmptyTel t
   where
     absV a x (TelV tel t) = TelV (ExtendTel a (Abs x tel)) t
+
+telViewPath :: Type -> TCM TelView
+telViewPath = telViewUpToPath (-1)
+
+-- | @telViewUpToPath n t@ takes off $t$
+--   the first @n@ (or arbitrary many if @n < 0@) function domains or Path types.
+telViewUpToPath :: Int -> Type -> TCM TelView
+telViewUpToPath 0 t = return $ TelV EmptyTel t
+telViewUpToPath n t = do
+  vt <- pathViewAsPi $ t
+  case vt of
+    Left (a,b)     -> absV a (absName b) <$> telViewUpToPath (n - 1) (absBody b)
+    Right (El _ t) | Pi a b <- ignoreSharing t
+                   -> absV a (absName b) <$> telViewUpToPath (n - 1) (absBody b)
+    _              -> return $ TelV EmptyTel t
+  where
+    absV a x (TelV tel t) = TelV (ExtendTel a (Abs x tel)) t
+
+pathViewAsPi :: Type -> TCM (Either (Dom Type, Abs Type) Type)
+pathViewAsPi t = either (Left . fst) Right <$> pathViewAsPi' t
+
+pathViewAsPi' :: Type -> TCM (Either ((Dom Type, Abs Type), (Term,Term)) Type)
+pathViewAsPi' t = do
+  t <- pathView =<< reduce t
+  case t of
+    PathType s l p a x y -> do
+      let name | Lam _ (Abs n _) <- unArg a = n
+               | otherwise = "i"
+      i <- El Inf <$> primInterval
+      return $ Left $ ((defaultDom $ i, Abs name $ El (raise 1 s) $ raise 1 (unArg a) `apply` [defaultArg $ var 0]), (unArg x, unArg y))
+
+    OType t    -> return $ Right t
+
+isPath :: Type -> TCM (Maybe (Dom Type, Abs Type))
+isPath t = either Just (const Nothing) <$> pathViewAsPi t
 
 -- | Decomposing a function type.
 

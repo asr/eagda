@@ -479,7 +479,7 @@ instance Pretty Pragma where
     pretty (DisplayPragma _ lhs rhs) = text "DISPLAY" <+> sep [ pretty lhs <+> text "=", nest 2 $ pretty rhs ]
     pretty (NoPositivityCheckPragma _) = text "NO_POSITIVITY_CHECK"
     pretty (PolarityPragma _ q occs) =
-      hsep (text "NO_POSITIVITY_CHECK" : pretty q : map pretty occs)
+      hsep (text "POLARITY" : pretty q : map pretty occs)
 
 instance Pretty Fixity where
     pretty (Fixity _ Unrelated   _)   = __IMPOSSIBLE__
@@ -546,6 +546,7 @@ instance Pretty Pattern where
             LitP l          -> pretty l
             QuoteP _        -> text "quote"
             RecP _ fs       -> sep [ text "record", bracesAndSemicolons (map pretty fs) ]
+            EqualP _ es     -> sep $ concat [ [pretty e1, text "=", pretty e2] | (e1,e2) <- es ]
 
 prettyOpApp ::
   Pretty a => QName -> [NamedArg (MaybePlaceholder a)] -> [Doc]

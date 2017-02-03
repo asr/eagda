@@ -133,6 +133,7 @@ instance EmbPrj a => EmbPrj (A.Pattern' a) where
   icod_ (A.ProjP _ a b)       = icode2 8 a b
   icod_ (A.PatternSynP _ a b) = icode2 9 a b
   icod_ (A.RecP _ a)          = icode1 10 a
+  icod_ (A.EqualP _ a)        = __IMPOSSIBLE__
 
   value = vcase valu where
     valu [0, a]       = valu1 A.VarP a

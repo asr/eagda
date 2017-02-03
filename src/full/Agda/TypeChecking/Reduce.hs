@@ -149,6 +149,7 @@ instance Instantiate Sort where
 instance Instantiate Elim where
   instantiate' (Apply v) = Apply <$> instantiate' v
   instantiate' (Proj o f)= pure $ Proj o f
+  instantiate' (IApply x y v) = IApply <$> instantiate' x <*> instantiate' y <*> instantiate' v
 
 instance Instantiate t => Instantiate (Abs t) where
   instantiate' = traverse instantiate'
@@ -262,6 +263,7 @@ instance Reduce Sort where
 instance Reduce Elim where
   reduce' (Apply v) = Apply <$> reduce' v
   reduce' (Proj o f)= pure $ Proj o f
+  reduce' (IApply x y v) = IApply <$> reduce' x <*> reduce' y <*> reduce' v
 
 instance Reduce Level where
   reduce'  (Max as) = levelMax <$> mapM reduce' as
@@ -314,6 +316,20 @@ instance (Reduce a, Reduce b) => Reduce (a,b) where
 instance (Reduce a, Reduce b,Reduce c) => Reduce (a,b,c) where
     reduce' (x,y,z) = (,,) <$> reduce' x <*> reduce' y <*> reduce' z
 
+reduceIApply :: ReduceM (Blocked Term) -> [Elim] -> ReduceM (Blocked Term)
+reduceIApply = reduceIApply' reduceB'
+
+reduceIApply' :: (Term -> ReduceM (Blocked Term)) -> ReduceM (Blocked Term) -> [Elim] -> ReduceM (Blocked Term)
+reduceIApply' reduceB' d (IApply x y r : es) = do
+  view <- intervalView'
+  r <- reduceB' r
+  case view (ignoreBlocking r) of -- should we propagate the blocking?
+   IZero -> reduceB' (applyE x es)
+   IOne  -> reduceB' (applyE y es)
+   _     -> reduceIApply d es
+reduceIApply' reduceB' d (_ : es) = reduceIApply d es
+reduceIApply' reduceB' d [] = d
+
 instance Reduce Term where
   reduceB' = {-# SCC "reduce'<Term>" #-} maybeFastReduceTerm
 
@@ -334,12 +350,13 @@ slowReduceTerm :: Term -> ReduceM (Blocked Term)
 slowReduceTerm v = do
     v <- instantiate' v
     let done = return $ notBlocked v
+        iapp = reduceIApply done
     case v of
 --    Andreas, 2012-11-05 not reducing meta args does not destroy anything
 --    and seems to save 2% sec on the standard library
 --      MetaV x args -> notBlocked . MetaV x <$> reduce' args
-      MetaV x es -> done
-      Def f es   -> unfoldDefinitionE False reduceB' (Def f []) f es
+      MetaV x es -> iapp es
+      Def f es   -> flip reduceIApply es $ unfoldDefinitionE False reduceB' (Def f []) f es
       Con c ci args -> do
           -- Constructors can reduce' when they come from an
           -- instantiated module.
@@ -351,7 +368,7 @@ slowReduceTerm v = do
                     {- else -} done
       Pi _ _   -> done
       Lit _    -> done
-      Var _ _  -> done
+      Var _ es  -> iapp es
       Lam _ _  -> done
       DontCare _ -> done
       Shared{}   -> updateSharedTermF reduceB' v
@@ -380,6 +397,9 @@ unfoldCorecursionE :: Elim -> ReduceM (Blocked Elim)
 unfoldCorecursionE (Proj o p)           = notBlocked . Proj o <$> getOriginalProjection p
 unfoldCorecursionE (Apply (Arg info v)) = fmap (Apply . Arg info) <$>
   unfoldCorecursion v
+unfoldCorecursionE (IApply x y r) = do -- TODO check if this makes sense
+   [x,y,r] <- mapM unfoldCorecursion [x,y,r]
+   return $ IApply <$> x <*> y <*> r
 
 unfoldCorecursion :: Term -> ReduceM (Blocked Term)
 unfoldCorecursion v = do
@@ -698,6 +718,7 @@ instance Simplify Type where
 instance Simplify Elim where
   simplify' (Apply v) = Apply <$> simplify' v
   simplify' (Proj o f)= pure $ Proj o f
+  simplify' (IApply x y v) = IApply <$> simplify' x <*> simplify' y <*> simplify' v
 
 instance Simplify Sort where
     simplify' s = do
@@ -855,6 +876,7 @@ instance Normalise Term where
 instance Normalise Elim where
   normalise' (Apply v) = Apply <$> normalise' v
   normalise' (Proj o f)= pure $ Proj o f
+  normalise' (IApply x y v) = IApply <$> normalise' x <*> normalise' y <*> normalise' v
 
 instance Normalise Level where
   normalise' (Max as) = levelMax <$> normalise' as
@@ -935,7 +957,7 @@ instance Normalise Char where
   normalise' = return
 
 instance Normalise ConPatternInfo where
-  normalise' (ConPatternInfo mr mt) = ConPatternInfo mr <$> normalise' mt
+  normalise' (ConPatternInfo mr b mt) = ConPatternInfo mr b <$> normalise' mt
 
 instance Normalise DBPatVar where
   normalise' = return
@@ -1053,7 +1075,7 @@ instance InstantiateFull Int where
     instantiateFull' = return
 
 instance InstantiateFull ConPatternInfo where
-  instantiateFull' (ConPatternInfo mr mt) = ConPatternInfo mr <$> instantiateFull' mt
+  instantiateFull' (ConPatternInfo mr b mt) = ConPatternInfo mr b <$> instantiateFull' mt
 
 instance InstantiateFull DBPatVar where
     instantiateFull' = return
@@ -1117,6 +1139,7 @@ instance InstantiateFull Constraint where
 instance (InstantiateFull a) => InstantiateFull (Elim' a) where
   instantiateFull' (Apply v) = Apply <$> instantiateFull' v
   instantiateFull' (Proj o f)= pure $ Proj o f
+  instantiateFull' (IApply x y v) = IApply <$> instantiateFull' x <*> instantiateFull' y <*> instantiateFull' v
 
 instance InstantiateFull e => InstantiateFull (Map k e) where
     instantiateFull' = traverse instantiateFull'
@@ -1144,9 +1167,9 @@ instance InstantiateFull Char where
     instantiateFull' = return
 
 instance InstantiateFull Definition where
-    instantiateFull' (Defn rel x t pol occ df i c inst copy ma inj d) = do
+    instantiateFull' (Defn rel x t pol occ df i c inst copy ma sc inj d) = do
       (t, df, d) <- instantiateFull' (t, df, d)
-      return $ Defn rel x t pol occ df i c inst copy ma inj d
+      return $ Defn rel x t pol occ df i c inst copy ma sc inj d
 
 instance InstantiateFull NLPat where
   instantiateFull' (PVar x y z) = return $ PVar x y z
@@ -1215,11 +1238,12 @@ instance InstantiateFull a => InstantiateFull (WithArity a) where
   instantiateFull' (WithArity n a) = WithArity n <$> instantiateFull' a
 
 instance InstantiateFull a => InstantiateFull (Case a) where
-  instantiateFull' (Branches cop cs ls m) =
+  instantiateFull' (Branches cop cs ls m b) =
     Branches cop
       <$> instantiateFull' cs
       <*> instantiateFull' ls
       <*> instantiateFull' m
+      <*> pure b
 
 instance InstantiateFull CompiledClauses where
   instantiateFull' Fail        = return Fail

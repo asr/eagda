@@ -1,6 +1,7 @@
-{-# LANGUAGE CPP                  #-}
-{-# LANGUAGE DeriveDataTypeable   #-}
-{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE BangPatterns       #-}
+{-# LANGUAGE CPP                #-}
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE UndecidableInstances   #-}
 
 #if __GLASGOW_HASKELL__ <= 708
 {-# LANGUAGE OverlappingInstances #-}
@@ -61,6 +62,7 @@ instance Apply Term where
       Lam _ b     ->
         case es of
           Apply a : es0 -> lazyAbsApp b (unArg a) `applyE` es0
+          IApply _ _ a : es0 -> lazyAbsApp b a `applyE` es0
           _             -> __IMPOSSIBLE__
       MetaV x es' -> MetaV x (es' ++ es)
       Shared p    -> Shared $ applyE p es
@@ -85,6 +87,7 @@ canProject f v =
 conApp :: ConHead -> ConInfo -> Args -> Elims -> Term
 conApp ch                  ci args []             = Con ch ci args
 conApp ch                  ci args (Apply a : es) = conApp ch ci (args ++ [a]) es
+conApp ch                  ci args (IApply{} : es) = __IMPOSSIBLE__
 conApp ch@(ConHead c _ fs) ci args (Proj o f : es) =
   let failure = flip trace __IMPOSSIBLE__ $
         "conApp: constructor " ++ show c ++
@@ -177,8 +180,8 @@ instance Subst Term a => Apply (Tele a) where
   apply (ExtendTel _ tel) (t : ts) = lazyAbsApp tel (unArg t) `apply` ts
 
 instance Apply Definition where
-  apply (Defn info x t pol occ df m c inst copy ma inj d) args =
-    Defn info x (piApply t args) (apply pol args) (apply occ args) df m c inst copy ma inj (apply d args)
+  apply (Defn info x t pol occ df m c inst copy ma nc inj d) args =
+    Defn info x (piApply t args) (apply pol args) (apply occ args) df m c inst copy ma nc inj (apply d args)
 
 instance Apply RewriteRule where
   apply r args = RewriteRule
@@ -354,6 +357,7 @@ instance Apply Clause where
               where v' = raise (n - 1) v
             DotP{}  -> mkSub tm n ps vs
             LitP{}  -> __IMPOSSIBLE__
+            ConP q _ [] -> mkSub tm n ps vs
             ConP{}  -> __IMPOSSIBLE__
             ProjP{} -> __IMPOSSIBLE__
         mkSub _ _ _ _ = __IMPOSSIBLE__
@@ -372,6 +376,7 @@ instance Apply Clause where
             VarP (DBPatVar _ i) -> newTel (n - 1) (subTel (size tel - 1 - i) v tel) (substP i (raise (n - 1) v) ps) vs
             DotP{}              -> newTel n tel ps vs
             LitP{}              -> __IMPOSSIBLE__
+            ConP q _ [] -> newTel n tel ps vs
             ConP{}              -> __IMPOSSIBLE__
             ProjP{}             -> __IMPOSSIBLE__
         newTel _ tel _ _ = __IMPOSSIBLE__
@@ -400,10 +405,10 @@ instance Apply a => Apply (WithArity a) where
   applyE (WithArity n a) es   = WithArity n $ applyE a es
 
 instance Apply a => Apply (Case a) where
-  apply (Branches cop cs ls m) args =
-    Branches cop (apply cs args) (apply ls args) (apply m args)
-  applyE (Branches cop cs ls m) es =
-    Branches cop (applyE cs es) (applyE ls es) (applyE m es)
+  apply (Branches cop cs ls m b) args =
+    Branches cop (apply cs args) (apply ls args) (apply m args) b
+  applyE (Branches cop cs ls m b) es =
+    Branches cop (applyE cs es) (applyE ls es) (applyE m es) b
 
 instance Apply FunctionInverse where
   apply NotInjective  args = NotInjective
@@ -505,8 +510,8 @@ instance Abstract Telescope where
   ExtendTel arg xtel `abstract` tel = ExtendTel arg $ xtel <&> (`abstract` tel)
 
 instance Abstract Definition where
-  abstract tel (Defn info x t pol occ df m c inst copy ma inj d) =
-    Defn info x (abstract tel t) (abstract tel pol) (abstract tel occ) df m c inst copy ma inj (abstract tel d)
+  abstract tel (Defn info x t pol occ df m c inst copy ma nc inj d) =
+    Defn info x (abstract tel t) (abstract tel pol) (abstract tel occ) df m c inst copy ma nc inj (abstract tel d)
 
 -- | @tel ⊢ (Γ ⊢ lhs ↦ rhs : t)@ becomes @tel, Γ ⊢ lhs ↦ rhs : t)@
 --   we do not need to change lhs, rhs, and t since they live in Γ.
@@ -539,7 +544,7 @@ instance Abstract Projection where
 
 instance Abstract ProjLams where
   abstract tel (ProjLams lams) = ProjLams $
-    map (\ (Dom ai (x, _)) -> Arg ai x) (telToList tel) ++ lams
+    map (\ !dom -> argFromDom (fst <$> dom)) (telToList tel) ++ lams
 
 instance Abstract Defn where
   abstract tel d = case d of
@@ -603,16 +608,16 @@ instance Abstract a => Abstract (WithArity a) where
   abstract tel (WithArity n a) = WithArity n $ abstract tel a
 
 instance Abstract a => Abstract (Case a) where
-  abstract tel (Branches cop cs ls m) =
-    Branches cop (abstract tel cs) (abstract tel ls) (abstract tel m)
+  abstract tel (Branches cop cs ls m b) =
+    Branches cop (abstract tel cs) (abstract tel ls) (abstract tel m) b
 
 telVars :: Int -> Telescope -> [Arg DeBruijnPattern]
 telVars m = map (fmap namedThing) . (namedTelVars m)
 
 namedTelVars :: Int -> Telescope -> [NamedArg DeBruijnPattern]
 namedTelVars m EmptyTel                     = []
-namedTelVars m (ExtendTel (Dom info a) tel) =
-  Arg info (namedDBVarP (m-1) $ absName tel) :
+namedTelVars m (ExtendTel !dom tel) =
+  Arg (domInfo dom) (namedDBVarP (m-1) $ absName tel) :
   namedTelVars (m-1) (unAbs tel)
 
 instance Abstract FunctionInverse where
@@ -638,7 +643,7 @@ instance Abstract v => Abstract (HashMap k v) where
 abstractArgs :: Abstract a => Args -> a -> a
 abstractArgs args x = abstract tel x
     where
-        tel   = foldr (\(Arg info x) -> ExtendTel (Dom info $ sort Prop) . Abs x)
+        tel   = foldr (\arg@(Arg info x) -> ExtendTel (sort Prop <$ domFromArg arg) . Abs x)
                       EmptyTel
               $ zipWith (<$) names args
         names = cycle $ map (stringToArgName . (:[])) ['a'..'z']
@@ -720,7 +725,7 @@ instance Subst Term String where
   applySubst rho = id
 
 instance Subst Term ConPatternInfo where
-  applySubst rho (ConPatternInfo mr mt) = ConPatternInfo mr $ applySubst rho mt
+  applySubst rho (ConPatternInfo mr b mt) = ConPatternInfo mr b $ applySubst rho mt
 
 instance Subst Term Pattern where
   applySubst rho p = case p of
@@ -795,6 +800,7 @@ instance Subst Term A.NamedDotPattern where
 instance Subst t a => Subst t (Elim' a) where
   applySubst rho e = case e of
     Apply v -> Apply $ applySubst rho v
+    IApply x y r -> IApply (applySubst rho x) (applySubst rho y) (applySubst rho r)
     Proj{}  -> e
 
 instance Subst t a => Subst t (Abs a) where
@@ -938,8 +944,10 @@ telView'UpTo n t = case ignoreSharing $ unEl t of
 
 -- | @mkPi dom t = telePi (telFromList [dom]) t@
 mkPi :: Dom (ArgName, Type) -> Type -> Type
-mkPi (Dom info (x, a)) b = el $ Pi (Dom info a) (mkAbs x b)
+mkPi !dom b = el $ Pi a (mkAbs x b)
   where
+    x = fst $ unDom dom
+    a = snd <$> dom
     el = El $ dLub (getSort a) (Abs x (getSort b)) -- dLub checks x freeIn
 
 mkLam :: Arg ArgName -> Term -> Term
@@ -987,7 +995,7 @@ class TeleNoAbs a where
   teleNoAbs :: a -> Term -> Term
 
 instance TeleNoAbs ListTel where
-  teleNoAbs tel t = foldr (\ (Dom ai (x, _)) -> Lam ai . NoAbs x) t tel
+  teleNoAbs tel t = foldr (\ (Dom{domInfo = ai, unDom = (x, _)}) -> Lam ai . NoAbs x) t tel
 
 instance TeleNoAbs Telescope where
   teleNoAbs tel = teleNoAbs $ telToList tel
@@ -1103,13 +1111,18 @@ instance (Subst t a, Ord a) => Ord (Abs a) where
 instance (Subst t a, Eq a)  => Eq  (Elim' a) where
   Apply  a == Apply  b = a == b
   Proj _ x == Proj _ y = x == y
+  IApply x y r == IApply x' y' r' = x == x' && y == y' && r == r'
   _ == _ = False
 
 instance (Subst t a, Ord a) => Ord (Elim' a) where
   Apply  a `compare` Apply  b = a `compare` b
   Proj _ x `compare` Proj _ y = x `compare` y
-  Apply{}  `compare` Proj{}   = LT
-  Proj{}   `compare` Apply{}  = GT
+  IApply x y r `compare` IApply x' y' r' = compare x x' `mappend` compare y y' `mappend` compare r r'
+  Apply{}  `compare` _        = LT
+  _        `compare` Apply{}  = GT
+  Proj{}   `compare` _        = LT
+  _        `compare` Proj{}   = GT
+
 
 ---------------------------------------------------------------------------
 -- * Level stuff
@@ -1144,6 +1157,7 @@ sLub a (DLub b c) = DLub (sLub a b) c
 --
 --   @dLub s1 \i.s2 = \omega@ if @i@ appears in the rigid variables of @s2@.
 dLub :: Sort -> Abs Sort -> Sort
+dLub Inf _ = Inf
 dLub s1 (NoAbs _ s2) = sLub s1 s2
 dLub s1 b@(Abs _ s2) = case occurrence 0 s2 of
   Flexible _    -> DLub s1 b

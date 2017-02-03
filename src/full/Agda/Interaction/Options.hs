@@ -112,7 +112,6 @@ data CommandLineOptions = Options
   , optIgnoreInterfaces :: Bool
   , optForcing          :: Bool
   , optPragmaOptions    :: PragmaOptions
-  , optSafe             :: Bool
   , optSharing          :: Bool
   , optCaching          :: Bool
   }
@@ -144,10 +143,12 @@ data PragmaOptions = PragmaOptions
   , optExactSplit                :: Bool
   , optEta                       :: Bool
   , optRewriting                 :: Bool  -- ^ Can rewrite rules be added and used?
+  , optCubical                   :: Bool
   , optPostfixProjections        :: Bool
       -- ^ Should system generated projections 'ProjSystem' be printed
       --   postfix (True) or prefix (False).
   , optInstanceSearchDepth       :: Int
+  , optSafe                      :: Bool
   }
   deriving (Show,Eq)
 
@@ -196,7 +197,6 @@ defaultOptions = Options
   , optIgnoreInterfaces = False
   , optForcing          = True
   , optPragmaOptions    = defaultPragmaOptions
-  , optSafe             = False
   , optSharing          = False
   , optCaching          = False
   }
@@ -225,8 +225,10 @@ defaultPragmaOptions = PragmaOptions
   , optExactSplit                = False
   , optEta                       = True
   , optRewriting                 = False
+  , optCubical                   = False
   , optPostfixProjections        = False
   , optInstanceSearchDepth       = 500
+  , optSafe                      = False
   }
 
 -- | The default termination depth.
@@ -302,7 +304,7 @@ versionFlag o = return $ o { optShowVersion = True }
 helpFlag :: Flag CommandLineOptions
 helpFlag o = return $ o { optShowHelp = True }
 
-safeFlag :: Flag CommandLineOptions
+safeFlag :: Flag PragmaOptions
 safeFlag o = return $ o { optSafe = True }
 
 sharingFlag :: Bool -> Flag CommandLineOptions
@@ -408,6 +410,9 @@ noExactSplitFlag o = return $ o { optExactSplit = False }
 
 rewritingFlag :: Flag PragmaOptions
 rewritingFlag o = return $ o { optRewriting = True }
+
+cubicalFlag :: Flag PragmaOptions
+cubicalFlag o = return $ o { optCubical = True }
 
 postfixProjectionsFlag :: Flag PragmaOptions
 postfixProjectionsFlag o = return $ o { optPostfixProjections = True }
@@ -527,8 +532,6 @@ standardOptions =
                     "don't use default libraries"
     , Option []     ["no-forcing"] (NoArg noForcingFlag)
                     "disable the forcing optimisation"
-    , Option []     ["safe"] (NoArg safeFlag)
-                    "disable postulates, unsafe OPTION pragmas and primTrustMe"
     , Option []     ["sharing"] (NoArg $ sharingFlag True)
                     "enable sharing and call-by-need evaluation (experimental) (default: OFF)"
     , Option []     ["no-sharing"] (NoArg $ sharingFlag False)
@@ -600,10 +603,14 @@ pragmaOptions =
                     "default records to no-eta-equality"
     , Option []     ["rewriting"] (NoArg rewritingFlag)
                     "enable declaration and use of REWRITE rules"
+    , Option []     ["cubical"] (NoArg cubicalFlag)
+                    "enable cubical features (e.g. overloads lambdas for paths)"
     , Option []     ["postfix-projections"] (NoArg postfixProjectionsFlag)
                     "make postfix projection notation the default"
     , Option []     ["instance-search-depth"] (ReqArg instanceDepthFlag "N")
                     "set instance search depth to N (default: 500)"
+    , Option []     ["safe"] (NoArg safeFlag)
+                    "disable postulates, unsafe OPTION pragmas and primTrustMe"
     ]
 
 -- | Used for printing usage info.

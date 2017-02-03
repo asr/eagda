@@ -1954,6 +1954,7 @@ exprToPattern e = do
         Quote r                 -> return $ QuoteP r
         Rec r es | Just fs <- mapM maybeLeft es -> do
           RecP r <$> T.mapM (T.mapM exprToPattern) fs
+        Equal r e1 e2           -> return $ EqualP r [(e1, e2)]
         _                       -> failure
 
 opAppExprToPattern :: OpApp Expr -> Parser Pattern

@@ -224,6 +224,7 @@ instance PrettyTCM ArgName where
 
 -- instance (Reify a e, ToConcrete e c, P.Pretty c, PrettyTCM a) => PrettyTCM (Elim' a) where
 instance PrettyTCM Elim where
+  prettyTCM (IApply x y v) = text "$" <+> prettyTCM v
   prettyTCM (Apply v) = text "$" <+> prettyTCM v
   prettyTCM (Proj _ f)= text "." <> prettyTCM f
 
@@ -408,6 +409,7 @@ prettyTCMPatternList :: [NamedArg DeBruijnPattern] -> TCM Doc
 prettyTCMPatternList = prettyList . map prettyA <=< reifyPatterns
 
 instance PrettyTCM (Elim' DisplayTerm) where
+  prettyTCM (IApply x y v) = text "$" <+> prettyTCM v
   prettyTCM (Apply v) = text "$" <+> prettyTCM (unArg v)
   prettyTCM (Proj _ f)= text "." <> prettyTCM f
 
@@ -445,6 +447,7 @@ instance PrettyTCM NLPType where
   prettyTCM (NLPType l     a) = text "{" <> prettyTCM l <> text "}" <> prettyTCM a
 
 instance PrettyTCM (Elim' NLPat) where
+  prettyTCM (IApply x y v) = prettyTCM v
   prettyTCM (Apply v) = prettyTCM (unArg v)
   prettyTCM (Proj _ f)= text "." <> prettyTCM f
 

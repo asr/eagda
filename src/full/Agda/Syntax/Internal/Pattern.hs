@@ -184,6 +184,7 @@ patternToTerm :: DeBruijnPattern -> Term
 patternToTerm p = case patternToElim (defaultArg p) of
   Apply x -> unArg x
   Proj{}  -> __IMPOSSIBLE__
+  IApply{} -> __IMPOSSIBLE__
 
 
 class MapNamedArg f where

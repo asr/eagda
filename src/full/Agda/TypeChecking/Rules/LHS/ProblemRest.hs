@@ -1,8 +1,11 @@
+{-# LANGUAGE BangPatterns  #-}
 {-# LANGUAGE CPP           #-}
 
 module Agda.TypeChecking.Rules.LHS.ProblemRest where
 
-import Data.Functor ((<$))
+#if __GLASGOW_HASKELL__ <= 708
+import Data.Functor ( (<$), (<$>) )
+#endif
 
 import Agda.Syntax.Common
 import Agda.Syntax.Internal
@@ -30,18 +33,18 @@ useNamesFromPattern :: [NamedArg A.Pattern] -> Telescope -> Telescope
 useNamesFromPattern ps = telFromList . zipWith ren (map namedArg ps ++ repeat dummy) . telToList
   where
     dummy = A.WildP __IMPOSSIBLE__
-    ren (A.VarP x) (Dom info (_, a)) | notHidden info && not (isNoName x) =
-      Dom info (nameToArgName x, a)
-    ren A.AbsurdP{} (Dom info (_, a)) | notHidden info = Dom info ("()", a)
+    ren (A.VarP x) !dom | notHidden (domInfo dom) && not (isNoName x) =
+      (\(_,a) -> (nameToArgName x,a)) <$> dom
+    ren A.AbsurdP{} !dom | notHidden (domInfo dom) = (\ (_,a) -> ("()",a)) <$> dom
     -- Andreas, 2013-03-13: inserted the following line in the hope to fix issue 819
     -- but it does not do the job, instead, it puts a lot of "_"s
     -- instead of more sensible names into error messages.
     -- ren A.WildP{}  (Dom info (_, a)) | notHidden info = Dom info ("_", a)
-    ren A.PatternSynP{} _ = __IMPOSSIBLE__  -- ensure there are no syns left
+    ren A.PatternSynP{} !_ = __IMPOSSIBLE__  -- ensure there are no syns left
     -- Andreas, 2016-05-10, issue 1848: if context variable has no name, call it "x"
-    ren _ (Dom info (x, a)) | notHidden info && isNoName x =
-      Dom info (stringToArgName "x", a)
-    ren _ a = a
+    ren _ !dom | notHidden (domInfo dom) && isNoName (fst (unDom dom)) =
+      (\ (_,a) -> (stringToArgName "x",a)) <$> dom
+    ren _ !a = a
 
 useOriginFrom :: (LensOrigin a, LensOrigin b) => [a] -> [b] -> [a]
 useOriginFrom = zipWith $ \x y -> setOrigin (getOrigin y) x
@@ -93,7 +96,7 @@ problemFromPats ps0 a = do
 
   -- Redo the telView, in order to *not* normalize the clause type further than necessary.
   -- (See issue 734.)
-  TelV tel0 b  <- telViewUpTo (length ps) a
+  TelV tel0 b  <- telViewUpToPath (length ps) a
   let gamma     = useNamesFromPattern ps tel0
       as        = telToList gamma
       (ps1,ps2) = splitAt (size as) ps
@@ -126,7 +129,7 @@ updateProblemRest_ :: Problem -> TCM (Nat, Problem)
 updateProblemRest_ p@(Problem ps0 qs0 tel0 (ProblemRest ps a)) = do
       ps <- insertImplicitPatternsT ExpandLast ps $ unArg a
       -- (Issue 734: Do only the necessary telView to preserve clause types as much as possible.)
-      TelV tel b   <- telViewUpTo (length ps) $ unArg a
+      TelV tel b   <- telViewUpToPath (length ps) $ unArg a
       let gamma     = useNamesFromPattern ps tel
           as        = telToList gamma
           (ps1,ps2) = splitAt (size as) ps
@@ -156,4 +159,5 @@ updateProblemRest st@LHSState { lhsProblem = p } = do
     return $ LHSState
       { lhsProblem = p'
       , lhsDPI     = applyPatSubst tau (lhsDPI st)
+      , lhsPartialSplit = lhsPartialSplit st
       }

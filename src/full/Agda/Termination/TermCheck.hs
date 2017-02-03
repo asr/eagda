@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns               #-}
 {-# LANGUAGE CPP                        #-}
 {-# LANGUAGE GADTs                      #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -613,6 +614,7 @@ instance ExtractCalls a => ExtractCalls (Dom a) where
 instance ExtractCalls a => ExtractCalls (Elim' a) where
   extract Proj{}    = return empty
   extract (Apply a) = extract $ unArg a
+  extract (IApply x y a) = extract (x,(y,a)) -- TODO Andrea: conservative
 
 instance ExtractCalls a => ExtractCalls [a] where
   extract = mapM' extract
@@ -896,7 +898,8 @@ instance ExtractCalls LevelAtom where
 
 -- | Rewrite type @tel -> Size< u@ to @tel -> Size@.
 maskSizeLt :: MonadTCM tcm => Dom Type -> tcm (Dom Type)
-maskSizeLt dom@(Dom info a) = liftTCM $ do
+maskSizeLt !dom = liftTCM $ do
+  let a = unDom dom
   (msize, msizelt) <- getBuiltinSize
   case (msize, msizelt) of
     (_ , Nothing) -> return dom
@@ -904,8 +907,8 @@ maskSizeLt dom@(Dom info a) = liftTCM $ do
     (Just size, Just sizelt) -> do
       TelV tel c <- telView a
       case ignoreSharingType a of
-        El s (Def d [v]) | d == sizelt -> return $ Dom info $
-          abstract tel $ El s $ Def size []
+        El s (Def d [v]) | d == sizelt -> return $
+          (abstract tel $ El s $ Def size []) <$ dom
         _ -> return dom
 
 {- | @compareArgs es@
@@ -979,6 +982,9 @@ compareElim e p = do
     (Proj{}, _)            -> return Order.unknown
     (Apply{}, ProjP{})     -> return Order.unknown
     (Apply arg, _)         -> compareTerm (unArg arg) p
+    -- TODO Andrea: making sense?
+    (IApply{}, ProjP{})  -> return Order.unknown
+    (IApply _ _ arg, _)    -> compareTerm arg p
 
 -- | In dependent records, the types of later fields may depend on the
 --   values of earlier fields.  Thus when defining an inhabitant of a
@@ -1082,6 +1088,12 @@ instance StripAllProjections Elims where
       []             -> return []
       (Apply a : es) -> do
         (:) <$> (Apply <$> stripAllProjections a) <*> stripAllProjections es
+      (IApply x y a : es) -> do
+        -- TODO Andrea: are we doind extra work?
+        (:) <$> (IApply <$> stripAllProjections x
+                        <*> stripAllProjections y
+                        <*> stripAllProjections a)
+            <*> stripAllProjections es
       (Proj o p  : es) -> do
         isP <- isProjectionButNotCoinductive p
         applyUnless isP (Proj o p :) <$> stripAllProjections es

@@ -10,7 +10,12 @@ import Control.Monad.State
 
 import Data.List hiding (sort)
 import qualified Data.List as List
-import Data.Traversable hiding (mapM, sequence)
+import qualified Data.Map as Map
+import qualified Data.Set as Set
+
+#if __GLASGOW_HASKELL__ <= 708
+import Data.Traversable ( traverse )
+#endif
 
 import Agda.Syntax.Abstract.Views (isSet)
 import Agda.Syntax.Common
@@ -22,6 +27,7 @@ import Agda.TypeChecking.Monad.Builtin
 import Agda.TypeChecking.CompiledClause (CompiledClauses(Fail))
 import Agda.TypeChecking.MetaVars
 import Agda.TypeChecking.MetaVars.Occurs (killArgs,PruneResult(..))
+import Agda.TypeChecking.Names
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Substitute
 import qualified Agda.TypeChecking.SyntacticEquality as SynEq
@@ -40,7 +46,7 @@ import Agda.TypeChecking.Level
 import Agda.TypeChecking.Implicit (implicitArgs)
 import Agda.TypeChecking.Irrelevance
 import Agda.TypeChecking.ProjectionLike (elimView)
-
+import Agda.TypeChecking.Primitive
 import Agda.Interaction.Options
 
 import Agda.Utils.Except ( MonadError(catchError, throwError) )
@@ -251,7 +257,7 @@ compareTerm' cmp a m n =
           b <- levelView n
           equalLevel a b
 -- OLD:        Pi dom _  -> equalFun (dom, a') m n
-        a@Pi{}    -> equalFun a m n
+        a@Pi{}    -> equalFun s a m n
         Lam _ _   -> __IMPOSSIBLE__
         Def r es  -> do
           isrec <- isEtaRecord r
@@ -300,18 +306,53 @@ compareTerm' cmp a m n =
                   -- Record constructors are covariant (see test/succeed/CovariantConstructors).
                   compareArgs (repeat $ polFromCmp cmp) (telePi_ tel $ sort Prop) (Con c ConOSystem []) m' n'
 
-            else compareAtom cmp a' m n
+            else (do pathview <- pathView a'
+                     equalPath pathview a' m n)
         _ -> compareAtom cmp a' m n
   where
     -- equality at function type (accounts for eta)
-    equalFun :: Term -> Term -> Term -> TCM ()
-    equalFun (Shared p) m n = equalFun (derefPtr p) m n
-    equalFun (Pi dom@(Dom info _) b) m n = do
+    equalFun :: Sort -> Term -> Term -> Term -> TCM ()
+    equalFun s (Shared p) m n = equalFun s (derefPtr p) m n
+    equalFun s a@(Pi dom b) m n | domFinite dom = do
+       mp <- fmap getPrimName <$> getBuiltin' builtinIsOne
+       case unEl $ unDom dom of
+          Def q [Apply phi]
+              | Just q == mp -> compareTermOnFace cmp (unArg phi) (El s (Pi (dom {domFinite = False}) b)) m n
+          _                  -> equalFun s (Pi (dom{domFinite = False}) b) m n
+    equalFun _ (Pi dom@Dom{domInfo = info} b) m n | not $ domFinite dom = do
         name <- freshName_ $ suggest (absName b) "x"
         addContext' (name, dom) $ compareTerm cmp (absBody b) m' n'
       where
         (m',n') = raise 1 (m,n) `apply` [Arg info $ var 0]
-    equalFun _ _ _ = __IMPOSSIBLE__
+    equalFun _ _ _ _ = __IMPOSSIBLE__
+    equalPath :: PathView -> Type -> Term -> Term -> TCM ()
+    equalPath (PathType s _ l a x y) _ m n = do
+        name <- freshName_ $ "i"
+        interval <- el primInterval
+        let (m',n') = raise 1 (m, n) `applyE` [IApply (raise 1 $ unArg x) (raise 1 $ unArg y) (var 0)]
+        addContext (name, defaultDom interval) $ compareTerm cmp (El (raise 1 s) $ (raise 1 $ unArg a) `apply` [argN $ var 0]) m' n'
+    equalPath OType{} a' m n = cmpDef a' m n
+    cmpDef a'@(El s ty) m n = do
+       mI     <- getBuiltinName'   builtinInterval
+       mIsOne <- getBuiltinName'   builtinIsOne
+       mGlue  <- getPrimitiveName' builtinGlue
+       mSub   <- getBuiltinName' builtinSub
+       case ty of
+         Def q es | Just q == mIsOne -> return ()
+         Def q es | Just q == mGlue, Just args@(l:_:a:phi:_) <- allApplyElims es -> do
+              ty <- el' (pure $ unArg l) (pure $ unArg a)
+              unglue <- prim_unglue
+              let mkUnglue m = apply unglue $ map (setHiding Hidden) args ++ [argN m]
+              reportSDoc "conv.glue" 20 $ prettyTCM (ty,mkUnglue m,mkUnglue n)
+              compareTermOnFace cmp (unArg phi) ty m n
+              compareTerm cmp ty (mkUnglue m) (mkUnglue n)
+         Def q es | Just q == mSub, Just args@(l:a:_) <- allApplyElims es -> do
+              ty <- el' (pure $ unArg l) (pure $ unArg a)
+              out <- primSubOut
+              let mkOut m = apply out $ map (setHiding Hidden) args ++ [argN m]
+              compareTerm cmp ty (mkOut m) (mkOut n)
+         Def q [] | Just q == mI -> compareInterval cmp a' m n
+         _ -> compareAtom cmp a' m n
 
 -- | @compareTel t1 t2 cmp tel1 tel1@ checks whether pointwise
 --   @tel1 \`cmp\` tel2@ and complains that @t2 \`cmp\` t1@ failed if
@@ -324,7 +365,7 @@ compareTel t1 t2 cmp tel1 tel2 =
     (EmptyTel, EmptyTel) -> return ()
     (EmptyTel, _)        -> bad
     (_, EmptyTel)        -> bad
-    (ExtendTel dom1@(Dom i1 a1) tel1, ExtendTel dom2@(Dom i2 a2) tel2) -> do
+    (ExtendTel dom1{-@(Dom i1 a1)-} tel1, ExtendTel dom2{-@(Dom i2 a2)-} tel2) -> do
       compareDom cmp dom1 dom2 tel1 tel2 bad bad $
         compareTel t1 t2 cmp (absBody tel1) (absBody tel2)
 
@@ -492,7 +533,7 @@ compareAtom cmp t m n =
                 -- Variables are invariant in their arguments
                 compareElims [] a (var i) es es'
             (Def f [], Def f' []) | f == f' -> return ()
-            (Def f es, Def f' es') | f == f' -> do
+            (Def f es, Def f' es') | f == f' -> ifM (compareEtaPrims f es es') (return ()) $ do
                 def <- getConstInfo f
                 -- To compute the type @a@ of a projection-like @f@,
                 -- we have to infer the type of its first argument.
@@ -529,6 +570,49 @@ compareAtom cmp t m n =
                     compareArgs (repeat $ polFromCmp cmp) a' (Con x ci []) xArgs yArgs
             _ -> etaInequal cmp t m n -- fixes issue 856 (unsound conversion error)
     where
+        -- returns True in case we handled the comparison already.
+        compareEtaPrims :: QName -> Elims -> Elims -> TCM Bool
+        compareEtaPrims q es es' = do
+          munglue <- getPrimitiveName' builtin_unglue
+          msubout <- getPrimitiveName' builtinSubOut
+          case () of
+            _ | Just q == munglue -> compareUnglueApp q es es'
+            _ | Just q == msubout -> compareSubApp q es es'
+            _                     -> return False
+        compareSubApp q es es' = do
+          let (as,bs) = splitAt 5 es; (as',bs') = splitAt 5 es'
+          case (allApplyElims as, allApplyElims as') of
+            (Just [a,bA,phi,u,x], Just [a',bA',phi',u',x']) -> do
+              tSub <- primSub
+              -- Andrea, 28-07-16:
+              -- comparing the types is most probably wasteful,
+              -- since b and b' should be neutral terms, but it's a
+              -- precondition for the compareAtom call to make
+              -- sense.
+              equalType (El Inf $ apply tSub $ [a,bA] ++ map (setHiding NotHidden) [phi,u])
+                        (El Inf $ apply tSub $ [a,bA'] ++ map (setHiding NotHidden) [phi',u'])
+              compareAtom cmp (El Inf $ apply tSub $ [a,bA] ++ map (setHiding NotHidden) [phi,u])
+                              (unArg x) (unArg x')
+              compareElims [] (El (tmSort (unArg a)) (unArg bA)) (Def q as) bs bs'
+              return True
+            _  -> return False
+        compareUnglueApp q es es' = do
+          let (as,bs) = splitAt 8 es; (as',bs') = splitAt 8 es'
+          case (allApplyElims as, allApplyElims as') of
+            (Just [la,lb,bA,phi,bT,f,pf,b], Just [la',lb',bA',phi',bT',f',pf',b']) -> do
+              tGlue <- getPrimitiveTerm builtinGlue
+              -- Andrea, 28-07-16:
+              -- comparing the types is most probably wasteful,
+              -- since b and b' should be neutral terms, but it's a
+              -- precondition for the compareAtom call to make
+              -- sense.
+              equalType (El (tmSort (unArg lb)) $ apply tGlue $ [la,lb] ++ map (setHiding NotHidden) [bA,phi,bT,f,pf])
+                        (El (tmSort (unArg lb')) $ apply tGlue $ [la',lb'] ++ map (setHiding NotHidden) [bA',phi',bT',f',pf'])
+              compareAtom cmp (El (tmSort (unArg lb)) $ apply tGlue $ [la,lb] ++ map (setHiding NotHidden) [bA,phi,bT,f,pf])
+                              (unArg b) (unArg b')
+              compareElims [] (El (tmSort (unArg la)) (unArg bA)) (Def q as) bs bs'
+              return True
+            _  -> return False
         -- Andreas, 2013-05-15 due to new postponement strategy, type can now be blocked
         conType c t = ifBlockedType t (\ _ _ -> patternViolation) $ \ t -> do
           let impossible = do
@@ -579,7 +663,7 @@ compareDom :: Free c
   -> TCM ()     -- ^ Continuation if mismatch in 'Relevance'.
   -> TCM ()     -- ^ Continuation if comparison is successful.
   -> TCM ()
-compareDom cmp dom1@(Dom i1 a1) dom2@(Dom i2 a2) b1 b2 errH errR cont
+compareDom cmp dom1@(Dom{domInfo = i1, unDom = a1}) dom2@(Dom{domInfo = i2, unDom = a2}) b1 b2 errH errR cont
   | getHiding dom1 /= getHiding dom2 = errH
   -- Andreas 2010-09-21 compare r1 and r2, but ignore forcing annotations!
   | not $ compareRelevance cmp (ignoreForced $ getRelevance dom1)
@@ -590,7 +674,7 @@ compareDom cmp dom1@(Dom i1 a1) dom2@(Dom i2 a2) b1 b2 errH errR cont
           dependent = (r /= Irrelevant) && isBinderUsed b2
       pid <- newProblem_ $ compareType cmp a1 a2
       dom <- if dependent
-             then Dom i1 <$> blockTypeOnProblem a1 pid
+             then (\ a -> dom1 {unDom = a}) <$> blockTypeOnProblem a1 pid
              else return dom1
         -- We only need to require a1 == a2 if b2 is dependent
         -- If it's non-dependent it doesn't matter what we add to the context.
@@ -630,8 +714,32 @@ compareElims pols0 a v els01 els02 = catchConstraint (ElimCmp pols0 a v els01 el
     (Proj{}  : _, []         ) -> failure -- could be x.p =?= x for projection p
     ([]         , Apply{} : _) -> failure -- not impossible, see issue 878
     (Apply{} : _, []         ) -> failure
+    ([]         , IApply{} : _) -> failure
+    (IApply{} : _, []         ) -> failure
     (Apply{} : _, Proj{}  : _) -> __IMPOSSIBLE__ <$ solveAwakeConstraints' True -- NB: popped up in issue 889
     (Proj{}  : _, Apply{} : _) -> __IMPOSSIBLE__ <$ solveAwakeConstraints' True -- but should be impossible (but again in issue 1467)
+    (IApply{} : _, Proj{}  : _) -> __IMPOSSIBLE__ <$ solveAwakeConstraints' True
+    (Proj{}  : _, IApply{} : _) -> __IMPOSSIBLE__ <$ solveAwakeConstraints' True
+    (IApply{} : _, Apply{}  : _) -> __IMPOSSIBLE__ <$ solveAwakeConstraints' True
+    (Apply{}  : _, IApply{} : _) -> __IMPOSSIBLE__ <$ solveAwakeConstraints' True
+    (e@(IApply x1 y1 r1) : els1, IApply x2 y2 r2 : els2) -> do
+       -- Andrea: copying stuff from the Apply case..
+      let (pol, pols) = nextPolarity pols0
+      ifBlockedType a (\ m t -> patternViolation) $ \ a -> do
+          va <- pathView a
+          case va of
+            PathType s path l bA x y -> do
+              b <- elInf primInterval
+              compareWithPol pol (flip compareTerm b)
+                                  r1 r2
+              -- TODO: compare (x1,x2) and (y1,y2) ?
+              let r = r1 -- TODO Andrea:  do blocking
+              codom <- el' (pure . unArg $ l) ((pure . unArg $ bA) <@> pure r)
+              compareElims pols codom -- Path non-dependent (codom `lazyAbsApp` unArg arg)
+                                (applyE v [e]) els1 els2
+
+            OType{} -> patternViolation
+
     (Apply arg1 : els1, Apply arg2 : els2) ->
       verboseBracket "tc.conv.elim" 20 "compare Apply" $ do
       reportSDoc "tc.conv.elim" 10 $ nest 2 $ vcat
@@ -649,7 +757,7 @@ compareElims pols0 a v els01 els02 = catchConstraint (ElimCmp pols0 a v els01 el
       let (pol, pols) = nextPolarity pols0
       ifBlockedType a (\ m t -> patternViolation) $ \ a -> do
         case ignoreSharing . unEl $ a of
-          (Pi (Dom info b) codom) -> do
+          (Pi (Dom{domInfo = info, unDom = b}) codom) -> do
             mlvl <- tryMaybe primLevel
             let freeInCoDom (Abs _ c) = 0 `freeInIgnoringSorts` c
                 freeInCoDom _         = False
@@ -1356,6 +1464,156 @@ equalSort s1 s2 = do
             (DLub{}  , _       )             -> postpone
             (_       , DLub{}  )             -> postpone
 
+
+-- -- This should probably represent face maps with a more precise type
+-- toFaceMaps :: Term -> TCM [[(Int,Term)]]
+-- toFaceMaps t = do
+--   view <- intervalView'
+--   iz <- primIZero
+--   io <- primIOne
+--   ineg <- (\ q t -> Def q [Apply $ Arg defaultArgInfo t]) <$> fromMaybe __IMPOSSIBLE__ <$> getPrimitiveName' "primINeg"
+
+--   let f IZero = mzero
+--       f IOne  = return []
+--       f (IMin x y) = do xs <- (f . view . unArg) x; ys <- (f . view . unArg) y; return (xs ++ ys)
+--       f (IMax x y) = msum $ map (f . view . unArg) [x,y]
+--       f (INeg x)   = map (id -*- not) <$> (f . view . unArg) x
+--       f (OTerm (Var i [])) = return [(i,True)]
+--       f (OTerm _) = return [] -- what about metas? we should suspend? maybe no metas is a precondition?
+--       isConsistent xs = all (\ xs -> length xs == 1) . map nub . Map.elems $ xs  -- optimize by not doing generate + filter
+--       as = map (map (id -*- head) . Map.toAscList) . filter isConsistent . map (Map.fromListWith (++) . map (id -*- (:[]))) $ (f (view t))
+--   xs <- mapM (mapM (\ (i,b) -> (,) i <$> intervalUnview (if b then IOne else IZero))) as
+--   return xs
+
+forallFaceMaps :: Term -> (Map.Map Int Bool -> MetaId -> Term -> TCM a) -> (Substitution -> TCM a) -> TCM [a]
+forallFaceMaps t kb k = do
+  as <- decomposeInterval t
+  boolToI <- do
+    io <- primIOne
+    iz <- primIZero
+    return (\b -> if b then io else iz)
+  forM as $ \ (ms,ts) -> do
+   ifBlockeds ts (kb ms) $ \ _ -> do
+    let xs = map (id -*- boolToI) $ Map.toAscList ms
+    cxt <- asks envContext
+    (cxt',sigma) <- substContextN cxt xs
+    resolved <- forM xs (\ (i,t) -> (,) <$> lookupBV i <*> return (applySubst sigma t))
+    modifyContext (const cxt') $ updateModuleParameters sigma $
+      addBindings resolved $ do
+        cl <- buildClosure ()
+        tel <- getContextTelescope
+        m <- currentModule
+        sub <- getModuleParameterSub m
+        reportSLn "conv.forall" 10 $ unlines [replicate 10 '-'
+                                             , show (envCurrentModule $ clEnv cl)
+                                             , show (envLetBindings $ clEnv cl)
+                                             , show tel -- (toTelescope $ envContext $ clEnv cl)
+                                             , show (clModuleParameters cl)
+                                             , show sigma
+                                             , show m
+                                             , show sub]
+
+        k sigma
+  where
+    -- TODO Andrea: inefficient because we try to reduce the ts which we know are in whnf
+    ifBlockeds ts blocked unblocked = do
+      and <- getPrimitiveTerm "primIMin"
+      io  <- primIOne
+      let t = foldr (\ x r -> and `apply` [argN x,argN r]) io ts
+      ifBlocked t blocked unblocked
+    addBindings [] m = m
+    addBindings ((Dom{domInfo = info,unDom = (nm,ty)},t):bs) m = addLetBinding info nm t ty (addBindings bs m)
+
+    substContextN :: Context -> [(Int,Term)] -> TCM (Context , Substitution)
+    substContextN c [] = return (c, idS)
+    substContextN c ((i,t):xs) = do
+      (c', sigma) <- substContext i t c
+      (c'', sigma')  <- substContextN c' (map (subtract 1 -*- applySubst sigma) xs)
+      return (c'', applySubst sigma' sigma)
+
+
+    -- assumes the term can be typed in the shorter telescope
+    -- the terms we get from toFaceMaps are closed.
+    substContext :: Int -> Term -> Context -> TCM (Context , Substitution)
+    substContext i t [] = __IMPOSSIBLE__
+    substContext i t (x:xs) | i == 0 = return $ (xs , singletonS 0 t)
+    substContext i t (x:xs) | i > 0 = do
+                                  (c,sigma) <- substContext (i-1) t xs
+                                  e <- mkContextEntry (applySubst sigma (ctxEntry x))
+                                  return (e:c, liftS 1 sigma)
+    substContext i t (x:xs) = __IMPOSSIBLE__
+
+compareInterval :: Comparison -> Type -> Term -> Term -> TCM ()
+compareInterval cmp i t u = do
+  it <- decomposeInterval' =<< reduce t
+  iu <- decomposeInterval' =<< reduce u
+  x <- leqInterval it iu
+  y <- leqInterval iu it
+  let final = isCanonical it && isCanonical iu
+  if x && y then return () else
+     if final then typeError $ UnequalTerms cmp t u i
+              else patternViolation
+
+
+type Conj = (Map.Map Int (Set.Set Bool),[Term])
+
+isCanonical :: [Conj] -> Bool
+isCanonical = all (null . snd)
+
+-- | leqInterval r q = r ≤ q in the I lattice.
+-- (∨ r_i) ≤ (∨ q_j)  iff  ∀ i. ∃ j. r_i ≤ q_j
+leqInterval :: [Conj] -> [Conj] -> TCM Bool
+leqInterval r q =
+  and <$> forM r (\ r_i ->
+   or <$> forM q (\ q_j -> leqConj r_i q_j))  -- TODO shortcut
+
+-- | leqConj r q = r ≤ q in the I lattice, when r and q are conjuctions.
+-- (∧ r_i)   ≤ (∧ q_j)               iff
+-- (∧ r_i)   ∧ (∧ q_j)   = (∧ r_i)   iff
+-- {r_i | i} ∪ {q_j | j} = {r_i | i} iff
+-- {q_j | j} ⊆ {r_i | i}
+leqConj :: Conj -> Conj -> TCM Bool
+leqConj (rs,rst) (qs,qst) = do
+  case toSet qs `Set.isSubsetOf` toSet rs of
+    False -> return False
+    True  -> do
+      interval <- elInf $ primInterval
+      let eqT t u = withFreezeMetas $ ifNoConstraints (compareAtom CmpEq interval t u)
+                                                      (\ _ -> return True)
+                                                      (\ _ _ -> return False)
+      let listSubset ts us = and <$> forM ts (\ t ->
+                              or <$> forM us (\ u -> eqT t u)) -- TODO shortcut
+      listSubset qst rst
+  where
+    toSet m = Set.fromList [ (i,b) | (i,bs) <- Map.toList m, b <- Set.toList bs]
+
+
+-- | equalTermOnFace φ A u v = _ , φ ⊢ u = v : A
+equalTermOnFace :: Term -> Type -> Term -> Term -> TCM ()
+equalTermOnFace = compareTermOnFace CmpEq
+
+compareTermOnFace :: Comparison -> Term -> Type -> Term -> Term -> TCM ()
+compareTermOnFace = compareTermOnFace' compareTerm
+
+compareTermOnFace' :: (Comparison -> Type -> Term -> Term -> TCM ()) -> Comparison -> Term -> Type -> Term -> Term -> TCM ()
+compareTermOnFace' k cmp phi ty u v = do
+  phi <- reduce phi
+  _ <- forallFaceMaps phi postponed
+         $ \ alpha -> k cmp (applySubst alpha ty) (applySubst alpha u) (applySubst alpha v)
+  return ()
+ where
+  postponed ms i psi = do
+    ty' <- runNamesT [] $ do
+             imin <- cl $ getPrimitiveTerm "primIMin"
+             ineg <- cl $ getPrimitiveTerm "primINeg"
+             ty <- open ty
+             psi <- open psi
+             let phi = foldr (\ (i,b) r -> do i <- open (var i); pure imin <@> (if b then i else pure ineg <@> i) <@> r)
+                          psi (Map.toList ms) -- TODO Andrea: make a view?
+             pPi' "o" phi $ const ty
+    let
+      lam_o = Lam (setRelevance Irrelevant defaultArgInfo) . NoAbs "_"
+    addConstraint (ValueCmp cmp ty' (lam_o u) (lam_o v))
 ---------------------------------------------------------------------------
 -- * Definitions
 ---------------------------------------------------------------------------

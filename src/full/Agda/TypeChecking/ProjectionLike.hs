@@ -123,6 +123,9 @@ projView v = do
           Apply a : es -> return $ ProjectionView f a es
           -- Since a projection is a function, it cannot be projected itself.
           Proj{}  : _  -> __IMPOSSIBLE__
+          -- The principal argument of a projection-like cannot be the interval?
+          IApply{} : _ -> __IMPOSSIBLE__
+
     _ -> fallback
 
 -- | Reduce away top-level projection like functions.
@@ -271,7 +274,7 @@ makeProjection x = -- if True then return () else do
                     , projOrig     = x
                     , projFromType = d
                     , projIndex    = pIndex
-                    , projLams     = ProjLams $ map (\ (Dom ai (y, _)) -> Arg ai y) tel
+                    , projLams     = ProjLams $ map (argFromDom . fmap fst) tel
                     }
               let newDef = def
                            { funProjection     = Just projection

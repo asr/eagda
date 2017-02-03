@@ -30,11 +30,13 @@ import Agda.TypeChecking.Level
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Monad.Builtin
 import Agda.TypeChecking.Pretty
+import Agda.TypeChecking.Primitive
 import Agda.TypeChecking.ProjectionLike (elimView)
 import Agda.TypeChecking.Records (getDefType)
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
+
 
 import Agda.Utils.Functor (($>))
 import Agda.Utils.Monad
@@ -139,7 +141,7 @@ checkInternal' action v t = do
                $ Con c ci (take (length vs) vs2)
     Lit l      -> Lit l <$ ((`subtype` t) =<< litType l)
     Lam ai vb  -> do
-      (a, b) <- shouldBePi t
+      (a, b) <- maybe (shouldBePi t) return =<< isPath t
       checkArgInfo ai $ domInfo a
       addContext (suggest vb b, a) $ do
         Lam ai . Abs (absName vb) <$> checkInternal' action (absBody vb) (absBody b)
@@ -252,6 +254,14 @@ inferSpine' action t self self' (e : es) = do
     , text "eliminated by e = " <+> prettyTCM e
     ]
   case e of
+    IApply x y r -> do
+      (a, b) <- shouldBePath t
+      r' <- checkInternal' action r (unDom a)
+      izero <- primIZero
+      ione  <- primIOne
+      x' <- checkInternal' action x (b `absApp` izero)
+      y' <- checkInternal' action y (b `absApp` ione)
+      inferSpine' action (b `absApp` r) (self `applyE` [e]) (self' `applyE` [IApply x' y' r']) es
     Apply (Arg ai v) -> do
       (a, b) <- shouldBePi t
       checkArgInfo ai $ domInfo a
@@ -271,6 +281,13 @@ shouldBeProjectible :: Type -> QName -> TCM Type
 shouldBeProjectible t f = maybe failure return =<< getDefType f =<< reduce t
   where failure = typeError $ ShouldBeRecordType t
     -- TODO: more accurate error that makes sense also for proj.-like funs.
+
+shouldBePath :: Type -> TCM (Dom Type, Abs Type)
+shouldBePath t = do
+  m <- isPath t
+  case m of
+    Just p  -> return p
+    Nothing -> typeError $ ShouldBePath t
 
 shouldBePi :: Type -> TCM (Dom Type, Abs Type)
 shouldBePi t = ifPiType t (\ a b -> return (a, b)) $ const $ typeError $ ShouldBePi t
@@ -359,8 +376,11 @@ eliminate self t (e : es) = case e of
     Apply (Arg _ v) -> do
       (_, b) <- shouldBePi t
       eliminate (self `apply1` v) (b `absApp` v) es
+    IApply _ _ v -> do
+      (_, b) <- shouldBePath t
+      eliminate (self `applyE` [e]) (b `absApp` v) es
     -- case: projection or projection-like
     Proj o f -> do
-      (Dom ai _, b) <- shouldBePi =<< shouldBeProjectible t f
+      (Dom{domInfo = ai}, b) <- shouldBePi =<< shouldBeProjectible t f
       u  <- applyDef o f $ Arg ai self
       eliminate u (b `absApp` self) es

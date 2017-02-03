@@ -888,6 +888,7 @@ instance ToConcrete BindingPattern A.Pattern where
       A.AbsurdP{}            -> ret p
       A.LitP{}               -> ret p
       A.DotP{}               -> ret p
+      A.EqualP{}             -> ret p
       A.ConP i c args        -> bindToConcrete ((map . fmap . fmap) BindingPat args) $ ret . A.ConP i c
       A.DefP i f args        -> bindToConcrete ((map . fmap . fmap) BindingPat args) $ ret . A.DefP i f
       A.PatternSynP i f args -> bindToConcrete ((map . fmap . fmap) BindingPat args) $ ret . A.PatternSynP i f
@@ -938,6 +939,9 @@ instance ToConcrete A.Pattern C.Pattern where
           -- following the fusing of WildP and ImplicitP.
           C.Underscore{} -> return $ C.WildP $ getRange i
           _ -> return $ C.DotP (getRange i) o c
+
+      A.EqualP i es -> do
+        C.EqualP (getRange i) <$> toConcrete es
 
       A.PatternSynP i n _ ->
         -- Ulf, 2016-11-29: This doesn't seem right. The underscore is a list

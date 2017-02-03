@@ -457,6 +457,7 @@ data Pattern' e
   | LitP Literal
   | PatternSynP PatInfo QName [NamedArg (Pattern' e)]
   | RecP PatInfo [FieldAssignment' (Pattern' e)]
+  | EqualP PatInfo [(Expr,Expr)]
   deriving (Typeable, Show, Functor, Foldable, Traversable, Eq)
 
 type Pattern  = Pattern' Expr
@@ -643,6 +644,7 @@ instance HasRange (Pattern' e) where
     getRange (LitP l)            = getRange l
     getRange (PatternSynP i _ _) = getRange i
     getRange (RecP i _)          = getRange i
+    getRange (EqualP i _)        = getRange i
 
 instance HasRange SpineLHS where
     getRange (SpineLHS i _ _ _)  = getRange i
@@ -683,6 +685,7 @@ instance SetRange (Pattern' a) where
     setRange r (LitP l)             = LitP (setRange r l)
     setRange r (PatternSynP _ n as) = PatternSynP (PatRange r) (setRange r n) as
     setRange r (RecP i as)          = RecP (PatRange r) as
+    setRange r (EqualP _ es)        = EqualP (PatRange r) es
 
 instance KillRange LamBinding where
   killRange (DomainFree info x) = killRange1 (DomainFree info) x
@@ -767,6 +770,7 @@ instance KillRange e => KillRange (Pattern' e) where
   killRange (LitP l)            = killRange1 LitP l
   killRange (PatternSynP i a p) = killRange3 PatternSynP i a p
   killRange (RecP i as)         = killRange2 RecP i as
+  killRange (EqualP i es)       = killRange2 EqualP i es
 
 instance KillRange SpineLHS where
   killRange (SpineLHS i a b c)  = killRange4 SpineLHS i a b c
@@ -993,6 +997,7 @@ patternToExpr (AbsurdP _)         = Underscore emptyMetaInfo  -- TODO: could thi
 patternToExpr (LitP l)            = Lit l
 patternToExpr (PatternSynP _ _ _) = __IMPOSSIBLE__
 patternToExpr (RecP _ as)         = Rec exprNoRange $ map (Left . fmap patternToExpr) as
+patternToExpr EqualP{}            = __IMPOSSIBLE__  -- Andrea TODO: where is this used?
 
 type PatternSynDefn = ([Arg Name], Pattern' Void)
 type PatternSynDefns = Map QName PatternSynDefn
@@ -1015,6 +1020,7 @@ substPattern s p = case p of
   DefP{}        -> p              -- destructor pattern
   AsP i x p     -> AsP i x (substPattern s p) -- Note: cannot substitute into as-variable
   PatternSynP{} -> __IMPOSSIBLE__ -- pattern synonyms (already gone)
+  EqualP i es -> EqualP i (map (substExpr (map (fmap patternToExpr) s)) es)
 
 class SubstExpr a where
   substExpr :: [(Name, Expr)] -> a -> a

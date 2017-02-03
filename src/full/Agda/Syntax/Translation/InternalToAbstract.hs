@@ -94,6 +94,8 @@ apps e = elims e . map I.Apply
 -- | Drops hidden arguments unless --show-implicit.
 nelims :: Expr -> [I.Elim' (Named_ Expr)] -> TCM Expr
 nelims e [] = return e
+nelims e (I.IApply x y r : es) =
+  nelims (A.App noExprInfo e $ defaultArg r) es
 nelims e (I.Apply arg : es) = do
   arg <- reify arg  -- This replaces the arg by _ if irrelevant
   dontShowImp <- not <$> showImplicitArguments
@@ -235,11 +237,13 @@ reifyDisplayFormP lhs@(A.SpineLHS i f ps wps) =
     okDisplayTerm DDef{}    = False
     okDisplayTerm _         = False
 
+    okDElim (I.IApply x y r) = okDisplayTerm r
     okDElim (I.Apply v) = okDisplayTerm $ unArg v
     okDElim I.Proj{}    = True
 
     okToDropE (I.Apply v) = okToDrop v
     okToDropE I.Proj{}    = False
+    okToDropE (I.IApply x y r) = False
 
     okToDrop arg = notVisible arg && case ignoreSharing $ unArg arg of
       I.Var _ []   -> True
@@ -249,6 +253,7 @@ reifyDisplayFormP lhs@(A.SpineLHS i f ps wps) =
 
     okArg = okTerm . unArg
 
+    okElim (I.IApply x y r) = okTerm r
     okElim (I.Apply a) = okArg a
     okElim (I.Proj{})  = True
 
@@ -274,6 +279,7 @@ reifyDisplayFormP lhs@(A.SpineLHS i f ps wps) =
         return $ SpineLHS i f vs (ds ++ wps)
       where
         argToPat arg = fmap unnamed <$> traverse termToPat arg
+        elimToPat (I.IApply _ _ r) = argToPat (Arg defaultArgInfo r)
         elimToPat (I.Apply arg) = argToPat arg
         elimToPat (I.Proj o d)  = return $ defaultNamedArg $ A.ProjP patNoRange o $ AmbQ [d]
 
@@ -394,8 +400,8 @@ reifyTerm expandAnonDefs0 v = do
                 -- Andreas, 2012-09-18
                 -- If the first regular constructor argument is hidden,
                 -- we keep the parameters to avoid confusion.
-                (Dom info _ : _) | notVisible info -> do
-                  let us = for (drop n pars) $ \ (Dom ai _) ->
+                (Dom {domInfo = info} : _) | notVisible info -> do
+                  let us = for (drop n pars) $ \ (Dom {domInfo = ai}) ->
                              -- setRelevance Relevant $
                              hideOrKeepInstance $ Arg ai underscore
                   apps h $ us ++ es  -- Note: unless --show-implicit, @apps@ will drop @us@.
@@ -521,7 +527,7 @@ reifyTerm expandAnonDefs0 v = do
               -- These are the dropped projection arguments
               scope <- getScope
               let underscore = A.Underscore $ Info.emptyMetaInfo { metaScope = scope }
-              let pad = for as $ \ (Dom ai (x, _)) ->
+              let pad = for as $ \ (Dom{domInfo = ai, unDom = (x, _)}) ->
                     Arg ai $ Named (Just $ unranged x) underscore
 
               -- Now pad' ++ es' = drop n (pad ++ es)
@@ -619,6 +625,15 @@ instance (Reify i a) => Reify (Arg i) (Arg a) where
               `and2M` (return (argInfoRelevance info /= Irrelevant) `or2M` showIrrelevantArguments)
   reifyWhen b i = traverse (reifyWhen b) i
 
+-- instance Reify Elim Expr where
+--   reifyWhen = reifyWhenE
+--   reify e = case e of
+--     I.IApply x y r -> appl "iapply" <$> reify (defaultArg r :: Arg Term)
+--     I.Apply v -> appl "apply" <$> reify v
+--     I.Proj f  -> appl "proj"  <$> reify ((defaultArg $ I.Def f []) :: Arg Term)
+--     where
+--       appl :: String -> Arg Expr -> Expr
+--       appl s v = A.App exprInfo (A.Lit (LitString noRange s)) $ fmap unnamed v
 
 data NamedClause = NamedClause QName Bool I.Clause
   -- ^ Also tracks whether module parameters should be dropped from the patterns.
@@ -703,6 +718,7 @@ stripImplicits (ps, wps) = do          -- v if show-implicit we don't need the n
             A.AsP i x p   -> A.AsP i x $ stripPat p
             A.PatternSynP _ _ _ -> __IMPOSSIBLE__ -- p
             A.RecP i fs   -> A.RecP i $ map (fmap stripPat) fs  -- TODO Andreas: is this right?
+            A.EqualP{}    -> p
 
           varOrDot A.VarP{}      = True
           varOrDot A.WildP{}     = True
@@ -765,6 +781,7 @@ instance BlankVars A.Pattern where
     A.AsP i n p   -> A.AsP i n $ blank bound p
     A.PatternSynP _ _ _ -> __IMPOSSIBLE__
     A.RecP i fs   -> A.RecP i $ blank bound fs
+    A.EqualP i es -> A.EqualP i (blank bound es)  -- Andrea TODO: is this correct?
 
 instance BlankVars A.Expr where
   blank bound e = case e of
@@ -849,6 +866,7 @@ instance Binder A.Pattern where
     A.LitP{}             -> empty
     A.PatternSynP _ _ ps -> varsBoundIn ps
     A.RecP _ fs          -> varsBoundIn fs
+    A.EqualP{}           -> empty
 
 instance Binder A.LamBinding where
   varsBoundIn (A.DomainFree _ x) = singleton x
@@ -1022,7 +1040,7 @@ instance Reify I.Telescope A.Telescope where
     return $ TypedBindings r (Arg info (TBind r [pure x] e)) : bs
 
 instance Reify i a => Reify (Dom i) (Arg a) where
-    reify (Dom info i) = Arg info <$> reify i
+    reify (Dom{domInfo = info, unDom = i}) = Arg info <$> reify i
 
 instance Reify i a => Reify (I.Elim' i) (I.Elim' a) where
   reify = traverse reify

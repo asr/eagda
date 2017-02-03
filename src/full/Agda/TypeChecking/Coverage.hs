@@ -41,6 +41,7 @@ import Agda.Syntax.Internal
 import Agda.Syntax.Internal.Pattern
 
 import Agda.TypeChecking.Monad
+import Agda.TypeChecking.Monad.Builtin
 import Agda.TypeChecking.Monad.Exception
 
 import Agda.TypeChecking.Rules.LHS.Problem (allFlexVars)
@@ -131,7 +132,7 @@ type CoverM = ExceptionT SplitError TCM
 -- | Top-level function for checking pattern coverage.
 coverageCheck :: QName -> Type -> [Clause] -> TCM SplitTree
 coverageCheck f t cs = do
-  TelV gamma a <- telView t
+  TelV gamma a <- telViewUpToPath (-1) t
   let -- n             = arity
       -- xs            = variable patterns fitting lgamma
       n            = size gamma
@@ -379,7 +380,9 @@ isDatatype ind at = do
   let t       = unDom at
       throw f = throwException . f =<< do liftTCM $ buildClosure t
   t' <- liftTCM $ reduce t
+  mInterval <- liftTCM $ getBuiltinName' builtinInterval
   case ignoreSharing $ unEl t' of
+    Def d [] | Just d == mInterval -> throw NotADatatype
     Def d es -> do
       let ~(Just args) = allApplyElims es
       def <- liftTCM $ theDef <$> getConstInfo d
@@ -420,7 +423,7 @@ fixTarget sc@SClause{ scTel = sctel, scPats = ps, scSubst = sigma, scModuleParam
       [ text "target type before substitution (variables may be wrong): " <+> do
           addContext sctel $ prettyTCM a
       ]
-    TelV tel b <- telView $ applyPatSubst sigma $ unArg a
+    TelV tel b <- telViewUpToPath (-1) $ applyPatSubst sigma $ unArg a
     reportSDoc "tc.cover.target" 15 $ sep
       [ text "target type telescope (after substitution): " <+> do
           addContext sctel $ prettyTCM tel
@@ -733,8 +736,8 @@ split' ind fixtarget sc@(SClause tel ps _ mpsub target) (BlockingVar x mcons) = 
   -- Split the telescope at the variable
   -- t = type of the variable,  Δ₁ ⊢ t
   (n, t, delta1, delta2) <- do
-    let (tel1, Dom info (n, t) : tel2) = genericSplitAt (size tel - x - 1) $ telToList tel
-    return (n, Dom info t, telFromList tel1, telFromList tel2)
+    let (tel1, dom : tel2) = genericSplitAt (size tel - x - 1) $ telToList tel
+    return (fst $ unDom dom, snd <$> dom, telFromList tel1, telFromList tel2)
 
   -- Check that t is a datatype or a record
   -- Andreas, 2010-09-21, isDatatype now directly throws an exception if it fails

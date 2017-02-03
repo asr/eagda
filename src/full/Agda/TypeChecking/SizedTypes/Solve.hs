@@ -326,7 +326,7 @@ castConstraintToCurrentContext cl = do
   let delta = envContext $ clEnv cl
   -- The constraint
   let c = clValue cl
-  let findInGamma (Ctx cid (Dom _ (x, t))) =
+  let findInGamma (Ctx cid (Dom {unDom = (x, t)})) =
         -- try to find same CtxId (safe)
         case List.findIndex ((cid ==) . ctxId) gamma of
           Just i -> Just i
@@ -785,6 +785,7 @@ sizeExpr u = do
       _           -> return Nothing
   where
     isVar (Proj{})  = Nothing
+    isVar (IApply _ _ v) = isVar (Apply (defaultArg v))
     isVar (Apply v) = case ignoreSharing $ unArg v of
       Var i [] -> Just i
       _        -> Nothing

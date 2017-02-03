@@ -984,7 +984,7 @@ data MetaInstantiation
 
 data TypeCheckingProblem
   = CheckExpr A.Expr Type
-  | CheckArgs ExpandHidden Range [NamedArg A.Expr] Type Type (Args -> Type -> TCM Term)
+  | CheckArgs ExpandHidden Range [NamedArg A.Expr] Type Type (Elims -> Type -> TCM Term)
   | CheckLambda (Arg ([WithHiding Name], Maybe Type)) A.Expr Type
     -- ^ @(λ (xs : t₀) → e) : t@
     --   This is not an instance of 'CheckExpr' as the domain type
@@ -1321,6 +1321,8 @@ data Definition = Defn
                          -- instantiation?
   , defMatchable      :: Bool
     -- ^ Is the def matched against in a rewrite rule?
+  , defNoCompilation  :: Bool
+    -- ^ should compilers skip this? Used for e.g. cubical's comp
   , defInjective      :: Bool
     -- ^ Should the def be treated as injective by the pattern matching unifier?
   , theDef            :: Defn
@@ -1344,6 +1346,7 @@ defaultDefn info x t def = Defn
   , defInstance       = Nothing
   , defCopy           = False
   , defMatchable      = False
+  , defNoCompilation  = False
   , defInjective      = False
   , theDef            = def
   }
@@ -1538,6 +1541,7 @@ data Defn = Axiom
               --   for recursive records.
             , recRecursive      :: Bool                 -- ^ Recursive record.  Infers @recEtaEquality = False@.  Projections are not size-preserving.
             , recAbstr          :: IsAbstract
+            , recComp           :: Maybe QName
             }
           | Constructor
             { conPars     :: Int         -- ^ Number of parameters.
@@ -1546,6 +1550,7 @@ data Defn = Axiom
             , conData     :: QName       -- ^ Name of datatype or record type.
             , conAbstr    :: IsAbstract
             , conInd      :: Induction   -- ^ Inductive or coinductive?
+            , conComp     :: Maybe (QName,[QName]) -- ^ (cubical composition, projections)
             , conErased   :: [Bool]      -- ^ Which arguments are erased at runtime (computed during compilation to treeless)
             , conTPTPRole :: Maybe TPTPRole  -- ^ TPTP axiom?
             }
@@ -2307,6 +2312,14 @@ data Warning =
   | UselessPublic
     -- ^ If the user opens a module public before the module header.
     --   (See issue #2377.)
+  -- Safe flag errors
+  | SafeFlagPostulate C.Name
+  | SafeFlagPragma [String]
+  | SafeFlagNonTerminating
+  | SafeFlagTerminating
+  | SafeFlagPrimTrustMe
+  | SafeFlagNoPositivityCheck
+  | SafeFlagPolarity
   | ParseWarning             ParseWarning
   deriving Show
 
@@ -2347,14 +2360,7 @@ isUnsolvedWarning w = case w of
   UnsolvedInteractionMetas{} -> True
   UnsolvedConstraints{}      -> True
  -- rest
-  OldBuiltin{}               -> False
-  EmptyRewritePragma         -> False
-  UselessPublic              -> False
-  UnreachableClauses{}       -> False
-  TerminationIssue{}         -> False
-  CoverageIssue{}            -> False
-  NotStrictlyPositive{}      -> False
-  ParseWarning{}             -> False
+  _                          -> False
 
 classifyWarning :: Warning -> WhichWarnings
 classifyWarning w = case w of
@@ -2368,6 +2374,13 @@ classifyWarning w = case w of
   UnsolvedMetaVariables{}    -> ErrorWarnings
   UnsolvedInteractionMetas{} -> ErrorWarnings
   UnsolvedConstraints{}      -> ErrorWarnings
+  SafeFlagPostulate{}        -> ErrorWarnings
+  SafeFlagPragma{}           -> ErrorWarnings
+  SafeFlagNonTerminating     -> ErrorWarnings
+  SafeFlagTerminating        -> ErrorWarnings
+  SafeFlagPrimTrustMe        -> ErrorWarnings
+  SafeFlagNoPositivityCheck  -> ErrorWarnings
+  SafeFlagPolarity           -> ErrorWarnings
   ParseWarning{}             -> ErrorWarnings
 
 classifyWarnings :: [TCWarning] -> ([TCWarning], [TCWarning])
@@ -2509,6 +2522,7 @@ data TypeError
             -- ^ The given type should have been a sort.
         | ShouldBePi Type
             -- ^ The given type should have been a pi.
+        | ShouldBePath Type
         | ShouldBeRecordType Type
         | ShouldBeRecordPattern DeBruijnPattern
         | NotAProjectionPattern (NamedArg A.Pattern)
@@ -2640,14 +2654,6 @@ data TypeError
     -- Reflection errors
         | UnquoteFailed UnquoteError
         | DeBruijnIndexOutOfScope Nat Telescope [Name]
-    -- Safe flag errors
-        | SafeFlagPostulate C.Name
-        | SafeFlagPragma [String]
-        | SafeFlagNonTerminating
-        | SafeFlagTerminating
-        | SafeFlagPrimTrustMe
-        | SafeFlagNoPositivityCheck
-        | SafeFlagPolarity
     -- Language option errors
         | NeedOptionCopatterns
         | NeedOptionRewriting
@@ -3080,8 +3086,8 @@ instance KillRange Section where
   killRange (Section tel) = killRange1 Section tel
 
 instance KillRange Definition where
-  killRange (Defn ai name t pols occs displ mut compiled inst copy ma inj def) =
-    killRange12 Defn ai name t pols occs displ mut compiled inst copy ma inj def
+  killRange (Defn ai name t pols occs displ mut compiled inst copy ma nc inj def) =
+    killRange12 Defn ai name t pols occs displ mut compiled inst copy ma nc inj def
     -- TODO clarify: Keep the range in the defName field?
 
 instance KillRange CtxId where
@@ -3124,8 +3130,8 @@ instance KillRange Defn where
       Function cls comp tt inv mut isAbs delayed proj flags term extlam with copat role ->
         killRange14 Function cls comp tt inv mut isAbs delayed proj flags term extlam with copat role
       Datatype a b c d e f g h i j k -> killRange11 Datatype a b c d e f g h i j k
-      Record a b c d e f g h i j k   -> killRange11 Record a b c d e f g h i j k
-      Constructor a b c d e f g h    -> killRange8 Constructor a b c d e f g h
+      Record a b c d e f g h i j k l -> killRange12 Record a b c d e f g h i j k l
+      Constructor a b c d e f g h i  -> killRange9 Constructor a b c d e f g h i
       Primitive a b c d              -> killRange4 Primitive a b c d
 
 instance KillRange MutualId where

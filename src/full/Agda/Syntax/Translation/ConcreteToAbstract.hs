@@ -72,6 +72,7 @@ import Agda.Interaction.FindFile (checkModuleName)
 -- import Agda.Interaction.Imports  -- for type-checking in ghci
 import {-# SOURCE #-} Agda.Interaction.Imports (scopeCheckImport)
 import Agda.Interaction.Options
+import qualified Agda.Interaction.Options.Lenses as Lens
 
 import Agda.Utils.Either
 import Agda.Utils.Except ( MonadError(catchError, throwError) )
@@ -171,11 +172,11 @@ instance PatternVars (A.Pattern' e) where
         -- indexed records.
       A.PatternSynP _ _ args -> patternVars args
       A.RecP _ fs            -> patternVars fs
-
+      A.EqualP{}             -> []
 
 -- | Make sure that there are no dot patterns (called on pattern synonyms).
-noDotPattern :: String -> A.Pattern' e -> ScopeM (A.Pattern' Void)
-noDotPattern err = dot
+noDotorEqPattern :: String -> A.Pattern' e -> ScopeM (A.Pattern' Void)
+noDotorEqPattern err = dot
   where
     dot :: A.Pattern' e -> ScopeM (A.Pattern' Void)
     dot p = case p of
@@ -185,6 +186,7 @@ noDotPattern err = dot
       A.WildP i              -> pure $ A.WildP i
       A.AsP i x p            -> A.AsP i x <$> dot p
       A.DotP{}               -> typeError $ GenericError err
+      A.EqualP{}             -> typeError $ GenericError err   -- Andrea: so we also disallow = patterns, reasonable?
       A.AbsurdP i            -> pure $ A.AbsurdP i
       A.LitP l               -> pure $ A.LitP l
       A.DefP i f args        -> A.DefP i f <$> (traverse $ traverse $ traverse dot) args
@@ -1165,7 +1167,7 @@ instance ToAbstract [C.Declaration] [A.Declaration] where
     -- When --safe is active the termination checker (Issue 586) and
     -- positivity checker (Issue 1614) may not be switched off, and
     -- polarities may not be assigned.
-    ds <- ifM (optSafe <$> commandLineOptions)
+    ds <- ifM (Lens.getSafeMode <$> commandLineOptions)
               (mapM (noNoTermCheck >=> noNoPositivityCheck >=> noPolarity) ds)
               (return ds)
     toAbstract =<< niceDecls ds
@@ -1174,20 +1176,21 @@ instance ToAbstract [C.Declaration] [A.Declaration] where
     -- @NoTerminationCheck@ because the @NO_TERMINATION_CHECK@ pragma
     -- was removed. See Issue 1763.
     noNoTermCheck :: C.Declaration -> TCM C.Declaration
-    noNoTermCheck (C.Pragma (C.TerminationCheckPragma r NonTerminating)) =
-      typeError $ SafeFlagNonTerminating
-    noNoTermCheck (C.Pragma (C.TerminationCheckPragma r Terminating)) =
-      typeError $ SafeFlagTerminating
+    noNoTermCheck d@(C.Pragma (C.TerminationCheckPragma r NonTerminating)) =
+      d <$ (setCurrentRange d $ warning SafeFlagNonTerminating)
+    noNoTermCheck d@(C.Pragma (C.TerminationCheckPragma r Terminating)) =
+      d <$ (setCurrentRange d $ warning SafeFlagTerminating)
     noNoTermCheck d = return d
 
     noNoPositivityCheck :: C.Declaration -> TCM C.Declaration
-    noNoPositivityCheck (C.Pragma (C.NoPositivityCheckPragma _)) =
-      typeError $ SafeFlagNoPositivityCheck
+    noNoPositivityCheck d@(C.Pragma (C.NoPositivityCheckPragma _)) =
+      d <$ (setCurrentRange d $ warning SafeFlagNoPositivityCheck)
     noNoPositivityCheck d = return d
 
     noPolarity :: C.Declaration -> TCM C.Declaration
-    noPolarity (C.Pragma C.PolarityPragma{}) = typeError SafeFlagPolarity
-    noPolarity d                             = return d
+    noPolarity d@(C.Pragma C.PolarityPragma{}) =
+      d <$ (setCurrentRange d $ warning SafeFlagPolarity)
+    noPolarity d                               = return d
 
 newtype LetDefs = LetDefs [C.Declaration]
 newtype LetDef = LetDef NiceDeclaration
@@ -1250,6 +1253,7 @@ instance ToAbstract LetDef [A.LetBinding] where
               definedName C.AbsurdP{}            = Nothing
               definedName C.AsP{}                = Nothing
               definedName C.DotP{}               = Nothing
+              definedName C.EqualP{}             = Nothing
               definedName C.LitP{}               = Nothing
               definedName C.RecP{}               = Nothing
               definedName C.QuoteP{}             = Nothing
@@ -1332,7 +1336,7 @@ instance ToAbstract NiceDeclaration A.Declaration where
     C.Axiom r f p a i rel _ x t -> do
       -- check that we do not postulate in --safe mode
       clo <- commandLineOptions
-      when (optSafe clo) (typeError (SafeFlagPostulate x))
+      when (Lens.getSafeMode clo) (warning $ SafeFlagPostulate x)
       -- check the postulate
       toAbstractNiceAxiom A.NoFunSig NotMacroDef d
 
@@ -1568,8 +1572,8 @@ instance ToAbstract NiceDeclaration A.Declaration where
       defn@(as, p) <- withLocalVars $ do
          p  <- toAbstract =<< parsePatternSyn p
          checkPatternLinearity [p]
-         let err = "Dot patterns are not allowed in pattern synonyms. Use '_' instead."
-         p <- noDotPattern err p
+         let err = "Dot or equality patterns are not allowed in pattern synonyms. Maybe use '_' instead."
+         p <- noDotorEqPattern err p
          as <- (traverse . mapM) (unVarName <=< resolveName . C.QName) as
          unlessNull (patternVars p \\ map unArg as) $ \ xs -> do
            typeError . GenericDocError =<< do
@@ -2070,12 +2074,24 @@ instance ToAbstract LeftHandSide A.LHS where
         printLocals 10 "checked dots:"
         return $ A.LHS (LHSRange $ getRange (lhs, wps)) lhscore wps
 
+-- Merges adjacent EqualP patterns into one: typecheking expects only one pattern for each domain in the telescope.
+mergeEqualPs :: [NamedArg (Pattern' e)] -> [NamedArg (Pattern' e)]
+mergeEqualPs = go Nothing
+  where
+    go acc (Arg i (Named n (A.EqualP r es)) : ps) = go (fmap (fmap (++es)) acc `mplus` Just ((i,n,r),es)) ps
+    go Nothing [] = []
+    go Nothing (p : ps) = p : go Nothing ps
+    go (Just ((i,n,r),es)) ps = Arg i (Named n (A.EqualP r es)) :
+      case ps of
+        (p : ps) -> p : go Nothing ps
+        []     -> []
+
 -- does not check pattern linearity
 instance ToAbstract C.LHSCore (A.LHSCore' C.Expr) where
     toAbstract (C.LHSHead x ps) = do
         x    <- withLocalVars $ setLocalVars [] >> toAbstract (OldName x)
         args <- toAbstract ps
-        return $ A.LHSHead x args
+        return $ A.LHSHead x (mergeEqualPs args)
     toAbstract c@(C.LHSProj d ps1 l ps2) = do
         unless (null ps1) $ typeError $ GenericDocError $
           P.text "Ill-formed projection pattern" P.<+> P.pretty (foldl C.AppP (C.IdentP d) ps1)
@@ -2087,7 +2103,7 @@ instance ToAbstract C.LHSCore (A.LHSCore' C.Expr) where
                 _           -> genericError $
                   "head of copattern needs to be a field identifier, but "
                   ++ show d ++ " isn't one"
-        A.LHSProj (AmbQ ds) <$> toAbstract l <*> toAbstract ps2
+        A.LHSProj (AmbQ ds) <$> toAbstract l <*> (mergeEqualPs <$> toAbstract ps2)
 
 instance ToAbstract c a => ToAbstract (WithHiding c) (WithHiding a) where
   toAbstract (WithHiding h a) = WithHiding h <$> toAbstractHiding h a
@@ -2120,6 +2136,7 @@ instance ToAbstract (A.Pattern' C.Expr) (A.Pattern' A.Expr) where
     toAbstract (A.WildP i)            = return $ A.WildP i
     toAbstract (A.AsP i x p)          = A.AsP i x <$> toAbstract p
     toAbstract (A.DotP i o e)         = A.DotP i o <$> insideDotPattern (toAbstract e)
+    toAbstract (A.EqualP i es)        = return $ A.EqualP i es
     toAbstract (A.AbsurdP i)          = return $ A.AbsurdP i
     toAbstract (A.LitP l)             = return $ A.LitP l
     toAbstract (A.PatternSynP i x as) = A.PatternSynP i x <$> mapM toAbstract as
@@ -2200,6 +2217,8 @@ instance ToAbstract C.Pattern (A.Pattern' C.Expr) where
             info = PatRange r
     -- we have to do dot patterns at the end
     toAbstract p0@(C.DotP r o e) = return $ A.DotP info o e
+        where info = PatRange r
+    toAbstract p0@(C.EqualP r es) = A.EqualP info <$> traverse (\(t,u) -> (,) <$> toAbstract t <*> toAbstract u) es
         where info = PatRange r
     toAbstract p0@(C.AbsurdP r) = return $ A.AbsurdP info
         where info = PatRange r

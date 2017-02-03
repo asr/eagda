@@ -79,7 +79,8 @@ etaExpandClause clause = liftTCM $ do
     -- it means we skipped an element of the telescope.
     useNames :: [Arg ArgName] -> ListTel -> ListTel
     useNames []     tel       = map (setOrigin Inserted) tel
-    useNames (_:_)  []        = __IMPOSSIBLE__
+    -- Andrea: we can have more Lam's than Pi's, because they might be for Path
+    useNames (_:_)  []        = []
     useNames (x:xs) (dom:tel)
       | getHiding x == getHiding dom =
           -- set the ArgName of the dom

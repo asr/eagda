@@ -284,7 +284,7 @@ sizePolarity d pol0 = do
             (parTel, ixTel) = genericSplitAt np $ telToList tel
         case ixTel of
           []                 -> exit  -- No size index
-          Dom _ (_, a) : _ -> ifM ((/= Just BoundedNo) <$> isSizeType a) exit $ do
+          Dom{unDom = (_,a)} : _ -> ifM ((/= Just BoundedNo) <$> isSizeType a) exit $ do
             -- we assume the size index to be 'Covariant' ...
             let pol   = genericTake np pol0
                 polCo = pol ++ [Covariant]
@@ -389,6 +389,7 @@ instance HasPolarity Type where
 instance HasPolarity a => HasPolarity (Elim' a) where
   polarities i Proj{}    = return []
   polarities i (Apply a) = polarities i a
+  polarities i (IApply x y a) = polarities i (x,(y,a))
 
 instance HasPolarity Term where
   polarities i v = do

@@ -152,6 +152,8 @@ data FastCase c = FBranches
     -- ^ Map from literal to case subtree.
   , fcatchAllBranch :: Maybe c
     -- ^ (Possibly additional) catch-all clause.
+  , ffallThrough :: Maybe Bool
+    -- ^ (if True) In case of non-canonical argument use catchAllBranch.
   }
 
 -- | Case tree with bodies.
@@ -180,17 +182,18 @@ fastCompiledClauses z s cc =
     Case (Arg _ n) bs -> FCase n (fastCase z s bs)
 
 fastCase :: Maybe ConHead -> Maybe ConHead -> Case CompiledClauses -> FastCase FastCompiledClauses
-fastCase z s (Branches proj con lit wild) =
+fastCase z s (Branches proj con lit wild fT) =
   FBranches
     { fprojPatterns   = proj
     , fconBranches    = Map.mapKeysMonotonic (nameId . qnameName) $ fmap (fastCompiledClauses z s . content) con
     , fsucBranch      = fmap (fastCompiledClauses z s . content) $ flip Map.lookup con . conName =<< s
     , flitBranches    = fmap (fastCompiledClauses z s) lit
+    , ffallThrough    = fT
     , fcatchAllBranch = fmap (fastCompiledClauses z s) wild }
 
 {-# INLINE lookupCon #-}
 lookupCon :: QName -> FastCase c -> Maybe c
-lookupCon c (FBranches _ cons _ _ _) = Map.lookup (nameId $ qnameName c) cons
+lookupCon c (FBranches _ cons _ _ _ _) = Map.lookup (nameId $ qnameName c) cons
 
 -- QName memo -------------------------------------------------------------
 
@@ -235,7 +238,8 @@ strictSubst strict us
         _        -> applySubst (liftS k rho) v
 
     goE k (Apply v) = Apply $! mapArg' (go k) v
-    goE _ p         = p
+    goE k (IApply x y r) = IApply (go k x) (go k y) (go k r)
+    goE _ p@Proj{}       = p
 
     goAbs k (Abs   x v) = Abs   x $! go (k + 1) v
     goAbs k (NoAbs x v) = NoAbs x $! go k v
@@ -289,7 +293,7 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = reduceB' 0
 
     reduceB' steps v =
       case v of
-        Def f es -> unfoldDefinitionE steps False reduceB' (Def f []) f es
+        Def f es -> runReduce $ reduceIApp es $ return $ unfoldDefinitionE steps False reduceB' (Def f []) f es
         Con c ci vs ->
           -- Constructors can reduce' when they come from an
           -- instantiated module.
@@ -297,9 +301,10 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = reduceB' 0
             NotBlocked r v -> NotBlocked r $ reduceNat v
             b              -> b
         Lit{} -> done
-        Var{} -> done
+        Var i es -> runReduce $ reduceIApp es (return done)
         _     -> runReduce (slowReduceTerm v)
       where
+        reduceIApp es d = reduceIApply' (return . reduceB' steps) d es
         done = notBlocked v
 
         reduceNat v@(Con c ci [])
@@ -323,6 +328,8 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = reduceB' 0
     unfoldCorecursionE (Proj o p)           = notBlocked $ Proj o $ originalProjection p
     unfoldCorecursionE (Apply (Arg info v)) = fmap (Apply . Arg info) $
       unfoldCorecursion 0 v
+    unfoldCorecursionE (IApply x y r) =
+      IApply <$> unfoldCorecursion 0 x <*> unfoldCorecursion 0 y <*> unfoldCorecursion 0 r
 
     unfoldCorecursion :: Int -> Term -> Blocked Term
     unfoldCorecursion steps (Def f es) = unfoldDefinitionE steps True unfoldCorecursion (Def f []) f es
@@ -498,14 +505,16 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = reduceB' 0
                         where (es0, rest) = splitAt n es
                               (es1, es2)  = splitAt m rest
                               vs          = map argFromElim es1
+                      fallThrough = fromMaybe False (ffallThrough bs) && isJust (fcatchAllBranch bs)
                   -- Now do the matching on the @n@ths argument:
                   in case eb of
+                    Blocked x _ | fallThrough -> match' steps f $ catchAllFrame $ stack
                     Blocked x _       -> no (Blocked x) es'
                     NotBlocked blk elim ->
                       case elim of
+                        IApply{} -> __IMPOSSIBLE__ -- Cannot define a path by cases
                         Apply (Arg info v) ->
                           case v of
-                            MetaV x _ -> no (Blocked x) es'
 
                             -- In case of a natural number literal, try also its constructor form
                             Lit l@(LitNat r n) ->
@@ -517,6 +526,10 @@ reduceTm env !constInfo allowNonTerminating hasRewriting zero suc = reduceB' 0
 
                             Lit l    -> match' steps f $ litFrame l    $ catchAllFrame stack
                             Con c ci vs -> match' steps f $ conFrame c ci vs $ catchAllFrame $ stack
+
+                            _ | fallThrough -> match' steps f $ catchAllFrame $ stack
+
+                            MetaV x _ -> no (Blocked x) es'
 
                             -- Otherwise, we are stuck.  If we were stuck before,
                             -- we keep the old reason, otherwise we give reason StuckOn here.

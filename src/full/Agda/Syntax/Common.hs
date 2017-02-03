@@ -538,21 +538,22 @@ instance Underscore Doc where
 --   and in 'Abstract' syntax and other situations.
 data Dom e = Dom
   { domInfo   :: ArgInfo
+  , domFinite :: !Bool
   , unDom     :: e
   } deriving (Typeable, Ord, Functor, Foldable, Traversable)
 
 instance Decoration Dom where
-  traverseF f (Dom ai a) = Dom ai <$> f a
+  traverseF f (Dom ai b a) = Dom ai b <$> f a
 
 instance HasRange a => HasRange (Dom a) where
   getRange = getRange . unDom
 
 instance KillRange a => KillRange (Dom a) where
-  killRange (Dom info a) = killRange2 Dom info a
+  killRange (Dom info b a) = killRange3 Dom info b a
 
 instance Eq a => Eq (Dom a) where
-  Dom (ArgInfo h1 r1 _ _) x1 == Dom (ArgInfo h2 r2 _ _) x2 =
-    (h1, ignoreForced r1, x1) == (h2, ignoreForced r2, x2)
+  Dom (ArgInfo h1 r1 _ _) b1 x1 == Dom (ArgInfo h2 r2 _ _) b2 x2 =
+    (h1, ignoreForced r1, b1, x1) == (h2, ignoreForced r2, b2, x2)
 
 instance Show a => Show (Dom a) where
   show = show . argFromDom
@@ -574,14 +575,16 @@ instance LensOrigin (Dom e) where
   mapOrigin = mapArgInfo . mapOrigin
 
 argFromDom :: Dom a -> Arg a
-argFromDom (Dom i a) = Arg i a
+argFromDom (Dom i _ a) = Arg i a
 
 domFromArg :: Arg a -> Dom a
-domFromArg (Arg i a) = Dom i a
+domFromArg (Arg i a) = Dom i False a
 
 defaultDom :: a -> Dom a
-defaultDom = Dom defaultArgInfo
+defaultDom = defaultArgDom defaultArgInfo
 
+defaultArgDom :: ArgInfo -> a -> Dom a
+defaultArgDom info x = Dom info False x
 ---------------------------------------------------------------------------
 -- * Named arguments
 ---------------------------------------------------------------------------

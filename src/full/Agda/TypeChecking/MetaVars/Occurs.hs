@@ -32,6 +32,7 @@ import Agda.Syntax.Common
 import Agda.Syntax.Internal
 
 import Agda.TypeChecking.Monad
+import Agda.TypeChecking.Monad.Builtin
 import qualified Agda.TypeChecking.Monad.Benchmark as Bench
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Pretty
@@ -429,9 +430,14 @@ instance Occurs Sort where
 instance Occurs a => Occurs (Elim' a) where
   occurs red ctx m xs e@Proj{}  = return e
   occurs red ctx m xs (Apply a) = Apply <$> occurs red ctx m xs a
+  occurs red ctx m xs (IApply x y a)
+    = IApply <$> occurs red ctx m xs x
+             <*> occurs red ctx m xs y
+             <*> occurs red ctx m xs a
 
   metaOccurs m (Proj{} ) = return ()
   metaOccurs m (Apply a) = metaOccurs m a
+  metaOccurs m (IApply x y a) = metaOccurs m (x,(y,a))
 
 instance (Occurs a, Subst t a) => Occurs (Abs a) where
   occurs red ctx m xs b@(Abs   s x) = Abs   s <$> underAbstraction_ b (occurs red ctx m (liftUnderAbs xs))
@@ -449,7 +455,7 @@ instance Occurs a => Occurs (Arg a) where
   metaOccurs m a = metaOccurs m (unArg a)
 
 instance Occurs a => Occurs (Dom a) where
-  occurs red ctx m xs (Dom info x) = Dom info <$> occurs red ctx m xs x
+  occurs red ctx m xs = traverse $ occurs red ctx m xs
   metaOccurs m = metaOccurs m . unDom
 
 instance (Occurs a, Occurs b) => Occurs (a,b) where
@@ -651,6 +657,7 @@ instance FoldRigid a => FoldRigid (Dom a) where
 
 instance FoldRigid a => FoldRigid (Elim' a) where
   foldRigid f (Apply a) = foldRigid f a
+  foldRigid f (IApply x y a) = foldRigid f (x,(y,a))
   foldRigid f Proj{}    = mempty
 
 instance FoldRigid a => FoldRigid [a] where
@@ -714,7 +721,7 @@ killArgs kills m = do
 --   @t'@ is type @t@ after pruning all @k'i==True@.
 killedType :: [(Dom (ArgName, Type), Bool)] -> Type -> ([Arg Bool], Type)
 killedType [] b = ([], b)
-killedType ((arg@(Dom info _), kill) : kills) b
+killedType ((arg@(Dom {domInfo = info}), kill) : kills) b
   | dontKill  = (Arg info False : args, mkPi arg b')
   | otherwise = (Arg info True  : args, strengthen __IMPOSSIBLE__ b')
   where

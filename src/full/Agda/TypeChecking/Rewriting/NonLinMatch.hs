@@ -93,6 +93,10 @@ instance (PatternFrom a b) => PatternFrom (Arg a) (Arg b) where
 instance (PatternFrom a NLPat) => PatternFrom (Elim' a) (Elim' NLPat) where
   patternFrom r k (Apply u) = let r' = r `composeRelevance` getRelevance u
                               in  Apply <$> traverse (patternFrom r' k) u
+  patternFrom r k (IApply x y u) = let r' = r `composeRelevance` Relevant
+                                   in  IApply <$> patternFrom r' k x
+                                              <*> patternFrom r' k y
+                                              <*> patternFrom r' k u
   patternFrom r k (Proj o f) = return $ Proj o f
 
 instance (PatternFrom a b) => PatternFrom (Dom a) (Dom b) where
@@ -265,6 +269,10 @@ instance Match a b => Match (Arg a) (Arg b) where
 instance Match a b => Match (Elim' a) (Elim' b) where
   match r gamma k p v =
    case (p, v) of
+     -- The types should ensure that the endpoints are the same.
+     (IApply _ _ p,IApply _ _ v) ->
+                           let r' = r `composeRelevance` Relevant
+                           in  match r' gamma k p v
      (Apply p, Apply v) -> let r' = r `composeRelevance` getRelevance p
                            in  match r' gamma k p v
      (Proj _ x, Proj _ y) -> if x == y then return () else
@@ -273,6 +281,10 @@ instance Match a b => Match (Elim' a) (Elim' b) where
                                , text " and " <+> prettyTCM y ]) mzero
      (Apply{}, Proj{} ) -> __IMPOSSIBLE__
      (Proj{} , Apply{}) -> __IMPOSSIBLE__
+     (IApply{}, Proj{} ) -> __IMPOSSIBLE__
+     (Proj{} , IApply{}) -> __IMPOSSIBLE__
+     (IApply{}, Apply{} ) -> __IMPOSSIBLE__
+     (Apply{} , IApply{}) -> __IMPOSSIBLE__
 
 instance Match a b => Match (Dom a) (Dom b) where
   match r gamma k p v = match r gamma k (C.unDom p) (C.unDom v)

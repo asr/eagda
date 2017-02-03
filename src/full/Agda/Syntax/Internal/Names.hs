@@ -54,9 +54,9 @@ instance NamesIn Defn where
     Axiom{} -> Set.empty
     Function    { funClauses = cl, funCompiled = cc }              -> namesIn (cl, cc)
     Datatype    { dataClause = cl, dataCons = cs, dataSort = s }   -> namesIn (cl, cs, s)
-    Record      { recClause = cl, recConHead = c, recFields = fs } -> namesIn (cl, c, fs)
+    Record      { recClause = cl, recConHead = c, recFields = fs, recComp = comp } -> namesIn (cl, c, (fs, comp))
       -- Don't need recTel since those will be reachable from the constructor
-    Constructor { conSrcCon = c, conData = d }                     -> namesIn (c, d)
+    Constructor { conSrcCon = c, conData = d, conComp = cn }       -> namesIn (c, d, cn)
     Primitive   { primClauses = cl, primCompiled = cc }            -> namesIn (cl, cc)
     AbstractDefn -> __IMPOSSIBLE__
 
@@ -133,6 +133,7 @@ instance NamesIn Literal where
 instance NamesIn a => NamesIn (Elim' a) where
   namesIn (Apply arg) = namesIn arg
   namesIn (Proj _ f)  = namesIn f
+  namesIn (IApply x y arg) = namesIn (x, y, arg)
 
 instance NamesIn QName   where namesIn x = Set.singleton x
 instance NamesIn ConHead where namesIn h = namesIn (conName h)
@@ -172,6 +173,7 @@ instance NamesIn (A.Pattern' a) where
     A.PatternSynP _ c args -> namesIn (c, args)
     A.RecP _ fs            -> namesIn fs
     A.DotP{}               -> __IMPOSSIBLE__    -- Dot patterns are not allowed in pattern synonyms
+    A.EqualP{}             -> __IMPOSSIBLE__    -- Andrea: should we allow these in pattern synonyms?
 
 instance NamesIn AmbiguousQName where
   namesIn (AmbQ cs) = namesIn cs
