@@ -167,6 +167,61 @@ Compiler backends
   backends using Agda as a library. This allows prospective backend writers to
   experiment with new backends without having to change the Agda code base.
 
+LaTeX backend
+-------------
+
+* Some spacing issues
+  [[#2353](https://github.com/agda/agda/issues/2353),
+  [#2441](https://github.com/agda/agda/issues/2441)] have been fixed.
+
+  This change can affect spacing in existing documents, if they are
+  recompiled using the new `agda.sty`. To avoid this change you can
+  use the old `agda.sty`, or insert
+  ```latex
+  \defaultcolumn{@{~}l@{~}}
+  ```
+  just after the import of `agda.sty`.
+
+* The user can now control the typesetting of (certain) individual tokens
+  by redefining the `\AgdaFormat` command. Example:
+  ```latex
+  \usepackage{ifthen}
+
+  % Insert extra space before some tokens.
+  \DeclareRobustCommand{\AgdaFormat}[2]{%
+    \ifthenelse{
+      \equal{#1}{≡⟨} \OR
+      \equal{#1}{≡⟨⟩} \OR
+      \equal{#1}{∎}
+    }{\ }{}#2}
+  ```
+  Note the use of `\DeclareRobustCommand`. The first argument to
+  `\AgdaFormat` is the token, and the second argument the thing to
+  be typeset.
+
+* The alignment feature used to regard the string `+̲`, containing `+`
+  and a combining character, as having length two. However, it seems
+  more reasonable to treat it as having length one, as it occupies a
+  single column, if displayed "properly" using a monospace font. This
+  has now been fixed: the backend counts ["extended grapheme
+  clusters"](http://www.unicode.org/reports/tr29/#Grapheme_Cluster_Boundaries)
+  rather than code points.
+
+  Note that this fix is not perfect: a single extended grapheme
+  cluster might be displayed in different ways by different programs,
+  and might, in some cases, occupy more than one column. Here are some
+  examples of extended grapheme clusters, all of which are treated as
+  a single character by the alignment algorithm:
+  ```
+  │ │
+  │+̲│
+  │Ö̂│
+  │நி│
+  │ᄀힰᇹ│
+  │ᄀᄀᄀᄀᄀᄀힰᇹᇹᇹᇹᇹᇹ│
+  │ │
+  ```
+
 Pragmas and options
 -------------------
 
