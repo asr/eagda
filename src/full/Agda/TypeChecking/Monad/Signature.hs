@@ -40,6 +40,7 @@ import Agda.TypeChecking.Monad.Mutual
 import Agda.TypeChecking.Monad.Open
 import Agda.TypeChecking.Monad.Local
 import Agda.TypeChecking.Monad.State
+import Agda.TypeChecking.Monad.Trace
 import Agda.TypeChecking.Positivity.Occurrence
 import Agda.TypeChecking.Substitute
 import {-# SOURCE #-} Agda.TypeChecking.Telescope
@@ -112,54 +113,57 @@ addClauses q cls = do
   tel <- getContextTelescope
   modifyFunClauses q (++ abstract tel cls)
 
-ensureNoCompiledHaskell :: QName -> TCM ()
-ensureNoCompiledHaskell q =
-  whenM (isJust . compiledHaskell . defCompiledRep <$> getConstInfo q) $
-    typeError $ GenericError $ "Multiple Haskell bindings for " ++ show q ++ ". " ++
-                               "Note that builtin numbers, booleans, chars and strings don't need " ++
-                               "COMPILED pragmas."
+-- ** Temporary **
+--  The functions below are only needed while we still parse the old COMPILED
+--  pragmas.
 
-addHaskellCode :: QName -> HaskellType -> HaskellCode -> TCM ()
-addHaskellCode q hsTy hsDef = do
-  ensureNoCompiledHaskell q
-  modifySignature $ updateDefinition q $ updateDefCompiledRep $ addHs
-  where
-    addHs crep = crep { compiledHaskell = Just $ HsDefn hsTy hsDef }
+type HaskellCode = String
+type HaskellType = String
+type JSCode = String
+type CoreCode = String
 
-addHaskellExport :: QName -> HaskellType -> String -> TCM ()
-addHaskellExport q hsTy hsName = do
-  ensureNoCompiledHaskell q
-  modifySignature $ updateDefinition q $ updateDefCompiledRep $ addHs
-  where
-    addHs crep = crep { exportHaskell = Just (HsExport hsTy hsName)}
+dataFormat :: String -> [String] -> String
+dataFormat ty cons = "= data " ++ ty ++ " (" ++ intercalate " | " cons ++ ")"
+
+mkPragma :: String -> TCM CompilerPragma
+mkPragma s = CompilerPragma <$> getCurrentRange <*> pure s
+
+addPragma :: BackendName -> QName -> String -> TCM ()
+addPragma b q s = modifySignature . updateDefinition q . addCompilerPragma b =<< mkPragma s
+
+addHaskellCode :: QName -> HaskellCode -> TCM ()
+addHaskellCode q hsCode = addPragma ghcBackendName q $ "= " ++ hsCode
+
+addHaskellExport :: QName -> String -> TCM ()
+addHaskellExport q hsName = addPragma ghcBackendName q $ "as " ++ hsName
 
 addHaskellType :: QName -> HaskellType -> TCM ()
-addHaskellType q hsTy = do
-  ensureNoCompiledHaskell q
-  modifySignature $ updateDefinition q $ updateDefCompiledRep $ addHs
-  where
-    addHs crep = crep { compiledHaskell = Just $ HsType hsTy }
+addHaskellType q hsTy = addPragma ghcBackendName q $ "= type " ++ hsTy
 
-addJSCode :: QName -> String -> TCM ()
-addJSCode q jsDef = modifySignature $ updateDefinition q $ updateDefCompiledRep $ addJS
-  where
-    addJS crep = crep { compiledJS = Just jsDef }
+addHaskellData :: QName -> HaskellType -> [HaskellCode] -> TCM ()
+addHaskellData q hsTy hsCons = addPragma ghcBackendName q $ dataFormat hsTy hsCons
 
-addCoreCode :: QName -> CR.CoreExpr -> TCM ()
-addCoreCode q crDef =  modifySignature $ updateDefinition q $ updateDefCompiledRep $ addCore crDef
-  where
-    addCore e crep = crep { compiledCore = Just $ CrDefn e }
+addJSCode :: QName -> JSCode -> TCM ()
+addJSCode q jsDef = addPragma jsBackendName q jsDef
 
-addCoreConstr :: QName -> CR.CoreConstr -> TCM ()
-addCoreConstr q con = modifySignature $ updateDefinition q $ updateDefCompiledRep $ addCore
-  where
-    addCore crep = crep {compiledCore = Just $ CrConstr con }
+addCoreCode :: QName -> CoreCode -> TCM ()
+addCoreCode q crDef = addPragma uhcBackendName q $ "= " ++ crDef
 
-addCoreType :: QName -> CR.CoreType -> TCM ()
-addCoreType q crTy = modifySignature $ updateDefinition q $ updateDefCompiledRep $ addCr
-  -- TODO: sanity checking
-  where
-    addCr crep = crep { compiledCore = Just $ CrType crTy }
+addCoreType :: QName -> CoreCode -> [CoreCode] -> TCM ()
+addCoreType q crTy crCons = addPragma uhcBackendName q $ dataFormat crTy crCons
+
+-- ** End of temporary functions **
+
+getUniqueCompilerPragma :: BackendName -> QName -> TCM (Maybe CompilerPragma)
+getUniqueCompilerPragma backend q = do
+  ps <- defCompilerPragmas backend <$> getConstInfo q
+  case ps of
+    []  -> return Nothing
+    [p] -> return $ Just p
+    _   -> setCurrentRange (ps !! 1) $
+            genericDocError $
+                  hang (text ("Conflicting " ++ backend ++ " pragmas for") <+> pretty q <+> text "at") 2 $
+                       vcat [ text "-" <+> pretty (getRange p) | p <- ps ]
 
 -- | Add the information of an ATP-pragma to the signature.
 addATPPragma :: TPTPRole -> QName -> [QName] -> TCM ()
@@ -778,14 +782,7 @@ getErasedConArgs :: QName -> TCM [Bool]
 getErasedConArgs q = do
   def <- getConstInfo q
   case theDef def of
-    Constructor{ conData = d, conPars = np, conErased = es } -> do
-      ddef <- getConstInfo d
-      case compiledHaskell $ defCompiledRep ddef of
-        Nothing -> return es
-        Just _  -> do
-          -- Can't erase arguments of COMPILED_DATA constructors yet
-          TelV tel _ <- telView $ defType def
-          return $ replicate (size tel - np) False
+    Constructor{ conData = d, conPars = np, conErased = es } -> return es
     _ -> __IMPOSSIBLE__
 
 setErasedConArgs :: QName -> [Bool] -> TCM ()

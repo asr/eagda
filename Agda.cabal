@@ -211,14 +211,15 @@ library
                     Agda.Compiler.Backend
                     Agda.Compiler.CallCompiler
                     Agda.Compiler.Common
-                    Agda.Compiler.HaskellTypes
                     Agda.Compiler.JS.Compiler
                     Agda.Compiler.JS.Syntax
                     Agda.Compiler.JS.Substitution
                     Agda.Compiler.JS.Pretty
                     Agda.Compiler.MAlonzo.Compiler
                     Agda.Compiler.MAlonzo.Encode
+                    Agda.Compiler.MAlonzo.HaskellTypes
                     Agda.Compiler.MAlonzo.Misc
+                    Agda.Compiler.MAlonzo.Pragmas
                     Agda.Compiler.MAlonzo.Pretty
                     Agda.Compiler.MAlonzo.Primitives
                     Agda.Compiler.ToTreeless
