@@ -81,7 +81,7 @@ addConstant q d = do
                     Just (doms, dom) -> telFromList $ fmap hideOrKeepInstance doms ++ [dom]
               _ -> tel
   let d' = abstract tel' $ d { defName = q }
-  reportSLn "tc.signature" 30 $ "lambda-lifted definition = " ++ show d'
+  reportSLn "tc.signature" 60 $ "lambda-lifted definition = " ++ show d'
   modifySignature $ updateDefinitions $ HMap.insertWith (+++) q d'
   i <- currentOrFreshMutualBlock
   setMutualBlock i q
@@ -848,7 +848,11 @@ getDefFreeVars :: (Functor m, Applicative m, ReadTCState m, MonadReader TCEnv m)
 getDefFreeVars = getModuleFreeVars . qnameModule
 
 freeVarsToApply :: QName -> TCM Args
-freeVarsToApply = moduleParamsToApply . qnameModule
+freeVarsToApply q = do
+  vs <- moduleParamsToApply $ qnameModule q
+  t <- defType <$> getConstInfo q
+  let TelV tel _ = telView'UpTo (size vs) t
+  return $ zipWith (\ (Arg _ v) (Dom ai _ _) -> Arg ai v) vs $ telToList tel
 
 {-# SPECIALIZE getModuleFreeVars :: ModuleName -> TCM Nat #-}
 {-# SPECIALIZE getModuleFreeVars :: ModuleName -> ReduceM Nat #-}
