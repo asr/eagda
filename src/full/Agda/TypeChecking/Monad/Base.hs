@@ -1913,17 +1913,26 @@ data HighlightingMethod
     -- ^ Both via files and via stdout.
     deriving (Eq, Show, Read)
 
+-- | @ifTopLevelAndHighlightingLevelIs l b m@ runs @m@ when we're
+-- type-checking the top-level module and either the highlighting
+-- level is /at least/ @l@ or @b@ is 'True'.
+
+ifTopLevelAndHighlightingLevelIsOr ::
+  MonadTCM tcm => HighlightingLevel -> Bool -> tcm () -> tcm ()
+ifTopLevelAndHighlightingLevelIsOr l b m = do
+  e <- ask
+  when (envModuleNestingLevel e == 0 &&
+        (envHighlightingLevel e >= l || b))
+       m
+
 -- | @ifTopLevelAndHighlightingLevelIs l m@ runs @m@ when we're
 -- type-checking the top-level module and the highlighting level is
 -- /at least/ @l@.
 
 ifTopLevelAndHighlightingLevelIs ::
   MonadTCM tcm => HighlightingLevel -> tcm () -> tcm ()
-ifTopLevelAndHighlightingLevelIs l m = do
-  e <- ask
-  when (envModuleNestingLevel e == 0 &&
-        envHighlightingLevel e >= l)
-       m
+ifTopLevelAndHighlightingLevelIs l =
+  ifTopLevelAndHighlightingLevelIsOr l False
 
 ---------------------------------------------------------------------------
 -- * Type checking environment
@@ -2294,6 +2303,9 @@ data Warning =
   | SafeFlagNoPositivityCheck
   | SafeFlagPolarity
   | ParseWarning             ParseWarning
+  | DeprecationWarning String String String
+    -- ^ `DeprecationWarning old new version`:
+    --   `old` is deprecated, use `new` instead. This will be an error in Agda `version`.
   deriving Show
 
 -- we also keep the state so that we can print the warning correctly
@@ -2347,6 +2359,7 @@ classifyWarning w = case w of
   UnreachableClauses{}       -> AllWarnings
   UselessInline{}            -> AllWarnings
   GenericWarning{}           -> AllWarnings
+  DeprecationWarning{}       -> AllWarnings
   TerminationIssue{}         -> ErrorWarnings
   CoverageIssue{}            -> ErrorWarnings
   NotStrictlyPositive{}      -> ErrorWarnings

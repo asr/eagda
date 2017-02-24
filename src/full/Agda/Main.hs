@@ -35,8 +35,6 @@ import Agda.TypeChecking.Pretty
 import Agda.Compiler.Common (IsMain (..))
 import Agda.Compiler.MAlonzo.Compiler (ghcBackend)
 import Agda.Compiler.JS.Compiler (jsBackend)
-import Agda.Compiler.UHC.Compiler (uhcBackend)
-import Agda.Compiler.UHC.Bridge (uhcBackendEnabled)
 
 import Agda.Compiler.Backend
 
@@ -54,9 +52,7 @@ import Agda.Utils.Lens
 #include "undefined.h"
 
 builtinBackends :: [Backend]
-builtinBackends =
-  [ ghcBackend, jsBackend ] ++
-  [ uhcBackend | uhcBackendEnabled ]
+builtinBackends = [ ghcBackend, jsBackend ]
 
 -- | The main function
 runAgda :: [Backend] -> IO ()
@@ -132,17 +128,23 @@ runAgdaWithOptions backends generateHTML interaction progName opts
         -- thus, I am removing it.
         -- resetState
         if not hasFile then return Nothing else do
-          file    <- getInputFile
-          (i, mw) <- Imp.typeCheckMain file
+          let mode = if optOnlyScopeChecking opts
+                     then Imp.ScopeCheck
+                     else Imp.TypeCheck
 
-          -- An interface is only generated if NoWarnings.
-          result <- case mw of
-            SomeWarnings ws -> do
+          file    <- getInputFile
+          (i, mw) <- Imp.typeCheckMain file mode
+
+          -- An interface is only generated if the mode is
+          -- Imp.TypeCheck and there are no warnings.
+          result <- case (mode, mw) of
+            (Imp.ScopeCheck, _)  -> return Nothing
+            (_, NoWarnings)      -> return $ Just i
+            (_, SomeWarnings ws) -> do
               ws' <- applyFlagsToTCWarnings RespectFlags ws
               case ws' of
                 []   -> return Nothing
                 cuws -> tcWarningsToError cuws
-            NoWarnings      -> return $ Just i
 
           reportSDoc "main" 50 $ pretty i
 
