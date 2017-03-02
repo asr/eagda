@@ -58,11 +58,6 @@ import Agda.Utils.Impossible
 checkDataDef :: Info.DefInfo -> QName -> [A.LamBinding] -> [A.Constructor] -> TCM ()
 checkDataDef i name ps cs =
     traceCall (CheckDataDef (getRange name) (qnameName name) ps cs) $ do -- TODO!! (qnameName)
-        let countPars A.DomainFree{} = 1
-            countPars (A.DomainFull (A.TypedBindings _ (Arg _ b))) = case b of
-              A.TLet{}       -> 0
-              A.TBind _ xs _ -> size xs
-            npars = sum $ map countPars ps
 
         -- Add the datatype module
         addSection (qnameToMName name)
@@ -122,6 +117,7 @@ checkDataDef i name ps cs =
                 , text "small params:" <+> text (show smallPars)
                 ]
               ]
+            let npars = size tel
 
             -- Change the datatype from an axiom to a datatype with no constructors.
             let dataDef = Datatype
@@ -138,7 +134,7 @@ checkDataDef i name ps cs =
                   , dataTPTPRole   = Nothing
                   }
 
-            escapeContext (size tel) $ do
+            escapeContext npars $ do
               addConstant name $
                 defaultDefn defaultArgInfo name t dataDef
                 -- polarity and argOcc.s determined by the positivity checker
@@ -538,6 +534,8 @@ bindParameters'
   -> [A.LamBinding] -- ^ Bindings from definition site.
   -> Type           -- ^ Pi-type of bindings coming from signature site.
   -> (Telescope -> Type -> TCM a)
+     -- ^ Continuation, accepting parameter telescope and rest of type.
+     --   The parameters are part of the context when the continutation is invoked.
   -> TCM a
 
 bindParameters' _ [] a ret = ret EmptyTel a

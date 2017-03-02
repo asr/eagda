@@ -71,25 +71,33 @@ When the original arguments are the same in the new clauses you can use the
 In this case ``...`` expands to ``filter p (x ∷ xs)``. There are three cases
 where you have to spell out the left-hand side:
 
-- If you want to do further pattern matching on the original arguments.
-- When the pattern matching on the intermediate result refines some of the
-  other arguments (see :ref:`dot-patterns`).
-- To disambiguate the clauses of nested with abstractions (see `Nested with-abstractions`_ below).
+- If you want to do further pattern matching on the original
+  arguments.
+
+- When the pattern matching on the intermediate result refines some of
+  the other arguments (see :ref:`dot-patterns`).
+
+- To disambiguate the clauses of nested with abstractions (see
+  :ref:`nested-with-abstractions` below).
 
 ..
   ::
   module generalisation where
 
+.. _generalisation:
+
+
 Generalisation
 ~~~~~~~~~~~~~~
 
-The power of with-abstraction comes from the fact that the goal type and the
-type of the original arguments are generalised over the value of the scrutinee.
-See `Technical details`_ below for the details.  This generalisation is
-important when you have to prove properties about functions defined using
-``with``. For instance, suppose we want to prove that the ``filter`` function
-above satisfies some property ``P``. Starting out by pattern matching of the
-list we get the following (with the goal types shown in the holes)
+The power of with-abstraction comes from the fact that the goal type
+and the type of the original arguments are generalised over the value
+of the scrutinee. See :ref:`technical-details` below for the details.
+This generalisation is important when you have to prove properties
+about functions defined using ``with``. For instance, suppose we want
+to prove that the ``filter`` function above satisfies some property
+``P``. Starting out by pattern matching of the list we get the
+following (with the goal types shown in the holes)
 
 ..
   ::
@@ -156,9 +164,11 @@ The generalisation is not limited to scrutinees in other with-abstractions. All
 occurrences of the term in the goal type and argument types will be
 generalised.
 
-Note that this generalisation is not always type correct and may result in a
-(sometimes cryptic) type error. See `Ill-typed with-abstractions`_ below for
-more details.
+Note that this generalisation is not always type correct and may
+result in a (sometimes cryptic) type error. See
+:ref:`ill-typed-with-abstractions` below for more details.
+
+.. _nested-with-abstractions:
 
 Nested with-abstractions
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -216,6 +226,7 @@ have to spell out the left-hand side and write
 
     open import Agda.Builtin.Nat using (_+_)
 
+.. _simultaneous-abstraction:
 
 Simultaneous abstraction
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -265,9 +276,10 @@ pattern match on ``eq`` we get
       thm a b t with   a + b  | plus-commute a b
       thm a b t    | .(b + a) | refl = {! t : P (b + a) !}
 
-and can thus fill the hole with ``t``. In effect we used the commutativity
-proof to rewrite ``a + b`` to ``b + a`` in the type of ``t``. This is such a
-useful thing to do that there is special syntax for it. See `Rewrite`_ below.
+and can thus fill the hole with ``t``. In effect we used the
+commutativity proof to rewrite ``a + b`` to ``b + a`` in the type of
+``t``. This is such a useful thing to do that there is special syntax
+for it. See :ref:`Rewrite <with-rewrite>` below.
 
 ..
   ::
@@ -321,7 +333,7 @@ In this case the type of ``lemma n`` (``P (f n) → R``) is generalised over ``f
 n`` so in the right hand side of the last clause we have ``q : P (suc fn)`` and
 ``lem : P (suc fn) → R``.
 
-See `The Inspect idiom`_ below for an alternative approach.
+See :ref:`the-inspect-idiom` below for an alternative approach.
 
 ..
   ::
@@ -366,8 +378,8 @@ are not needed.  Here is a (slightly contrived) example::
 Rewrite
 ~~~~~~~
 
-Remember example of `simultaneous abstraction <Simultaneous abstraction_>`_
-from above.
+Remember example of :ref:`simultaneous
+abstraction <simultaneous-abstraction>` from above.
 
 ..
   ::
@@ -433,15 +445,18 @@ Note that the with-abstracted arguments introduced by the rewrite (``lhs`` and
   ::
   module inspect-idiom where
 
+.. _the-inspect-idiom:
+
 The inspect idiom
 ~~~~~~~~~~~~~~~~~
 
-When you with-abstract a term ``t`` you lose the connection between ``t`` and
-the new argument representing its value. That's fine as long as all instances
-of ``t`` that you care about get generalised by the abstraction, but as we saw
-`above <with-on-lemma_>`_ this is not always the case. In that example we used
-simultaneous abstraction to make sure that we did capture all the instances we
-needed. An alternative to that is to use the *inspect idiom*, which retains a
+When you with-abstract a term ``t`` you lose the connection between
+``t`` and the new argument representing its value. That's fine as long
+as all instances of ``t`` that you care about get generalised by the
+abstraction, but as we saw :ref:`above <with-on-lemma>` this is not
+always the case. In that example we used simultaneous abstraction to
+make sure that we did capture all the instances we needed. An
+alternative to that is to use the *inspect idiom*, which retains a
 proof that the original term is equal to its abstraction.
 
 ..
@@ -557,22 +572,23 @@ with-abstraction, but you have to do it manually. Two things that it will not le
 Helper functions
 ++++++++++++++++
 
-Internally with-abstractions are translated to auxiliary functions (see
-`Technical details`_ below) and you can always\ [#with-inlining]_ write these
-functions manually. The downside is that the type signature for the helper
-function needs to be written out explicitly, but fortunately the
-:ref:`emacs-mode` has a command (``C-c C-h``) to generate it using the same
-algorithm that generates the type of a with-function.
+Internally with-abstractions are translated to auxiliary functions
+(see :ref:`technical-details` below) and you can
+always\ [#with-inlining]_ write these functions manually. The downside
+is that the type signature for the helper function needs to be written
+out explicitly, but fortunately the :ref:`emacs-mode` has a command
+(``C-c C-h``) to generate it using the same algorithm that generates
+the type of a with-function.
 
 Performance considerations
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The `generalisation step <Generalisation_>`_ of a with-abstraction needs to
-normalise the scrutinee and the goal and argument types to make sure that all
-instances of the scrutinee are generalised. The generalisation also needs to
-be type checked to make sure that it's not `ill-typed <Ill-typed
-with-abstractions_>`_. This makes it expensive to type check a with-abstraction
-if
+The :ref:`generalisation step <generalisation>` of a with-abstraction
+needs to normalise the scrutinee and the goal and argument types to
+make sure that all instances of the scrutinee are generalised. The
+generalisation also needs to be type checked to make sure that it's
+not :ref:`ill-typed <ill-typed-with-abstractions>`. This makes it
+expensive to type check a with-abstraction if
 
 - the normalisation is expensive,
 - the normalised form of the goal and argument types are big, making finding
@@ -582,6 +598,8 @@ if
 
 In these cases it is worth looking at the `alternatives to with-abstraction`_
 from above.
+
+.. _technical-details:
 
 Technical details
 -----------------
@@ -630,8 +648,8 @@ variables bound in :math:`ps`), we
   where :math:`X \simeq Y` is equality of the normal forms of :math:`X` and
   :math:`Y`. The type of the auxiliary function is then :math:`\Delta_1 \to C`.
 
-- Check that :math:`\Delta_1 \to C` is type correct, which is not guaranteed
-  (see `below <Ill-typed with-abstractions_>`_).
+- Check that :math:`\Delta_1 \to C` is type correct, which is not
+  guaranteed (see :ref:`below <ill-typed-with-abstractions>`).
 
 - Add a function :math:`f_{aux}`, mutually recursive with :math:`f`, with the
   definition
@@ -731,6 +749,8 @@ Below are some examples of with-abstractions and their translations.
 ..
   ::
   module ill-typed where
+
+.. _ill-typed-with-abstractions:
 
 Ill-typed with-abstractions
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
