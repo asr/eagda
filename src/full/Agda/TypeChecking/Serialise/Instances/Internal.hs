@@ -314,7 +314,7 @@ instance EmbPrj Defn where
   icod_ (Axiom       a b)                         = icode2 0 a b
   icod_ (Function    a b _ c d e f g h i j k m n) = icode13 1 a b c d e f g h i j k m n
   icod_ (Datatype    a b c d e f g h i j k)       = icode11 2 a b c d e f g h i j k
-  icod_ (Record      a b c d e f g h i j k l)     = icode12 3 a b c d e f g h i j k l
+  icod_ (Record      a b c d e f g h i j k)       = icode11 3 a b c d e f g h i j k
   icod_ (Constructor a b c d e f g h i)           = icode9 4 a b c d e f g h i
   icod_ (Primitive   a b c d)                     = icode4 5 a b c d
   icod_ AbstractDefn                              = __IMPOSSIBLE__
@@ -323,7 +323,7 @@ instance EmbPrj Defn where
     valu [0, a, b]                                  = valu2 Axiom a b
     valu [1, a, b, c, d, e, f, g, h, i, j, k, m, n] = valu13 (\ a b -> Function a b Nothing) a b c d e f g h i j k m n
     valu [2, a, b, c, d, e, f, g, h, i, j, k]       = valu11 Datatype a b c d e f g h i j k
-    valu [3, a, b, c, d, e, f, g, h, i, j, k, l]    = valu12 Record  a b c d e f g h i j k l
+    valu [3, a, b, c, d, e, f, g, h, i, j, k]       = valu11 Record  a b c d e f g h i j k
     valu [4, a, b, c, d, e, f, g, h, i]             = valu9 Constructor a b c d e f g h i
     valu [5, a, b, c, d]                            = valu4 Primitive   a b c d
     valu _                                          = malformed

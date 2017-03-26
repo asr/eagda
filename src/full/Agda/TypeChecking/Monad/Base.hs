@@ -1454,9 +1454,11 @@ data Defn = Axiom
             , funTreeless       :: Maybe Compiled
               -- ^ Intermediate representation for compiler backends.
             , funInv            :: FunctionInverse
-            , funMutual         :: [QName]
+            , funMutual         :: Maybe [QName]
               -- ^ Mutually recursive functions, @data@s and @record@s.
-              --   Does not include this function.
+              --   Does include this function.
+              --   Empty list if not recursive.
+              --   @Nothing@ if not yet computed (by positivity checker).
             , funAbstr          :: IsAbstract
             , funDelayed        :: Delayed
               -- ^ Are the clauses of this definition delayed?
@@ -1490,26 +1492,43 @@ data Defn = Axiom
             , dataClause         :: (Maybe Clause) -- ^ This might be in an instantiated module.
             , dataCons           :: [QName]        -- ^ Constructor names.
             , dataSort           :: Sort
-            , dataMutual         :: [QName]        -- ^ Mutually recursive functions, @data@s and @record@s.  Does not include this data type.
+            , dataMutual         :: Maybe [QName]
+              -- ^ Mutually recursive functions, @data@s and @record@s.
+              --   Does include this data type.
+              --   Empty if not recursive.
+              --   @Nothing@ if not yet computed (by positivity checker).
             , dataAbstr          :: IsAbstract
             , dataTPTPRole       :: Maybe TPTPRole  -- ^ TPTP sort?
             }
           | Record
-            { recPars           :: Nat                  -- ^ Number of parameters.
+            { recPars           :: Nat
+              -- ^ Number of parameters.
             , recClause         :: Maybe Clause
-            , recConHead        :: ConHead              -- ^ Constructor name and fields.
+              -- ^ Was this record type created by a module application?
+              --   If yes, the clause is its definition (linking back to the original record type).
+            , recConHead        :: ConHead
+              -- ^ Constructor name and fields.
             , recNamedCon       :: Bool
+              -- ^ Does this record have a @constructor@?
             , recFields         :: [Arg QName]
-            , recTel            :: Telescope            -- ^ The record field telescope. (Includes record parameters.)
-                                                        --   Note: @TelV recTel _ == telView' recConType@.
-                                                        --   Thus, @recTel@ is redundant.
-            , recMutual         :: [QName]              -- ^ Mutually recursive functions, @data@s and @record@s.  Does not include this record.
-            , recEtaEquality'    :: EtaEquality          -- ^ Eta-expand at this record type.  @False@ for unguarded recursive records and coinductive records unless the user specifies otherwise.
+              -- ^ The record field names.
+            , recTel            :: Telescope
+              -- ^ The record field telescope. (Includes record parameters.)
+              --   Note: @TelV recTel _ == telView' recConType@.
+              --   Thus, @recTel@ is redundant.
+            , recMutual         :: Maybe [QName]
+              -- ^ Mutually recursive functions, @data@s and @record@s.
+              --   Does include this record.
+              --   Empty if not recursive.
+              --   @Nothing@ if not yet computed (by positivity checker).
+            , recEtaEquality'    :: EtaEquality
+              -- ^ Eta-expand at this record type?
+              --   @False@ for unguarded recursive records and coinductive records
+              --   unless the user specifies otherwise.
             , recInduction      :: Maybe Induction
               -- ^ 'Inductive' or 'CoInductive'?  Matters only for recursive records.
               --   'Nothing' means that the user did not specify it, which is an error
               --   for recursive records.
-            , recRecursive      :: Bool                 -- ^ Recursive record.  Infers @recEtaEquality = False@.  Projections are not size-preserving.
             , recAbstr          :: IsAbstract
             , recComp           :: Maybe QName
             }
@@ -1536,6 +1555,11 @@ data Defn = Axiom
             -- ^ Primitive or builtin functions.
     deriving (Typeable, Show)
 
+-- | Is the record type recursive?
+recRecursive :: Defn -> Bool
+recRecursive (Record { recMutual = Just qs }) = not $ null qs
+recRecursive _ = __IMPOSSIBLE__
+
 recEtaEquality :: Defn -> Bool
 recEtaEquality = etaEqualityToBool . recEtaEquality'
 
@@ -1546,7 +1570,7 @@ emptyFunction = Function
   , funCompiled    = Nothing
   , funTreeless    = Nothing
   , funInv         = NotInjective
-  , funMutual      = []
+  , funMutual      = Nothing
   , funAbstr       = ConcreteDef
   , funDelayed     = NotDelayed
   , funProjection  = Nothing
@@ -1660,7 +1684,8 @@ data AllowedReduction
   = ProjectionReductions     -- ^ (Projection and) projection-like functions may be reduced.
   | InlineReductions         -- ^ Functions marked INLINE may be reduced.
   | CopatternReductions      -- ^ Copattern definitions may be reduced.
-  | FunctionReductions       -- ^ Functions which are not projections may be reduced.
+  | FunctionReductions       -- ^ Non-recursive functions and primitives may be reduced.
+  | RecursiveReductions      -- ^ Even recursive functions may be reduced.
   | LevelReductions          -- ^ Reduce @'Level'@ terms.
   | UnconfirmedReductions    -- ^ Functions whose termination has not (yet) been confirmed.
   | NonTerminatingReductions -- ^ Functions that have failed termination checking.
@@ -2586,7 +2611,7 @@ data TypeError
         | UnificationStuck Telescope [Term] [Term]
         | SplitError SplitError
     -- Positivity errors
-        | TooManyPolarities QName Integer
+        | TooManyPolarities QName Int
     -- Import errors
         | LocalVsImportedModuleClash ModuleName
         | SolvedButOpenHoles
@@ -3183,7 +3208,7 @@ instance KillRange Defn where
       Function cls comp tt inv mut isAbs delayed proj flags term extlam with copat role ->
         killRange14 Function cls comp tt inv mut isAbs delayed proj flags term extlam with copat role
       Datatype a b c d e f g h i j k -> killRange11 Datatype a b c d e f g h i j k
-      Record a b c d e f g h i j k l -> killRange12 Record a b c d e f g h i j k l
+      Record a b c d e f g h i j k   -> killRange11 Record a b c d e f g h i j k
       Constructor a b c d e f g h i  -> killRange9 Constructor a b c d e f g h i
       Primitive a b c d              -> killRange4 Primitive a b c d
 
