@@ -2472,9 +2472,6 @@ data SplitError
   | GenericSplitError String
   deriving (Show)
 
-instance Error SplitError where
-  strMsg = GenericSplitError
-
 data UnquoteError
   = BadVisibility String (Arg I.Term)
   | ConInsteadOfDef QName String String
@@ -2483,9 +2480,6 @@ data UnquoteError
   | BlockedOnMeta TCState MetaId
   | UnquotePanic String
   deriving (Show)
-
-instance Error UnquoteError where
-  strMsg msg = UnquotePanic msg
 
 data TypeError
         = InternalError String

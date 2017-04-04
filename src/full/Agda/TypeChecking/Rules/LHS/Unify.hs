@@ -138,7 +138,6 @@ import Agda.Syntax.Position
 
 import Agda.TypeChecking.Monad
 import qualified Agda.TypeChecking.Monad.Benchmark as Bench
-import Agda.TypeChecking.Monad.Exception
 import Agda.TypeChecking.Monad.Builtin (constructorForm)
 import Agda.TypeChecking.Conversion -- equalTerm
 import Agda.TypeChecking.Constraints
@@ -160,10 +159,7 @@ import Agda.Interaction.Options (optInjectiveTypeConstructors, optWithoutK)
 import Agda.TypeChecking.Rules.LHS.Problem hiding (Substitution)
 -- import Agda.TypeChecking.SyntacticEquality
 
-import Agda.Utils.Except
-  ( Error(noMsg, strMsg)
-  , MonadError(catchError, throwError)
-  )
+import Agda.Utils.Except ( MonadError(catchError, throwError) )
 import Agda.Utils.Either
 import Agda.Utils.Functor
 import Agda.Utils.List
