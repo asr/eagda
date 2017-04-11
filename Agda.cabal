@@ -107,7 +107,7 @@ library
 
   build-depends:  async >= 2.0.2 && < 2.2
                 , array >= 0.4.0.1 && < 0.6
-                , base >= 4.6.0.1 && < 4.10
+                , base >= 4.6.0.1 && < 4.11
                 , binary >= 0.7.2.1 && < 0.9
                 , boxes >= 0.1.3 && < 0.2
                 , bytestring >= 0.10.0.2 && < 0.11
@@ -147,10 +147,10 @@ library
                 , regex-tdfa >= 1.2.2 && < 1.3
                 , stm >= 2.4.4 && < 2.5
                 , strict >= 0.3.2 && < 0.4
-                , template-haskell >= 2.8.0.0 && < 2.12
+                , template-haskell >= 2.8.0.0 && < 2.13
                 , text >= 0.11.3.1 && < 1.3
                 , text-icu == 0.7.*
-                , time >= 1.4.0.1 && < 1.7
+                , time >= 1.4.0.1 && < 1.9
                 -- In hTags the mtl library must be compiled with the
                 -- version of transformers shipped GHC. The lower
                 -- bound is the version of transformers shipped with
@@ -532,6 +532,12 @@ library
                  -Wsemigroup
                  -Wunused-foralls
 
+  if impl(ghc >= 8.2)
+    ghc-options: -Wcpp-undef
+                 -Wmissing-home-modules
+                 -Wsimplifiable-class-constraints
+                 -Wunbanged-strict-patterns
+
   ghc-prof-options: -fprof-auto
 
   default-language: Haskell2010
@@ -559,7 +565,13 @@ library
 executable agda
   hs-source-dirs: src/main
   main-is:        Main.hs
-  build-depends:  Agda == 2.6.0.1
+  build-depends:  Agda
+                  -- A version range on Agda generates a warning with
+                  -- some versions of Cabal and GHC
+                  -- (e.g. cabal-install version 1.24.0.2 compiled
+                  -- using version 1.24.2.0 of the Cabal library and
+                  -- GHC 8.2.1 RC1).
+
                   -- Nothing is used from the following package,
                   -- except for the prelude.
                 , base >= 4.6.0.1 && < 6
@@ -576,7 +588,7 @@ executable agda-mode
   hs-source-dirs:   src/agda-mode
   main-is:          Main.hs
   other-modules:    Paths_Agda
-  build-depends:    base >= 4.6.0.1 && < 4.10
+  build-depends:    base >= 4.6.0.1 && < 4.11
                   , directory >= 1.2.0.1 && < 1.4
                   , filepath >= 1.3.0.1 && < 1.5
                   , process >= 1.1.0.2 && < 1.5
@@ -605,7 +617,7 @@ test-suite agda-tests
                     , Utils
 
   build-depends:  array >= 0.4.0.1 && < 0.6
-                , base >= 4.6.0.1 && < 4.10
+                , base >= 4.6.0.1 && < 4.11
                 , bytestring >= 0.10.0.2 && < 0.11
                 , containers >= 0.5.0.0 && < 0.6
                 , directory >= 1.2.0.1 && < 1.4
@@ -634,6 +646,13 @@ test-suite agda-tests
     ghc-options: -fwarn-missing-local-sigs
   else
     ghc-options: -Wmissing-local-signatures
+
+  -- ASR (2017-04-11). TODO: Using -Wmissing-home-modules generates an
+  -- error.
+  if impl(ghc >= 8.2)
+    ghc-options: -Wcpp-undef
+                 -Wunbanged-strict-patterns
+
   default-language: Haskell2010
 
 test-suite internal-tests
@@ -689,9 +708,9 @@ test-suite internal-tests
                 , InternalTests.Utils.Trie
                 , InternalTests.Utils.Warshall
 
-  build-depends:  Agda == 2.6.0.1
+  build-depends:  Agda
                 , array >= 0.4.0.1 && < 0.6
-                , base >= 4.6.0.1 && < 4.10
+                , base >= 4.6.0.1 && < 4.11
                 , containers >= 0.5.0.0 && < 0.6
                 , filepath >= 1.3.0.1 && < 1.5
                 -- mtl-2.1 contains a severe bug.
@@ -789,3 +808,10 @@ test-suite internal-tests
                  -Wnoncanonical-monoid-instances
                  -Wsemigroup
                  -Wunused-foralls
+
+  -- ASR (2017-04-11). TODO: Using -Wmissing-home-modules generates an
+  -- error.
+  if impl(ghc >= 8.2)
+    ghc-options: -Wcpp-undef
+                 -Wsimplifiable-class-constraints
+                 -Wunbanged-strict-patterns
