@@ -176,10 +176,8 @@ compareTerm cmp a u v = do
         ]
       ifM (isInstantiatedMeta x) patternViolation {-else-} $ do
         assignE dir x es v $ compareTermDir dir a
-      _ <- instantiate u
-      -- () <- seq u' $ return ()
       reportSDoc "tc.conv.term.shortcut" 50 $
-        text "shortcut successful" $$ nest 2 (text "result:" <+> pretty u)
+        text "shortcut successful" $$ nest 2 (text "result:" <+> (pretty =<< instantiate (MetaV x es)))
     -- Should be ok with catchError_ but catchError is much safer since we don't
     -- rethrow errors.
     orelse m h = catchError m (\_ -> h)
@@ -716,8 +714,9 @@ compareRelevance CmpLeq = (<=)
 antiUnify :: ProblemId -> Type -> Term -> Term -> TCM Term
 antiUnify pid a u v = do
   ((u, v), eq) <- runReduceM (SynEq.checkSyntacticEquality u v)
+  if eq then return u else do
+  (u, v) <- reduce (u, v)
   case (ignoreSharing u, ignoreSharing v) of
-    _ | eq -> return u
     (Pi ua ub, Pi va vb) -> do
       wa0 <- antiUnifyType pid (unDom ua) (unDom va)
       let wa = wa0 <$ ua
