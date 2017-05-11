@@ -35,8 +35,8 @@ matchLeq (a :=< b) (c :=< d)
   | length xs == length ys = (a, b) == applySubst rho (c, d)
   | otherwise              = False
   where
-    free :: Free' a [Int] => a -> [Int]
-    free = nub . runFree ((:[]) . fst) IgnoreNot
+    free :: Free a => a -> [Int]
+    free = nub . runFree (:[]) IgnoreNot  -- Note: use a list to preserve order of variables
     xs  = free (a, b)
     ys  = free (c, d)
     rho = mkSub $ List.sort $ zip ys xs

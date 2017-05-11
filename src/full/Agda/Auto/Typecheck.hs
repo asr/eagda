@@ -5,6 +5,7 @@ module Agda.Auto.Typecheck where
 import Data.IORef
 import Control.Monad (liftM)
 
+import Agda.Syntax.Common (Hiding (..))
 import Agda.Auto.NarrowingSearch
 import Agda.Auto.Syntax
 import Agda.Auto.SearchControl
@@ -15,7 +16,6 @@ import Agda.Utils.Impossible
 -- ---------------------------------
 
 -- | Typechecker drives the solution of metas.
-
 tcExp :: Bool -> Ctx o -> CExp o -> MExp o -> EE (MyPB o)
 tcExp isdep ctx typ@(TrBr typtrs ityp@(Clos _ itypexp)) trm =
   mbpcase prioTypeUnknown Nothing (hnn_checkstep ityp) $ \(hntyp, iotastepdone) ->
@@ -190,7 +190,7 @@ tcargs ndfv isdep ctx ityp@(TrBr ityptrs iityp) args elimtrm isconstructor cont 
  where
   t = TrBr ityptrs
 
-addend :: FMode -> MExp o -> MM (Exp o) blk -> MM (Exp o) blk
+addend :: Hiding -> MExp o -> MM (Exp o) blk -> MM (Exp o) blk
 addend hid a (NotM (App uid okh elr as)) = NotM $ App uid okh elr (f as)
  where
    f (NotM ALNil)             = NotM $ ALCons hid a (NotM $ ALNil)
@@ -792,7 +792,6 @@ calcEqRState cs = f EqRSNone
 
     (_ : ss, ALConPar args) -> fs ss args
     ([], ALConPar args) -> fs [] args
-
 
 -- ---------------------------------
 

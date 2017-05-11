@@ -286,7 +286,6 @@ addRewriteRule q = do
         n = size tel
         allIxs = zipWith ($>) (flattenTel tel) (downFrom n)
         usedIxs = filter (not . unused . getRelevance) allIxs
-        unused UnusedArg{} = True
         unused _           = False
 
 -- | Append rewrite rules to a definition.
@@ -459,7 +458,7 @@ instance GetMatchables RewriteRule where
   getMatchables = getMatchables . rewPats
 
 -- Only computes free variables that are not bound (i.e. those in a PTerm)
-instance Free' NLPat c where
+instance Free NLPat where
   freeVars' p = case p of
     PVar _ _ _ -> mempty
     PWild -> mempty
@@ -469,7 +468,7 @@ instance Free' NLPat c where
     PBoundVar _ es -> freeVars' es
     PTerm t -> freeVars' t
 
-instance Free' NLPType c where
+instance Free NLPType where
   freeVars' (NLPType l a) =
     ifM ((IgnoreNot ==) <$> asks feIgnoreSorts)
       {- then -} (freeVars' (l, a))
