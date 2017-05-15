@@ -91,9 +91,9 @@ instance EmbPrj I.Term where
   icod_ (Con    a b c) = icode3 4 a b c
   icod_ (Pi       a b) = icode2 5 a b
   icod_ (Sort     a  ) = icode1 7 a
-  icod_ (MetaV    a b) = __IMPOSSIBLE__
-  icod_ (DontCare a  ) = icode1 8 a
-  icod_ (Level    a  ) = icode1 9 a
+  icod_ (MetaV    a b) = icode2 8 a b
+  icod_ (DontCare a  ) = icode1 9 a
+  icod_ (Level    a  ) = icode1 10 a
   icod_ (Shared p)     = icodeMemo termD termC p $ icode (derefPtr p)
 
   value r = vcase valu' r where
@@ -106,8 +106,9 @@ instance EmbPrj I.Term where
     valu [4, a, b, c] = valu3 Con a b c
     valu [5, a, b] = valu2 Pi    a b
     valu [7, a]    = valu1 Sort  a
-    valu [8, a]    = valu1 DontCare a
-    valu [9, a]    = valu1 Level a
+    valu [8, a, b] = valu2 MetaV a b
+    valu [9, a]    = valu1 DontCare a
+    valu [10, a]   = valu1 Level a
     valu _         = malformed
 
 instance EmbPrj Level where
@@ -127,7 +128,7 @@ instance EmbPrj PlusLevel where
 instance EmbPrj LevelAtom where
   icod_ (NeutralLevel _ a) = icode1' a
   icod_ (UnreducedLevel a) = icode1 1 a
-  icod_ MetaLevel{}        = __IMPOSSIBLE__
+  icod_ (MetaLevel a b)    = icode2 2 a b
   icod_ BlockedLevel{}     = __IMPOSSIBLE__
 
   value = vcase valu where
@@ -135,6 +136,7 @@ instance EmbPrj LevelAtom where
                                          -- since we do not want do (de)serialize
                                          -- the reason for neutrality
     valu [1, a] = valu1 UnreducedLevel a
+    valu [2, a, b] = valu2 MetaLevel a b
     valu _      = malformed
 
 instance EmbPrj I.Sort where
@@ -373,6 +375,7 @@ instance EmbPrj a => EmbPrj (I.Pattern' a) where
   icod_ (LitP a    ) = icode1 2 a
   icod_ (DotP a    ) = icode1 3 a
   icod_ (ProjP a b ) = icode2 4 a b
+  icod_ (AbsurdP a ) = icode1 5 a
 
   value = vcase valu where
     valu [a]       = valu1 VarP a
@@ -380,6 +383,7 @@ instance EmbPrj a => EmbPrj (I.Pattern' a) where
     valu [2, a]    = valu1 LitP a
     valu [3, a]    = valu1 DotP a
     valu [4, a, b] = valu2 ProjP a b
+    valu [5, a]    = valu1 AbsurdP a
     valu _         = malformed
 
 instance EmbPrj a => EmbPrj (Builtin a) where
@@ -390,3 +394,20 @@ instance EmbPrj a => EmbPrj (Builtin a) where
     valu [a]    = valu1 Prim    a
     valu [1, a] = valu1 Builtin a
     valu _      = malformed
+
+instance EmbPrj a => EmbPrj (Substitution' a) where
+  icod_ IdS              = icode0'
+  icod_ EmptyS           = icode0 1
+  icod_ (a :# b)         = icode2 2 a b
+  icod_ (Strengthen a b) = icode2 3 a b
+  icod_ (Wk a b)         = icode2 4 a b
+  icod_ (Lift a b)       = icode2 5 a b
+
+  value = vcase valu where
+    valu []        = valu0 IdS
+    valu [1]       = valu0 EmptyS
+    valu [2, a, b] = valu2 (:#) a b
+    valu [3, a, b]    = valu2 Strengthen a b
+    valu [4, a, b] = valu2 Wk a b
+    valu [5, a, b] = valu2 Lift a b
+    valu _         = malformed

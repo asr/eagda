@@ -10,9 +10,12 @@
 
 module Agda.TypeChecking.Serialise.Instances.Common (SerialisedRange(..)) where
 
+import Prelude hiding (mapM)
+
 import Control.Applicative
-import Control.Monad.Reader
+import Control.Monad.Reader hiding (mapM)
 import Control.Monad.State.Strict (gets, modify)
+import Control.Exception
 
 import Data.Array.IArray
 import Data.Word
@@ -28,9 +31,12 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
+import Data.Traversable ( mapM )
+
 #if __GLASGOW_HASKELL__ <= 708
-import Data.Typeable (Typeable)
+import Data.Typeable ( Typeable )
 #endif
+
 import Data.Void
 
 import Agda.Syntax.Common
@@ -51,8 +57,12 @@ import Agda.Utils.HashMap (HashMap)
 import qualified Agda.Utils.HashMap as HMap
 import Agda.Utils.FileName
 import qualified Agda.Utils.Maybe.Strict as Strict
+import Agda.Utils.Trie
 
 import Agda.Utils.Except
+
+import Agda.Utils.Empty (Empty)
+import qualified Agda.Utils.Empty as Empty
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -202,6 +212,11 @@ instance (Ord a, EmbPrj a, EmbPrj b) => EmbPrj (Map a b) where
 instance (Ord a, EmbPrj a) => EmbPrj (Set a) where
   icod_ s = icode (Set.toList s)
   value s = Set.fromList `fmap` value s
+
+instance (Ord a, EmbPrj a, EmbPrj b) => EmbPrj (Trie a b) where
+  icod_ (Trie a b)= icode2' a b
+
+  value = value2 Trie
 
 instance EmbPrj a => EmbPrj (Seq a) where
   icod_ s = icode (Fold.toList s)
@@ -486,3 +501,18 @@ instance EmbPrj Delayed where
     valu [0] = valu0 Delayed
     valu []  = valu0 NotDelayed
     valu _   = malformed
+
+
+instance EmbPrj Impossible where
+  icod_ (Impossible a b)  = icode2 0 a b
+  icod_ (Unreachable a b) = icode2 1 a b
+
+  value = vcase valu where
+    valu [0, a, b] = valu2 Impossible  a b
+    valu [1, a, b] = valu2 Unreachable a b
+    valu _         = malformed
+
+instance EmbPrj Empty where
+  icod_ a = icod_ =<< lift (Empty.toImpossible a)
+
+  value = fmap throwImpossible . value

@@ -93,7 +93,7 @@ prettyError err = liftTCM $ show <$> prettyError' err []
 ---------------------------------------------------------------------------
 
 instance PrettyTCM TCWarning where
-  prettyTCM (TCWarning tcst clw) = localState $ do
+  prettyTCM (TCWarning _ tcst clw) = localState $ do
     put tcst
     sayWhen (envRange  $ clEnv clw)
             (envCall   $ clEnv clw)
@@ -224,8 +224,8 @@ applyFlagsToTCWarnings ifs ws = do
   -- This is a way to collect all of them and remove duplicates.
   let pragmas w = case tcWarning w of { SafeFlagPragma ps -> ([w], ps); _ -> ([], []) }
   let sfp = case fmap nub (foldMap pragmas ws) of
-              (TCWarning tcst cl:_, sfp) ->
-                 [TCWarning tcst (cl { clValue = SafeFlagPragma sfp })]
+              (TCWarning m tcst cl:_, sfp) ->
+                 [TCWarning m tcst (cl { clValue = SafeFlagPragma sfp })]
               _           -> []
 
   unsolvedNotOK <- not . optAllowUnsolved <$> pragmaOptions
@@ -1205,6 +1205,7 @@ instance PrettyTCM TypeError where
     prettyPat :: Integer -> (I.Pattern' a) -> TCM Doc
     prettyPat _ (I.VarP _) = text "_"
     prettyPat _ (I.DotP _) = text "._"
+    prettyPat _ (I.AbsurdP _) = text absurdPatternName
     prettyPat n (I.ConP c _ args) =
       mpar n args $
         prettyTCM c <+> fsep (map (prettyArg . fmap namedThing) args)

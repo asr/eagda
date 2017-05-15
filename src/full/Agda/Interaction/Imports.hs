@@ -118,6 +118,7 @@ mergeInterface i = do
         builtin = Map.toList $ iBuiltin i
         prim    = [ x | (_,Prim x) <- builtin ]
         bi      = Map.fromList [ (x,Builtin t) | (x,Builtin t) <- builtin ]
+        warns   = iWarnings i
     bs <- gets stBuiltinThings
     reportSLn "import.iface.merge" 10 $ "Merging interface"
     reportSLn "import.iface.merge" 20 $
@@ -132,7 +133,7 @@ mergeInterface i = do
             Just b1 = Map.lookup b bs
             Just b2 = Map.lookup b bi
     mapM_ check (map fst $ Map.toList $ Map.intersection bs bi)
-    addImportedThings sig bi (iPatternSyns i) (iDisplayForms i)
+    addImportedThings sig bi (iPatternSyns i) (iDisplayForms i) warns
     reportSLn "import.iface.merge" 20 $
       "  Rebinding primitives " ++ show prim
     mapM_ rebind prim
@@ -143,12 +144,13 @@ mergeInterface i = do
 
 addImportedThings ::
   Signature -> BuiltinThings PrimFun ->
-  A.PatternSynDefns -> DisplayForms -> TCM ()
-addImportedThings isig ibuiltin patsyns display = do
+  A.PatternSynDefns -> DisplayForms -> [TCWarning] -> TCM ()
+addImportedThings isig ibuiltin patsyns display warnings = do
   stImports              %= \ imp -> unionSignatures [imp, over sigRewriteRules killCtxId isig]
   stImportedBuiltins     %= \ imp -> Map.union imp ibuiltin
   stPatternSynImports    %= \ imp -> Map.union imp patsyns
   stImportedDisplayForms %= \ imp -> HMap.unionWith (++) imp display
+  stTCWarnings           %= \ imp -> List.union imp warnings
   addImportedInstances isig
 
 -- | Scope checks the given module. A proper version of the module
@@ -487,7 +489,7 @@ typeCheck x file isMain = do
       sig     <- getSignature
       patsyns <- getPatternSyns
       display <- use stImportsDisplayForms
-      addImportedThings sig Map.empty patsyns display
+      addImportedThings sig Map.empty patsyns display []
       setSignature emptySignature
       setPatternSyns Map.empty
 
@@ -510,10 +512,8 @@ typeCheck x file isMain = do
       -- the persistent state may not be preserved if an error other
       -- than a type error or an IO exception is encountered in an
       -- imported module.
-      -- Andreas, 2014-03-23: freshTCM spawns a new TCM computation
-      -- with initial state and environment
-      -- but on the same Benchmark accounts.
-      r <- freshTCM $
+      r <- noCacheForImportedModule $
+           freshTCM $
              withImportPath ms $
              local (\e -> e { envModuleNestingLevel = nesting
                               -- Andreas, 2014-08-18:
@@ -528,7 +528,7 @@ typeCheck x file isMain = do
                setInteractionOutputCallback ho
                stModuleToSource .= mf
                setVisitedModules vs
-               addImportedThings isig ibuiltin ipatsyns display
+               addImportedThings isig ibuiltin ipatsyns display []
 
                r  <- withMsgs $ createInterface file x isMain
                mf <- use stModuleToSource
@@ -920,6 +920,7 @@ buildInterface file topLevel syntaxInfo pragmas = do
     patsyns <- killRange <$> getPatternSyns
     h       <- liftIO $ hashFile file
     let builtin' = Map.mapWithKey (\ x b -> (x,) . primFunName <$> b) builtin
+    warnings <- getAllWarnings' AllWarnings RespectFlags
     reportSLn "import.iface" 7 "  instantiating all meta variables"
     i <- instantiateFull $ Interface
       { iSourceHash      = h
@@ -934,6 +935,7 @@ buildInterface file topLevel syntaxInfo pragmas = do
       , iHighlighting    = syntaxInfo
       , iPragmaOptions   = pragmas
       , iPatternSyns     = patsyns
+      , iWarnings        = warnings
       }
     reportSLn "import.iface" 7 "  interface complete"
     return i

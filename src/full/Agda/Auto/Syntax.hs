@@ -3,9 +3,13 @@
 module Agda.Auto.Syntax where
 
 import Data.IORef
+import qualified Data.Set as Set
+
+#if __GLASGOW_HASKELL__ <= 708
+import Control.Applicative ( (<$>), (<*>) )
+#endif
 
 import Agda.Syntax.Common (Hiding)
-
 import Agda.Auto.NarrowingSearch
 
 #include "undefined.h"
@@ -16,7 +20,6 @@ type UId o = Metavar (Exp o) (RefInfo o)
 
 data HintMode = HMNormal
               | HMRecCall
-
 
 data EqReasoningConsts o = EqReasoningConsts
   { eqrcId    -- "_≡_"
@@ -52,7 +55,8 @@ data RefInfo o
        --   (used to put cost when traversing a definition
        --    by construction instantiation).
     }
-  | RIUnifInfo [CAction o] (HNExp o) -- meta environment, opp hne
+  | RIUnifInfo [CAction o] (HNExp o)
+    -- meta environment, opp hne
   | RICopyInfo (ICExp o)
   | RIIotaStep Bool -- True - semiflex
   | RIInferredTypeUnknown
@@ -99,7 +103,8 @@ data ConstDef o = ConstDef
 -- | Constant definitions.
 
 data DeclCont o
-  = Def Nat [Clause o] (Maybe Nat) (Maybe Nat) -- maybe an index to elimand argument, maybe index to elim arg if semiflex
+  = Def Nat [Clause o] (Maybe Nat) -- maybe an index to elimand argument
+                       (Maybe Nat) -- maybe index to elim arg if semiflex
   | Datatype [ConstRef o] -- constructors
              [ConstRef o] -- projection functions (in case it is a record)
 
@@ -124,6 +129,15 @@ type ConstRef o = IORef (ConstDef o)
 data Elr o
   = Var Nat
   | Const (ConstRef o)
+  deriving (Eq)
+
+getVar :: Elr o -> Maybe Nat
+getVar (Var n) = Just n
+getVar Const{} = Nothing
+
+getConst :: Elr o -> Maybe (ConstRef o)
+getConst (Const c) = Just c
+getConst Var{}     = Nothing
 
 data Sort
   = Set Nat
@@ -172,13 +186,20 @@ data ArgList o
     --   Inserted to cover glitch of polymorphic constructor
     --   applications coming from Agda
 
-
 type MArgList o = MM (ArgList o) (RefInfo o)
 
-data HNExp o = HNApp [Maybe (UId o)] (Elr o) (ICArgList o)
-             | HNLam [Maybe (UId o)] Hiding (Abs (ICExp o))
-             | HNPi [Maybe (UId o)] Hiding Bool (ICExp o) (Abs (ICExp o))
-             | HNSort Sort
+data WithSeenUIds a o = WithSeenUIds
+  { seenUIds :: [Maybe (UId o)]
+  , rawValue :: a
+  }
+
+type HNExp o = WithSeenUIds (HNExp' o) o
+
+data HNExp' o =
+    HNApp  (Elr o) (ICArgList o)
+  | HNLam  Hiding (Abs (ICExp o))
+  | HNPi   Hiding Bool (ICExp o) (Abs (ICExp o))
+  | HNSort Sort
 
 -- | Head-normal form of 'ICArgList'.  First entry is exposed.
 --
@@ -233,6 +254,7 @@ detecteliminand cls =
 
 detectsemiflex :: ConstRef o -> [Clause o] -> IO Bool
 detectsemiflex _ _ = return False -- disabled
+
 categorizedecl :: ConstRef o -> IO ()
 categorizedecl c = do
  cd <- readIORef c
@@ -248,103 +270,72 @@ categorizedecl c = do
 
 -- -------------------------------------------
 
+class MetaliseOKH t where
+  metaliseOKH :: t -> IO t
+
+instance MetaliseOKH t => MetaliseOKH (MM t a) where
+  metaliseOKH e = case e of
+    Meta m -> return $ Meta m
+    NotM e -> NotM <$> metaliseOKH e
+
+instance MetaliseOKH t => MetaliseOKH (Abs t) where
+  metaliseOKH (Abs id b) = Abs id <$> metaliseOKH b
+
+instance MetaliseOKH (Exp o) where
+  metaliseOKH e = case e of
+    App uid okh elr args ->
+      (\ m -> App uid m elr) <$> (Meta <$> initMeta) <*> metaliseOKH args
+    Lam hid b -> Lam hid <$> metaliseOKH b
+    Pi uid hid dep it ot ->
+      Pi uid hid dep <$> metaliseOKH it <*> metaliseOKH ot
+    Sort{} -> return e
+    AbsurdLambda{} -> return e
+
+instance MetaliseOKH (ArgList o) where
+  metaliseOKH e = case e of
+    ALNil -> return ALNil
+    ALCons hid a as -> ALCons hid <$> metaliseOKH a <*> metaliseOKH as
+    ALProj eas idx hid as ->
+      (\ eas -> ALProj eas idx hid) <$> metaliseOKH eas <*> metaliseOKH as
+    ALConPar as -> ALConPar <$> metaliseOKH as
+
 metaliseokh :: MExp o -> IO (MExp o)
-metaliseokh = fm
- where
-  fm (Meta m) = return $ Meta m
-  fm (NotM e) = do
-   e <- f e
-   return $ NotM e
-  f (App uid _ elr args) = do
-   m <- initMeta
-   args <- fms args
-   return $ App uid (Meta m) elr args
-  f (Lam hid (Abs id b)) = do
-   b <- fm b
-   return $ Lam hid (Abs id b)
-  f (Pi uid hid posdep it (Abs id ot)) = do
-   it <- fm it
-   ot <- fm ot
-   return $ Pi uid hid posdep it (Abs id ot)
-  f e@(Sort{}) = return e
-
-  f e@(AbsurdLambda{}) = return e
-
-
-  fms (Meta m) = return $ Meta m
-  fms (NotM es) = do
-   es <- fs es
-   return $ NotM es
-  fs ALNil = return ALNil
-  fs (ALCons hid a as) = do
-   a <- fm a
-   as <- fms as
-   return $ ALCons hid a as
-
-  fs (ALProj eas idx hid as) = do
-   eas <- fms eas
-   as <- fms as
-   return $ ALProj eas idx hid as
-
-
-  fs (ALConPar as) = do
-   as <- fms as
-   return $ ALConPar as
-
+metaliseokh = metaliseOKH
 
 -- -------------------------------------------
 
-expandExp :: MExp o -> IO (MExp o)
-expandExp = fm
- where
-  fm (Meta m) = do
-   mb <- readIORef $ mbind m
-   case mb of
-    Nothing -> return $ Meta m
-    Just e -> fm (NotM e)
-  fm (NotM e) = do
-   e <- f e
-   return $ NotM e
-  f (App uid okh elr args) = do
-   args <- fms args
-   return $ App uid okh elr args
-  f (Lam hid (Abs id b)) = do
-   b <- fm b
-   return $ Lam hid (Abs id b)
-  f (Pi uid hid posdep it (Abs id ot)) = do
-   it <- fm it
-   ot <- fm ot
-   return $ Pi uid hid posdep it (Abs id ot)
-  f e@(Sort{}) = return e
+class ExpandMetas t where
+  expandMetas :: t -> IO t
 
-  f e@(AbsurdLambda{}) = return e
+instance ExpandMetas t => ExpandMetas (MM t a) where
+  expandMetas t = case t of
+    NotM e -> NotM <$> expandMetas e
+    Meta m -> do
+      mb <- readIORef (mbind m)
+      case mb of
+        Nothing -> return $ Meta m
+        Just e  -> NotM <$> expandMetas e
 
+instance ExpandMetas t => ExpandMetas (Abs t) where
+  expandMetas (Abs id b) = Abs id <$> expandMetas b
 
-  fms (Meta m) = do
-   mb <- readIORef $ mbind m
-   case mb of
-    Nothing -> return $ Meta m
-    Just es -> fms (NotM es)
-  fms (NotM es) = do
-   es <- fs es
-   return $ NotM es
-  fs ALNil = return ALNil
-  fs (ALCons hid a as) = do
-   a <- fm a
-   as <- fms as
-   return $ ALCons hid a as
+instance ExpandMetas (Exp o) where
+  expandMetas t = case t of
+    App uid okh elr args -> App uid okh elr <$> expandMetas args
+    Lam hid b -> Lam hid <$> expandMetas b
+    Pi uid hid dep it ot ->
+      Pi uid hid dep <$> expandMetas it <*> expandMetas ot
+    Sort{} -> return t
+    AbsurdLambda{} -> return t
 
-  fs (ALProj eas idx hid as) = do
-   idx <- expandbind idx
-   eas <- fms eas
-   as <- fms as
-   return $ ALProj eas idx hid as
-
-
-  fs (ALConPar as) = do
-   as <- fms as
-   return $ ALConPar as
-
+instance ExpandMetas (ArgList o) where
+  expandMetas e = case e of
+    ALNil -> return ALNil
+    ALCons hid a as -> ALCons hid <$> expandMetas a <*> expandMetas as
+    ALProj eas idx hid as ->
+      (\ a b -> ALProj a b hid) <$> expandMetas eas
+      <*> expandbind idx <*> expandMetas as
+    ALConPar as -> ALConPar <$> expandMetas as
 
 -- ---------------------------------
 
@@ -370,22 +361,26 @@ subi :: MExp o -> ICExp o -> ICExp o
 subi e (Clos (Skip : as) x) = Clos (Sub (Clos [] e) : as) x
 subi _ _ = __IMPOSSIBLE__
 
-weak :: Nat -> CExp o -> CExp o
-weak n (TrBr trs e) = TrBr trs (weaki n e)
+class Weakening t where
+  weak :: Nat -> t -> t
+  weak 0 = id
+  weak n = weak' n
 
-weaki :: Nat -> Clos a o -> Clos a o
-weaki 0 x = x
-weaki n (Clos as x) = Clos (Weak n : as) x
+  weak' :: Nat -> t -> t
 
-weakarglist :: Nat -> ICArgList o -> ICArgList o
-weakarglist 0 = id
-weakarglist n = f
- where f CALNil = CALNil
-       f (CALConcat (Clos cl as) as2) = CALConcat (Clos (Weak n : cl) as) (f as2)
-weakelr :: Nat -> Elr o -> Elr o
-weakelr 0 elr = elr
-weakelr n (Var v) = Var (v + n)
-weakelr _ elr@(Const _) = elr
+instance Weakening a => Weakening (TrBr a o) where
+  weak' n (TrBr trs e) = TrBr trs (weak' n e)
+
+instance Weakening (Clos a o) where
+  weak' n (Clos as x) = Clos (Weak n : as) x
+
+instance Weakening (ICArgList o) where
+  weak' n e = case e of
+    CALNil         -> CALNil
+    CALConcat a as -> CALConcat (weak' n a) (weak' n as)
+
+instance Weakening (Elr o) where
+  weak' n = rename (n+)
 
 -- | Substituting for a variable.
 doclos :: [CAction o] -> Nat -> Either Nat (ICExp o)
@@ -394,7 +389,78 @@ doclos = f 0
   -- ns is the number of weakenings
   f ns []            i = Left (ns + i)
   f ns (Weak n : xs) i = f (ns + n) xs i
-  f ns (Sub s  : _ ) 0 = Right (weaki ns s)
+  f ns (Sub s  : _ ) 0 = Right (weak ns s)
   f ns (Skip   : _ ) 0 = Left ns
   f ns (Skip   : xs) i = f (ns + 1) xs (i - 1)
   f ns (Sub _  : xs) i = f ns xs (i - 1)
+
+
+-- | FreeVars class and instances
+
+class FreeVars t where
+  freeVars :: t -> Set.Set Nat
+  freeVars = freeVarsOffset 0
+
+  freeVarsOffset :: Nat -> t -> Set.Set Nat
+
+instance FreeVars t => FreeVars (MM t a) where
+  freeVarsOffset n e = freeVarsOffset n (rm e)
+
+instance FreeVars t => FreeVars (Abs t) where
+  freeVarsOffset n (Abs id e) = freeVarsOffset (n + 1) e
+
+instance FreeVars (Elr o) where
+  freeVarsOffset n e = case e of
+    Var v   -> Set.singleton (v - n)
+    Const{} -> Set.empty
+
+instance FreeVars (Exp o) where
+  freeVarsOffset n e = case e of
+   App _ _ elr args -> Set.union (freeVarsOffset n elr) (freeVarsOffset n args)
+   Lam _ b          -> freeVarsOffset n b
+   Pi _ _ _ it ot   -> Set.union (freeVarsOffset n it) (freeVarsOffset n ot)
+   Sort{}           -> Set.empty
+   AbsurdLambda{}   -> Set.empty
+
+instance FreeVars (ArgList o) where
+  freeVarsOffset n es = case es of
+    ALNil         -> Set.empty
+    ALCons _ e es -> Set.union (freeVarsOffset n e) (freeVarsOffset n es)
+    ALConPar es   -> freeVarsOffset n es
+    ALProj{}      -> __IMPOSSIBLE__
+
+
+-- | Renaming Typeclass and instances
+class Renaming t where
+  rename :: (Nat -> Nat) -> t -> t
+  rename = renameOffset 0
+
+  renameOffset :: Nat -> (Nat -> Nat) -> t -> t
+
+instance Renaming t => Renaming (MM t a) where
+  renameOffset j ren e = NotM $ renameOffset j ren (rm e)
+
+instance Renaming t => Renaming (Abs t) where
+  renameOffset j ren (Abs id e) = Abs id $ renameOffset (j + 1) ren e
+
+instance Renaming (Elr o) where
+  renameOffset j ren e = case e of
+    Var v | v >= j -> Var (ren (v - j) + j)
+    _              -> e
+
+instance Renaming (Exp o) where
+  renameOffset j ren e = case e of
+    App uid ok elr args -> App uid ok (renameOffset j ren elr)
+                                      (renameOffset j ren args)
+    Lam hid e -> Lam hid (renameOffset j ren e)
+    Pi uid hid possdep it ot ->
+      Pi uid hid possdep (renameOffset j ren it) (renameOffset j ren ot)
+    Sort{}         -> e
+    AbsurdLambda{} -> e
+
+instance Renaming (ArgList o) where
+  renameOffset j ren e = case e of
+    ALNil           -> ALNil
+    ALCons hid a as -> ALCons hid (renameOffset j ren a) (renameOffset j ren as)
+    ALConPar as     -> ALConPar (renameOffset j ren as)
+    ALProj{}        -> __IMPOSSIBLE__
