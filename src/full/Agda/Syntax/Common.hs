@@ -727,7 +727,7 @@ data TPTPRole = TPTPAxiom
               | TPTPDefinition
               | TPTPHint
               | TPTPType
-              deriving (Eq, Show, Typeable)
+              deriving (Eq, Show, Typeable, Data)
 
 instance KillRange TPTPRole where
   killRange = id
