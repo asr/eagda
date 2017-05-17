@@ -466,6 +466,7 @@ library
                     Agda.Utils.Time
                     Agda.Utils.Trie
                     Agda.Utils.Tuple
+                    Agda.Utils.TypeLevel
                     Agda.Utils.Update
                     Agda.Utils.VarSet
                     Agda.Utils.Warshall
@@ -687,6 +688,7 @@ test-suite internal-tests
                 , InternalTests.Termination.SparseMatrix
                 , InternalTests.Termination.Termination
                 , InternalTests.TypeChecking
+                , InternalTests.TypeChecking.Substitute
                 , InternalTests.TypeChecking.Coverage.SplitTree
                 , InternalTests.TypeChecking.Free
                 , InternalTests.TypeChecking.Free.Lazy

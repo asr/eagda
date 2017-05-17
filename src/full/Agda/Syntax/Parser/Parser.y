@@ -650,7 +650,7 @@ Expr2
 ExtendedOrAbsurdLam :: { Expr }
 ExtendedOrAbsurdLam
     : '\\'  '{' LamClauses '}'     { ExtendedLam (getRange ($1,$2,$3,$4)) (reverse $3) }
-    | '\\' 'where' vopen LamClauses close { ExtendedLam (getRange ($1, $2, $4)) (reverse $4) }
+    | '\\' 'where' vopen LamWhereClauses close { ExtendedLam (getRange ($1, $2, $4)) (reverse $4) }
     | '\\' AbsurdLamBindings       {% case $2 of
                                        Left (bs, h) -> if null bs then return $ AbsurdLam r h else
                                                        return $ Lam r bs (AbsurdLam r h)
@@ -886,6 +886,12 @@ LamClauses
    | NonAbsurdLamClause { [$1] }
 --   | {- empty -} { [] }
 
+-- Parses all extended lambda clauses including a single absurd clause. For λ
+-- where this is not taken care of in AbsurdLambda
+LamWhereClauses :: { [(LHS,RHS,WhereClause,Bool)] }
+LamWhereClauses
+   : LamClauses semi LamClause { $3 : $1 }
+   | LamClause { [$1] }
 
 ForallBindings :: { [LamBinding] }
 ForallBindings
@@ -1751,11 +1757,15 @@ figureOutTopLevelModule ds =
     -- Case 4: a top-level module declaration is missing.
     -- Andreas, 2017-01-01, issue #2229:
     -- Put everything (except OPTIONS pragmas) into an anonymous module.
-    _ -> ds0 ++ [Module (getRange ds1) (QName noName_) [] ds1]
+    _ -> ds0 ++ [Module r (QName $ noName r) [] ds1]
       where
       (ds0, ds1) = (`span` ds) $ \case
         Pragma OptionsPragma{} -> True
         _ -> False
+      -- Andreas, 2017-05-17, issue #2574.
+      -- Since the module noName will act as jump target, it needs a range.
+      -- We use the beginning of the file as beginning of the top level module.
+      r = beginningOfFile $ getRange ds1
 
 -- | Create a name from a string.
 
