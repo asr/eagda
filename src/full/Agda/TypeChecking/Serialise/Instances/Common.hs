@@ -486,11 +486,11 @@ instance EmbPrj TPTPRole where
   icod_ TPTPType       = icode0 4
 
   value = vcase valu where
-    valu []  = valu0 TPTPAxiom
-    valu [1] = valu0 TPTPConjecture
-    valu [2] = valu0 TPTPDefinition
-    valu [3] = valu0 TPTPHint
-    valu [4] = valu0 TPTPType
+    valu []  = valuN TPTPAxiom
+    valu [1] = valuN TPTPConjecture
+    valu [2] = valuN TPTPDefinition
+    valu [3] = valuN TPTPHint
+    valu [4] = valuN TPTPType
     valu _   = malformed
 
 instance EmbPrj Delayed where
