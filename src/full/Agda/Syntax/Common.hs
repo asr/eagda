@@ -67,17 +67,31 @@ instance NFData Induction where
 -- * Hiding
 ---------------------------------------------------------------------------
 
-data Hiding  = Hidden | Instance | NotHidden
+data Overlappable = YesOverlap | NoOverlap
   deriving (Typeable, Data, Show, Eq, Ord)
+
+data Hiding  = Hidden | Instance Overlappable | NotHidden
+  deriving (Typeable, Data, Show, Eq, Ord)
+
+-- | Just for the 'Hiding' instance. Should never combine different
+--   overlapping.
+instance Semigroup Overlappable where
+  NoOverlap  <> NoOverlap  = NoOverlap
+  YesOverlap <> YesOverlap = YesOverlap
+  _          <> _          = __IMPOSSIBLE__
 
 -- | 'Hiding' is an idempotent partial monoid, with unit 'NotHidden'.
 --   'Instance' and 'NotHidden' are incompatible.
 instance Semigroup Hiding where
-  NotHidden <> h         = h
-  h         <> NotHidden = h
-  Hidden    <> Hidden    = Hidden
-  Instance  <> Instance  = Instance
-  _         <> _         = __IMPOSSIBLE__
+  NotHidden  <> h           = h
+  h          <> NotHidden   = h
+  Hidden     <> Hidden      = Hidden
+  Instance o <> Instance o' = Instance (o <> o')
+  _          <> _           = __IMPOSSIBLE__
+
+instance Monoid Overlappable where
+  mempty  = NoOverlap
+  mappend = (<>)
 
 instance Monoid Hiding where
   mempty = NotHidden
@@ -86,13 +100,20 @@ instance Monoid Hiding where
 instance KillRange Hiding where
   killRange = id
 
+instance NFData Overlappable where
+  rnf NoOverlap  = ()
+  rnf YesOverlap = ()
+
 instance NFData Hiding where
-  rnf Hidden    = ()
-  rnf Instance  = ()
-  rnf NotHidden = ()
+  rnf Hidden       = ()
+  rnf (Instance o) = rnf o
+  rnf NotHidden    = ()
 
 -- | Decorating something with 'Hiding' information.
-data WithHiding a = WithHiding !Hiding a
+data WithHiding a = WithHiding
+  { whHiding :: !Hiding
+  , whThing  :: a
+  }
   deriving (Typeable, Data, Eq, Ord, Show, Functor, Foldable, Traversable)
 
 instance Decoration WithHiding where
@@ -154,12 +175,27 @@ hide = setHiding Hidden
 hideOrKeepInstance :: LensHiding a => a -> a
 hideOrKeepInstance x =
   case getHiding x of
-    Hidden -> x
-    Instance -> x
-    NotHidden -> setHiding Hidden x
+    Hidden     -> x
+    Instance{} -> x
+    NotHidden  -> setHiding Hidden x
 
 makeInstance :: LensHiding a => a -> a
-makeInstance = setHiding Instance
+makeInstance = makeInstance' NoOverlap
+
+makeInstance' :: LensHiding a => Overlappable -> a -> a
+makeInstance' o = setHiding (Instance o)
+
+isOverlappable :: LensHiding a => a -> Bool
+isOverlappable x =
+  case getHiding x of
+    Instance YesOverlap -> True
+    _ -> False
+
+isInstance :: LensHiding a => a -> Bool
+isInstance x =
+  case getHiding x of
+    Instance{} -> True
+    _          -> False
 
 ---------------------------------------------------------------------------
 -- * Relevance
@@ -346,6 +382,31 @@ instance NFData Origin where
   rnf Inserted = ()
   rnf Reflected = ()
 
+-- | Decorating something with 'Origin' information.
+data WithOrigin a = WithOrigin
+  { woOrigin :: !Origin
+  , woThing  :: a
+  }
+  deriving (Typeable, Data, Eq, Ord, Show, Functor, Foldable, Traversable)
+
+instance Decoration WithOrigin where
+  traverseF f (WithOrigin h a) = WithOrigin h <$> f a
+
+instance HasRange a => HasRange (WithOrigin a) where
+  getRange = getRange . dget
+
+instance SetRange a => SetRange (WithOrigin a) where
+  setRange = fmap . setRange
+
+instance KillRange a => KillRange (WithOrigin a) where
+  killRange = fmap killRange
+
+instance NFData a => NFData (WithOrigin a) where
+  rnf (WithOrigin _ a) = rnf a
+
+-- | A lens to access the 'Origin' attribute in data structures.
+--   Minimal implementation: @getOrigin@ and one of @setOrigin@ or @mapOrigin@.
+
 class LensOrigin a where
 
   getOrigin :: a -> Origin
@@ -361,6 +422,11 @@ instance LensOrigin Origin where
   setOrigin = const
   mapOrigin = id
 
+instance LensOrigin (WithOrigin a) where
+  getOrigin   (WithOrigin h _) = h
+  setOrigin h (WithOrigin _ a) = WithOrigin h a
+  mapOrigin f (WithOrigin h a) = WithOrigin (f h) a
+
 ---------------------------------------------------------------------------
 -- * Argument decoration
 ---------------------------------------------------------------------------
@@ -371,11 +437,10 @@ data ArgInfo = ArgInfo
   { argInfoHiding       :: Hiding
   , argInfoRelevance    :: Relevance
   , argInfoOrigin       :: Origin
-  , argInfoOverlappable :: Bool
   } deriving (Typeable, Data, Eq, Ord, Show)
 
 instance KillRange ArgInfo where
-  killRange (ArgInfo h r o v) = killRange3 ArgInfo h r o v
+  killRange (ArgInfo h r o) = killRange3 ArgInfo h r o
 
 class LensArgInfo a where
   getArgInfo :: a -> ArgInfo
@@ -390,7 +455,7 @@ instance LensArgInfo ArgInfo where
   mapArgInfo = id
 
 instance NFData ArgInfo where
-  rnf (ArgInfo a b c d) = rnf a `seq` rnf b `seq` rnf c `seq` rnf d
+  rnf (ArgInfo a b c) = rnf a `seq` rnf b `seq` rnf c
 
 instance LensHiding ArgInfo where
   getHiding = argInfoHiding
@@ -410,8 +475,7 @@ instance LensOrigin ArgInfo where
 defaultArgInfo :: ArgInfo
 defaultArgInfo =  ArgInfo { argInfoHiding       = NotHidden
                           , argInfoRelevance    = Relevant
-                          , argInfoOrigin       = UserWritten
-                          , argInfoOverlappable = False }
+                          , argInfoOrigin       = UserWritten }
 
 
 ---------------------------------------------------------------------------
@@ -436,14 +500,16 @@ instance KillRange a => KillRange (Arg a) where
   killRange (Arg info a) = killRange2 Arg info a
 
 instance Eq a => Eq (Arg a) where
-  Arg (ArgInfo h1 _ _ _) x1 == Arg (ArgInfo h2 _ _ _) x2 = (h1, x1) == (h2, x2)
+  Arg (ArgInfo h1 _ _) x1 == Arg (ArgInfo h2 _ _) x2 = (h1, x1) == (h2, x2)
 
 instance Show a => Show (Arg a) where
-    show (Arg (ArgInfo h r o v) x) = showR r $ showO o $ showH h $ show x
+    show (Arg (ArgInfo h r o) x) = showR r $ showO o $ showH h $ show x
       where
-        showH Hidden     s = "{" ++ s ++ "}"
-        showH NotHidden  s = "(" ++ s ++ ")"
-        showH Instance   s = (if v then "overlap " else "") ++ "{{" ++ s ++ "}}"
+        showH Hidden       s = "{" ++ s ++ "}"
+        showH NotHidden    s = "(" ++ s ++ ")"
+        showH (Instance o) s = showOv o ++ "{{" ++ s ++ "}}"
+          where showOv YesOverlap = "overlap "
+                showOv NoOverlap  = ""
         showR r s = case r of
           Irrelevant   -> "." ++ s
           NonStrict    -> "?" ++ s
@@ -541,7 +607,7 @@ instance KillRange a => KillRange (Dom a) where
   killRange (Dom info b a) = killRange3 Dom info b a
 
 instance Eq a => Eq (Dom a) where
-  Dom (ArgInfo h1 r1 _ _) b1 x1 == Dom (ArgInfo h2 r2 _ _) b2 x2 =
+  Dom (ArgInfo h1 r1 _) b1 x1 == Dom (ArgInfo h2 r2 _) b2 x2 =
     (h1, ignoreForced r1, b1, x1) == (h2, ignoreForced r2, b2, x2)
 
 instance Show a => Show (Dom a) where

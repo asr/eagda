@@ -174,6 +174,19 @@ Emacs mode
     test _ ()
   ```
 
+* Interactively expanding ellipsis.
+  [Issue [#2589](https://github.com/agda/agda/issues/2589)]
+  An ellipsis in a with-clause can be expanded by splitting on "variable" "." (dot).
+  ```agda
+    test0 : Nat → Nat
+    test0 x with zero
+    ... | q = {! . !}  -- C-c C-c
+  ```
+  Splitting on dot here yields:
+  ```agda
+    test0 x | q = ?
+  ```
+
 * Fewer commands have the side effect that the buffer is saved.
 
 Compiler backends
@@ -231,6 +244,55 @@ Compiler backends
   There is a new API in `Agda.Compiler.Backend` for creating stand-alone
   backends using Agda as a library. This allows prospective backend writers to
   experiment with new backends without having to change the Agda code base.
+
+HTML backend
+------------
+
+* Anchors for identifiers (excluding bound variables) are now the
+  identifiers themselves rather than just the file position
+  [Issue [#2604](https://github.com/agda/agda/issues/2604)].
+
+  The new, symbolic anchors look like
+  ```html
+  <a name="test1">
+  <a name="M.bla">
+  ```
+  while the old anchors just give the character position in the file:
+  ```html
+  <a name="42">
+  ```
+
+  Top-level module names do not get a symbolic anchor, since the position of
+  a top-level module is defined to be the beginning of the file.
+
+  Example:
+
+  ```agda
+  module Issue2604 where   -- Character position anchor
+
+  test1 : Set₁             -- Issue2604.html#test1
+  test1 = bla
+    where
+    bla = Set              -- Character position anchor
+
+  test2 : Set₁             -- Issue2604.html#test2
+  test2 = bla
+    where
+    bla = Set              -- Character position anchor
+
+  test3 : Set₁             -- Issue2604.html#test3
+  test3 = bla
+    module M where         -- Issue2604.html#M
+    bla = Set              -- Issue2604.html#M.bla
+
+  module NamedModule where -- Issue2604.html#NamedModule
+    test4 : Set₁           -- Issue2604.html#NamedModule.test4
+    test4 = M.bla
+
+  module _ where           -- Character position anchor
+    test5 : Set₁           -- Character position anchor
+    test5 = M.bla
+  ```
 
 LaTeX backend
 -------------
@@ -307,11 +369,12 @@ LaTeX backend
   `\AgdaFormat` is the token, and the second argument the thing to
   be typeset.
 
-* The alignment feature used to regard the string `+̲`, containing `+`
-  and a combining character, as having length two. However, it seems
-  more reasonable to treat it as having length one, as it occupies a
-  single column, if displayed "properly" using a monospace font. This
-  has now been fixed: the backend counts ["extended grapheme
+* The alignment feature regards the string `+̲`, containing `+` and a
+  combining character, as having length two. However, it seems more
+  reasonable to treat it as having length one, as it occupies a single
+  column, if displayed "properly" using a monospace font. The new flag
+  `--count-clusters` is an attempt at fixing this. When this flag is
+  enabled the backend counts ["extended grapheme
   clusters"](http://www.unicode.org/reports/tr29/#Grapheme_Cluster_Boundaries)
   rather than code points.
 
@@ -332,12 +395,18 @@ LaTeX backend
 
   Note also that the layout machinery does not count extended grapheme
   clusters, but code points. The following code is syntactically
-  correct, but the LaTeX backend does not align the two `field`
-  keywords:
+  correct, but if `--count-clusters` is used, then the LaTeX backend
+  does not align the two `field` keywords:
   ```agda
     record +̲ : Set₁ where  field A : Set
                             field B : Set
   ```
+
+  The `--count-clusters` flag is not enabled in all builds of Agda,
+  because the implementation depends on the
+  [ICU](http://site.icu-project.org) library, the installation of
+  which could cause extra trouble for some users. The presence of this
+  flag is controlled by the Cabal flag `enable-cluster-counting`.
 
 * A faster variant of the LaTeX backend: QuickLaTeX.
 
@@ -365,6 +434,12 @@ Pragmas and options
   subset of the language by stating `{-# OPTIONS --safe #-}` at the top
   of the corresponding file. Incompatibilities between the `--safe` option
   and other options or language constructs are non-fatal errors.
+
+* New command-line option and pragma `--warning=MODE` (or `-W MODE`) for
+  setting the warning mode. Current options are
+  - `warn` for displaying warnings (default)
+  - `error` for turning warnings into errors
+  - `ignore` for not displaying warnings
 
 Release notes for Agda version 2.5.2
 ====================================

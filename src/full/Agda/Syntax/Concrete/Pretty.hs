@@ -74,9 +74,9 @@ lambda = text "\x03bb"
 prettyHiding :: LensHiding a => a -> (Doc -> Doc) -> Doc -> Doc
 prettyHiding a parens =
   case getHiding a of
-    Hidden    -> braces'
-    Instance  -> dbraces
-    NotHidden -> parens
+    Hidden     -> braces'
+    Instance{} -> dbraces
+    NotHidden  -> parens
 
 prettyRelevance :: LensRelevance a => a -> Doc -> Doc
 prettyRelevance a d =
@@ -136,9 +136,9 @@ instance Pretty Expr where
                 sep [ lambda <+> fsep (map pretty bs) <+> arrow
                     , nest 2 $ pretty e
                     ]
-            AbsurdLam _ NotHidden -> lambda <+> text "()"
-            AbsurdLam _ Instance -> lambda <+> text "{{}}"
-            AbsurdLam _ Hidden -> lambda <+> text "{}"
+            AbsurdLam _ NotHidden  -> lambda <+> text "()"
+            AbsurdLam _ Instance{} -> lambda <+> text "{{}}"
+            AbsurdLam _ Hidden     -> lambda <+> text "{}"
             ExtendedLam _ pes ->
               lambda <+> bracesAndSemicolons (map (\(x,y,z,_) -> prettyClause x y z) pes)
                    where prettyClause lhs rhs wh = sep [ pretty lhs
@@ -308,8 +308,8 @@ instance Pretty Declaration where
                   mkInst InstanceDef    d = sep [ text "instance", nest 2 d ]
                   mkInst NotInstanceDef d = d
 
-                  mkOverlap i d | argInfoOverlappable i = text "overlap" <+> d
-                                | otherwise             = d
+                  mkOverlap i d | isOverlappable i = text "overlap" <+> d
+                                | otherwise        = d
             FunClause lhs rhs wh _ ->
                 sep [ pretty lhs
                     , nest 2 $ pretty rhs
@@ -544,15 +544,18 @@ instance Pretty Pattern where
             RecP _ fs       -> sep [ text "record", bracesAndSemicolons (map pretty fs) ]
             EqualP _ es     -> sep $ concat [ [pretty e1, text "=", pretty e2] | (e1,e2) <- es ]
 
-prettyOpApp ::
+prettyOpApp :: forall a .
   Pretty a => QName -> [NamedArg (MaybePlaceholder a)] -> [Doc]
 prettyOpApp q es = merge [] $ prOp ms xs es
   where
+    -- ms: the module part of the name.
     ms = init (qnameParts q)
+    -- xs: the concrete name (alternation of @Id@ and @Hole@)
     xs = case unqualify q of
            Name _ xs -> xs
            NoName{}  -> __IMPOSSIBLE__
 
+    prOp :: [Name] -> [NamePart] -> [NamedArg (MaybePlaceholder a)] -> [(Doc, Maybe PositionInName)]
     prOp ms (Hole : xs) (e : es) = (pretty e, case namedArg e of
                                                 Placeholder p -> Just p
                                                 _             -> Nothing) :
@@ -561,7 +564,9 @@ prettyOpApp q es = merge [] $ prOp ms xs es
     prOp ms (Id x : xs) es       = ( pretty (foldr Qual (QName (Name noRange $ [Id x])) ms)
                                    , Nothing
                                    ) : prOp [] xs es
-    prOp _  []       []          = []
+      -- Qualify the name part with the module.
+      -- We then clear @ms@ such that the following name parts will not be qualified.
+
     prOp _  []       es          = map (\e -> (pretty e, Nothing)) es
 
     -- Section underscores should be printed without surrounding

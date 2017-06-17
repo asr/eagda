@@ -759,7 +759,7 @@ TypedBindings
                              setRelevance Irrelevant $3 }
     | '.' '{{' TBind DoubleCloseBrace
                            { setRange (getRange ($2,$3,$4)) $
-                             setHiding Instance $
+                             makeInstance $
                              setRelevance Irrelevant $3 }
     | '..' '(' TBindWithHiding ')'   { setRange (getRange ($2,$3,$4)) $
                              setRelevance NonStrict $3 }
@@ -768,12 +768,12 @@ TypedBindings
                              setRelevance NonStrict $3 }
     | '..' '{{' TBind DoubleCloseBrace
                            { setRange (getRange ($2,$3,$4)) $
-                             setHiding Instance $
+                             makeInstance $
                              setRelevance NonStrict $3 }
     | '(' TBindWithHiding ')'        { setRange (getRange ($1,$2,$3)) $2 }
     | '{{' TBind DoubleCloseBrace
                            { setRange (getRange ($1,$2,$3)) $
-                             setHiding Instance $2 }
+                             makeInstance $2 }
     | '{' TBind '}'        { setRange (getRange ($1,$2,$3)) $
                              setHiding Hidden $2 }
     | '(' Open ')'               { tLet (getRange ($1,$3)) $2 }
@@ -832,7 +832,7 @@ LamBinds
   | TypedBindings               { [Right $ DomainFull $1] }
   | '(' ')'                     { [Left NotHidden] }
   | '{' '}'                     { [Left Hidden] }
-  | '{{' DoubleCloseBrace       { [Left Instance] }
+  | '{{' DoubleCloseBrace       { [Left (Instance NoOverlap)] }
 
 -- Like LamBinds, but could also parse an absurd LHS of an extended lambda @{ p1 ... () }@
 LamBindsAbsurd :: { Either [Either Hiding LamBinding] [Expr] }
@@ -845,7 +845,7 @@ LamBindsAbsurd
   | TypedBindings               { Left [Right $ DomainFull $1] }
   | '(' ')'                     { Left [Left NotHidden] }
   | '{' '}'                     { Left [Left Hidden] }
-  | '{{' DoubleCloseBrace       { Left [Left Instance] }
+  | '{{' DoubleCloseBrace       { Left [Left (Instance NoOverlap)] }
 
 -- FNF, 2011-05-05: No where clauses in extended lambdas for now
 NonAbsurdLamClause :: { (LHS,RHS,WhereClause,Bool) }
@@ -890,7 +890,7 @@ LamClauses
 -- where this is not taken care of in AbsurdLambda
 LamWhereClauses :: { [(LHS,RHS,WhereClause,Bool)] }
 LamWhereClauses
-   : LamClauses semi LamClause { $3 : $1 }
+   : LamWhereClauses semi LamClause { $3 : $1 }
    | LamClause { [$1] }
 
 ForallBindings :: { [LamBinding] }
@@ -920,17 +920,6 @@ DomainFreeBinding
                              Left lbs -> lbs
                              Right _ -> fail "expected sequence of bound identifiers, not absurd pattern"
                           }
-{-    : BId             { [DomainFree NotHidden Relevant $ mkBoundName_ $1]  }
-    | '.' BId           { [DomainFree NotHidden Irrelevant $ mkBoundName_ $2]  }
-    | '..' BId          { [DomainFree NotHidden NonStrict $ mkBoundName_ $2]  }
-    | '{' CommaBIds '}' { map (DomainFree Hidden Relevant . mkBoundName_) $2 }
-    | '{{' CommaBIds DoubleCloseBrace { map (DomainFree (setHiding Instance defaultArgInfo) . mkBoundName_) $2 }
-    | '.' '{' CommaBIds '}' { map (DomainFree Hidden Irrelevant . mkBoundName_) $3 }
-    | '.' '{{' CommaBIds DoubleCloseBrace { map (DomainFree Instance Irrelevant . mkBoundName_) $3 }
-    | '..' '{' CommaBIds '}' { map (DomainFree Hidden NonStrict . mkBoundName_) $3 }
-    | '..' '{{' CommaBIds DoubleCloseBrace { map (DomainFree Instance NonStrict . mkBoundName_) $3 }
-    | '..' '{{' CommaBIds DoubleCloseBrace { map (DomainFree Instance NonStrict . mkBoundName_) $3 }
-  -}
 
 -- A domain free binding is either x or {x1 .. xn}
 DomainFreeBindingAbsurd :: { Either [LamBinding] [Expr]}
@@ -940,11 +929,11 @@ DomainFreeBindingAbsurd
     | '..' BId          { Left [DomainFree (setRelevance NonStrict $ defaultArgInfo) $ mkBoundName_ $2]  }
     | '{' CommaBIdAndAbsurds '}'
          { mapLeft (map (DomainFree (setHiding Hidden $ defaultArgInfo) . mkBoundName_)) $2 }
-    | '{{' CommaBIds DoubleCloseBrace { Left $ map (DomainFree (setHiding Instance $ defaultArgInfo) . mkBoundName_) $2 }
+    | '{{' CommaBIds DoubleCloseBrace { Left $ map (DomainFree (makeInstance $ defaultArgInfo) . mkBoundName_) $2 }
     | '.' '{' CommaBIds '}' { Left $ map (DomainFree (setHiding Hidden $ setRelevance Irrelevant $ defaultArgInfo) . mkBoundName_) $3 }
-    | '.' '{{' CommaBIds DoubleCloseBrace { Left $ map (DomainFree (setHiding Instance $ setRelevance Irrelevant $ defaultArgInfo) . mkBoundName_) $3 }
+    | '.' '{{' CommaBIds DoubleCloseBrace { Left $ map (DomainFree (makeInstance $ setRelevance Irrelevant $ defaultArgInfo) . mkBoundName_) $3 }
     | '..' '{' CommaBIds '}' { Left $ map (DomainFree (setHiding Hidden $ setRelevance NonStrict $ defaultArgInfo) . mkBoundName_) $3 }
-    | '..' '{{' CommaBIds DoubleCloseBrace { Left $ map (DomainFree  (setHiding Instance $ setRelevance NonStrict $ defaultArgInfo) . mkBoundName_) $3 }
+    | '..' '{{' CommaBIds DoubleCloseBrace { Left $ map (DomainFree  (makeInstance $ setRelevance NonStrict $ defaultArgInfo) . mkBoundName_) $3 }
 
 
 {--------------------------------------------------------------------------
@@ -1100,12 +1089,17 @@ TypeSigs : SpaceIds ':' Expr { map (\ x -> TypeSig defaultArgInfo x $3) $1 }
 ArgTypeSigs :: { [Arg Declaration] }
 ArgTypeSigs
   : ArgIds ':' Expr { map (fmap (\ x -> TypeSig defaultArgInfo x $3)) $1 }
-  | 'overlap' ArgIds ':' Expr {
-      let setOverlap (Arg i x) = Arg i{ argInfoOverlappable = True } x in
-      map (setOverlap . fmap (\ x -> TypeSig defaultArgInfo x $4)) $2 }
+  | 'overlap' ArgIds ':' Expr {%
+      let setOverlap x =
+            case getHiding x of
+              Instance _ -> return $ makeInstance' YesOverlap x
+              _          ->
+                parseErrorAt (fromJust $ rStart' $ getRange $1)
+                             "The 'overlap' keyword only applies to instance fields (fields marked with {{ }})"
+      in T.traverse (setOverlap . fmap (\ x -> TypeSig defaultArgInfo x $4)) $2 }
   | 'instance' ArgTypeSignatures {
     let
-      setInstance (TypeSig info x t) = TypeSig (setHiding Instance info) x t
+      setInstance (TypeSig info x t) = TypeSig (makeInstance info) x t
       setInstance _ = __IMPOSSIBLE__ in
     map (fmap setInstance) $2 }
 
@@ -1171,8 +1165,9 @@ Infix : 'infix'  Int SpaceBIds  { Infix (Fixity (getRange ($1,$3)) (Related $2) 
 Fields :: { [Declaration] }
 Fields : 'field' ArgTypeSignatures
             { let
-                inst i | getHiding i == Instance = InstanceDef
-                       | otherwise               = NotInstanceDef
+                inst i = case getHiding i of
+                           Instance _ -> InstanceDef
+                           _          -> NotInstanceDef
                 toField (Arg info (TypeSig info' x t)) = Field (inst info') x (Arg info t)
               in map toField $2 }
 
@@ -1249,10 +1244,10 @@ HoleNames : HoleName { [$1] }
 HoleName :: { NamedArg HoleName }
 HoleName
   : SimpleTopHole { defaultNamedArg $1 }
-  | '{'  SimpleHole '}'  { setHiding Hidden   $ defaultNamedArg $2 }
-  | '{{' SimpleHole '}}' { setHiding Instance $ defaultNamedArg $2 }
-  | '{'  SimpleId '=' SimpleHole '}'  { setHiding Hidden   $ defaultArg $ named $2 $4 }
-  | '{{' SimpleId '=' SimpleHole '}}' { setHiding Instance $ defaultArg $ named $2 $4 }
+  | '{'  SimpleHole '}'  { hide         $ defaultNamedArg $2 }
+  | '{{' SimpleHole '}}' { makeInstance $ defaultNamedArg $2 }
+  | '{'  SimpleId '=' SimpleHole '}'  { hide         $ defaultArg $ named $2 $4 }
+  | '{{' SimpleId '=' SimpleHole '}}' { makeInstance $ defaultArg $ named $2 $4 }
 
 SimpleTopHole :: { HoleName }
 SimpleTopHole
