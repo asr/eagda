@@ -479,14 +479,12 @@ instance EmbPrj IsAbstract where
 
 -- ASR TODO (30 September 2015). Move to the end. We wrote this
 -- instance here for avoiding conflicts when merging master.
---
--- Based on EmbPrj Occurence instance.
 instance EmbPrj TPTPRole where
-  icod_ TPTPAxiom      = icode0'
-  icod_ TPTPConjecture = icode0 1
-  icod_ TPTPDefinition = icode0 2
-  icod_ TPTPHint       = icode0 3
-  icod_ TPTPType       = icode0 4
+  icod_ TPTPAxiom      = icodeN' TPTPAxiom
+  icod_ TPTPConjecture = icodeN 1 TPTPConjecture
+  icod_ TPTPDefinition = icodeN 2 TPTPDefinition
+  icod_ TPTPHint       = icodeN 3 TPTPHint
+  icod_ TPTPType       = icodeN 4 TPTPType
 
   value = vcase valu where
     valu []  = valuN TPTPAxiom
