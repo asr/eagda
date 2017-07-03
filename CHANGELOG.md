@@ -129,6 +129,33 @@ Language
   Aside from datatypes, this pragma can also be used to mark other definition
   as being injective (for example postulates).
 
+* New TC primitive: `debugPrint`.
+
+  ```agda
+    debugPrint : String → Nat → List ErrorPart → TC ⊤
+  ```
+
+  This maps to the internal function `reportSDoc`. Debug output is enabled with
+  the `-v` flag at the command line, or in an `OPTIONS` pragma. For instance,
+  giving `-v a.b.c:10` enables printing from `debugPrint "a.b.c.d" 10 msg`. In the
+  Emacs mode, debug output ends up in the `*Agda debug*` buffer.
+
+* Dot patterns.
+
+  The dot in front of an inaccessible pattern can now be skipped if the
+  pattern is constructor-headed. For example:
+  ```agda
+    open import Agda.Builtin.Bool
+
+    data D : Bool → Set where
+      c : D true
+
+    f : (x : Bool) → D x → Bool
+    f true c = true
+
+  ```
+  Before this change, you had to write `f .true c = true`.
+
 Emacs mode
 ----------
 
@@ -1169,6 +1196,15 @@ Language
   ```
 
   Returns `true` if the name refers to a macro, otherwise `false`.
+
+* The `record-type` constructor now has an extra argument containing
+  information about the record type's fields:
+  ```agda
+    data Definition : Set where
+      …
+      record-type : (c : Name) (fs : List (Arg Name)) → Definition
+      …
+  ```
 
 Type checking
 -------------

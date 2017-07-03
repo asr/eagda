@@ -231,8 +231,9 @@ below <reflection-tc-monad>`.
   data Definition : Set where
     function    : (cs : List Clause) → Definition
     data-type   : (pars : Nat) (cs : List Name) → Definition  -- parameters and constructors
-    record-type : (c : Name) → Definition                     -- c is name of record constructor
-    data-cons   : (d : Name) → Definition                     -- d is name of data type
+    record-type : (c : Name) (fs : List (Arg Name)) →         -- c: name of record constructor
+                  Definition                                  -- fs: fields
+    data-cons   : (d : Name) → Definition                     -- d: name of data type
     axiom       : Definition
     prim-fun    : Definition
 
@@ -363,6 +364,10 @@ following primitive operations::
     -- normalisation.
     withNormalisation : ∀ {a} {A : Set a} → Bool → TC A → TC A
 
+    -- Prints the third argument if the corresponding verbosity level is turned
+    -- on (with the -v flag to Agda).
+    debugPrint : String → Nat → List ErrorPart → TC ⊤
+
   {-# BUILTIN AGDATCMUNIFY              unify              #-}
   {-# BUILTIN AGDATCMTYPEERROR          typeError          #-}
   {-# BUILTIN AGDATCMBLOCKONMETA        blockOnMeta        #-}
@@ -384,6 +389,7 @@ following primitive operations::
   {-# BUILTIN AGDATCMCOMMIT             commitTC           #-}
   {-# BUILTIN AGDATCMISMACRO            isMacro            #-}
   {-# BUILTIN AGDATCMWITHNORMALISATION  withNormalisation  #-}
+  {-# BUILTIN AGDATCMDEBUGPRINT         debugPrint         #-}
 
 Metaprogramming
 ---------------
