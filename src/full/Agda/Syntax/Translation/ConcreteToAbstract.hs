@@ -61,6 +61,7 @@ import Agda.TypeChecking.Monad.Builtin
 import Agda.TypeChecking.Monad.Trace (traceCall, setCurrentRange)
 import Agda.TypeChecking.Monad.State
 import Agda.TypeChecking.Monad.MetaVars (registerInteractionPoint)
+import Agda.TypeChecking.Monad.Debug
 import Agda.TypeChecking.Monad.Options
 import Agda.TypeChecking.Monad.Env (insideDotPattern, isInsideDotPattern)
 import Agda.TypeChecking.Rules.Builtin (isUntypedBuiltin, bindUntypedBuiltin, builtinKindOfName)
@@ -1159,9 +1160,12 @@ instance ToAbstract (TopLevel [C.Declaration]) TopLevelInfo where
 
 -- | runs Syntax.Concrete.Definitions.niceDeclarations on main module
 niceDecls :: [C.Declaration] -> ScopeM [NiceDeclaration]
-niceDecls ds = case runNice $ niceDeclarations ds of
-  Left e   -> throwError $ Exception (getRange e) $ pretty e
-  Right ds -> return ds
+niceDecls ds = do
+  let (result, warns) = runNice $ niceDeclarations ds
+  unless (null warns) $ warning $ NicifierIssue warns
+  case result of
+    Left e   -> throwError $ Exception (getRange e) $ pretty e
+    Right ds -> return ds
 
 #if __GLASGOW_HASKELL__ >= 710
 instance {-# OVERLAPPING #-} ToAbstract [C.Declaration] [A.Declaration] where
@@ -1466,6 +1470,16 @@ instance ToAbstract NiceDeclaration A.Declaration where
           afields <- toAbstract fields
           printScope "rec" 15 "checked fields"
           return afields
+        -- Andreas, 2017-07-13 issue #2642 disallow duplicate fields
+        -- Check for duplicate fields. (See "Check for duplicate constructors")
+        do let fs = catMaybes $ for fields $ \case
+                 C.NiceField _ _ _ _ _ f _ -> Just f
+                 _ -> Nothing
+           let dups = nub $ fs \\ nub fs
+               bad  = filter (`elem` dups) fs
+           unless (distinct fs) $
+             setCurrentRange bad $
+               typeError $ DuplicateFields dups
         bindModule p x m
         cm' <- mapM (\(ThingWithFixity c f, _) -> bindConstructorName m c f a p YesRec) cm
         let inst = caseMaybe cm NotInstanceDef snd

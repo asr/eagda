@@ -39,7 +39,7 @@ import Agda.Benchmarking (Benchmark, Phase)
 import Agda.Syntax.Concrete (TopLevelModuleName)
 import Agda.Syntax.Common
 import qualified Agda.Syntax.Concrete as C
-import qualified Agda.Syntax.Concrete.Definitions as D
+import Agda.Syntax.Concrete.Definitions (NiceDeclaration, DeclarationWarning)
 import qualified Agda.Syntax.Abstract as A
 import Agda.Syntax.Abstract (AllNames)
 import Agda.Syntax.Internal as I
@@ -62,7 +62,7 @@ import {-# SOURCE #-} Agda.Compiler.Backend
 -- import {-# SOURCE #-} Agda.Interaction.FindFile
 import Agda.Interaction.Options
 import Agda.Interaction.Response
-  (InteractionOutputCallback, defaultInteractionOutputCallback)
+  (InteractionOutputCallback, defaultInteractionOutputCallback, Response(..))
 import Agda.Interaction.Highlighting.Precise
   (CompressedFile, HighlightingInfo)
 
@@ -1257,7 +1257,7 @@ data RewriteRule = RewriteRule
                              --   where @≡@ is the rewrite relation.
   , rewContext :: Telescope  -- ^ @Γ@.
   , rewHead    :: QName      -- ^ @f@.
-  , rewPats    :: PElims     -- ^ @Γ ⊢ ps  : t@.
+  , rewPats    :: PElims     -- ^ @Γ ⊢ f ps : t@.
   , rewRHS     :: Term       -- ^ @Γ ⊢ rhs : t@.
   , rewType    :: Type       -- ^ @Γ ⊢ t@.
   }
@@ -1832,7 +1832,7 @@ data Call = CheckClause Type A.SpineClause
           | CheckWithFunctionType A.Expr
           | CheckSectionApplication Range ModuleName A.ModuleApplication
           | ScopeCheckExpr C.Expr
-          | ScopeCheckDeclaration D.NiceDeclaration
+          | ScopeCheckDeclaration NiceDeclaration
           | ScopeCheckLHS C.QName C.Pattern
           | NoHighlighting
           | ModuleContents  -- ^ Interaction command: show module contents.
@@ -2324,8 +2324,9 @@ instance Free Candidate where
 -- | A non-fatal error is an error which does not prevent us from
 -- checking the document further and interacting with the user.
 
-data Warning =
-    TerminationIssue         [TerminationError]
+data Warning
+  = NicifierIssue            [DeclarationWarning]
+  | TerminationIssue         [TerminationError]
   | UnreachableClauses       QName [[NamedArg DeBruijnPattern]]
   | CoverageIssue            QName [(Telescope, [NamedArg DeBruijnPattern])]
   -- ^ `CoverageIssue f pss` means that `pss` are not covered in `f`
@@ -2433,6 +2434,7 @@ classifyWarning w = case w of
   UselessInline{}            -> AllWarnings
   GenericWarning{}           -> AllWarnings
   DeprecationWarning{}       -> AllWarnings
+  NicifierIssue{}            -> AllWarnings
   TerminationIssue{}         -> ErrorWarnings
   CoverageIssue{}            -> ErrorWarnings
   CoverageNoExactSplit{}     -> ErrorWarnings
@@ -2692,8 +2694,8 @@ data TypeError
             -- ^ The expr was used in the right hand side of an implicit module
             --   definition, but it wasn't of the form @m Delta@.
         | NotAnExpression C.Expr
-        | NotAValidLetBinding D.NiceDeclaration
-        | NotValidBeforeField D.NiceDeclaration
+        | NotAValidLetBinding NiceDeclaration
+        | NotValidBeforeField NiceDeclaration
         | NothingAppliedToHiddenArg C.Expr
         | NothingAppliedToInstanceArg C.Expr
     -- Pattern synonym errors

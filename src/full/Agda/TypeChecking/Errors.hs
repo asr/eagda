@@ -49,6 +49,7 @@ import Agda.Syntax.Scope.Base
 import Agda.TypeChecking.Monad.Base
 import Agda.TypeChecking.Monad.Closure
 import Agda.TypeChecking.Monad.Context
+import Agda.TypeChecking.Monad.Debug
 import Agda.TypeChecking.Monad.Options
 import Agda.TypeChecking.Monad.Builtin
 import Agda.TypeChecking.Monad.State
@@ -60,6 +61,7 @@ import Agda.TypeChecking.Reduce (instantiate)
 import Agda.Utils.Except ( MonadError(catchError, throwError) )
 import Agda.Utils.FileName
 import Agda.Utils.Function
+import Agda.Utils.Functor
 import Agda.Utils.List
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
@@ -201,6 +203,10 @@ instance PrettyTCM Warning where
       [text old] ++ pwords "has been deprecated. Use" ++ [text new] ++ pwords
       "instead. This will be an error in Agda" ++ [text version <> text "."]
 
+    NicifierIssue ws -> vcat $ do
+      for ws $ \ w -> do
+        sayWhere (getRange w) $ pretty w
+
 prettyTCWarnings :: [TCWarning] -> TCM String
 prettyTCWarnings = fmap (unlines . intersperse "") . prettyTCWarnings'
 
@@ -261,6 +267,7 @@ applyFlagsToTCWarnings ifs ws = do
           SafeFlagNoPositivityCheck    -> True
           SafeFlagPolarity             -> True
           DeprecationWarning{}         -> True
+          NicifierIssue{}              -> True
 
   return $ sfp ++ filter (cleanUp . tcWarning) ws
 

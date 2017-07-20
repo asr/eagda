@@ -113,12 +113,13 @@ highlightAsTypeChecked rPre r m
 printHighlightingInfo :: MonadTCM tcm => HighlightingInfo -> tcm ()
 printHighlightingInfo x = do
   modToSrc <- use stModuleToSource
+  method   <- view eHighlightingMethod
   liftTCM $ reportSLn "highlighting" 50 $
     "Printing highlighting info:\n" ++ show x ++ "\n" ++
     "  modToSrc = " ++ show modToSrc
   unless (null $ ranges x) $ do
     liftTCM $ appInteractionOutputCallback $
-        Resp_HighlightingInfo x modToSrc
+        Resp_HighlightingInfo x method modToSrc
 
 -- | Highlighting levels.
 
@@ -569,7 +570,7 @@ warningHighlighting w = case tcWarning w of
   SafeFlagNoPositivityCheck  -> mempty
   SafeFlagPolarity           -> mempty
   DeprecationWarning{}       -> mempty
-
+  NicifierIssue{}            -> mempty
 
 -- | Generate syntax highlighting for termination errors.
 

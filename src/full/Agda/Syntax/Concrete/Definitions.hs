@@ -30,6 +30,7 @@ module Agda.Syntax.Concrete.Definitions
     , NiceConstructor, NiceTypeSignature
     , Clause(..)
     , DeclarationException(..)
+    , DeclarationWarning(..)
     , Nice, runNice
     , niceDeclarations
     , notSoNiceDeclarations
@@ -39,7 +40,7 @@ module Agda.Syntax.Concrete.Definitions
 
 import Prelude hiding (null)
 
-import Control.Arrow ((***))
+import Control.Arrow ((***), first, second)
 import Control.Applicative hiding (empty)
 import Control.Monad.State
 
@@ -69,7 +70,7 @@ import Agda.Syntax.Concrete.Pretty ()
 
 import Agda.TypeChecking.Positivity.Occurrence
 
-import Agda.Utils.Except ( MonadError(throwError) )
+import Agda.Utils.Except ( MonadError(throwError,catchError) )
 import Agda.Utils.Function
 import Agda.Utils.Functor
 import Agda.Utils.Lens
@@ -179,14 +180,8 @@ data DeclarationException
         | WrongParameters Name Params Params
           -- ^ 'Name' of symbol, 'Params' of signature, 'Params' of definition.
         | NotAllowedInMutual NiceDeclaration
-        | UnknownNamesInFixityDecl [Name]
-        | UnknownNamesInPolarityPragmas [Name]
-        | PolarityPragmasButNotPostulates [Name]
         | Codata Range
         | DeclarationPanic String
-        | UselessPrivate Range
-        | UselessAbstract Range
-        | UselessInstance Range
         | WrongContentBlock KindOfBlock Range
         | AmbiguousFunClauses LHS [Name] -- ^ in a mutual block, a clause could belong to any of the @[Name]@ type signatures
         | InvalidTerminationCheckPragma Range
@@ -201,7 +196,17 @@ data DeclarationException
         | BadMacroDef NiceDeclaration
         | InvalidNoPositivityCheckPragma Range
 
-    deriving (Typeable, Data)
+    deriving (Typeable, Data, Show)
+
+-- | Non-fatal errors encountered in the Nicifier
+data DeclarationWarning
+  = UnknownNamesInFixityDecl [Name]
+  | UnknownNamesInPolarityPragmas [Name]
+  | PolarityPragmasButNotPostulates [Name]
+  | UselessPrivate Range
+  | UselessAbstract Range
+  | UselessInstance Range
+  deriving (Typeable, Data, Show)
 
 -- | Several declarations expect only type signatures as sub-declarations.  These are:
 data KindOfBlock
@@ -226,14 +231,8 @@ instance HasRange DeclarationException where
   getRange (WrongParameters x _ _)              = getRange x
   getRange (AmbiguousFunClauses lhs xs)         = getRange lhs
   getRange (NotAllowedInMutual x)               = getRange x
-  getRange (UnknownNamesInFixityDecl xs)        = getRange . head $ xs
-  getRange (UnknownNamesInPolarityPragmas xs)   = getRange . head $ xs
-  getRange (PolarityPragmasButNotPostulates xs) = getRange . head $ xs
   getRange (Codata r)                           = r
   getRange (DeclarationPanic _)                 = noRange
-  getRange (UselessPrivate r)                   = r
-  getRange (UselessAbstract r)                  = r
-  getRange (UselessInstance r)                  = r
   getRange (WrongContentBlock _ r)              = r
   getRange (InvalidTerminationCheckPragma r)    = r
   getRange (InvalidMeasureMutual r)             = r
@@ -242,6 +241,14 @@ instance HasRange DeclarationException where
   getRange (UnquoteDefRequiresSignature x)      = getRange x
   getRange (BadMacroDef d)                      = getRange d
   getRange (InvalidNoPositivityCheckPragma r)   = r
+
+instance HasRange DeclarationWarning where
+  getRange (UnknownNamesInFixityDecl xs)        = getRange . head $ xs
+  getRange (UnknownNamesInPolarityPragmas xs)   = getRange . head $ xs
+  getRange (PolarityPragmasButNotPostulates xs) = getRange . head $ xs
+  getRange (UselessPrivate r)                   = r
+  getRange (UselessAbstract r)                  = r
+  getRange (UselessInstance r)                  = r
 
 instance HasRange NiceDeclaration where
   getRange (Axiom r _ _ _ _ _ _ _ _)         = r
@@ -300,18 +307,6 @@ instance Pretty DeclarationException where
         pwords "it could belong to any of:"
     , vcat $ map (pretty . PrintRange) xs
     ]
-  pretty (UnknownNamesInFixityDecl xs) = fsep $
-    pwords "The following names are not declared in the same scope as their syntax or fixity declaration (i.e., either not in scope at all, imported from another module, or declared in a super module):" ++ map pretty xs
-  pretty (UnknownNamesInPolarityPragmas xs) = fsep $
-    pwords "The following names are not declared in the same scope as their polarity pragmas (they could for instance be out of scope, imported from another module, or declared in a super module):" ++ map pretty xs
-  pretty (PolarityPragmasButNotPostulates xs) = fsep $
-    pwords "Polarity pragmas have been given for the following identifiers which are not postulates:" ++ map pretty xs
-  pretty (UselessPrivate _)      = fsep $
-    pwords "Using private here has no effect. Private applies only to declarations that introduce new identifiers into the module, like type signatures and data, record, and module declarations."
-  pretty (UselessAbstract _)      = fsep $
-    pwords "Using abstract here has no effect. Abstract applies only definitions like data definitions, record type definitions and function clauses."
-  pretty (UselessInstance _)      = fsep $
-    pwords "Using instance here has no effect. Instance applies only to declarations that introduce new identifiers into the module, like type signatures and axioms."
   pretty (WrongContentBlock b _)      = fsep . pwords $
     case b of
       PostulateBlock -> "A postulate block can only contain type signatures, possibly under keyword instance"
@@ -337,6 +332,20 @@ instance Pretty DeclarationException where
   pretty (DeclarationPanic s) = text s
   pretty (InvalidNoPositivityCheckPragma _) = fsep $
     pwords "No positivity checking pragmas can only precede a mutual block or a data/record definition."
+
+instance Pretty DeclarationWarning where
+  pretty (UnknownNamesInFixityDecl xs) = fsep $
+    pwords "The following names are not declared in the same scope as their syntax or fixity declaration (i.e., either not in scope at all, imported from another module, or declared in a super module):" ++ map pretty xs
+  pretty (UnknownNamesInPolarityPragmas xs) = fsep $
+    pwords "The following names are not declared in the same scope as their polarity pragmas (they could for instance be out of scope, imported from another module, or declared in a super module):" ++ map pretty xs
+  pretty (PolarityPragmasButNotPostulates xs) = fsep $
+    pwords "Polarity pragmas have been given for the following identifiers which are not postulates:" ++ map pretty xs
+  pretty (UselessPrivate _)      = fsep $
+    pwords "Using private here has no effect. Private applies only to declarations that introduce new identifiers into the module, like type signatures and data, record, and module declarations."
+  pretty (UselessAbstract _)      = fsep $
+    pwords "Using abstract here has no effect. Abstract applies to only definitions like data definitions, record type definitions and function clauses."
+  pretty (UselessInstance _)      = fsep $
+    pwords "Using instance here has no effect. Instance applies only to declarations that introduce new identifiers into the module, like type signatures and axioms."
 
 declName :: NiceDeclaration -> String
 declName Axiom{}             = "Postulates"
@@ -417,6 +426,7 @@ positivityCheck _               = True
 --   NO_TERMINATION_CHECK pragma.
 combineTermChecks :: Range -> [TerminationCheck] -> Nice TerminationCheck
 combineTermChecks r tcs = loop tcs where
+  loop :: [TerminationCheck] -> Nice TerminationCheck
   loop []         = return TerminationCheck
   loop (tc : tcs) = do
     let failure r = throwError $ InvalidMeasureMutual r
@@ -467,8 +477,49 @@ matchParameters x sig def = loop (kindParams sig) (kindParams def)
     | otherwise               = failure
 
 -- | Nicifier monad.
+--   Preserve the state when throwing an exception.
 
-type Nice = StateT NiceEnv (Either DeclarationException)
+newtype Nice a = Nice { unNice :: NiceEnv -> (Either DeclarationException a, NiceEnv) }
+
+-- We have to hand-roll the instances ourselves, since the automagic does not
+-- work for @Nice a = State s (Except e a)@, only for the usual
+-- @Nice a = StateT s (Except e) a@.
+
+instance Functor Nice where
+  fmap f m = Nice $ \ s ->
+    let (r, s') = unNice m s in
+    case r of
+      Left  e -> (Left e, s')
+      Right a -> (Right (f a), s')
+
+instance Applicative Nice where
+  pure a = Nice $ \ s -> (Right a, s)
+  (<*>)  = ap
+
+instance Monad Nice where
+  return = pure
+  m >>= k  = Nice $ \ s ->
+    let (r, s') = unNice m s in
+    case r of
+      Left e  -> (Left e, s')
+      Right a -> unNice (k a) s'
+
+instance MonadState NiceEnv Nice where
+  state f  = Nice $ \ s -> first Right $ f s
+  -- get = Nice $ \ s -> (Right s, s)  -- Subsumed by state
+
+instance MonadError DeclarationException Nice where
+  throwError e   = Nice $ \ s -> (Left e, s)
+  catchError m h = Nice $ \ s ->
+    let (r, s') = unNice m s in
+    case r of
+      Left e  -> unNice (h e) s'
+      Right a -> (Right a, s')
+
+-- | Run a Nicifier computation, return result and warnings
+--   (in chronological order).
+runNice :: Nice a -> (Either DeclarationException a, NiceWarnings)
+runNice m = second (reverse . niceWarn) $ unNice m initNiceEnv
 
 -- | Nicifier state.
 
@@ -483,11 +534,15 @@ data NiceEnv = NiceEnv
     -- ^ Catchall pragma waiting for a function clause.
   , fixs     :: Fixities
   , pols     :: Polarities
+  , niceWarn :: NiceWarnings
+    -- ^ Stack of warnings. Head is last warning.
   }
 
 type LoneSigs   = Map Name DataRecOrFun
 type Fixities   = Map Name Fixity'
 type Polarities = Map Name [Occurrence]
+type NiceWarnings = [DeclarationWarning]
+     -- ^ Stack of warnings. Head is last warning.
 
 -- | Initial nicifier state.
 
@@ -499,6 +554,7 @@ initNiceEnv = NiceEnv
   , _catchall = False
   , fixs      = empty
   , pols      = empty
+  , niceWarn  = []
   }
 
 -- * Handling the lone signatures, stored to infer mutual blocks.
@@ -587,6 +643,10 @@ withCatchallPragma ca f = do
   catchallPragma .= ca_old
   return result
 
+-- | Add a new warning.
+niceWarning :: DeclarationWarning -> Nice ()
+niceWarning w = modify $ \ st -> st { niceWarn = w : niceWarn st }
+
 -- | Check whether name is not "_" and return its fixity.
 getFixity :: Name -> Nice Fixity'
 getFixity x = Map.findWithDefault noFixity' x <$> gets fixs -- WAS: defaultFixity'
@@ -598,9 +658,6 @@ getPolarity x = do
   p <- gets (Map.lookup x . pols)
   modify (\s -> s { pols = Map.delete x (pols s) })
   return p
-
-runNice :: Nice a -> Either DeclarationException a
-runNice nice = nice `evalStateT` initNiceEnv
 
 data DeclKind
     = LoneSig DataRecOrFun Name
@@ -640,33 +697,50 @@ parameters = List.concatMap $ \case
 -- | Main.
 niceDeclarations :: [Declaration] -> Nice [NiceDeclaration]
 niceDeclarations ds = do
+
   -- Get fixity and syntax declarations.
   (fixs, polarities) <- fixitiesAndPolarities ds
   let declared    = Set.fromList (concatMap declaredNames ds)
-      unknownFixs = Map.keysSet fixs       Set.\\ declared
-      unknownPols = Map.keysSet polarities Set.\\ declared
-  case (Set.null unknownFixs, Set.null unknownPols) of
-    -- If we have fixity/syntax decls for names not declared
-    -- in the current scope, fail.
-    (False, _)   -> throwError $ UnknownNamesInFixityDecl
-                                   (Set.toList unknownFixs)
-    -- Fail if there are polarity pragmas with undeclared names.
-    (_, False)   -> throwError $ UnknownNamesInPolarityPragmas
-                                   (Set.toList unknownPols)
-    (True, True) -> localState $ do
-      -- Run the nicifier in an initial environment of fixity decls
-      -- and polarities.
-      put $ initNiceEnv { fixs = fixs, pols = polarities }
-      ds <- nice ds
-      -- Check that every polarity pragma was used.
-      unusedPolarities <- gets (Map.keys . pols)
-      unless (null unusedPolarities) $ do
-        throwError $ PolarityPragmasButNotPostulates unusedPolarities
-      -- Check that every signature got its definition.
-      checkLoneSigs . Map.toList =<< use loneSigs
-      -- Note that loneSigs is ensured to be empty.
-      -- (Important, since inferMutualBlocks also uses loneSigs state).
-      inferMutualBlocks ds
+
+  -- If we have names in fixity declarations
+  -- which are not defined in the appropriate scope,
+  -- raise a warning and delete them from fixs.
+  fixs <- ifNull (Map.keysSet fixs Set.\\ declared) (return fixs) $ \ unknownFixs -> do
+    niceWarning $ UnknownNamesInFixityDecl $ Set.toList unknownFixs
+    -- Note: Data.Map.restrictKeys requires containers >= 0.5.8.2
+    -- return $ Map.restrictKeys fixs declared
+    return $ Map.filterWithKey (\ k _ -> Set.member k declared) fixs
+
+  -- Same for undefined names in polarity declarations.
+  polarities <- ifNull (Map.keysSet polarities Set.\\ declared) (return polarities) $
+    \ unknownPols -> do
+      niceWarning $ UnknownNamesInPolarityPragmas $ Set.toList unknownPols
+      -- Note: Data.Map.restrictKeys requires containers >= 0.5.8.2
+      -- return $ Map.restrictKeys polarities declared
+      return $ Map.filterWithKey (\ k _ -> Set.member k declared) polarities
+
+  -- Run the nicifier in an initial environment of fixity decls
+  -- and polarities.  But keep the warnings.
+  st <- get
+  put $ initNiceEnv { fixs = fixs, pols = polarities, niceWarn = niceWarn st }
+  ds <- nice ds
+
+  -- Check that every polarity pragma was used.
+  unlessNullM (Map.keys <$> gets pols) $ \ unusedPolarities -> do
+    niceWarning $ PolarityPragmasButNotPostulates unusedPolarities
+
+  -- Check that every signature got its definition.
+  checkLoneSigs . Map.toList =<< use loneSigs
+
+  -- Note that loneSigs is ensured to be empty.
+  -- (Important, since inferMutualBlocks also uses loneSigs state).
+  res <- inferMutualBlocks ds
+
+  -- Restore the old state, but keep the warnings.
+  warns <- gets niceWarn
+  put $ st { niceWarn = warns }
+  return res
+
   where
     -- Compute the names defined in a declaration.
     -- We stay in the current scope, i.e., do not go into modules.
@@ -1022,7 +1096,7 @@ niceDeclarations ds = do
       TypeSig rel x t -> do
         fx <- getFixity x
         return [ Axiom (getRange d) fx PublicAccess ConcreteDef NotInstanceDef rel Nothing x t ]
-      Field i x argt -> do
+      Field i x argt | b == FieldBlock -> do
         fx <- getFixity x
         return [ NiceField (getRange d) fx PublicAccess ConcreteDef i x argt ]
       InstanceB r decls -> do
@@ -1264,19 +1338,24 @@ niceDeclarations ds = do
     abstractBlock r ds = do
       let (ds', anyChange) = runChange $ mkAbstract ds
           inherited        = r == noRange
-          -- hack to avoid failing on inherited abstract blocks in where clauses
-      if anyChange || inherited then return ds' else throwError $ UselessAbstract r
+      if anyChange then return ds' else do
+        -- hack to avoid failing on inherited abstract blocks in where clauses
+        unless inherited $ niceWarning $ UselessAbstract r
+        return ds -- no change!
 
     privateBlock _ _ [] = return []
     privateBlock r o ds = do
       let (ds', anyChange) = runChange $ mkPrivate o ds
-      if anyChange then return ds' else
-        if o == UserWritten then throwError $ UselessPrivate r else return ds -- no change!
+      if anyChange then return ds' else do
+        when (o == UserWritten) $ niceWarning $ UselessPrivate r
+        return ds -- no change!
 
     instanceBlock _ [] = return []
     instanceBlock r ds = do
       let (ds', anyChange) = runChange $ mapM mkInstance ds
-      if anyChange then return ds' else throwError $ UselessInstance r
+      if anyChange then return ds' else do
+        niceWarning $ UselessInstance r
+        return ds -- no change!
 
     -- Make a declaration eligible for instance search.
     mkInstance :: Updater NiceDeclaration
