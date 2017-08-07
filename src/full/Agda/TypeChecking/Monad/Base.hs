@@ -564,6 +564,7 @@ newtype ProblemId = ProblemId Nat
 -- ASR (28 December 2014). This instance is not used anymore (module
 -- the test suite) when reporting errors. See Issue 1293.
 
+-- This particular Show instance is ok because of the Num instance.
 instance Show ProblemId where
   show (ProblemId n) = show n
 
@@ -730,7 +731,7 @@ data Closure a = Closure
     deriving (Typeable, Data, Functor, Foldable)
 
 instance Show a => Show (Closure a) where
-  show cl = "Closure " ++ show (clValue cl)
+  show cl = "Closure { clValue = " ++ show (clValue cl) ++ " }"
 
 instance HasRange a => HasRange (Closure a) where
     getRange = getRange . clValue
@@ -826,22 +827,11 @@ instance TermLike Constraint where
       UnBlock _              -> __IMPOSSIBLE__  -- mempty     -- Not yet implemented
       Guarded c _            -> __IMPOSSIBLE__  -- foldTerm c -- Not yet implemented
       FindInScope _ _ cs     -> __IMPOSSIBLE__  -- Not yet implemented
-  traverseTerm f c  = __IMPOSSIBLE__ -- Not yet implemented
   traverseTermM f c = __IMPOSSIBLE__ -- Not yet implemented
 
 
 data Comparison = CmpEq | CmpLeq
-  deriving (Eq, Typeable, Data)
-
--- TODO: 'Show' should output Haskell-parseable representations.
--- The following instance is deprecated, and Pretty[TCM] should be used
--- instead. Later, simply derive Show for this type.
-
--- ASR (27 December 2014). This instance is not used anymore (module
--- the test suite) when reporting errors. See Issue 1293.
-instance Show Comparison where
-  show CmpEq  = "="
-  show CmpLeq = "=<"
+  deriving (Eq, Typeable, Data, Show)
 
 instance Pretty Comparison where
   pretty CmpEq  = text "="
@@ -849,12 +839,13 @@ instance Pretty Comparison where
 
 -- | An extension of 'Comparison' to @>=@.
 data CompareDirection = DirEq | DirLeq | DirGeq
-  deriving (Eq, Typeable)
+  deriving (Eq, Typeable, Show)
 
-instance Show CompareDirection where
-  show DirEq  = "="
-  show DirLeq = "=<"
-  show DirGeq = ">="
+instance Pretty CompareDirection where
+  pretty = text . \case
+    DirEq  -> "="
+    DirLeq -> "=<"
+    DirGeq -> ">="
 
 -- | Embed 'Comparison' into 'CompareDirection'.
 fromCmp :: Comparison -> CompareDirection
@@ -881,7 +872,7 @@ dirToCmp cont DirGeq = flip $ cont CmpLeq
 
 -- | A thing tagged with the context it came from.
 data Open a = OpenThing { openThingCtxIds :: [CtxId], openThing :: a }
-    deriving (Typeable, Data, Show, Functor)
+    deriving (Typeable, Data, Show, Functor, Foldable, Traversable)
 
 instance Decoration Open where
   traverseF f (OpenThing cxt x) = OpenThing cxt <$> f x
@@ -1148,8 +1139,11 @@ type Definitions = HashMap QName Definition
 type RewriteRuleMap = HashMap QName RewriteRules
 type DisplayForms = HashMap QName [LocalDisplayForm]
 
-data Section = Section { _secTelescope :: Telescope }
+newtype Section = Section { _secTelescope :: Telescope }
   deriving (Typeable, Data, Show)
+
+instance Pretty Section where
+  pretty = pretty . _secTelescope
 
 secTelescope :: Lens' Telescope Section
 secTelescope f s =
@@ -1226,7 +1220,7 @@ defRelevance = argInfoRelevance . defArgInfo
 
 -- | Non-linear (non-constructor) first-order pattern.
 data NLPat
-  = PVar (Maybe CtxId) !Int [Arg Int]
+  = PVar !Int [Arg Int]
     -- ^ Matches anything (modulo non-linearity) that only contains bound
     --   variables that occur in the given arguments.
   | PWild
@@ -1360,6 +1354,13 @@ data Polarity
   | Invariant      -- ^ no information (mixed variance)
   | Nonvariant     -- ^ constant
   deriving (Typeable, Data, Show, Eq)
+
+instance Pretty Polarity where
+  pretty = text . \case
+    Covariant     -> "+"
+    Contravariant -> "-"
+    Invariant     -> "*"
+    Nonvariant    -> "_"
 
 -- | The backends are responsible for parsing their own pragmas.
 data CompilerPragma = CompilerPragma Range String
@@ -1791,6 +1792,12 @@ data TermHead = SortHead
               | PiHead
               | ConsHead QName
   deriving (Typeable, Data, Eq, Ord, Show)
+
+instance Pretty TermHead where
+  pretty = \case
+    SortHead  -> text "SortHead"
+    PiHead    -> text "PiHead"
+    ConsHead q-> text "ConsHead" <+> pretty q
 
 ---------------------------------------------------------------------------
 -- ** Mutual blocks
@@ -2468,13 +2475,12 @@ data CallInfo = CallInfo
     -- ^ Range of the target function.
   , callInfoCall :: Closure Term
     -- ^ To be formatted representation of the call.
-  } deriving (Typeable, Data)
+  } deriving (Typeable, Data, Show)
 
 -- no Eq, Ord instances: too expensive! (see issues 851, 852)
 
 -- | We only 'show' the name of the callee.
-instance Show   CallInfo where show   = show . callInfoTarget
-instance Pretty CallInfo where pretty = text . show
+instance Pretty CallInfo where pretty = pretty . callInfoTarget
 instance AllNames CallInfo where allNames = singleton . callInfoTarget
 
 -- UNUSED, but keep!
@@ -2729,9 +2735,6 @@ data TypeError
 
 -- | Distinguish error message when parsing lhs or pattern synonym, resp.
 data LHSOrPatSyn = IsLHS | IsPatSyn deriving (Eq, Show)
-
--- instance Show TypeError where
---   show _ = "<TypeError>" -- TODO: more info?
 
 -- | Type-checking errors.
 
@@ -3209,7 +3212,7 @@ instance KillRange CtxId where
   killRange (CtxId x) = killRange1 CtxId x
 
 instance KillRange NLPat where
-  killRange (PVar x y z) = killRange3 PVar x y z
+  killRange (PVar x y) = killRange2 PVar x y
   killRange (PWild)    = PWild
   killRange (PDef x y) = killRange2 PDef x y
   killRange (PLam x y) = killRange2 PLam x y

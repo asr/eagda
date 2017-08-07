@@ -227,7 +227,7 @@ getDefType f t = do
   -- if @f@ is not a projection (like) function, @a@ is the correct type
       fallback = return $ Just a
   reportSDoc "tc.deftype" 20 $ vcat
-    [ text "definition f = " <> prettyTCM f <+> text ("raw: " ++ show f)
+    [ text "definition f = " <> prettyTCM f <+> text ("raw: " ++ prettyShow f)
     , text "has type   a = " <> prettyTCM a
     , text "principal  t = " <> prettyTCM t
     ]
@@ -249,7 +249,7 @@ getDefType f t = do
             -- now we know it is reduced, we can safely take the parameters
             let pars = fromMaybe __IMPOSSIBLE__ $ allApplyElims $ take npars es
             reportSDoc "tc.deftype" 20 $ vcat
-              [ text $ "head d     = " ++ show d
+              [ text $ "head d     = " ++ prettyShow d
               , text "parameters =" <+> sep (map prettyTCM pars)
               ]
             reportSLn "tc.deftype" 60 $ "parameters = " ++ show pars
@@ -276,11 +276,48 @@ getDefType f t = do
 --   In this case, the first result is not a record type.
 --
 --   Precondition: @t@ is reduced.
-projectTyped :: Term -> Type -> ProjOrigin -> QName -> TCM (Maybe (Dom Type, Term, Type))
+--
+projectTyped
+  :: Term        -- ^ Head (record value).
+  -> Type        -- ^ Its type.
+  -> ProjOrigin
+  -> QName       -- ^ Projection.
+  -> TCM (Maybe (Dom Type, Term, Type))
 projectTyped v t o f = caseMaybeM (getDefType f t) (return Nothing) $ \ tf -> do
   ifNotPiType tf (const $ return Nothing) {- else -} $ \ dom b -> do
   u <- applyDef o f (argFromDom dom $> v)
   return $ Just (dom, u, b `absApp` v)
+
+-- | Typing of an elimination.
+
+data ElimType
+  = ArgT (Dom Type)           -- ^ Type of the argument.
+  | ProjT
+    { projTRec   :: Dom Type  -- ^ The type of the record which is eliminated.
+    , projTField :: Type      -- ^ The type of the field.
+    }
+
+instance PrettyTCM ElimType where
+  prettyTCM (ArgT a)    = prettyTCM a
+  prettyTCM (ProjT a b) =
+    text "." <> parens (prettyTCM a <+> text "->" <+> prettyTCM b)
+
+-- | Given a head and its type, compute the types of the eliminations.
+
+typeElims :: Type -> Term -> Elims -> TCM [ElimType]
+typeElims a _ [] = return []
+typeElims a self (e : es) = do
+  case e of
+    -- Andrea 02/08/2017: when going from patterns to elims we
+    -- generate an Apply elim even for Path types, because we use VarP
+    -- for both, so we have to allow for a Path type here.
+    Apply v -> ifNotPiOrPathType a __IMPOSSIBLE__ {- else -} $ \ a b -> do
+      (ArgT a :) <$> typeElims (absApp b $ unArg v) (self `applyE` [e]) es
+    Proj o f -> do
+      a <- reduce a
+      (dom, self, a) <- fromMaybe __IMPOSSIBLE__ <$> projectTyped self a o f
+      (ProjT dom a :) <$> typeElims a self es
+    IApply{} -> __IMPOSSIBLE__
 
 -- | Check if a name refers to an eta expandable record.
 {-# SPECIALIZE isEtaRecord :: QName -> TCM Bool #-}
@@ -431,7 +468,11 @@ expandRecordVar i gamma0 = do
           -- Use "f(x)" as variable name for the projection f(x).
           s     = prettyShow x
           tel'  = mapAbsNames (\ f -> stringToArgName $ argNameToString f ++ "(" ++ s ++ ")") tel
-          delta = telFromList $ gamma1 ++ telToList tel' ++ applySubst tau0 gamma2
+          delta = telFromList $ gamma1 ++ telToList tel' ++
+                    telToList (applySubst tau0 $ telFromList gamma2)
+                    -- Andreas, 2017-07-29, issue #2644
+                    -- We cannot substitute directly into a ListTel like gamma2,
+                    -- we have to convert it to a telescope first, otherwise we get garbage.
 
       return (delta, sigma, tau, tel)
 
@@ -533,8 +574,8 @@ etaExpandRecord'_ forceEta r pars def u = do
       when (con /= con_) $ do
         reportSDoc "impossible" 10 $ vcat
           [ text "etaExpandRecord_: the following two constructors should be identical"
-          , nest 2 $ text $ "con  = " ++ show con
-          , nest 2 $ text $ "con_ = " ++ show con_
+          , nest 2 $ text $ "con  = " ++ prettyShow con
+          , nest 2 $ text $ "con_ = " ++ prettyShow con_
           ]
         __IMPOSSIBLE__
       return (tel', con, ci, args)
@@ -614,7 +655,7 @@ isSingletonRecordModuloRelevance r ps = mapRight isJust <$> isSingletonRecord' T
 --   contains garbage.
 isSingletonRecord' :: Bool -> QName -> Args -> TCM (Either MetaId (Maybe Term))
 isSingletonRecord' regardIrrelevance r ps = do
-  reportSLn "tc.meta.eta" 30 $ "Is " ++ show r ++ " a singleton record type?"
+  reportSLn "tc.meta.eta" 30 $ "Is " ++ prettyShow r ++ " a singleton record type?"
   def <- getRecordDef r
   emap (Con (recConHead def) ConOSystem) <$> check (recTel def `apply` ps)
   where

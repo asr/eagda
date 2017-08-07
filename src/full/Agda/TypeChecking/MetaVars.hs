@@ -33,6 +33,7 @@ import Agda.TypeChecking.Irrelevance
 import Agda.TypeChecking.EtaContract
 import Agda.TypeChecking.SizedTypes (boundedSizeMetaHook, isSizeProblem)
 import {-# SOURCE #-} Agda.TypeChecking.CheckInternal
+import {-# SOURCE #-} Agda.TypeChecking.Conversion
 
 -- import Agda.TypeChecking.CheckInternal
 -- import {-# SOURCE #-} Agda.TypeChecking.CheckInternal (checkInternal)
@@ -582,7 +583,11 @@ assign dir x args v = do
   -- arguments to definitions as flexible), if that fails it tries again
   -- with full unfolding.
   v <- instantiate v
-  reportSLn "tc.meta.assign" 50 $ "MetaVars.assign: assigning to " ++ show v
+  reportSDoc "tc.meta.assign" 45 $
+    text "MetaVars.assign: assigning to " <+> prettyTCM v
+
+  reportSLn "tc.meta.assign" 75 $
+    "MetaVars.assign: assigning to " ++ show v
 
   case (ignoreSharing v, mvJudgement mvar) of
       (Sort Inf, HasType{}) -> typeError SetOmegaNotValidType
@@ -616,7 +621,21 @@ assign dir x args v = do
     -- args <- etaContract =<< normalise args
 
     -- Also, try to expand away projected vars in meta args.
+    reportSDoc "tc.meta.assign.proj" 45 $ do
+      cxt <- getContextTelescope
+      vcat
+        [ text "context before projection expansion"
+        , nest 2 $ inTopContext $ prettyTCM cxt
+        ]
+
     expandProjectedVars args v $ \ args v -> do
+
+      reportSDoc "tc.meta.assign.proj" 45 $ do
+        cxt <- getContextTelescope
+        vcat
+          [ text "context after projection expansion"
+          , nest 2 $ inTopContext $ prettyTCM cxt
+          ]
 
       -- If we had the type here we could save the work we put
       -- into expanding projected variables.
@@ -880,7 +899,7 @@ assignMeta' m x t n ids v = do
     reportSDoc "tc.meta.assign" 15 $ text "type of meta =" <+> prettyTCM t
     reportSDoc "tc.meta.assign" 70 $ text "type of meta =" <+> text (show t)
 
-    TelV tel' _ <- telViewUpTo n t
+    (telv@(TelV tel' _),bs) <- telViewUpToPathBoundary n t
     reportSDoc "tc.meta.assign" 30 $ text "tel'  =" <+> prettyTCM tel'
     reportSDoc "tc.meta.assign" 30 $ text "#args =" <+> text (show n)
     -- Andreas, 2013-09-17 (AIM XVIII): if t does not provide enough
@@ -890,10 +909,36 @@ assignMeta' m x t n ids v = do
        patternViolation -- WAS: __IMPOSSIBLE__
 
     -- Perform the assignment (and wake constraints).
-    reportSDoc "tc.meta.assign" 10 $
-      text "solving" <+> prettyTCM x <+> text ":=" <+> prettyTCM (abstract tel' v')
-    assignTerm x (telToArgs tel') v'
 
+    let vsol = abstract tel' v'
+    -- -- Andreas, 2013-10-25 double check solution before assigning
+    -- -- Andreas, 2017-07-28
+    -- m <- lookupMeta x
+    -- case mvJudgement m of
+    --   IsSort{}    -> return ()  -- skip double check since type of meta is not accurate
+    --   HasType _ a -> do
+    --     reportSDoc "tc.meta.check" 30 $ vcat
+    --       [ text "double checking solution"
+    --       , nest 2 $ prettyTCM vsol <+> text " : " <+> prettyTCM a
+    --       ]
+    --     dontAssignMetas $ checkInternal vsol a  -- This can crash at assignTerm'!
+
+    reportSDoc "tc.meta.assign" 10 $
+      text "solving" <+> prettyTCM x <+> text ":=" <+> prettyTCM vsol
+
+    v' <- blockOnBoundary telv bs v'
+
+    assignTerm x (telToArgs tel') v'
+  where
+    blockOnBoundary :: TelView -> Boundary -> Term -> TCM Term
+    blockOnBoundary telv         [] v = return v
+    blockOnBoundary (TelV tel t) bs v = addContext tel $
+      blockTerm t $ do
+        neg <- primINeg
+        forM_ bs $ \ (r,(x,y)) -> do
+          equalTermOnFace (neg `apply1` r) t x v
+          equalTermOnFace r  t y v
+        return v
 
 -- | Turn the assignment problem @_X args <= SizeLt u@ into
 -- @_X args = SizeLt (_Y args)@ and constraint
@@ -979,7 +1024,7 @@ instance NoProjectedVar Term where
     case ignoreSharing t of
       Var i es
         | qs@(_:_) <- takeWhileJust id $ map isProjElim es -> Left $ ProjVarExc i qs
-      -- Andreas, 2015-09-12 Issue 1316:
+      -- Andreas, 2015-09-12 Issue #1316:
       -- Also look in inductive record constructors
       Con (ConHead _ Inductive (_:_)) _ vs -> noProjectedVar vs
       _ -> return ()

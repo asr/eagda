@@ -503,7 +503,7 @@ instance Eq a => Eq (Arg a) where
   Arg (ArgInfo h1 _ _) x1 == Arg (ArgInfo h2 _ _) x2 = (h1, x1) == (h2, x2)
 
 instance Show a => Show (Arg a) where
-    show (Arg (ArgInfo h r o) x) = showR r $ showO o $ showH h $ show x
+    show (Arg (ArgInfo h r o) a) = showR r $ showO o $ showH h $ show a
       where
         showH Hidden       s = "{" ++ s ++ "}"
         showH NotHidden    s = "(" ++ s ++ ")"
@@ -673,8 +673,8 @@ instance (KillRange name, KillRange a) => KillRange (Named name a) where
   killRange (Named n a) = Named (killRange n) (killRange a)
 
 instance Show a => Show (Named_ a) where
-    show (Named Nothing x)  = show x
-    show (Named (Just n) x) = rawNameToString (rangedThing n) ++ " = " ++ show x
+    show (Named Nothing a)  = show a
+    show (Named (Just n) a) = rawNameToString (rangedThing n) ++ " = " ++ show a
 
 instance (NFData name, NFData a) => NFData (Named name a) where
   rnf (Named a b) = rnf a `seq` rnf b
@@ -781,6 +781,9 @@ data ProjOrigin
 instance KillRange ProjOrigin where
   killRange = id
 
+data DataOrRecord = IsData | IsRecord
+  deriving (Typeable, Data, Eq, Ord, Show)
+
 ---------------------------------------------------------------------------
 -- * Infixity, access, abstract, etc.
 ---------------------------------------------------------------------------
@@ -815,6 +818,12 @@ data Access
   | OnlyQualified  -- ^ Visible from outside, but not exported when opening the module
                              --   Used for qualified constructors.
     deriving (Typeable, Data, Show, Eq, Ord)
+
+instance Pretty Access where
+  pretty = text . \case
+    PrivateAccess _ -> "private"
+    PublicAccess    -> "public"
+    OnlyQualified   -> "only-qualified"
 
 instance NFData Access where
   rnf _ = ()
@@ -869,7 +878,7 @@ instance KillRange NameId where
   killRange = id
 
 instance Show NameId where
-  show (NameId x i) = show x ++ "@" ++ show i
+  show (NameId n m) = show n ++ "@" ++ show m
 
 instance Enum NameId where
   succ (NameId n m)     = NameId (n + 1) m
@@ -968,7 +977,7 @@ newtype InteractionId = InteractionId { interactionId :: Nat }
              )
 
 instance Show InteractionId where
-    show (InteractionId x) = "?" ++ show x
+    show (InteractionId i) = "?" ++ show i
 
 instance KillRange InteractionId where killRange = id
 
@@ -1018,8 +1027,8 @@ setImportedName (ImportedName   x) y = ImportedName   y
 setImportedName (ImportedModule x) y = ImportedModule y
 
 instance (Show a, Show b) => Show (ImportedName' a b) where
-  show (ImportedModule x) = "module " ++ show x
-  show (ImportedName   x) = show x
+  show (ImportedModule b) = "module " ++ show b
+  show (ImportedName   a) = show a
 
 data Renaming' a b = Renaming
   { renFrom    :: ImportedName' a b

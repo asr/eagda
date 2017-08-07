@@ -275,33 +275,16 @@ instance NumHoles AmbiguousQName where
   numHoles (AmbQ qs) = numHoles $ fromMaybe __IMPOSSIBLE__ $ headMaybe qs
 
 ------------------------------------------------------------------------
--- * Show instances
+-- * Show instances (only for debug printing!)
+--
+-- | Use 'prettyShow' to print names to the user.
 ------------------------------------------------------------------------
 
--- deriving instance Show Name
--- deriving instance Show ModuleName
--- deriving instance Show QName
+deriving instance Show Name
+deriving instance Show ModuleName
+deriving instance Show QName
 deriving instance Show a => Show (QNamed a)
 deriving instance Show AmbiguousQName
-
--- | Only use this @show@ function in debugging!  To convert an
---   abstract 'Name' into a string use @prettyShow@.
-instance Show Name where
-  -- Andreas, 2014-10-02: Reverted to nice printing.
-  -- Reason: I do not have time just now to properly fix the
-  -- use of Show Name for pretty printing everywhere.
-  -- But I want to push the fix for Issue 836 now.
-  show = prettyShow
-
--- | Only use this @show@ function in debugging!  To convert an
---   abstract 'ModuleName' into a string use @prettyShow@.
-instance Show ModuleName where
-  show = prettyShow
-
--- | Only use this @show@ function in debugging!  To convert an
---   abstract 'QName' into a string use @prettyShow@.
-instance Show QName where
-  show = prettyShow
 
 ------------------------------------------------------------------------
 -- * Pretty instances
@@ -360,16 +343,20 @@ instance SetRange ModuleName where
 -- ** KillRange
 
 instance KillRange Name where
-  killRange (Name a b c d) = killRange4 Name a b c d
-  -- killRange x = x { nameConcrete = killRange $ nameConcrete x
-  --                 -- Andreas, 2014-03-30
-  --                 -- An experiment: what happens if we preserve
-  --                 -- the range of the binding site, but kill all
-  --                 -- other ranges before serialization?
-  --                 -- Andreas, Makoto, 2014-10-18 AIM XX
-  --                 -- Kill all ranges in signature, including nameBindingSite.
-  --                 , nameBindingSite = noRange
-  --                 }
+  killRange (Name a b c d) =
+    (killRange4 Name a b c d) { nameBindingSite = c }
+    -- Andreas, 2017-07-25, issue #2649
+    -- Preserve the nameBindingSite for error message.
+    --
+    -- Older remarks:
+    --
+    -- Andreas, 2014-03-30
+    -- An experiment: what happens if we preserve
+    -- the range of the binding site, but kill all
+    -- other ranges before serialization?
+    --
+    -- Andreas, Makoto, 2014-10-18 AIM XX
+    -- Kill all ranges in signature, including nameBindingSite.
 
 instance KillRange ModuleName where
   killRange (MName xs) = MName $ killRange xs

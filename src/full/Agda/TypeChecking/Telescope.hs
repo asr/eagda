@@ -36,32 +36,6 @@ import qualified Agda.Utils.VarSet as VarSet
 #include "undefined.h"
 import Agda.Utils.Impossible
 
-data OutputTypeName
-  = OutputTypeName QName
-  | OutputTypeVar
-  | OutputTypeNameNotYetKnown
-  | NoOutputTypeName
-
--- | Strips all Pi's and return the head definition name, if possible.
-getOutputTypeName :: Type -> TCM OutputTypeName
-getOutputTypeName t = do
-  TelV tel t' <- telView t
-  ifBlocked (unEl t') (\ _ _ -> return OutputTypeNameNotYetKnown) $ \ v ->
-    case ignoreSharing v of
-      -- Possible base types:
-      Def n _  -> return $ OutputTypeName n
-      Sort{}   -> return NoOutputTypeName
-      Var n _  -> return OutputTypeVar
-      -- Not base types:
-      Con{}    -> __IMPOSSIBLE__
-      Lam{}    -> __IMPOSSIBLE__
-      Lit{}    -> __IMPOSSIBLE__
-      Level{}  -> __IMPOSSIBLE__
-      MetaV{}  -> __IMPOSSIBLE__
-      Pi{}     -> __IMPOSSIBLE__
-      Shared{} -> __IMPOSSIBLE__
-      DontCare{} -> __IMPOSSIBLE__
-
 -- | Flatten telescope: (Γ : Tel) -> [Type Γ]
 flattenTel :: Telescope -> [Dom Type]
 flattenTel EmptyTel          = []
@@ -314,7 +288,7 @@ expandTelescopeVar gamma k delta c = (tel', rho)
 
     tel'        = gamma1 `abstract` (delta `abstract` gamma2')
 
-
+-- | Gather leading Πs of a type in a telescope.
 telView :: Type -> TCM TelView
 telView = telViewUpTo (-1)
 
@@ -353,12 +327,37 @@ telViewUpToPath n t = do
   where
     absV a x (TelV tel t) = TelV (ExtendTel a (Abs x tel)) t
 
+-- | [[ (i,(x,y)) ]] = [(i=0) -> x, (i=1) -> y]
+type Boundary = [(Term,(Term,Term))]
+
+-- | Like @telViewUpToPath@ but also returns the @Boundary@ expected
+-- by the Path types encountered. The boundary terms live in the
+-- telescope given by the @TelView@.
+telViewUpToPathBoundary :: Int -> Type -> TCM (TelView,Boundary)
+telViewUpToPathBoundary 0 t = return $ (TelV EmptyTel t,[])
+telViewUpToPathBoundary n t = do
+  vt <- pathViewAsPi' $ t
+  case vt of
+    Left ((a,b),xy) -> addEndPoints xy . absV a (absName b) <$> telViewUpToPathBoundary (n - 1) (absBody b)
+    Right (El _ t) | Pi a b <- ignoreSharing t
+                   -> absV a (absName b) <$> telViewUpToPathBoundary (n - 1) (absBody b)
+    _              -> return $ (TelV EmptyTel t,[])
+  where
+    absV a x (TelV tel t, cs) = (TelV (ExtendTel a (Abs x tel)) t, cs)
+    addEndPoints xy (telv@(TelV tel _),cs) = (telv, (var $ size tel - 1, xyInTel):cs)
+      where
+       xyInTel = raise (size tel) xy `apply` drop 1 (teleArgs tel)
+
 pathViewAsPi :: Type -> TCM (Either (Dom Type, Abs Type) Type)
 pathViewAsPi t = either (Left . fst) Right <$> pathViewAsPi' t
 
 pathViewAsPi' :: Type -> TCM (Either ((Dom Type, Abs Type), (Term,Term)) Type)
 pathViewAsPi' t = do
-  t <- pathView =<< reduce t
+  pathViewAsPi'whnf =<< reduce t
+
+pathViewAsPi'whnf :: Type -> TCM (Either ((Dom Type, Abs Type), (Term,Term)) Type)
+pathViewAsPi'whnf t = do
+  t <- pathView t
   case t of
     PathType s l p a x y -> do
       let name | Lam _ (Abs n _) <- unArg a = n
@@ -400,6 +399,11 @@ ifNotPi = flip . ifPi
 ifNotPiType :: MonadTCM tcm => Type -> (Type -> tcm a) -> (Dom Type -> Abs Type -> tcm a) -> tcm a
 ifNotPiType = flip . ifPiType
 
+ifNotPiOrPathType :: MonadTCM tcm => Type -> (Type -> tcm a) -> (Dom Type -> Abs Type -> tcm a) -> tcm a
+ifNotPiOrPathType t no yes = do
+  ifPiType t yes (\ t -> either (uncurry yes . fst) (const $ no t) =<< liftTCM (pathViewAsPi'whnf t))
+
+
 -- | A safe variant of piApply.
 
 piApplyM :: Type -> Args -> TCM Type
@@ -416,6 +420,32 @@ piApply1 t v = do
 ---------------------------------------------------------------------------
 -- * Instance definitions
 ---------------------------------------------------------------------------
+
+data OutputTypeName
+  = OutputTypeName QName
+  | OutputTypeVar
+  | OutputTypeNameNotYetKnown
+  | NoOutputTypeName
+
+-- | Strips all Pi's and return the head definition name, if possible.
+getOutputTypeName :: Type -> TCM OutputTypeName
+getOutputTypeName t = do
+  TelV tel t' <- telView t
+  ifBlocked (unEl t') (\ _ _ -> return OutputTypeNameNotYetKnown) $ \ v ->
+    case ignoreSharing v of
+      -- Possible base types:
+      Def n _  -> return $ OutputTypeName n
+      Sort{}   -> return NoOutputTypeName
+      Var n _  -> return OutputTypeVar
+      -- Not base types:
+      Con{}    -> __IMPOSSIBLE__
+      Lam{}    -> __IMPOSSIBLE__
+      Lit{}    -> __IMPOSSIBLE__
+      Level{}  -> __IMPOSSIBLE__
+      MetaV{}  -> __IMPOSSIBLE__
+      Pi{}     -> __IMPOSSIBLE__
+      Shared{} -> __IMPOSSIBLE__
+      DontCare{} -> __IMPOSSIBLE__
 
 addTypedInstance :: QName -> Type -> TCM ()
 addTypedInstance x t = do

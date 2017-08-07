@@ -19,6 +19,7 @@ import Agda.Syntax.Common
 import qualified Agda.Syntax.Concrete as C
 import Agda.Syntax.Concrete (exprFieldA)
 import Agda.Syntax.Position
+import Agda.Syntax.Abstract.Pattern ( containsAbsurdPattern )
 import qualified Agda.Syntax.Abstract as A
 import qualified Agda.Syntax.Abstract.Views as A
 import Agda.Syntax.Internal as I
@@ -58,14 +59,15 @@ import Agda.TypeChecking.Rules.LHS.Problem         ( AsBinding(..) )
 import {-# SOURCE #-} Agda.TypeChecking.Rules.Decl ( checkDecls )
 
 import Agda.Utils.Except ( MonadError(catchError, throwError) )
+import Agda.Utils.Functor
 import Agda.Utils.Lens
+import Agda.Utils.List
 import Agda.Utils.Maybe ( whenNothing )
 import Agda.Utils.Monad
 import Agda.Utils.Permutation
-import Agda.Utils.Size
-import Agda.Utils.Functor
-import Agda.Utils.List
+import Agda.Utils.Pretty ( prettyShow )
 import qualified Agda.Utils.Pretty as P
+import Agda.Utils.Size
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -124,8 +126,8 @@ isAlias cs t =
 checkAlias :: Type -> ArgInfo -> Delayed -> Info.DefInfo -> QName -> A.Expr -> Maybe C.Expr -> TCM ()
 checkAlias t' ai delayed i name e mc = atClause name 0 (A.RHS e mc) $ do
   reportSDoc "tc.def.alias" 10 $ text "checkAlias" <+> vcat
-    [ text (show name) <+> colon  <+> prettyTCM t'
-    , text (show name) <+> equals <+> prettyTCM e
+    [ text (prettyShow name) <+> colon  <+> prettyTCM t'
+    , text (prettyShow name) <+> equals <+> prettyTCM e
     ]
 
 {-
@@ -205,7 +207,7 @@ checkFunDefS :: Type             -- ^ the type we expect the function to have
              -> Maybe Substitution -- ^ substitution (from with abstraction) that needs to be applied to module parameters
              -> [A.Clause]       -- ^ the clauses to check
              -> TCM ()
-checkFunDefS t ai delayed extlam with i name withSub cs =
+checkFunDefS t ai delayed extlam with i name withSub cs = do
 
     traceCall (CheckFunDef (getRange i) (qnameName name) cs) $ do   -- TODO!! (qnameName)
         reportSDoc "tc.def.fun" 10 $
@@ -257,18 +259,18 @@ checkFunDefS t ai delayed extlam with i name withSub cs =
           typeError $ GenericError "no actual pattern matching in systems!"
 
 
-        reportSDoc "tc.def.fun" 70 $
+        reportSDoc "tc.def.fun" 70 $ inTopContext $ do
           sep $ [ text "checked clauses:" ] ++ map (nest 2 . text . show) cs
 
         -- After checking, remove the clauses again.
         -- (Otherwise, @checkInjectivity@ loops for issue 801).
         modifyFunClauses name (const [])
 
-        reportSDoc "tc.cc" 25 $ do
+        reportSDoc "tc.cc" 25 $ inTopContext $ do
           sep [ text "clauses before injectivity test"
               , nest 2 $ prettyTCM $ map (QNamed name) cs  -- broken, reify (QNamed n cl) expect cl to live at top level
               ]
-        reportSDoc "tc.cc" 60 $ do
+        reportSDoc "tc.cc" 60 $ inTopContext $ do
           sep [ text "raw clauses: "
               , nest 2 $ sep $ map (text . show . QNamed name) cs
               ]
@@ -307,7 +309,7 @@ checkFunDefS t ai delayed extlam with i name withSub cs =
         inv <- Bench.billTo [Bench.Injectivity] $
           checkInjectivity name cs
 
-        reportSDoc "tc.cc" 15 $ do
+        reportSDoc "tc.cc" 15 $ inTopContext $ do
           sep [ text "clauses before compilation"
               , nest 2 $ sep $ map (prettyTCM . QNamed name) cs
               ]
@@ -327,7 +329,7 @@ checkFunDefS t ai delayed extlam with i name withSub cs =
           inTopContext $ compileClauses (if isSystem then Nothing else (Just (name, fullType)))
                                         cs
 
-        reportSDoc "tc.cc" 60 $ do
+        reportSDoc "tc.cc" 60 $ inTopContext $ do
           sep [ text "compiled clauses of" <+> prettyTCM name
               , nest 2 $ text (show cc)
               ]
@@ -368,7 +370,7 @@ useTerPragma def@Defn{ defName = name, theDef = fun@Function{}} = do
         Terminating    -> Just True
         _              -> Nothing
   reportSLn "tc.fundef" 30 $ unlines $
-    [ "funTerminates of " ++ show name ++ " set to " ++ show terminates
+    [ "funTerminates of " ++ prettyShow name ++ " set to " ++ show terminates
     , "  tc = " ++ show tc
     ]
   return $ def { theDef = fun { funTerminates = terminates }}
@@ -645,7 +647,7 @@ checkRHS
                                               -- Note: the as-bindings are already bound (in checkClause)
 checkRHS i x aps t lhsResult@(LHSResult _ delta ps trhs _ _asb _) rhs0 = handleRHS rhs0
   where
-  absurdPat = any (containsAbsurdPattern . namedArg) aps
+  absurdPat = containsAbsurdPattern aps
   handleRHS rhs =
     case rhs of
 
@@ -978,23 +980,6 @@ newSection m tel cont = do
       nest 4 $ text "actual tele:" <+> do prettyTCM =<< lookupSection m
 
     withCurrentModule m cont
-
-
--- | Check if a pattern contains an absurd pattern. For instance, @suc ()@
-containsAbsurdPattern :: A.Pattern -> Bool
-containsAbsurdPattern p = case p of
-    A.AbsurdP _   -> True
-    A.VarP _      -> False
-    A.WildP _     -> False
-    A.DotP _ _ _  -> False
-    A.LitP _      -> False
-    A.AsP _ _ p   -> containsAbsurdPattern p
-    A.ConP _ _ ps -> any (containsAbsurdPattern . namedArg) ps
-    A.RecP _ fs   -> any (containsAbsurdPattern . (^. exprFieldA)) fs
-    A.ProjP{}     -> False
-    A.DefP _ _ ps -> any (containsAbsurdPattern . namedArg) ps
-    A.PatternSynP _ _ _ -> __IMPOSSIBLE__ -- False
-    A.EqualP{}    -> False
 
 -- | Set the current clause number.
 atClause :: QName -> Int -> A.RHS -> TCM a -> TCM a

@@ -26,22 +26,22 @@ data Literal = LitNat    Range !Integer
 
 instance Show Literal where
   showsPrec p l = showParen (p > 9) $ case l of
-    LitNat _ n    -> sh "LitNat" n
-    LitFloat _ x  -> sh "LitFloat" x
-    LitString _ s -> sh "LitString" s
-    LitChar _ c   -> sh "LitChar" c
-    LitQName _ q  -> sh "LitQName" q
-    LitMeta _ _ x -> sh "LitMeta" x
+    LitNat _ n    -> sh "LitNat _" n
+    LitFloat _ x  -> sh "LitFloat _" x
+    LitString _ s -> sh "LitString _" s
+    LitChar _ c   -> sh "LitChar _" c
+    LitQName _ q  -> sh "LitQName _" q
+    LitMeta _ _ x -> sh "LitMeta _ _" x
     where
       sh :: Show a => String -> a -> ShowS
       sh c x = showString (c ++ " ") . shows x
 
 instance Pretty Literal where
     pretty (LitNat _ n)     = text $ show n
-    pretty (LitFloat _ x)   = text $ show x
+    pretty (LitFloat _ d)   = text $ show d
     pretty (LitString _ s)  = text $ showString' s ""
     pretty (LitChar _ c)    = text $ "'" ++ showChar' c "" ++ "'"
-    pretty (LitQName _ x)   = text $ show x
+    pretty (LitQName _ x)   = pretty x
     pretty (LitMeta _ _ x)  = pretty x
 
 showString' :: String -> ShowS

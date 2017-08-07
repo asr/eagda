@@ -54,7 +54,6 @@ import Agda.TypeChecking.Serialise
 import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.Primitive
 import Agda.TypeChecking.Pretty as P
-import Agda.TypeChecking.Rewriting (killCtxId)
 import Agda.TypeChecking.DeadCode
 import qualified Agda.TypeChecking.Monad.Benchmark as Bench
 
@@ -147,7 +146,7 @@ addImportedThings ::
   Signature -> BuiltinThings PrimFun ->
   A.PatternSynDefns -> DisplayForms -> [TCWarning] -> TCM ()
 addImportedThings isig ibuiltin patsyns display warnings = do
-  stImports              %= \ imp -> unionSignatures [imp, over sigRewriteRules killCtxId isig]
+  stImports              %= \ imp -> unionSignatures [imp, isig]
   stImportedBuiltins     %= \ imp -> Map.union imp ibuiltin
   stPatternSynImports    %= \ imp -> Map.union imp patsyns
   stImportedDisplayForms %= \ imp -> HMap.unionWith (++) imp display
@@ -795,10 +794,13 @@ createInterface file mname isMain = Bench.billTo [Bench.TopModule mname] $
     i <- Bench.billTo [Bench.Serialization, Bench.BuildInterface] $ do
       buildInterface file topLevel syntaxInfo options
 
-    reportSLn "tc.top" 101 $ concat $
-      "Signature:\n" :
-      [ show x ++ "\n  type: " ++ show (defType def)
-               ++ "\n  def:  " ++ show cc ++ "\n"
+    reportSLn "tc.top" 101 $ unlines $
+      "Signature:" :
+      [ unlines
+          [ prettyShow x
+          , "  type: " ++ show (defType def)
+          , "  def:  " ++ show cc
+          ]
       | (x, def) <- HMap.toList $ iSignature i ^. sigDefinitions,
         Function{ funCompiled = cc } <- [theDef def]
       ]

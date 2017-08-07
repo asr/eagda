@@ -599,6 +599,17 @@ to be confused with the :ref:`rewrite construct <with-rewrite>`) has a built-in
 There is no ``Agda.Builtin`` module for the rewrite relation since different
 rewriting experiments typically want different relations.
 
+Static values
+-------------
+
+The ``STATIC`` pragma can be used to mark definitions which should
+be normalised before compilation. The typical use case for this is
+to mark the interpreter of an embedded language as ``STATIC``:
+
+.. code-block:: agda
+
+   {-# STATIC <Name> #-}
+
 Strictness
 ----------
 

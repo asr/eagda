@@ -52,6 +52,7 @@ import qualified Agda.Utils.Graph.AdjacencyMap.Unidirectional as Graph
 import Agda.Utils.Maybe
 import Agda.Utils.Null
 import Agda.Utils.Permutation (Permutation)
+import Agda.Utils.Pretty (Pretty, prettyShow)
 import qualified Agda.Utils.Pretty as P
 
 #include "undefined.h"
@@ -170,10 +171,10 @@ instance PrettyTCM Permutation  where prettyTCM = text . show
 instance PrettyTCM Polarity     where prettyTCM = text . show
 instance PrettyTCM R.Term       where prettyTCM = prettyA <=< toAbstractWithoutImplicit
 
-instance (Show a, PrettyTCM a, Subst a a) => PrettyTCM (Substitution' a) where
+instance (Pretty a, PrettyTCM a, Subst a a) => PrettyTCM (Substitution' a) where
   prettyTCM IdS        = text "idS"
   prettyTCM (Wk m IdS) = text "wkS" <+> pretty m
-  prettyTCM EmptyS     = text "emptyS"
+  prettyTCM (EmptyS _) = text "emptyS"
   prettyTCM rho = prettyTCM u <+> comma <+> prettyTCM rho1
     where
       (rho1, rho2) = splitS 1 rho
@@ -197,7 +198,7 @@ instance PrettyTCM MetaId where
     pretty $ NamedMeta mn x
 
 instance PrettyTCM a => PrettyTCM (Blocked a) where
-  prettyTCM (Blocked x a) = text "[" <+> prettyTCM a <+> text "]" <> text (show x)
+  prettyTCM (Blocked x a) = text "[" <+> prettyTCM a <+> text "]" <> text (P.prettyShow x)
   prettyTCM (NotBlocked _ x) = prettyTCM x
 
 instance (Reify a e, ToConcrete e c, P.Pretty c) => PrettyTCM (Named_ a) where
@@ -218,7 +219,7 @@ instance {-# OVERLAPPING #-} PrettyTCM ArgName where
 #else
 instance PrettyTCM ArgName where
 #endif
-  prettyTCM = text . show
+  prettyTCM = text . P.prettyShow
 
 -- instance (Reify a e, ToConcrete e c, P.Pretty c, PrettyTCM a) => PrettyTCM (Elim' a) where
 instance PrettyTCM Elim where
@@ -415,8 +416,8 @@ instance PrettyTCM a => PrettyTCM (Pattern' a) where
           sep [ prettyTCM (A.qnameName x) <+> text "=" , nest 2 $ prettyTCM $ namedArg p ]
         showCon = parens $ prTy $ prettyTCM c <+> fsep (map (prettyTCM . namedArg) ps)
         prTy d = d -- caseMaybe (conPType i) d $ \ t -> d  <+> text ":" <+> prettyTCM t
-  prettyTCM (LitP l)      = text (show l)
-  prettyTCM (ProjP _ q)   = text ("." ++ show q)
+  prettyTCM (LitP l)      = text (P.prettyShow l)
+  prettyTCM (ProjP _ q)   = text ("." ++ P.prettyShow q)
 
 -- | Proper pretty printing of patterns:
 prettyTCMPatterns :: [NamedArg DeBruijnPattern] -> TCM [Doc]
@@ -430,31 +431,17 @@ instance PrettyTCM (Elim' DisplayTerm) where
   prettyTCM (Apply v) = text "$" <+> prettyTCM (unArg v)
   prettyTCM (Proj _ f)= text "." <> prettyTCM f
 
-raisePatVars :: Int -> NLPat -> NLPat
-raisePatVars k (PVar id x bvs) = PVar id (k+x) bvs
-raisePatVars k (PWild)     = PWild
-raisePatVars k (PDef f es) = PDef f $ (fmap . fmap) (raisePatVars k) es
-raisePatVars k (PLam i u)  = PLam i $ fmap (raisePatVars k) u
-raisePatVars k (PPi a b)   =
-  PPi (fmap (raisePatVarsInType k) a) (fmap (raisePatVarsInType k) b)
-raisePatVars k (PBoundVar i es) = PBoundVar i $ (fmap . fmap) (raisePatVars k) es
-raisePatVars k (PTerm t)   = PTerm t
-
-raisePatVarsInType :: Int -> NLPType -> NLPType
-raisePatVarsInType k (NLPType l a) =
-  NLPType (raisePatVars k l) (raisePatVars k a)
-
 instance PrettyTCM NLPat where
-  prettyTCM (PVar id x bvs) = prettyTCM (Var x (map (Apply . fmap var) bvs))
+  prettyTCM (PVar x bvs) = prettyTCM (Var x (map (Apply . fmap var) bvs))
   prettyTCM (PWild)     = text $ "_"
   prettyTCM (PDef f es) = parens $
     prettyTCM f <+> fsep (map prettyTCM es)
   prettyTCM (PLam i u)  = parens $
     text ("λ " ++ absName u ++ " →") <+>
-    (addContext (absName u) $ prettyTCM (raisePatVars 1 $ absBody u))
+    (addContext (absName u) $ prettyTCM $ absBody u)
   prettyTCM (PPi a b)   = parens $
     text ("(" ++ absName b ++ " :") <+> prettyTCM (unDom a) <> text ") →" <+>
-    (addContext (absName b) $ prettyTCM (raisePatVarsInType 1 $ unAbs b))
+    (addContext (absName b) $ prettyTCM $ unAbs b)
   prettyTCM (PBoundVar i []) = prettyTCM (var i)
   prettyTCM (PBoundVar i es) = parens $ prettyTCM (var i) <+> fsep (map prettyTCM es)
   prettyTCM (PTerm t)   = text "." <> parens (prettyTCM t)
@@ -485,12 +472,7 @@ instance PrettyTCM RewriteRule where
     ]
 
 instance PrettyTCM Occurrence where
-  prettyTCM GuardPos  = text "-[g+]->"
-  prettyTCM StrictPos = text "-[++]->"
-  prettyTCM JustPos   = text "-[+]->"
-  prettyTCM JustNeg   = text "-[-]->"
-  prettyTCM Mixed     = text "-[*]->"
-  prettyTCM Unused    = text "-[ ]->"
+  prettyTCM occ  = text $ "-[" ++ prettyShow occ ++ "]->"
 
 -- | Pairing something with a node (for printing only).
 data WithNode n a = WithNode n a
