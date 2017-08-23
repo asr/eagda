@@ -15,7 +15,6 @@ import Data.Equivalence.Monad
 import Data.Char
 import Data.Functor
 import qualified Data.IntMap as IntMap
-import Data.List
 
 -- | Characteristic identifiers.
 type C = Int
@@ -28,7 +27,7 @@ cluster :: (a -> (C,[C])) -> [a] -> [[a]]
 cluster f as = cluster' $ map (\ a -> (a, f a)) as
 
 -- | Partition a list of @a@s paired with a non-empty list of
---   characteristics $C$ into groups
+--   characteristics @C@ into groups
 --   such that each element in a group shares at least one characteristic
 --   with at least one other element of the group.
 cluster' :: [(a,(C,[C]))] -> [[a]]

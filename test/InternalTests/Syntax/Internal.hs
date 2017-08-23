@@ -4,35 +4,13 @@
 module InternalTests.Syntax.Internal ( tests ) where
 
 import Agda.Syntax.Internal
+import Agda.TypeChecking.Substitute ()
 
 import InternalTests.Helpers
 import InternalTests.Syntax.Common ()
 
 ------------------------------------------------------------------------
 -- Instances
-
--- ASR (2017-01-23). Hack!
-
--- Why GHC <= 7.8.4 generate the error
-
---   test/InternalTests/Syntax/Internal.hs:18:10:
---       Duplicate instance declarations:
---         instance [overlap ok] Eq NotBlocked
---           -- Defined at test/InternalTests/Syntax/Internal.hs:18:10
---         instance [overlap ok] Eq NotBlocked
---           -- Defined in ‘Agda.TypeChecking.Substitute’
-
--- if Agda.TypeChecking.Substitute is not imported?
-
-#if __GLASGOW_HASKELL__ > 708
-instance Eq NotBlocked where
-  StuckOn _        == StuckOn _        = True  -- FIXME
-  Underapplied     == Underapplied     = True
-  AbsurdMatch      == AbsurdMatch      = True
-  MissingClauses   == MissingClauses   = True
-  ReallyNotBlocked == ReallyNotBlocked = True
-  _                == _                = False
-#endif
 
 instance Arbitrary NotBlocked where
   arbitrary = elements [ Underapplied
@@ -41,11 +19,6 @@ instance Arbitrary NotBlocked where
                        , ReallyNotBlocked
                        -- , StuckOn Elim  -- TODO
                        ]
-
-instance Eq (Blocked ()) where
-  Blocked m _     == Blocked m' _     = m == m'
-  NotBlocked bs _ == NotBlocked bs' _ = bs == bs'
-  _               == _                = False
 
 instance Arbitrary (Blocked ()) where
   arbitrary = do

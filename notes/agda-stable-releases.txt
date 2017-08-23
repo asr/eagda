@@ -13,7 +13,7 @@ be followed:
 
     MAJORVERSION=<current-Agda-version-eg-2.4.0>
     VERSION=<current-stable-version-eg-2.4.0.2>
-    git clone git@github.com:agda/agda.git agda.release
+    git clone git@github.com:agda/agda.git agda-release
     cd agda-release
     git checkout stable-$MAJORVERSION
 
@@ -41,6 +41,11 @@ be followed:
 
 * Update the LICENSE file, if necessary.
 
+  Note: the list of contributors is duplicated in the following locations:
+
+  - doc/user-manual/license.rst
+  - doc/user-manual/conf.py
+
 * Add a second source-repository section to Agda.cabal:
 
     source-repository this
@@ -50,11 +55,6 @@ be followed:
 
 * Remove -Werror and -fprof-auto from Agda.cabal (this is required by
   `cabal --check`).
-
-* Ensure that cabal haddock works with the latest version supported of
-  GHC:
-
-    make haddock
 
 * Run the test-suite:
 

@@ -85,8 +85,10 @@ import Agda.Utils.Monad
 import Agda.Utils.Null
 import Agda.Utils.Permutation
 import Agda.Utils.Pretty hiding ((<>))
+import qualified Agda.Utils.Pretty as P
 import Agda.Utils.Singleton
 import Agda.Utils.Functor
+import Agda.Utils.Function
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -669,14 +671,15 @@ data Interface = Interface
     -- ^ Module name of this interface.
   , iScope           :: Map ModuleName Scope
     -- ^ Scope defined by this module.
+    --
+    --   Andreas, AIM XX: Too avoid duplicate serialization, this field is
+    --   not serialized, so if you deserialize an interface, @iScope@
+    --   will be empty.
+    --   But 'constructIScope' constructs 'iScope' from 'iInsideScope'.
   , iInsideScope     :: ScopeInfo
     -- ^ Scope after we loaded this interface.
     --   Used in 'Agda.Interaction.BasicOps.AtTopLevel'
     --   and     'Agda.Interaction.CommandLine.interactionLoop'.
-    --
-    --   Andreas, AIM XX: For performance reason, this field is
-    --   not serialized, so if you deserialize an interface, @iInsideScope@
-    --   will be empty.  You need to type-check the file to get @iInsideScope@.
   , iSignature       :: Signature
   , iDisplayForms    :: DisplayForms
     -- ^ Display forms added for imported identifiers.
@@ -1211,6 +1214,22 @@ instance Free DisplayTerm where
   freeVars' (DDot v)           = freeVars' v
   freeVars' (DTerm v)          = freeVars' v
 
+instance Pretty DisplayTerm where
+  prettyPrec p v =
+    case v of
+      DTerm v          -> prettyPrec p v
+      DDot v           -> text "." P.<> prettyPrec 10 v
+      DDef f es        -> pretty f `pApp` es
+      DCon c _ vs      -> pretty (conName c) `pApp` map Apply vs
+      DWithApp h ws es ->
+        mparens (p > 0)
+          (sep [ pretty h
+              , nest 2 $ fsep [ text "|" <+> pretty w | w <- ws ] ])
+        `pApp` es
+    where
+      pApp d els = mparens (not (null els) && p > 9) $
+                   sep [d, nest 2 $ fsep (map (prettyPrec 10) els)]
+
 -- | By default, we have no display form.
 defaultDisplayForm :: QName -> [LocalDisplayForm]
 defaultDisplayForm c = []
@@ -1383,11 +1402,30 @@ type CompiledRepresentation = Map BackendName [CompilerPragma]
 noCompiledRep :: CompiledRepresentation
 noCompiledRep = Map.empty
 
+-- A face represented as a list of equality constraints.
+-- (r,False) ↦ (r = i0)
+-- (r,True ) ↦ (r = i1)
+type Face = [(Term,Bool)]
+
+-- | An alternative representation of partial elements in a telescope:
+--   Γ ⊢ λ Δ. [φ₁ u₁, ... , φₙ uₙ] : Δ → PartialP (∨_ᵢ φᵢ) T
+--   see cubicaltt paper (however we do not store the type T).
+data System = System
+  { systemTel :: Telescope
+    -- ^ the telescope Δ, binding vars for the clauses, Γ ⊢ Δ
+  , systemClauses :: [(Face,Term)]
+    -- ^ a system [φ₁ u₁, ... , φₙ uₙ] where Γ, Δ ⊢ φᵢ and Γ, Δ, φᵢ ⊢ uᵢ
+  } deriving (Typeable, Data, Show)
+
 -- | Additional information for extended lambdas.
 data ExtLamInfo = ExtLamInfo
   { extLamNumHidden :: Int  -- Number of hidden args to be dropped when printing.
   , extLamNumNonHid :: Int  -- Number of visible args to be dropped when printing.
-  } deriving (Typeable, Data, Eq, Ord, Show)
+  , extLamSys :: !(Maybe System)
+  } deriving (Typeable, Data, Show)
+
+modifySystem :: (System -> System) -> ExtLamInfo -> ExtLamInfo
+modifySystem f e = let !e' = e { extLamSys = f <$> extLamSys e } in e'
 
 -- | Additional information for projection 'Function's.
 data Projection = Projection
@@ -1469,7 +1507,7 @@ data Defn = Axiom
               -- ^ TPTP hints for a TPTP conjecture.
             }
             -- ^ Postulate.
-          | AbstractDefn
+          | AbstractDefn Defn
             -- ^ Returned by 'getConstInfo' if definition is abstract.
           | Function
             { funClauses        :: [Clause]
@@ -2375,16 +2413,14 @@ data Warning
 #endif
            )
 
--- we also keep the state so that we can print the warning correctly
--- later
 data TCWarning
   = TCWarning
-    { tcWarningOrigin :: SrcFile
-        -- ^ File where the warning was raised
-    , tcWarningState   :: TCState
-        -- ^ The state in which the warning was raised.
-    , tcWarningClosure :: Closure Warning
-        -- ^ The warning and the environment in which it was raised.
+    { tcWarningRange :: Range
+        -- ^ Range where the warning was raised
+    , tcWarning   :: Warning
+        -- ^ The warning itself
+    , tcWarningPrintedWarning :: Doc
+        -- ^ The warning printed in the state and environment where it was raised
     }
   deriving ( Show
 #if __GLASGOW_HASKELL__ <= 708
@@ -2392,11 +2428,11 @@ data TCWarning
 #endif
            )
 
-instance HasRange TCWarning where
-  getRange = envRange . clEnv . tcWarningClosure
+tcWarningOrigin :: TCWarning -> SrcFile
+tcWarningOrigin = rangeFile . tcWarningRange
 
-tcWarning :: TCWarning -> Warning
-tcWarning = clValue . tcWarningClosure
+instance HasRange TCWarning where
+  getRange = tcWarningRange
 
 -- used for merging lists of warnings
 instance Eq TCWarning where
@@ -2415,52 +2451,6 @@ getPartialDefs = do
     extractQName :: Warning -> Maybe QName
     extractQName (CoverageIssue f _) = Just f
     extractQName _                   = Nothing
-
--- | Classifying warnings: some are benign, others are (non-fatal) errors
-
-data WhichWarnings =
-    ErrorWarnings -- ^ warnings that will be turned into errors
-  | AllWarnings   -- ^ all warnings, including errors and benign ones
-  -- Note: order of constructors is important for the derived Ord instance
-  deriving (Eq, Ord)
-
-isUnsolvedWarning :: Warning -> Bool
-isUnsolvedWarning w = case w of
-  UnsolvedMetaVariables{}    -> True
-  UnsolvedInteractionMetas{} -> True
-  UnsolvedConstraints{}      -> True
- -- rest
-  _                          -> False
-
-classifyWarning :: Warning -> WhichWarnings
-classifyWarning w = case w of
-  OldBuiltin{}               -> AllWarnings
-  EmptyRewritePragma         -> AllWarnings
-  UselessPublic              -> AllWarnings
-  UnreachableClauses{}       -> AllWarnings
-  UselessInline{}            -> AllWarnings
-  GenericWarning{}           -> AllWarnings
-  DeprecationWarning{}       -> AllWarnings
-  NicifierIssue{}            -> AllWarnings
-  TerminationIssue{}         -> ErrorWarnings
-  CoverageIssue{}            -> ErrorWarnings
-  CoverageNoExactSplit{}     -> ErrorWarnings
-  NotStrictlyPositive{}      -> ErrorWarnings
-  UnsolvedMetaVariables{}    -> ErrorWarnings
-  UnsolvedInteractionMetas{} -> ErrorWarnings
-  UnsolvedConstraints{}      -> ErrorWarnings
-  GenericNonFatalError{}     -> ErrorWarnings
-  SafeFlagPostulate{}        -> ErrorWarnings
-  SafeFlagPragma{}           -> ErrorWarnings
-  SafeFlagNonTerminating     -> ErrorWarnings
-  SafeFlagTerminating        -> ErrorWarnings
-  SafeFlagPrimTrustMe        -> ErrorWarnings
-  SafeFlagNoPositivityCheck  -> ErrorWarnings
-  SafeFlagPolarity           -> ErrorWarnings
-  ParseWarning{}             -> ErrorWarnings
-
-classifyWarnings :: [TCWarning] -> ([TCWarning], [TCWarning])
-classifyWarnings = List.partition $ (< AllWarnings) . classifyWarning . tcWarning
 
 ---------------------------------------------------------------------------
 -- * Type checking errors
@@ -2681,6 +2671,7 @@ data TypeError
           -- the include path says contains the module.
     -- Scope errors
         | BothWithAndRHS
+        | AbstractConstructorNotInScope A.QName
         | NotInScope [C.QName]
         | NoSuchModule C.QName
         | AmbiguousName C.QName [A.QName]
@@ -2923,16 +2914,6 @@ instance MonadError TCErr (TCMT IO) where
             writeIORef r $ oldState { stPersistentState = stPersistentState newState }
       unTCM (h err) r e
 
--- | Parse monad
-
-runPM :: PM a -> TCM a
-runPM m = do
-  (res, ws) <- runPMIO m
-  mapM_ (warning . ParseWarning) ws
-  case res of
-    Left  e -> throwError (Exception (getRange e) (pretty e))
-    Right a -> return a
-
 -- | Interaction monad.
 
 type IM = TCMT (Haskeline.InputT IO)
@@ -3094,33 +3075,6 @@ typeError err = liftTCM $ throwError =<< typeError_ err
 typeError_ :: MonadTCM tcm => TypeError -> tcm TCErr
 typeError_ err = liftTCM $ TypeError <$> get <*> buildClosure err
 
-{-# SPECIALIZE genericWarning :: Doc -> TCM () #-}
-genericWarning :: MonadTCM tcm => Doc -> tcm ()
-genericWarning = warning . GenericWarning
-
-{-# SPECIALIZE genericNonFatalError :: Doc -> TCM () #-}
-genericNonFatalError :: MonadTCM tcm => Doc -> tcm ()
-genericNonFatalError = warning . GenericNonFatalError
-
-{-# SPECIALIZE warning_ :: Warning -> TCM TCWarning #-}
-warning_ :: MonadTCM tcm => Warning -> tcm TCWarning
-warning_ w =
-  liftTCM $ TCWarning <$> (rangeFile <$> view eRange) <*> get <*> buildClosure w
-
-{-# SPECIALIZE warning :: Warning -> TCM () #-}
-warning :: MonadTCM tcm => Warning -> tcm ()
-warning w = do
-  tcwarn <- warning_ w
-  wmode <- optWarningMode <$> pragmaOptions
-  case wmode of
-    IgnoreAllWarnings -> case classifyWarning w of
-                           -- not allowed to ignore non-fatal errors
-                           ErrorWarnings -> raiseWarning tcwarn
-                           AllWarnings -> return ()
-    TurnIntoErrors -> typeError $ NonFatalErrors [tcwarn]
-    LeaveAlone -> raiseWarning tcwarn
-  where raiseWarning tcw = stTCWarnings %= (tcw :)
-
 -- | Running the type checking monad (most general form).
 {-# SPECIALIZE runTCM :: TCEnv -> TCState -> TCM a -> IO (a, TCState) #-}
 runTCM :: MonadIO m => TCEnv -> TCState -> TCMT m a -> m (a, TCState)
@@ -3234,8 +3188,11 @@ instance KillRange CompiledRepresentation where
 instance KillRange EtaEquality where
   killRange = id
 
+instance KillRange System where
+  killRange (System tel sys) = System (killRange tel) (killRange sys)
+
 instance KillRange ExtLamInfo where
-  killRange = id
+  killRange (ExtLamInfo x y r) = ExtLamInfo x y (killRange r)
 
 instance KillRange FunctionFlag where
   killRange = id
@@ -3244,7 +3201,7 @@ instance KillRange Defn where
   killRange def =
     case def of
       Axiom role hints -> killRange2 Axiom role hints
-      AbstractDefn -> __IMPOSSIBLE__ -- only returned by 'getConstInfo'!
+      AbstractDefn{} -> __IMPOSSIBLE__ -- only returned by 'getConstInfo'!
       Function cls comp tt inv mut isAbs delayed proj flags term extlam with copat role ->
         killRange14 Function cls comp tt inv mut isAbs delayed proj flags term extlam with copat role
       Datatype a b c d e f g h i j k -> killRange11 Datatype a b c d e f g h i j k

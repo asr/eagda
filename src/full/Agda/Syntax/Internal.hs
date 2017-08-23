@@ -28,11 +28,6 @@ import qualified Data.List as List
 import Data.Maybe
 import Data.Semigroup (Semigroup, Monoid, (<>), mempty, mappend, Sum(..))
 
--- base-4.7 defines the Num instance for Sum
-#if !(MIN_VERSION_base(4,7,0))
-import Data.Orphans             ()
-#endif
-
 import Data.Traversable
 import Data.Data (Data)
 import Data.Typeable (Typeable)
@@ -972,13 +967,6 @@ hasElims v =
     DontCare{} -> Nothing
     Shared{}   -> __IMPOSSIBLE__
 
-{- PROBABLY USELESS
-getElims :: Term -> (Elims -> Term, Elims)
-getElims v = maybe default id $ hasElims v
-  where
-    default = (\ [] -> v, [])
--}
-
 -- | Drop 'Apply' constructor. (Unsafe!)
 argFromElim :: Elim' a -> Arg a
 argFromElim (Apply u) = u
@@ -1334,7 +1322,7 @@ instance Pretty Sort where
 instance Pretty Type where
   prettyPrec p (El _ a) = prettyPrec p a
 
-instance Pretty Elim where
+instance Pretty tm => Pretty (Elim' tm) where
   prettyPrec p (Apply v)    = prettyPrec p v
   prettyPrec _ (Proj _o x)  = text ("." ++ prettyShow x)
   prettyPrec p (IApply x y r) = prettyPrec p r

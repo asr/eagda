@@ -23,7 +23,7 @@ import Prelude hiding (null)
 import Control.Applicative hiding (empty)
 import Control.Monad
 import Control.Monad.Trans
-import Data.List hiding (null)
+import qualified Data.List as List
 import Data.Maybe (catMaybes)
 import qualified Data.Map as Map
 import System.FilePath
@@ -39,6 +39,7 @@ import Agda.TypeChecking.Monad.Trace
 import Agda.TypeChecking.Monad.Benchmark (billTo)
 import qualified Agda.TypeChecking.Monad.Benchmark as Bench
 import {-# SOURCE #-} Agda.TypeChecking.Monad.Options (getIncludeDirs)
+import Agda.TypeChecking.Warnings (runPM)
 
 import Agda.Utils.Except
 import Agda.Utils.FileName
@@ -121,7 +122,7 @@ findFile'' dirs m modFile =
       filesShortList <- fileList sourceFileExtsShortList
       existingFiles <-
         liftIO $ filterM (doesFileExistCaseSensitive . filePath) files
-      return $ case nub existingFiles of
+      return $ case List.nub existingFiles of
         []     -> (Left (NotFound filesShortList), modFile)
         [file] -> (Right file, Map.insert m file modFile)
         files  -> (Left (Ambiguous existingFiles), modFile)
@@ -210,7 +211,7 @@ dropAgdaExtension s = case catMaybes [ stripExtension ext s
     _      -> __IMPOSSIBLE__
   where
     stripExtension :: String -> String -> Maybe String
-    stripExtension e = fmap reverse . stripPrefix (reverse e) . reverse
+    stripExtension e = fmap reverse . List.stripPrefix (reverse e) . reverse
 
 rootNameModule :: AbsolutePath -> String
 rootNameModule = dropAgdaExtension . snd . splitFileName . filePath

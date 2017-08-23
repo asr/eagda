@@ -27,7 +27,7 @@ import Control.Monad.State hiding (mapM_, mapM)
 import Control.Monad.Reader hiding (mapM_, mapM)
 
 import Data.Foldable (Foldable, foldMap)
-import Data.List hiding (null, sort)
+import qualified Data.List as List
 import qualified Data.Map as Map
 import Data.Maybe
 import Data.Semigroup (Semigroup, Monoid, (<>), mempty, mappend)
@@ -64,6 +64,7 @@ import Agda.TypeChecking.DropArgs
 
 import Agda.Interaction.Options ( optPostfixProjections )
 
+import Agda.Utils.Either
 import Agda.Utils.Except ( MonadError(catchError) )
 import Agda.Utils.Function
 import Agda.Utils.Functor
@@ -493,8 +494,8 @@ reifyTerm expandAnonDefs0 v = do
       reportSLn "reify.def" 70 $ "freeVars for " ++ prettyShow x ++ " = " ++ show n
       -- If the definition is not (yet) in the signature,
       -- we just do the obvious.
-      let fallback = elims (A.Def x) =<< reify (drop n es)
-      caseMaybeM (tryMaybe $ getConstInfo x) fallback $ \ defn -> do
+      let fallback _ = elims (A.Def x) =<< reify (drop n es)
+      caseEitherM (getConstInfo' x) fallback $ \ defn -> do
       let def = theDef defn
 
       -- Check if we have an absurd lambda.
@@ -518,10 +519,10 @@ reifyTerm expandAnonDefs0 v = do
         toppars <- size <$> do lookupSection $ qnameModule x
         let extLam = case def of
              Function{ funExtLam = Just{}, funProjection = Just{} } -> __IMPOSSIBLE__
-             Function{ funExtLam = Just (ExtLamInfo h nh) } -> Just (toppars + h + nh)
+             Function{ funExtLam = Just (ExtLamInfo h nh sys) } -> Just (toppars + h + nh, sys)
              _ -> Nothing
         case extLam of
-          Just pars | df -> reifyExtLam x pars (defClauses defn) es
+          Just (pars,sys) | df -> reifyExtLam x pars sys (defClauses defn) es
 
         -- Otherwise (ordinary function call):
           _ -> do
@@ -573,7 +574,7 @@ reifyTerm expandAnonDefs0 v = do
               let padVis  = map (fmap (unnamed . namedThing)) padVisNamed
 
               -- Keep only the rest with the same visibility of @dom@...
-              let padTail = filter ((getHiding dom ==) . getHiding) padRest
+              let padTail = filter (sameHiding dom) padRest
 
               -- ... and even the same name.
               let padSame = filter ((Just (fst (unDom dom)) ==) . fmap rangedThing . nameOf . unArg) padTail
@@ -589,7 +590,7 @@ reifyTerm expandAnonDefs0 v = do
              [ "  pad = " ++ show pad
              , "  nes = " ++ show nes
              ]
-           let hd = foldl' (A.App noExprInfo) (A.Def x) pad
+           let hd = List.foldl' (A.App noExprInfo) (A.Def x) pad
            nelims hd =<< reify nes
 
     -- Andreas, 2016-07-06 Issue #2047
@@ -611,8 +612,8 @@ reifyTerm expandAnonDefs0 v = do
     -- patterns, we fall back to printing the internal function created for the
     -- extended lambda, instead trying to construct the nice syntax.
 
-    reifyExtLam :: QName -> Int -> [I.Clause] -> I.Elims -> TCM Expr
-    reifyExtLam x npars cls es = do
+    reifyExtLam :: QName -> Int -> Maybe System -> [I.Clause] -> I.Elims -> TCM Expr
+    reifyExtLam x npars msys cls es = do
       reportSLn "reify.def" 10 $ "reifying extended lambda " ++ prettyShow x
       reportSLn "reify.def" 50 $ render $ nest 2 $ vcat
         [ text "npars =" <+> pretty npars
@@ -621,10 +622,13 @@ reifyTerm expandAnonDefs0 v = do
       -- As extended lambda clauses live in the top level, we add the whole
       -- section telescope to the number of parameters.
       let (pars, rest) = splitAt npars es
+
       -- Since we applying the clauses to the parameters,
       -- we do not need to drop their initial "parameter" patterns
       -- (this is taken care of by @apply@).
-      cls <- mapM (reify . NamedClause x False . (`applyE` pars)) cls
+      cls <- caseMaybe msys
+               (mapM (reify . NamedClause x False . (`applyE` pars)) cls)
+               (reify . QNamed x . (`applyE` pars))
       let cx    = nameConcrete $ qnameName x
           dInfo = mkDefInfo cx noFixity' PublicAccess ConcreteDef (getRange x)
       elims (A.ExtendedLam noExprInfo dInfo x cls) =<< reify rest
@@ -777,13 +781,17 @@ instance (BlankVars a, BlankVars b) => BlankVars (Either a b) where
 instance BlankVars A.NamedDotPattern where
   blank bound = id
 
+instance BlankVars A.StrippedDotPattern where
+  blank bound = id
+
 instance BlankVars A.Clause where
-  blank bound (A.Clause lhs namedDots rhs [] ca) =
+  blank bound (A.Clause lhs namedDots strippedDots rhs [] ca) =
     let bound' = varsBoundIn lhs `Set.union` bound
     in  A.Clause (blank bound' lhs)
                  (blank bound' namedDots)
+                 (blank bound' strippedDots)
                  (blank bound' rhs) [] ca
-  blank bound (A.Clause lhs namedDots rhs (_:_) ca) = __IMPOSSIBLE__
+  blank bound (A.Clause lhs namedDots strippedDots rhs (_:_) ca) = __IMPOSSIBLE__
 
 instance BlankVars A.LHS where
   blank bound (A.LHS i core wps) = uncurry (A.LHS i) $ blank bound (core, wps)
@@ -932,8 +940,8 @@ reifyPatterns = mapM $ stripNameFromExplicit <.> traverse (traverse reifyPat)
   where
     stripNameFromExplicit :: NamedArg p -> NamedArg p
     stripNameFromExplicit a
-      | getHiding a == NotHidden = fmap (unnamed . namedThing) a
-      | otherwise                = a
+      | visible a = fmap (unnamed . namedThing) a
+      | otherwise = a
 
     reifyPat :: MonadTCM tcm => I.DeBruijnPattern -> tcm A.Pattern
     reifyPat p = do
@@ -998,17 +1006,41 @@ instance Reify NamedClause A.Clause where
     rhs <- caseMaybe (clauseBody cl) (return AbsurdRHS) $ \ e -> do
        RHS <$> reify e <*> pure Nothing
     reportSLn "reify.clause" 60 $ "reifying NamedClause, rhs = " ++ show rhs
-    let result = A.Clause (spineToLhs lhs) [] rhs [] (I.clauseCatchall cl)
+    let result = A.Clause (spineToLhs lhs) [] [] rhs [] (I.clauseCatchall cl)
     reportSLn "reify.clause" 60 $ "reified NamedClause, result = " ++ show result
     return result
     where
       perm = fromMaybe __IMPOSSIBLE__ $ clausePerm cl
       info = LHSRange noRange
 
-      dropParams n (SpineLHS i f ps wps) = SpineLHS i f (genericDrop n ps) wps
+      dropParams n (SpineLHS i f ps wps) = SpineLHS i f (drop n ps) wps
       stripImps (SpineLHS i f ps wps) = do
         (ps, wps) <- stripImplicits (ps, wps)
         return $ SpineLHS i f ps wps
+
+instance Reify (QNamed System) [A.Clause] where
+  reify (QNamed f (System tel sys)) = addContext tel $ do
+    reportSLn "reify.system" 40 $ unlines $ show tel : map show sys
+    unview <- intervalUnview'
+    forM sys $ \ (alpha,u) -> do
+      rhs <- RHS <$> reify u <*> pure Nothing
+      ep <- fmap (A.EqualP patNoRange) . forM alpha $ \ (phi,b) -> do
+        let
+            d True = unview IOne
+            d False = unview IZero
+        reify (phi, d b)
+      -- Since stripImplicits assumes all visible variables are bound
+      -- in the patterns, we create them for the full context and then
+      -- keep only the ones for "tel"
+      tel' <- getContextTelescope
+      ps <- reifyPatterns $ teleNamedArgs tel'
+      ps <- return $ ps ++ [defaultNamedArg ep]
+      (ps,[]) <- stripImplicits (ps,[])
+      ps <- return $ drop (size tel' - size tel) ps
+      let
+        lhs = SpineLHS (LHSRange noRange) f ps []
+        result = A.Clause (spineToLhs lhs) [] [] rhs [] False
+      return result
 
 instance Reify Type Expr where
     reifyWhen = reifyWhenE

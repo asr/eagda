@@ -69,6 +69,7 @@ import Agda.TypeChecking.Rules.Builtin (isUntypedBuiltin, bindUntypedBuiltin, bu
 
 import Agda.TypeChecking.Patterns.Abstract (expandPatternSynonyms)
 import Agda.TypeChecking.Pretty hiding (pretty, prettyA)
+import Agda.TypeChecking.Warnings
 
 import Agda.Interaction.FindFile (checkModuleName)
 -- import Agda.Interaction.Imports  -- for type-checking in ghci
@@ -727,8 +728,6 @@ scopeCheckExtendedLam r cs = do
         UnknownName -> return cname
         _           -> nextlamname r (i+1) s
 
-
-
 instance ToAbstract C.Expr A.Expr where
   toAbstract e =
     traceCall (ScopeCheckExpr e) $ annotateExpr $ case e of
@@ -737,24 +736,30 @@ instance ToAbstract C.Expr A.Expr where
       Ident x -> toAbstract (OldQName x Nothing)
 
   -- Literals
-      C.Lit l@(LitNat r n) -> do
-        let builtin | n < 0     = Just <$> primFromNeg    -- negative literals are only allowed if FROMNEG is defined
-                    | otherwise = getBuiltin' builtinFromNat
-            l'   = LitNat r (abs n)
-            info = ExprRange r
-        conv <- builtin
-        case conv of
-          Just (I.Def q _) -> return $ A.App info (A.Def q) $ defaultNamedArg (A.Lit l')
-          _                -> return $ A.Lit l
+      C.Lit l ->
+        case l of
+          LitNat r n -> do
+            let builtin | n < 0     = Just <$> primFromNeg    -- negative literals are only allowed if FROMNEG is defined
+                        | otherwise = ensureInScope =<< getBuiltin' builtinFromNat
+                l'   = LitNat r (abs n)
+                info = ExprRange r
+            conv <- builtin
+            case conv of
+              Just (I.Def q _) -> return $ A.App info (A.Def q) $ defaultNamedArg (A.Lit l')
+              _                -> return $ A.Lit l
 
-      C.Lit l@(LitString r s) -> do
-        conv <- getBuiltin' builtinFromString
-        let info = ExprRange r
-        case conv of
-          Just (I.Def q _) -> return $ A.App info (A.Def q) $ defaultNamedArg (A.Lit l)
-          _                -> return $ A.Lit l
+          LitString r s -> do
+            conv <- ensureInScope =<< getBuiltin' builtinFromString
+            let info = ExprRange r
+            case conv of
+              Just (I.Def q _) -> return $ A.App info (A.Def q) $ defaultNamedArg (A.Lit l)
+              _                -> return $ A.Lit l
 
-      C.Lit l -> return $ A.Lit l
+          _ -> return $ A.Lit l
+        where
+          ensureInScope :: Maybe I.Term -> ScopeM (Maybe I.Term)
+          ensureInScope v@(Just (I.Def q _)) = ifM (isNameInScope q <$> getScope) (return v) (return Nothing)
+          ensureInScope _ = return Nothing
 
   -- Meta variables
       C.QuestionMark r n -> do
@@ -1973,7 +1978,7 @@ instance ToAbstract C.Clause A.Clause where
     if not (null eqs)
       then do
         rhs <- toAbstract =<< toAbstractCtx TopCtx (RightHandSide eqs with wcs' rhs whds)
-        return $ A.Clause lhs' [] rhs [] catchall
+        return $ A.Clause lhs' [] [] rhs [] catchall
       else do
         -- ASR (16 November 2015) Issue 1137: We ban termination
         -- pragmas inside `where` clause.
@@ -1984,7 +1989,7 @@ instance ToAbstract C.Clause A.Clause where
         (rhs, ds) <- whereToAbstract (getRange wh) whname whds $
                       toAbstractCtx TopCtx (RightHandSide eqs with wcs' rhs [])
         rhs <- toAbstract rhs
-        return $ A.Clause lhs' [] rhs ds catchall
+        return $ A.Clause lhs' [] [] rhs ds catchall
 
 whereToAbstract :: Range -> Maybe (C.Name, Access) -> [C.Declaration] -> ScopeM a -> ScopeM (a, [A.Declaration])
 whereToAbstract _ _      []   inner = (,[]) <$> inner
@@ -2170,7 +2175,7 @@ instance ToAbstract C.Pattern (A.Pattern' C.Expr) where
 
     toAbstract (AppP (QuoteP _) p)
       | IdentP x <- namedArg p,
-        getHiding p == NotHidden = do
+        visible p = do
       e <- toAbstract (OldQName x Nothing)
       let quoted (A.Def x) = return x
           quoted (A.Macro x) = return x

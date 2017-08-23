@@ -8,7 +8,7 @@ import Control.Monad.Reader
 import Control.Monad.State
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import Data.List as List
+import qualified Data.List as List
 
 import Agda.Syntax.Common
 import Agda.Syntax.Internal as I
@@ -98,7 +98,7 @@ initialIFSCandidates t = do
               m <- currentModule
               -- Are we inside the record module? If so it's safe and desirable
               -- to eta-expand once (issue #2320).
-              if qnameToList r `isPrefixOf` mnameToList m
+              if qnameToList r `List.isPrefixOf` mnameToList m
                 then return (Just (r, vs))
                 else return Nothing
         r -> return r
@@ -405,13 +405,13 @@ filterResetingState m cands f = disableDestructiveUpdate $ do
 -- Drop all candidates which are judgmentally equal to the first one.
 -- This is sufficient to reduce the list to a singleton should all be equal.
 dropSameCandidates :: MetaId -> [(Candidate, Term, Type, a)] -> TCM [(Candidate, Term, Type, a)]
-dropSameCandidates m cands0 = do
+dropSameCandidates m cands0 = verboseBracket "tc.instance" 30 "dropSameCandidates" $ do
   metas <- Set.fromList . Map.keys <$> getMetaStore
   let freshMetas x = not $ Set.null $ Set.difference (Set.fromList $ allMetas x) metas
 
   -- Take overlappable candidates into account
   let cands =
-        case partition (\ (c, _, _, _) -> candidateOverlappable c) cands0 of
+        case List.partition (\ (c, _, _, _) -> candidateOverlappable c) cands0 of
           (cand : _, []) -> [cand]  -- only overlappable candidates: pick the first one
           _              -> cands0  -- otherwise require equality
 
@@ -423,16 +423,18 @@ dropSameCandidates m cands0 = do
   rel <- getMetaRelevance <$> lookupMeta m
   case cands of
     []            -> return cands
+    cvd : _ | isIrrelevant rel -> do
+      reportSLn "tc.instance" 30 "Meta is irrelevant so any candidate will do."
+      return [cvd]
     cvd@(_, v, a, _) : vas -> do
         if freshMetas (v, a)
           then return (cvd : vas)
           else (cvd :) <$> dropWhileM equal vas
       where
-        equal _ | isIrrelevant rel = return True
         equal (_, v', a', _)
             | freshMetas (v', a') = return False  -- If there are fresh metas we can't compare
             | otherwise           =
-          verboseBracket "tc.instance" 30 "checkEqualCandidates" $ do
+          verboseBracket "tc.instance" 30 "comparingCandidates" $ do
           reportSDoc "tc.instance" 30 $ sep [ prettyTCM v <+> text "==", nest 2 $ prettyTCM v' ]
           localTCState $ dontAssignMetas $ ifNoConstraints_ (equalType a a' >> equalTerm a v v')
                              {- then -} (return True)
@@ -489,7 +491,7 @@ checkCandidates m t cands = disableDestructiveUpdate $
         debugConstraints
         verboseBracket "tc.instance" 20 ("checkCandidateForMeta " ++ prettyShow m) $
           liftTCM $ runCandidateCheck $ do
-            reportSLn "tc.instance" 70 $ "  t: " ++ show t ++ "\n  t':" ++ show t' ++ "\n  term: " ++ show term ++ "."
+            reportSLn "tc.instance" 70 $ "  t: " ++ prettyShow t ++ "\n  t':" ++ prettyShow t' ++ "\n  term: " ++ prettyShow term ++ "."
             reportSDoc "tc.instance" 20 $ vcat
               [ text "checkCandidateForMeta"
               , text "t    =" <+> prettyTCM t
@@ -498,7 +500,7 @@ checkCandidates m t cands = disableDestructiveUpdate $
               ]
 
             -- Apply hidden and instance arguments (recursive inst. search!).
-            (args, t'') <- implicitArgs (-1) (\h -> h /= NotHidden || eti == ExplicitToInstance) t'
+            (args, t'') <- implicitArgs (-1) (\h -> notVisible h || eti == ExplicitToInstance) t'
 
             reportSDoc "tc.instance" 20 $
               text "instance search: checking" <+> prettyTCM t''
@@ -579,7 +581,7 @@ applyDroppingParameters t vs = do
     Con c ci [] -> do
       def <- theDef <$> getConInfo c
       case def of
-        Constructor {conPars = n} -> return $ Con c ci (genericDrop n vs)
+        Constructor {conPars = n} -> return $ Con c ci (drop n vs)
         _ -> __IMPOSSIBLE__
     Def f [] -> do
       mp <- isProjection f

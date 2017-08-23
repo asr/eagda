@@ -24,7 +24,7 @@ import qualified Data.Map as Map
 import qualified Data.List as List
 import qualified Data.Set as Set
 import qualified Data.Foldable as Fold (toList)
-import Data.List hiding (null)
+import qualified Data.List as List
 import Data.Maybe
 import Data.Monoid (mempty, mappend)
 import Data.Map (Map)
@@ -47,6 +47,7 @@ import Agda.Syntax.Translation.ConcreteToAbstract
 import Agda.Syntax.Internal
 
 import Agda.TypeChecking.Errors
+import Agda.TypeChecking.Warnings
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.MetaVars ( openMetasToPostulates )
 import Agda.TypeChecking.Monad
@@ -162,7 +163,7 @@ scopeCheckImport x = do
     verboseS "import.scope" 10 $ do
       visited <- Map.keys <$> getVisitedModules
       reportSLn "import.scope" 10 $
-        "  visited: " ++ intercalate ", " (map prettyShow visited)
+        "  visited: " ++ List.intercalate ", " (map prettyShow visited)
     -- Since scopeCheckImport is called from the scope checker,
     -- we need to reimburse her account.
     i <- Bench.billTo [] $ getInterface x
@@ -672,7 +673,7 @@ createInterface file mname isMain = Bench.billTo [Bench.TopModule mname] $
     verboseS "import.iface.create" 10 $ do
       visited <- Map.keys <$> getVisitedModules
       reportSLn "import.iface.create" 10 $
-        "  visited: " ++ intercalate ", " (map prettyShow visited)
+        "  visited: " ++ List.intercalate ", " (map prettyShow visited)
 
     -- Parsing.
     (pragmas, top) <- Bench.billTo [Bench.Parsing] $
@@ -883,9 +884,12 @@ errorWarningsOfTCErr err = case err of
       return $ filter (not . isUnsolvedWarning . tcWarning) ws
   _ -> return []
 
--- constructIScope :: ScopeInfo -> Map ModuleName Scope
+-- | Reconstruct the 'iScope' (not serialized)
+--   from the 'iInsideScope' (serialized).
+
 constructIScope :: Interface -> Interface
-constructIScope i = i{ iScope = billToPure [ Deserialization ] $ publicModules $ iInsideScope i }
+constructIScope i = billToPure [ Deserialization ] $
+  i{ iScope = publicModules $ iInsideScope i }
 
 -- | Builds an interface for the current module, which should already
 -- have been successfully type checked.

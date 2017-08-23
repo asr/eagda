@@ -8,7 +8,6 @@ import Prelude hiding (null)
 import Control.Monad.Reader
 
 import Data.Function
-import Data.List hiding (sort, null)
 import qualified Data.List as List
 import qualified Data.Map as Map
 import qualified Data.Foldable as Fold
@@ -65,7 +64,7 @@ import Agda.Utils.Impossible
 --   @reverse@ is necessary because we are directly abstracting over the list.
 --
 findIdx :: Eq a => [a] -> a -> Maybe Int
-findIdx vs v = findIndex (==v) (reverse vs)
+findIdx vs v = List.findIndex (==v) (reverse vs)
 
 -- | Check whether a meta variable is a place holder for a blocked term.
 isBlockedTerm :: MetaId -> TCM Bool
@@ -202,7 +201,11 @@ newIFSMetaCtx s t vs = do
   reportSDoc "tc.meta.new" 50 $ fsep
     [ nest 2 $ pretty x <+> text ":" <+> prettyTCM t
     ]
-  addConstraint $ FindInScope x Nothing Nothing
+  let c = FindInScope x Nothing Nothing
+  -- If we're not already solving instance constraints we should add this
+  -- to the awake constraints to make sure we don't forget about it. If we
+  -- are solving constraints it will get woken up later (see #2690)
+  ifM isSolvingConstraints (addConstraint c) (addAwakeConstraint' c)
   etaExpandMetaSafe x
   return (x, MetaV x $ map Apply vs)
 
@@ -1095,7 +1098,7 @@ type SubstCand = [(Int,Term)] -- ^ a possibly non-deterministic substitution
 --   Otherwise, raise the error.
 checkLinearity :: SubstCand -> ExceptT () TCM SubstCand
 checkLinearity ids0 = do
-  let ids = sortBy (compare `on` fst) ids0  -- see issue 920
+  let ids = List.sortBy (compare `on` fst) ids0  -- see issue 920
   let grps = groupOn fst ids
   concat <$> mapM makeLinear grps
   where

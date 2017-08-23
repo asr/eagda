@@ -259,6 +259,9 @@ class ToConcrete a c | a -> c where
     toConcrete :: a -> AbsToCon c
     bindToConcrete :: a -> (c -> AbsToCon b) -> AbsToCon b
 
+    -- Christian Sattler, 2017-08-05:
+    -- These default implementations are not valid semantically (at least
+    -- the second one). Perhaps they (it) should be removed.
     toConcrete     x     = bindToConcrete x return
     bindToConcrete x ret = ret =<< toConcrete x
 
@@ -546,8 +549,17 @@ makeDomainFree b@(A.DomainFull (A.TypedBindings r (Arg info (A.TBind _ [WithHidi
     _ -> b
 makeDomainFree b = b
 
+-- Christian Sattler, 2017-08-05, fixing #2669
+-- Both methods of ToConcrete (FieldAssignment' a) (FieldAssignment' c) need
+-- to be implemented, each in terms of the corresponding one of ToConcrete a c.
+-- This mirrors the instance ToConcrete (Arg a) (Arg c).
+-- The default implementations of ToConcrete are not valid semantically.
 instance ToConcrete a c => ToConcrete (FieldAssignment' a) (FieldAssignment' c) where
     toConcrete = traverse toConcrete
+
+    bindToConcrete (FieldAssignment name a) ret =
+      bindToConcrete a $ ret . FieldAssignment name
+
 
 -- Binder instances -------------------------------------------------------
 
@@ -562,7 +574,7 @@ instance ToConcrete A.TypedBindings [C.TypedBindings] where
     where
       recoverLabels :: Arg A.TypedBinding -> Arg C.TypedBinding -> [Arg C.TypedBinding]
       recoverLabels b cb
-        | getHiding b == NotHidden = [cb]   -- We don't care about labels for explicit args
+        | visible b = [cb]   -- We don't care about labels for explicit args
         | otherwise = traverse (recover (unArg b)) cb
 
       recover (A.TBind _ xs _) (C.TBind r ys e) = tbind r e (zipWith label xs ys)
@@ -606,14 +618,14 @@ instance ToConcrete LetBinding [C.Declaration] where
       x' <- unqualify <$> toConcrete x
       modapp <- toConcrete modapp
       let r = getRange modapp
-          open = maybe DontOpen id $ minfoOpenShort i
-          dir  = maybe defaultImportDir{ importDirRange = r } id $ minfoDirective i
+          open = fromMaybe DontOpen $ minfoOpenShort i
+          dir  = fromMaybe defaultImportDir{ importDirRange = r } $ minfoDirective i
       -- This is no use since toAbstract LetDefs is in localToAbstract.
       local (openModule' x dir id) $
         ret [ C.ModuleMacro (getRange i) x' modapp open dir ]
     bindToConcrete (LetOpen i x _) ret = do
       x' <- toConcrete x
-      let dir = maybe defaultImportDir id $ minfoDirective i
+      let dir = fromMaybe defaultImportDir $ minfoDirective i
       local (openModule' x dir restrictPrivate) $
             ret [ C.Open (getRange i) x' dir ]
     bindToConcrete (LetDeclaredVariable _) ret =
@@ -694,7 +706,7 @@ instance ToConcrete (Constr A.Constructor) C.Declaration where
   toConcrete (Constr d) = head <$> toConcrete d
 
 instance ToConcrete a C.LHS => ToConcrete (A.Clause' a) [C.Declaration] where
-  toConcrete (A.Clause lhs _ rhs wh catchall) =
+  toConcrete (A.Clause lhs _ _ rhs wh catchall) =
       bindToConcrete lhs $ \lhs ->
         case lhs of
           C.LHS p wps _ _ -> do
@@ -795,8 +807,8 @@ instance ToConcrete A.Declaration [C.Declaration] where
 
   toConcrete (A.Import i x _) = do
     x <- toConcrete x
-    let open = maybe DontOpen id $ minfoOpenShort i
-        dir  = maybe defaultImportDir id $ minfoDirective i
+    let open = fromMaybe DontOpen $ minfoOpenShort i
+        dir  = fromMaybe defaultImportDir $ minfoDirective i
     return [ C.Import (getRange i) x Nothing open dir]
 
   toConcrete (A.Pragma i p)     = do

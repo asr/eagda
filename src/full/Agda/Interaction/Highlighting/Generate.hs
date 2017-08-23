@@ -43,6 +43,7 @@ import Agda.TypeChecking.Monad
   hiding (MetaInfo, Primitive, Constructor, Record, Function, Datatype)
 import qualified Agda.TypeChecking.Monad as M
 import Agda.TypeChecking.Positivity.Occurrence
+import Agda.TypeChecking.Warnings (runPM)
 
 import qualified Agda.Syntax.Abstract as A
 import Agda.Syntax.Concrete (FieldAssignment'(..))
@@ -440,7 +441,7 @@ nameKinds hlLevel decl = do
   defnToKind   M.Record{}                          = Record
   defnToKind   M.Constructor{ M.conInd = i }       = Constructor i
   defnToKind   M.Primitive{}                       = Primitive
-  defnToKind   M.AbstractDefn                      = __IMPOSSIBLE__
+  defnToKind   M.AbstractDefn{}                    = __IMPOSSIBLE__
 
   declToKind :: A.Declaration ->
                 HashMap A.QName NameKind -> HashMap A.QName NameKind

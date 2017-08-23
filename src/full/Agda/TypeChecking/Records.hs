@@ -7,7 +7,7 @@ module Agda.TypeChecking.Records where
 import Control.Monad
 
 import Data.Function
-import Data.List
+import qualified Data.List as List
 import Data.Maybe
 import qualified Data.Set as Set
 import Data.Traversable (traverse)
@@ -46,9 +46,9 @@ import Agda.Utils.Impossible
 --   Use the second argument for missing fields.
 orderFields :: QName -> a -> [C.Name] -> [(C.Name, a)] -> TCM [a]
 orderFields r def xs fs = do
-  unlessNull (ys \\ nub ys) $ typeError . DuplicateFields . nub
-  unlessNull (ys \\ xs)     $ typeError . TooManyFields r
-  -- shouldBeNull (xs \\ ys)     $ TooFewFields r
+  unlessNull (ys List.\\ List.nub ys) $ typeError . DuplicateFields . List.nub
+  unlessNull (ys List.\\ xs)          $ typeError . TooManyFields r
+  -- shouldBeNull (xs List.\\ ys)     $ TooFewFields r
   return $ order xs fs
   where
     ys = map fst fs
@@ -227,7 +227,7 @@ getDefType f t = do
   -- if @f@ is not a projection (like) function, @a@ is the correct type
       fallback = return $ Just a
   reportSDoc "tc.deftype" 20 $ vcat
-    [ text "definition f = " <> prettyTCM f <+> text ("raw: " ++ prettyShow f)
+    [ text "definition f = " <> prettyTCM f <+> text ("  -- raw: " ++ prettyShow f)
     , text "has type   a = " <> prettyTCM a
     , text "principal  t = " <> prettyTCM t
     ]

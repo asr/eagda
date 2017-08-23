@@ -506,8 +506,8 @@ instance Pretty Fixity' where
  -- Andreas 2010-09-24: and in record fields
 instance Pretty a => Pretty (Arg a) where
   prettyPrec p (Arg ai e) = prettyHiding ai id $ prettyPrec p' e
-      where p' | getHiding ai == NotHidden = p
-               | otherwise                 = 0
+      where p' | visible ai = p
+               | otherwise  = 0
 
 instance Pretty e => Pretty (Named_ e) where
     prettyPrec p (Named Nothing e) = prettyPrec p e
@@ -531,7 +531,7 @@ instance Pretty Pattern where
             LitP l          -> pretty l
             QuoteP _        -> text "quote"
             RecP _ fs       -> sep [ text "record", bracesAndSemicolons (map pretty fs) ]
-            EqualP _ es     -> sep $ concat [ [pretty e1, text "=", pretty e2] | (e1,e2) <- es ]
+            EqualP _ es     -> sep $ [ parens (sep [pretty e1, text "=", pretty e2]) | (e1,e2) <- es ]
 
 prettyOpApp :: forall a .
   Pretty a => QName -> [NamedArg (MaybePlaceholder a)] -> [Doc]

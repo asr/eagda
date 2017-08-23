@@ -74,7 +74,7 @@ instance ToAbstract (Expr, Elim) Expr where
   toAbstract (f, Apply arg) = do
     arg     <- toAbstract arg
     showImp <- lift showImplicitArguments
-    return $ if showImp || getHiding arg == NotHidden
+    return $ if showImp || visible arg
              then App (ExprRange noRange) f arg
              else f
 
@@ -166,11 +166,11 @@ instance ToAbstract (QNamed R.Clause) A.Clause where
     (names, pats) <- toAbstractPats pats
     rhs           <- local (names++) $ toAbstract rhs
     let lhs = spineToLhs $ SpineLHS (LHSRange noRange) name pats []
-    return $ A.Clause lhs [] (RHS rhs Nothing) [] False
+    return $ A.Clause lhs [] [] (RHS rhs Nothing) [] False
   toAbstract (QNamed name (R.AbsurdClause pats)) = do
     (_, pats) <- toAbstractPats pats
     let lhs = spineToLhs $ SpineLHS (LHSRange noRange) name pats []
-    return $ A.Clause lhs [] AbsurdRHS [] False
+    return $ A.Clause lhs [] [] AbsurdRHS [] False
 
 instance ToAbstract [QNamed R.Clause] [A.Clause] where
   toAbstract = traverse toAbstract

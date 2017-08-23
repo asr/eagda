@@ -8,7 +8,6 @@ import Control.Monad
 import Control.Monad.Reader
 import Control.Monad.State
 
-import Data.List hiding (sort)
 import qualified Data.List as List
 import qualified Data.Map as Map
 import qualified Data.Set as Set
@@ -669,7 +668,7 @@ compareDom :: Free c
   -> TCM ()     -- ^ Continuation if comparison is successful.
   -> TCM ()
 compareDom cmp dom1@(Dom{domInfo = i1, unDom = a1}) dom2@(Dom{domInfo = i2, unDom = a2}) b1 b2 errH errR cont
-  | getHiding dom1 /= getHiding dom2 = errH
+  | not (sameHiding dom1 dom2) = errH
   -- Andreas 2010-09-21 compare r1 and r2, but ignore forcing annotations!
   | not $ compareRelevance cmp (ignoreForced $ getRelevance dom1)
                                (ignoreForced $ getRelevance dom2) = errR
@@ -1229,7 +1228,7 @@ leqLevel a b = liftTCM $ do
         -- remove subsumed
         -- Andreas, 2014-04-07: This is ok if we do not go back to equalLevel
         (as, bs)
-          | not $ null subsumed -> leqView (Max $ as \\ subsumed) (Max bs)
+          | not $ null subsumed -> leqView (Max $ as List.\\ subsumed) (Max bs)
           where
             subsumed = [ a | a@(Plus m l) <- as, n <- findN l, m <= n ]
             -- @findN a@ finds the unique(?) term @Plus n a@ in @bs@, if any.

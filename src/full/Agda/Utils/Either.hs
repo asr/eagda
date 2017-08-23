@@ -1,17 +1,8 @@
 ------------------------------------------------------------------------
--- | Utilities for the 'Either' type
+-- | Utilities for the 'Either' type.
 ------------------------------------------------------------------------
 
-module Agda.Utils.Either
-  ( whileLeft, caseEitherM
-  , mapEither, mapLeft, mapRight
-  , traverseEither
-  , isLeft, isRight
-  , fromLeft, fromRight
-  , maybeLeft, maybeRight
-  , allLeft, allRight
-  , maybeToEither
-  ) where
+module Agda.Utils.Either where
 
 -- | Loop while we have an exception.
 
@@ -48,12 +39,14 @@ traverseEither :: Functor f => (a -> f c) -> (b -> f d) -> Either a b -> f (Eith
 traverseEither f g = either (fmap Left . f) (fmap Right . g)
 
 -- | Returns 'True' iff the argument is @'Right' x@ for some @x@.
+--
 --   Note: from @base >= 4.7.0.0@ already present in @Data.Either@.
 isRight :: Either a b -> Bool
 isRight (Right _) = True
 isRight (Left  _) = False
 
 -- | Returns 'True' iff the argument is @'Left' x@ for some @x@.
+--
 --   Note: from @base >= 4.7.0.0@ already present in @Data.Either@.
 isLeft :: Either a b -> Bool
 isLeft (Right _) = False
@@ -67,28 +60,36 @@ fromLeft = either id
 fromRight :: (a -> b) -> Either a b -> b
 fromRight f = either f id
 
+-- | Analogue of 'Agda.Utils.Maybe.fromMaybeM'.
+fromLeftM :: Monad m => (b -> m a) -> Either a b -> m a
+fromLeftM = either return
+
+-- | Analogue of 'Agda.Utils.Maybe.fromMaybeM'.
+fromRightM :: Monad m => (a -> m b) -> Either a b -> m b
+fromRightM f = either f return
+
 -- | Safe projection from 'Left'.
---   @
---     maybeLeft (Left a) = Just a
---     maybeLeft Right{}  = Nothing
---   @
+--
+--   > maybeLeft (Left a) = Just a
+--   > maybeLeft Right{}  = Nothing
+--
 maybeLeft :: Either a b -> Maybe a
 maybeLeft = either Just (const Nothing)
 
 -- | Safe projection from 'Right'.
---   @
---     maybeRight (Right b) = Just b
---     maybeRight Left{}    = Nothing
---   @
+--
+--   > maybeRight (Right b) = Just b
+--   > maybeRight Left{}    = Nothing
+--
 maybeRight :: Either a b -> Maybe b
 maybeRight = either (const Nothing) Just
 
--- | Returns @'Just' <input with tags stripped>@ if all elements are
+-- | Returns @'Just' input_with_tags_stripped@ if all elements are
 -- to the 'Left', and otherwise 'Nothing'.
 allLeft :: [Either a b] -> Maybe [a]
 allLeft = mapM maybeLeft
 
--- | Returns @'Just' <input with tags stripped>@ if all elements are
+-- | Returns @'Just' input_with_tags_stripped@ if all elements are
 -- to the right, and otherwise 'Nothing'.
 --
 -- @
@@ -102,6 +103,6 @@ allLeft = mapM maybeLeft
 allRight :: [Either a b] -> Maybe [b]
 allRight = mapM maybeRight
 
--- | Convert 'Maybe' to @'Either' ()'@
+-- | Convert 'Maybe' to @'Either' ()@.
 maybeToEither :: Maybe a -> Either () a
 maybeToEither = maybe (Left ()) Right

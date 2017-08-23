@@ -26,7 +26,6 @@ module Agda.TypeChecking.Substitute
 import Control.Applicative
 import Data.Function
 import Data.Functor
-import Data.List hiding (sort, drop)
 import qualified Data.List as List
 import Data.Map (Map)
 import Data.Maybe
@@ -86,7 +85,7 @@ canProject :: QName -> Term -> Maybe (Arg Term)
 canProject f v =
   case ignoreSharing v of
     (Con (ConHead _ _ fs) _ vs) -> do
-      i <- elemIndex f fs
+      i <- List.elemIndex f fs
       headMaybe (drop i vs)
     _ -> Nothing
 
@@ -100,7 +99,7 @@ conApp ch@(ConHead c _ fs) ci args (Proj o f : es) =
         "conApp: constructor " ++ show c ++
         " with fields " ++ show fs ++
         " projected by " ++ show f
-      i = maybe failure id            $ elemIndex f fs
+      i = maybe failure id            $ List.elemIndex f fs
       v = maybe failure argToDontCare $ headMaybe $ drop i args
   in  applyE v es
 
@@ -251,15 +250,18 @@ instance Apply Defn where
   apply d [] = d
   apply d args = case d of
     Axiom{} -> d
-    AbstractDefn -> d
+    AbstractDefn d -> AbstractDefn $ apply d args
     Function{ funClauses = cs, funCompiled = cc, funInv = inv
+            , funExtLam = extLam
             , funProjection = Nothing } ->
       d { funClauses    = apply cs args
         , funCompiled   = apply cc args
         , funInv        = apply inv args
+        , funExtLam     = modifySystem (`apply` args) <$> extLam
         }
 
     Function{ funClauses = cs, funCompiled = cc, funInv = inv
+            , funExtLam = extLam
             , funProjection = Just p0} ->
       case p0 `apply` args of
         p@Projection{ projIndex = n }
@@ -272,6 +274,7 @@ instance Apply Defn where
                 , funCompiled       = apply cc args'
                 , funInv            = apply inv args'
                 , funProjection     = if isVar0 then Just p{ projIndex = 0 } else Nothing
+                , funExtLam         = modifySystem (\ _ -> __IMPOSSIBLE__) <$> extLam
                 }
               where
                 larg  = last args -- the record value
@@ -415,6 +418,24 @@ instance Apply CompiledClauses where
     where
       len = length args
 
+instance Apply ExtLamInfo where
+  apply (ExtLamInfo n h sys) args = ExtLamInfo n h (apply sys args)
+
+instance Apply System where
+  -- We assume we apply a system only to arguments introduced by
+  -- lambda lifting.
+  apply (System tel sys) args
+      = if nargs > ntel then __IMPOSSIBLE__
+        else System newTel (map (map (f -*- id) -*- f) sys)
+
+    where
+      f = applySubst sigma
+      nargs = length args
+      ntel = size tel
+      newTel = apply tel args
+      -- newTel ⊢ σ : tel
+      sigma = liftS (ntel - nargs) (parallelS (reverse $ map unArg args))
+
 instance Apply a => Apply (WithArity a) where
   apply  (WithArity n a) args = WithArity n $ apply  a args
   applyE (WithArity n a) es   = WithArity n $ applyE a es
@@ -484,7 +505,7 @@ instance DoDrop a => Abstract (Drop a) where
 instance Apply Permutation where
   -- The permutation must start with [0..m - 1]
   -- NB: section (- m) not possible (unary minus), hence (flip (-) m)
-  apply (Perm n xs) args = Perm (n - m) $ map (flip (-) m) $ genericDrop m xs
+  apply (Perm n xs) args = Perm (n - m) $ map (flip (-) m) $ drop m xs
     where
       m = size args
 
@@ -561,17 +582,23 @@ instance Abstract ProjLams where
   abstract tel (ProjLams lams) = ProjLams $
     map (\ !dom -> argFromDom (fst <$> dom)) (telToList tel) ++ lams
 
+instance Abstract System where
+  abstract tel (System tel1 sys) = System (abstract tel tel1) sys
+
 instance Abstract Defn where
   abstract tel d = case d of
     Axiom{} -> d
-    AbstractDefn -> d
+    AbstractDefn d -> AbstractDefn $ abstract tel d
     Function{ funClauses = cs, funCompiled = cc, funInv = inv
+            , funExtLam = extLam
             , funProjection = Nothing  } ->
       d { funClauses  = abstract tel cs
         , funCompiled = abstract tel cc
         , funInv      = abstract tel inv
+        , funExtLam   = modifySystem (abstract tel) <$> extLam
         }
     Function{ funClauses = cs, funCompiled = cc, funInv = inv
+            , funExtLam = extLam
             , funProjection = Just p } ->
       -- Andreas, 2015-05-11 if projection was applied to Var 0
       -- then abstract over last element of tel (the others are params).
@@ -579,6 +606,7 @@ instance Abstract Defn where
         d' { funClauses  = abstract tel1 cs
            , funCompiled = abstract tel1 cc
            , funInv      = abstract tel1 inv
+           , funExtLam   = modifySystem (\ _ -> __IMPOSSIBLE__) <$> extLam
            }
         where
           d' = d { funProjection = Just $ abstract tel p }
@@ -601,7 +629,7 @@ instance Abstract Defn where
       d { primClauses = abstract tel cs }
 
 instance Abstract PrimFun where
-    abstract tel (PrimFun x ar def) = PrimFun x (ar + n) $ \ts -> def $ genericDrop n ts
+    abstract tel (PrimFun x ar def) = PrimFun x (ar + n) $ \ts -> def $ drop n ts
         where n = size tel
 
 instance Abstract Clause where
@@ -849,6 +877,9 @@ instance Subst Term ModuleParameters where
 
 instance Subst Term A.NamedDotPattern where
   applySubst rho (A.NamedDot x v a) = A.NamedDot x (applySubst rho v) (applySubst rho a)
+
+instance Subst Term A.StrippedDotPattern where
+  applySubst rho (A.StrippedDot e v a) = A.StrippedDot e (applySubst rho v) (applySubst rho a)
 
 instance Subst t a => Subst t (Elim' a) where
   applySubst rho e = case e of

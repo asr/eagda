@@ -58,6 +58,7 @@ import Agda.TypeChecking.SizedTypes.Solve
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.Unquote
+import Agda.TypeChecking.Warnings
 
 import Agda.TypeChecking.Rules.Term
 import Agda.TypeChecking.Rules.Data    ( checkDataDef )
@@ -297,7 +298,12 @@ revisitRecordPatternTranslation qs = do
   classify q = inConcreteOrAbstractMode q $ \ def -> do
     case theDef def of
       Record{ recEtaEquality' = Inferred True } -> return $ Just $ Left q
-      Function{ funCompiled = Just cc } -> return $ Just $ Right (q, cc)
+      Function
+        { funProjection = Nothing
+            -- Andreas, 2017-08-10, issue #2664:
+            -- Do not record pattern translate record projection definitions!
+        , funCompiled   = Just cc
+        } -> return $ Just $ Right (q, cc)
       _ -> return Nothing
 
 type FinalChecks = Maybe (TCM ())
@@ -936,7 +942,7 @@ checkSectionApplication' i m1 (A.SectionApp ptel m2 args) copyInfo = do
       ]
     -- Andreas, 2014-04-06, Issue 1094:
     -- Add the section with well-formed telescope.
-    addContext aTel $ do
+    addContext (KeepNames aTel) $ do
       reportSDoc "tc.mod.apply" 80 $
         text "addSection" <+> prettyTCM m1 <+> (getContextTelescope >>= \ tel -> inTopContext (prettyTCM tel))
       addSection m1
@@ -948,7 +954,7 @@ checkSectionApplication' i m1 (A.SectionApp ptel m2 args) copyInfo = do
     args <- instantiateFull $ vs ++ ts
     let n = size aTel
     etaArgs <- inTopContext $ addContext aTel getContextArgs
-    addContext' aTel $
+    addContext' (KeepNames aTel) $
       applySection m1 (ptel `abstract` aTel) m2 (raise n args ++ etaArgs) copyInfo
 
 checkSectionApplication' i m1 (A.RecordModuleIFS x) copyInfo = do

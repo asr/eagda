@@ -10,7 +10,7 @@ import Control.Applicative
 import Control.Monad.Reader
 import Control.Monad.State
 
-import Data.List hiding (sort)
+import qualified Data.List as List
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Monoid
@@ -91,7 +91,7 @@ updateModuleParameters :: (MonadTCM tcm, MonadDebug tcm)
                        => Substitution -> tcm a -> tcm a
 updateModuleParameters sub ret = do
   pm <- use stModuleParameters
-  let showMP pref mps = intercalate "\n" $
+  let showMP pref mps = List.intercalate "\n" $
         [ p ++ show m ++ " : " ++ show (mpSubstitution mp)
         | (p, (m, mp)) <- zip (pref : repeat (map (const ' ') pref))
                               (Map.toList mps)
@@ -173,6 +173,10 @@ addContext' :: (MonadTCM tcm, MonadDebug tcm, AddContext b)
             => b -> tcm a -> tcm a
 addContext' cxt = addContext cxt . weakenModuleParameters (contextSize cxt)
 
+-- | Wrapper to tell 'addContext' not to 'unshadowName's. Used when adding a
+--   user-provided, but already type checked, telescope to the context.
+newtype KeepNames a = KeepNames a
+
 #if __GLASGOW_HASKELL__ >= 710
 instance {-# OVERLAPPABLE #-} AddContext a => AddContext [a] where
 #else
@@ -187,7 +191,10 @@ instance AddContext (Name, Dom Type) where
 
 instance AddContext (Dom (Name, Type)) where
   addContext = addContext . distributeF
-  -- addContext dom = addCtx (fst $ unDom dom) (snd <$> dom)
+  contextSize _ = 1
+
+instance AddContext (Dom (String, Type)) where
+  addContext = addContext . distributeF
   contextSize _ = 1
 
 instance AddContext ([Name], Dom Type) where
@@ -207,9 +214,10 @@ instance AddContext (String, Dom Type) where
     addCtx x dom ret
   contextSize _ = 1
 
-instance AddContext (Dom (String, Type)) where
-  addContext = addContext . distributeF
-  -- addContext dom = addContext (fst $ unDom dom, snd <$> dom)
+instance AddContext (KeepNames String, Dom Type) where
+  addContext (KeepNames s, dom) ret = do
+    x <- freshName_ s
+    addCtx x dom ret
   contextSize _ = 1
 
 instance AddContext (Dom Type) where
@@ -228,6 +236,12 @@ instance AddContext String where
   addContext s = addContext (s, dummyDom)
   contextSize _ = 1
 
+instance AddContext (KeepNames Telescope) where
+  addContext (KeepNames tel) ret = loop tel where
+    loop EmptyTel          = ret
+    loop (ExtendTel t tel) = underAbstraction' KeepNames t tel loop
+  contextSize (KeepNames tel) = size tel
+
 instance AddContext Telescope where
   addContext tel ret = loop tel where
     loop EmptyTel          = ret
@@ -241,10 +255,12 @@ dummyDom = defaultDom typeDontCare
 -- | Go under an abstraction.
 {-# SPECIALIZE underAbstraction :: Subst t a => Dom Type -> Abs a -> (a -> TCM b) -> TCM b #-}
 underAbstraction :: (Subst t a, MonadTCM tcm) => Dom Type -> Abs a -> (a -> tcm b) -> tcm b
-underAbstraction _ (NoAbs _ v) k = k v
-underAbstraction t a           k = do
-    x <- unshadowName =<< freshName_ (realName $ absName a)
-    addContext (x, t) $ k $ absBody a
+underAbstraction = underAbstraction' id
+
+underAbstraction' :: (Subst t a, MonadTCM tcm, AddContext (name, Dom Type)) =>
+                     (String -> name) -> Dom Type -> Abs a -> (a -> tcm b) -> tcm b
+underAbstraction' _ _ (NoAbs _ v) k = k v
+underAbstraction' wrap t a        k = addContext (wrap $ realName $ absName a, t) $ k $ absBody a
   where
     realName s = if isNoName s then "x" else argNameToString s
 
@@ -281,7 +297,7 @@ getContext = asks $ map ctxEntry . envContext
 -- | Get the size of the current context.
 {-# SPECIALIZE getContextSize :: TCM Nat #-}
 getContextSize :: (Applicative m, MonadReader TCEnv m) => m Nat
-getContextSize = genericLength <$> asks envContext
+getContextSize = length <$> asks envContext
 
 -- | Generate @[var (n - 1), ..., var 0]@ for all declarations in the context.
 {-# SPECIALIZE getContextArgs :: TCM Args #-}
@@ -345,7 +361,7 @@ getVarInfo
 getVarInfo x =
     do  ctx <- getContext
         def <- asks envLetBindings
-        case findIndex ((==x) . fst . unDom) ctx of
+        case List.findIndex ((==x) . fst . unDom) ctx of
             Just n -> do
                 t <- typeOfBV' n
                 return (var n, t)

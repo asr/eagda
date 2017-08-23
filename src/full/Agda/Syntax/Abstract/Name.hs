@@ -280,11 +280,30 @@ instance NumHoles AmbiguousQName where
 -- | Use 'prettyShow' to print names to the user.
 ------------------------------------------------------------------------
 
-deriving instance Show Name
-deriving instance Show ModuleName
-deriving instance Show QName
+-- deriving instance Show Name
+-- deriving instance Show ModuleName
+-- deriving instance Show QName
 deriving instance Show a => Show (QNamed a)
 deriving instance Show AmbiguousQName
+
+-- | Only use this @show@ function in debugging!  To convert an
+--   abstract 'Name' into a string use @prettyShow@.
+instance Show Name where
+  -- Andreas, 2014-10-02: Reverted to nice printing.
+  -- Reason: I do not have time just now to properly fix the
+  -- use of Show Name for pretty printing everywhere.
+  -- But I want to push the fix for Issue 836 now.
+  show = prettyShow
+
+-- | Only use this @show@ function in debugging!  To convert an
+--   abstract 'ModuleName' into a string use @prettyShow@.
+instance Show ModuleName where
+  show = prettyShow
+
+-- | Only use this @show@ function in debugging!  To convert an
+--   abstract 'QName' into a string use @prettyShow@.
+instance Show QName where
+  show = prettyShow
 
 ------------------------------------------------------------------------
 -- * Pretty instances
@@ -338,7 +357,12 @@ instance SetRange QName where
                    }
 
 instance SetRange ModuleName where
-  setRange r (MName ns) = MName (map (setRange r) ns)
+  setRange r (MName ns) = MName (zipWith setRange rs ns)
+    where
+      -- Put the range only on the last name. Otherwise
+      -- we get overlapping jump-to-definition links for all
+      -- the parts (See #2666).
+      rs = replicate (length ns - 1) noRange ++ [r]
 
 -- ** KillRange
 

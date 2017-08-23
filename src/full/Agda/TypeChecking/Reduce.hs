@@ -8,7 +8,7 @@ import Prelude hiding (mapM)
 import Control.Monad.Reader hiding (mapM)
 import Control.Applicative
 
-import Data.List as List hiding (sort)
+import qualified Data.List as List
 import Data.Maybe
 import Data.Map (Map)
 import Data.Traversable
@@ -352,7 +352,7 @@ maybeFastReduceTerm v = do
                  else do
     s <- optSharing   <$> commandLineOptions
     allowed <- asks envAllowedReductions
-    let notAll = delete NonTerminatingReductions allowed /= allReductions
+    let notAll = List.delete NonTerminatingReductions allowed /= allReductions
     if s || notAll then slowReduceTerm v else fastReduce (elem NonTerminatingReductions allowed) v
 
 slowReduceTerm :: Term -> ReduceM (Blocked Term)
@@ -491,10 +491,10 @@ unfoldDefinitionStep unfoldDelayed v0 f es =
     noReduction    = return . NoReduction
     yesReduction s = return . YesReduction s
     reducePrimitive x v0 f es pf dontUnfold cls mcc rewr
-      | genericLength es < ar
+      | length es < ar
                   = noReduction $ NotBlocked Underapplied $ v0 `applyE` es -- not fully applied
       | otherwise = {-# SCC "reducePrimitive" #-} do
-          let (es1,es2) = genericSplitAt ar es
+          let (es1,es2) = splitAt ar es
               args1     = fromMaybe __IMPOSSIBLE__ $ mapM isApplyElim es1
           r <- primFunImplementation pf args1
           case r of
@@ -1254,10 +1254,11 @@ instance InstantiateFull DisplayTerm where
 instance InstantiateFull Defn where
     instantiateFull' d = case d of
       Axiom{} -> return d
-      AbstractDefn -> return d
-      Function{ funClauses = cs, funCompiled = cc, funInv = inv } -> do
+      AbstractDefn d -> AbstractDefn <$> instantiateFull' d
+      Function{ funClauses = cs, funCompiled = cc, funInv = inv, funExtLam = extLam } -> do
         (cs, cc, inv) <- instantiateFull' (cs, cc, inv)
-        return $ d { funClauses = cs, funCompiled = cc, funInv = inv }
+        extLam <- instantiateFull' extLam
+        return $ d { funClauses = cs, funCompiled = cc, funInv = inv, funExtLam = extLam }
       Datatype{ dataSort = s, dataClause = cl } -> do
         s  <- instantiateFull' s
         cl <- instantiateFull' cl
@@ -1270,6 +1271,14 @@ instance InstantiateFull Defn where
       Primitive{ primClauses = cs } -> do
         cs <- instantiateFull' cs
         return $ d { primClauses = cs }
+
+instance InstantiateFull ExtLamInfo where
+  instantiateFull' e@(ExtLamInfo { extLamSys = sys}) = do
+    sys <- instantiateFull' sys
+    return $ e { extLamSys = sys}
+
+instance InstantiateFull System where
+  instantiateFull' (System tel sys) = System <$> instantiateFull' tel <*> instantiateFull' sys
 
 instance InstantiateFull FunctionInverse where
   instantiateFull' NotInjective = return NotInjective

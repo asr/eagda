@@ -4,13 +4,13 @@
 module Agda.TypeChecking.Rules.Def where
 
 import Prelude hiding (mapM)
-import Control.Arrow ((***),second)
+import Control.Arrow ((***),first,second)
 import Control.Applicative
 import Control.Monad.State hiding (forM, mapM)
 import Control.Monad.Reader hiding (forM, mapM)
 
 import Data.Function
-import Data.List hiding (sort)
+import qualified Data.List as List
 import Data.Maybe
 import Data.Traversable
 import qualified Data.Set as Set
@@ -119,7 +119,7 @@ isAlias cs t =
   where
     isMeta (MetaV x _) = Just x
     isMeta _           = Nothing
-    trivialClause [A.Clause (A.LHS i (A.LHSHead f []) []) _ (A.RHS e mc) [] _] = Just (e, mc)
+    trivialClause [A.Clause (A.LHS i (A.LHSHead f []) []) _ _ (A.RHS e mc) [] _] = Just (e, mc)
     trivialClause _ = Nothing
 
 -- | Check a trivial definition of the form @f = e@
@@ -252,7 +252,7 @@ checkFunDefS t ai delayed extlam with i name withSub cs = do
               inTopContext $ addClauses name [c]
               return (c,b)
 
-        (cs,isOneIxs) <- return $ (second (nub . concat) . unzip) cs
+        (cs,isOneIxs) <- return $ (second (List.nub . concat) . unzip) cs
 
         let isSystem = not . null $ isOneIxs
         when isSystem $ unless canBeSystem $
@@ -278,9 +278,9 @@ checkFunDefS t ai delayed extlam with i name withSub cs = do
 
         -- Systems have their own coverage and "coherence" check, we
         -- also add an absurd clause for the cases not needed.
-        cs <- if not isSystem then return cs else do
+        (cs,sys) <- if not isSystem then return (cs, Nothing) else do
                  fullType <- flip abstract t <$> getContextTelescope
-                 inTopContext $ checkSystemCoverage name isOneIxs fullType cs
+                 sys <- inTopContext $ checkSystemCoverage name isOneIxs fullType cs
                  tel <- getContextTelescope
                  let c = Clause
                        { clauseFullRange = noRange
@@ -291,7 +291,7 @@ checkFunDefS t ai delayed extlam with i name withSub cs = do
                        , clauseType = Just (defaultArg t)
                        , clauseCatchall = False
                        }
-                 return (cs ++ [c])
+                 return (cs ++ [c], Just sys)
 
         -- Annotate the clauses with which arguments are actually used.
         cs <- instantiateFull {- =<< mapM rebindClause -} cs
@@ -349,7 +349,7 @@ checkFunDefS t ai delayed extlam with i name withSub cs = do
              , funDelayed        = delayed
              , funInv            = inv
              , funAbstr          = Info.defAbstract i
-             , funExtLam         = extlam
+             , funExtLam         = (\ e -> e { extLamSys = sys }) <$> extlam
              , funWith           = with
              , funCopatternLHS   = isCopatternLHS cs
              , funTPTPRole        = Nothing
@@ -380,8 +380,8 @@ useTerPragma def = return def
 -- | Insert some patterns in the in with-clauses LHS of the given RHS
 insertPatterns :: [A.Pattern] -> A.RHS -> A.RHS
 insertPatterns pats (A.WithRHS aux es cs) = A.WithRHS aux es (map insertToClause cs)
-    where insertToClause (A.Clause (A.LHS i lhscore ps) dots rhs ds catchall)
-              = A.Clause (A.LHS i lhscore (pats ++ ps)) dots (insertPatterns pats rhs) ds catchall
+    where insertToClause (A.Clause (A.LHS i lhscore ps) dots sdots rhs ds catchall)
+              = A.Clause (A.LHS i lhscore (pats ++ ps)) dots sdots (insertPatterns pats rhs) ds catchall
 insertPatterns pats (A.RewriteRHS qes rhs wh) = A.RewriteRHS qes (insertPatterns pats rhs) wh
 insertPatterns pats rhs = rhs
 
@@ -411,7 +411,7 @@ checkSystemCoverage
   -> [Int]
   -> Type
   -> [Clause]
-  -> TCM ()
+  -> TCM System
 checkSystemCoverage f [n] t cs = do
   reportSDoc "tc.sys.cover" 10 $ text (show (n , length cs)) <+> prettyTCM t
   TelV gamma t <- telViewUpTo n t
@@ -432,15 +432,18 @@ checkSystemCoverage f [n] t cs = do
         isDir (ConP q _ []) | Just (conName q) == io = Just True
         isDir _ = Nothing
 
+        collectDirs :: [Int] -> [DeBruijnPattern] -> [(Int,Bool)]
         collectDirs [] [] = []
         collectDirs (i : is) (p : ps) | Just d <- isDir p = (i,d) : collectDirs is ps
                                       | otherwise         = collectDirs is ps
         collectDirs _ _ = __IMPOSSIBLE__
 
+        dir :: (Int,Bool) -> Term
         dir (i,False) = ineg `apply` [argN $ var i]
         dir (i,True) = var i
 
         -- andI and orI have cases for singletons to improve error messages.
+        andI, orI :: [Term] -> Term
         andI [] = i1
         andI [t] = t
         andI (t:ts) = (\ x -> imin `apply` [argN t, argN x]) $ andI ts
@@ -451,7 +454,9 @@ checkSystemCoverage f [n] t cs = do
 
       let
         pats = map (take n . map (namedThing . unArg) . namedClausePats) cs
+        alphas :: [[(Int,Bool)]] -- the face maps corresponding to each clause
         alphas = map (collectDirs (downFrom n)) pats
+        phis :: [Term] -- the φ terms for each clause (i.e. the alphas as terms)
         phis = map andI $ map (map dir) alphas
         psi = orI $ phis
         pcs = zip phis cs
@@ -463,7 +468,7 @@ checkSystemCoverage f [n] t cs = do
       reportSDoc "tc.sys.cover" 10 $ text "equalTerm " <+> prettyTCM (unArg phi) <+> prettyTCM psi
       equalTerm interval (unArg phi) psi
 
-      forM_ (init $ init $ tails pcs) $ \ ((phi1,cl1):pcs') -> do
+      forM_ (init $ init $ List.tails pcs) $ \ ((phi1,cl1):pcs') -> do
         forM_ pcs' $ \ (phi2,cl2) -> do
           phi12 <- reduce (imin `apply` [argN phi1, argN phi2])
           forallFaceMaps phi12 (\ _ _ -> __IMPOSSIBLE__) $ \ sigma -> do
@@ -480,10 +485,32 @@ checkSystemCoverage f [n] t cs = do
             v1 <- body cl1
             v2 <- body cl2
             equalTerm t' v1 v2
-      return ()
-    _ -> __IMPOSSIBLE__
 
-  where
+      sys <- forM (zip alphas cs) $ \ (alpha,cl) -> do
+
+            let
+                -- Δ = Γ_α , Δ'α
+                delta = clauseTel cl
+                -- Δ ⊢ b
+                Just b = clauseBody cl
+                -- Δ ⊢ ps : Γ , o : [φ] , Δ'
+                -- we assume that there's no pattern matching other
+                -- than from the system
+                ps = namedClausePats cl
+                extra = length (drop (size gamma + 1) ps)
+                -- size Δ'α = size Δ' = extra
+                -- Γ , α ⊢ u
+                takeLast n xs = drop (length xs - n) xs
+                weak [] = idS
+                weak (i:is) = weak is `composeS` liftS i (raiseS 1)
+                tel = telFromList (takeLast extra (telToList delta))
+                u = abstract tel (liftS extra (weak $ List.sort $ map fst alpha) `applySubst` b)
+            return (map (first var) alpha,u)
+
+      reportSDoc "tc.sys.cover.sys" 20 $ fsep $ prettyTCM gamma : map prettyTCM sys
+      reportSDoc "tc.sys.cover.sys" 40 $ fsep $ (text . show) gamma : map (text . show) sys
+      return (System gamma sys) -- gamma uses names from the type, not the patterns, could we do better?
+    _ -> __IMPOSSIBLE__
 checkSystemCoverage _ _ t cs = __IMPOSSIBLE__
 
 checkBodyEndPoints
@@ -547,7 +574,7 @@ checkClause
   -> A.SpineClause -- ^ Clause.
   -> TCM (Clause,[Int])    -- ^ Type-checked clause and whether we performed a partial split
 
-checkClause t withSub c@(A.Clause (A.SpineLHS i x aps withPats) namedDots rhs0 wh catchall) = do
+checkClause t withSub c@(A.Clause (A.SpineLHS i x aps withPats) namedDots strippedDots rhs0 wh catchall) = do
     reportSDoc "tc.lhs.top" 30 $ text "Checking clause" $$ prettyA c
     unless (null withPats) $
       typeError $ UnexpectedWithPatterns withPats
@@ -559,7 +586,7 @@ checkClause t withSub c@(A.Clause (A.SpineLHS i x aps withPats) namedDots rhs0 w
       closed_t <- flip abstract t <$> getContextTelescope
       -- Not really an as-pattern, but this does the right thing.
       bindAsPatterns [ AsB x v a | A.NamedDot x v a <- namedDots ] $
-        checkLeftHandSide (CheckPatternShadowing c) (Just x) aps t withSub $ \ lhsResult@(LHSResult npars delta ps trhs patSubst asb psplit) -> do
+        checkLeftHandSide (CheckPatternShadowing c) (Just x) aps t withSub strippedDots $ \ lhsResult@(LHSResult npars delta ps trhs patSubst asb psplit) -> do
         -- Note that we might now be in irrelevant context,
         -- in case checkLeftHandSide walked over an irrelevant projection pattern.
 
@@ -584,7 +611,8 @@ checkClause t withSub c@(A.Clause (A.SpineLHS i x aps withPats) namedDots rhs0 w
             updateRHS (A.WithRHS q es cs)       = A.WithRHS q es (map updateClause cs)
             updateRHS (A.RewriteRHS qes rhs wh) = A.RewriteRHS qes (updateRHS rhs) wh
 
-            updateClause (A.Clause f dots rhs wh ca) = A.Clause f (applySubst patSubst dots) (updateRHS rhs) wh ca
+            updateClause (A.Clause f dots sdots rhs wh ca) =
+              A.Clause f (applySubst patSubst dots) (applySubst patSubst sdots) (updateRHS rhs) wh ca
 
         (body, with) <- bindAsPatterns asb $ checkWhere wh $ checkRHS i x aps t' lhsResult rhs
 
@@ -749,7 +777,7 @@ checkRHS i x aps t lhsResult@(LHSResult _ delta ps trhs _ _asb _) rhs0 = handleR
               | otherwise = (A.RewriteRHS qes rhs' wh, [])
             -- Andreas, 2014-03-05 kill range of copied patterns
             -- since they really do not have a source location.
-            cs       = [A.Clause (A.LHS i (A.LHSHead x (killRange aps)) pats) [] rhs'' outerWhere False]
+            cs       = [A.Clause (A.LHS i (A.LHSHead x (killRange aps)) pats) [] [] rhs'' outerWhere False]
 
         checkWithRHS x qname t lhsResult [withExpr] [withType] cs
 
@@ -829,9 +857,9 @@ checkWithRHS x aux t (LHSResult npars delta ps trhs _ _asb _) vs0 as cs = Bench.
         let n = size us
             m = size delta
             -- First the variables bound outside this definition
-            (us0, us1') = genericSplitAt (n - m) us
+            (us0, us1') = splitAt (n - m) us
             -- Then permute the rest and grab those needed to for the with arguments
-            (us1, us2)  = genericSplitAt (size delta1) $ permute perm' us1'
+            (us1, us2)  = splitAt (size delta1) $ permute perm' us1'
             -- Now stuff the with arguments in between and finish with the remaining variables
             v    = Def aux $ map Apply $ us0 ++ us1 ++ map defaultArg withArgs ++ us2
         -- Andreas, 2013-02-26 add with-name to signature for printing purposes
@@ -876,7 +904,7 @@ checkWithFunction cxtNames (WithFunction f aux t delta delta1 delta2 vs as b qs 
       , text "as     =" <+> addContext delta1 (prettyTCM as)
       , text "vs     =" <+> do addContext delta1 $ prettyTCM vs
       , text "b      =" <+> do addContext delta1 $ addContext delta2 $ prettyTCM b
-      , text "qs     =" <+> prettyList (map pretty qs)
+      , text "qs     =" <+> do addContext delta $ prettyTCMPatternList qs
       , text "perm'  =" <+> text (show perm')
       , text "perm   =" <+> text (show perm)
       , text "fperm  =" <+> text (show finalPerm)
