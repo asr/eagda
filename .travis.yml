@@ -139,8 +139,8 @@ matrix:
 
   # Builds are loooong, we want to send an email as fast as possible.
   fast_finish: true
-  allow_failures:
-  - env: TEST=MAIN GHC_VER=8.2.1 BUILD=CABAL CABAL_VER=2.0
+  # allow_failures:
+  # - env: TEST=MAIN GHC_VER=8.2.1 BUILD=CABAL CABAL_VER=2.0
 
 ##############################################################################
 before_install:
@@ -218,6 +218,8 @@ install:
 
 # N.B. that we use the `--force-reinstalls` option [Issue 1520].
 
+# We are using `make CABAL_OPTS...` because we are including the
+# options to `cabal install` set up in the `Makefile`.
   - if [[ $TEST = "MAIN" || $TEST = "HADDOCK" ]]; then
        make CABAL_OPTS='--only-dependencies --force-reinstalls' install-bin;
     elif [[ $TEST = "STACKAGE" ]]; then

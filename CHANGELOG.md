@@ -300,6 +300,17 @@ Emacs mode
     test0 x | q = ?
   ```
 
+Library management
+------------------
+
+* The `name` field in an `.agda-lib` file is now optional.
+
+  This feature is convenient if you just want to specify the dependencies
+  and include pathes for your local project in an `.agda-lib` file.
+
+  Naturally, libraries without names cannot be depended on.
+
+
 Compiler backends
 -----------------
 
@@ -337,6 +348,12 @@ Compiler backends
   The COMPILED pragma (and the corresponding COMPILE GHC pragma) is now also
   allowed for functions. This makes it possible to have both an Agda
   implementation and a native Haskell runtime implementation.
+
+  The GHC file header pragmas `LANGUAGE`, `OPTIONS_GHC`, and `INCLUDE`
+  inside a `FOREIGN GHC` pragma are recognized and printed correctly
+  at the top of the generated Haskell file.
+  [Issue [#2712](https://github.com/agda/agda/issues/2712)]
+
 
 * UHC compiler backend
 
@@ -540,12 +557,21 @@ LaTeX backend
 Pragmas and options
 -------------------
 
-* The `--safe` option is now a valid pragma
+* The `--safe` option is now a valid pragma.
 
   This makes it possible to declare a module as being part of the safe
   subset of the language by stating `{-# OPTIONS --safe #-}` at the top
   of the corresponding file. Incompatibilities between the `--safe` option
   and other options or language constructs are non-fatal errors.
+
+* The `--no-main` option is now a valid pragma.
+
+  One can now suppress the compiler warning about a missing main function by
+  putting
+  ```agda
+    {-# OPTIONS --no-main #-}
+  ```
+  on top of the file.
 
 * New command-line option and pragma `--warning=MODE` (or `-W MODE`) for
   setting the warning mode. Current options are
