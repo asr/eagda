@@ -1637,7 +1637,10 @@ instance Pretty Definition where
       , text "theDef            =" <?> pretty theDef ] <+> text "}"
 
 instance Pretty Defn where
-  pretty Axiom = text "Axiom"
+  pretty Axiom{..} = text "Axiom {" <?> vcat
+    [ text "axATPRole =" <?> pshow axTPTPRole
+    , text "axHints   =" <?> pshow axTPTPHints
+    ] <?> text "}"
   pretty (AbstractDefn def) = text "AbstractDefn" <?> parens (pretty def)
   pretty Function{..} =
     text "Function {" <?> vcat
@@ -1652,7 +1655,8 @@ instance Pretty Defn where
       , text "funFlags        =" <?> pshow funFlags
       , text "funTerminates   =" <?> pshow funTerminates
       , text "funWith         =" <?> pshow funWith
-      , text "funCopatternLHS =" <?> pshow funCopatternLHS ] <?> text "}"
+      , text "funCopatternLHS =" <?> pshow funCopatternLHS
+      , text "funATPRole      =" <?> pshow funTPTPRole ] <?> text "}"
   pretty Datatype{..} =
     text "Datatype {" <?> vcat
       [ text "dataPars       =" <?> pshow dataPars
@@ -1664,7 +1668,8 @@ instance Pretty Defn where
       , text "dataCons       =" <?> pshow dataCons
       , text "dataSort       =" <?> pretty dataSort
       , text "dataMutual     =" <?> pshow dataMutual
-      , text "dataAbstr      =" <?> pshow dataAbstr ] <?> text "}"
+      , text "dataAbstr      =" <?> pshow dataAbstr
+      , text "dataATPRole    =" <?> pshow dataTPTPRole ] <?> text "}"
   pretty Record{..} =
     text "Record {" <?> vcat
       [ text "recPars         =" <?> pshow recPars
@@ -1679,13 +1684,14 @@ instance Pretty Defn where
       , text "recAbstr        =" <?> pshow recAbstr ] <?> text "}"
   pretty Constructor{..} =
     text "Constructor {" <?> vcat
-      [ text "conPars   =" <?> pshow conPars
-      , text "conArity  =" <?> pshow conArity
-      , text "conSrcCon =" <?> pshow conSrcCon
-      , text "conData   =" <?> pshow conData
-      , text "conAbstr  =" <?> pshow conAbstr
-      , text "conInd    =" <?> pshow conInd
-      , text "conErased =" <?> pshow conErased ] <?> text "}"
+      [ text "conPars    =" <?> pshow conPars
+      , text "conArity   =" <?> pshow conArity
+      , text "conSrcCon  =" <?> pshow conSrcCon
+      , text "conData    =" <?> pshow conData
+      , text "conAbstr   =" <?> pshow conAbstr
+      , text "conInd     =" <?> pshow conInd
+      , text "conErased  =" <?> pshow conErased
+      , text "conATPRole =" <?> pshow conTPTPRole ] <?> text "}"
   pretty Primitive{..} =
     text "Primitive {" <?> vcat
       [ text "primAbstr    =" <?> pshow primAbstr
