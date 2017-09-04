@@ -300,10 +300,43 @@ Emacs mode
     test0 x | q = ?
   ```
 
+* New command to check an expression against the type of the hole
+  it is in and see what it elaborates to.
+  [Issue [#2700](https://github.com/agda/agda/issues/2700)]
+  This is useful to determine e.g. what solution typeclass resolution yields.
+  The command is bound to `C-c C-;` and respects the `C-u` modifier.
+
+  ```agda
+    record Pointed (A : Set) : Set where
+      field point : A
+
+    it : ∀ {A : Set} {{x : A}} → A
+    it {{x}} = x
+
+    instance _ = record { point = 3 - 4 }
+
+    _ : Pointed Nat
+    _ = {! it !} -- C-u C-u C-c C-;
+  ```
+  yields
+  ```agda
+    Goal: Pointed Nat
+    Elaborates to: record { point = 0 }
+  ```
+
+* If `agda2-give` is called with a prefix, then giving is forced,
+  i.e., the safety checks are skipped,
+  including positivity, termination, and double type-checking.
+  [Issue [#2730](https://github.com/agda/agda/issues/2730)]
+
+  Invoke forced giving with key sequence `C-u C-c C-SPC`.
+
+
 Library management
 ------------------
 
 * The `name` field in an `.agda-lib` file is now optional.
+  [Issue [#2708](https://github.com/agda/agda/issues/2708)]
 
   This feature is convenient if you just want to specify the dependencies
   and include pathes for your local project in an `.agda-lib` file.
@@ -586,8 +619,10 @@ For 2.5.3, the following additional issues have been fixed
 (see [bug tracker](https://github.com/agda/agda/issues)):
 
 
+  - [#142](https://github.com/agda/agda/issues/142): Inherited dot patterns in with functions are not checked
   - [#623](https://github.com/agda/agda/issues/623): Error message points to importing module rather than imported module
   - [#657](https://github.com/agda/agda/issues/657): Yet another display form problem
+  - [#668](https://github.com/agda/agda/issues/668): Ability to stop, or restart, typechecking somehow
   - [#705](https://github.com/agda/agda/issues/705): confusing error message for ambiguous datatype module name
   - [#719](https://github.com/agda/agda/issues/719): Error message for duplicate module definition points to external module instead of internal module
   - [#776](https://github.com/agda/agda/issues/776): Unsolvable constraints should give error
@@ -598,6 +633,7 @@ For 2.5.3, the following additional issues have been fixed
   - [#1126](https://github.com/agda/agda/issues/1126): Port optimizations from the Epic backend
   - [#1175](https://github.com/agda/agda/issues/1175): Internal Error in Auto
   - [#1544](https://github.com/agda/agda/issues/1544): Positivity polymorphism needed for compositional positivity analysis
+  - [#1611](https://github.com/agda/agda/issues/1611): Interactive splitting instantiates meta
   - [#1664](https://github.com/agda/agda/issues/1664): Add Reflection primitives to expose precedence and fixity
   - [#1817](https://github.com/agda/agda/issues/1817): Solvable size constraints reported as unsolvable
   - [#1832](https://github.com/agda/agda/issues/1832): Insufficient indentation in LaTeX-rendered Agda code
@@ -610,7 +646,9 @@ For 2.5.3, the following additional issues have been fixed
   - [#2146](https://github.com/agda/agda/issues/2146): Unicode syntax for instance arguments
   - [#2217](https://github.com/agda/agda/issues/2217): Abort Agda without losing state
   - [#2229](https://github.com/agda/agda/issues/2229): Absence or presence of top-level module header affects scope
+  - [#2253](https://github.com/agda/agda/issues/2253): Wrong scope error for abstract constructors
   - [#2261](https://github.com/agda/agda/issues/2261): Internal error in Auto/CaseSplit.hs:284
+  - [#2329](https://github.com/agda/agda/issues/2329): Size solver does not use type `Size< i` to gain the necessary information
   - [#2354](https://github.com/agda/agda/issues/2354): Interaction between instance search, size solver, and ordinary constraint solver.
   - [#2355](https://github.com/agda/agda/issues/2355): Literate Agda parser does not recognize TeX comments
   - [#2360](https://github.com/agda/agda/issues/2360): With clause stripping chokes on ambiguous projection
@@ -624,6 +662,7 @@ For 2.5.3, the following additional issues have been fixed
   - [#2376](https://github.com/agda/agda/issues/2376): Termination checking interacts badly with eta-contraction
   - [#2377](https://github.com/agda/agda/issues/2377): open public is useless before module header
   - [#2381](https://github.com/agda/agda/issues/2381): Search (`C-c C-z`) panics on pattern synonyms
+  - [#2386](https://github.com/agda/agda/issues/2386): Relax requirements of BUILTIN EQUALITY
   - [#2400](https://github.com/agda/agda/issues/2400): LaTeX backend error on LaTeX comments
   - [#2402](https://github.com/agda/agda/issues/2402): Parameters not dropped when reporting incomplete patterns
   - [#2403](https://github.com/agda/agda/issues/2403): Termination checker should reduce arguments in structural order check
@@ -727,13 +766,17 @@ For 2.5.3, the following additional issues have been fixed
   - [#2666](https://github.com/agda/agda/issues/2666): Internal error at Agda/Syntax/Abstract/Name.hs:113
   - [#2667](https://github.com/agda/agda/issues/2667): Panic error on unbound variable.
   - [#2669](https://github.com/agda/agda/issues/2669): Interaction: incorrect field variable name generation
+  - [#2671](https://github.com/agda/agda/issues/2671): Feature request: nullary pattern matching lambdas
   - [#2679](https://github.com/agda/agda/issues/2679): Internal error at "Typechecking/Abstract.hs:133" and "TypeChecking/Telescope.hs:68"
   - [#2682](https://github.com/agda/agda/issues/2682): What are the rules for projections of abstract records?
   - [#2684](https://github.com/agda/agda/issues/2684): Bad error message for abstract constructor
   - [#2686](https://github.com/agda/agda/issues/2686): Abstract constructors should be ignored when resolving overloading
-
-
-
+  - [#2690](https://github.com/agda/agda/issues/2690): [regression?] Agda engages in deep search instead of immediately failing
+  - [#2705](https://github.com/agda/agda/issues/2705): The GHC backend might diverge in infinite file creation
+  - [#2714](https://github.com/agda/agda/issues/2714): Option --no-main should be allowed as file-local option
+  - [#2717](https://github.com/agda/agda/issues/2717): internal error at DisplayForm.hs:197
+  - [#2721](https://github.com/agda/agda/issues/2721): Without-K doesn't prevent heterogeneous conflict between literals
+  - [#2723](https://github.com/agda/agda/issues/2723): Unreachable clauses in definition by copattern matching trip clause compiler
 
 Release notes for Agda version 2.5.2
 ====================================

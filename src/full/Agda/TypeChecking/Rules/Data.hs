@@ -255,7 +255,7 @@ checkConstructor d tel nofIxs s con@(A.Axiom _ i ai Nothing c e) =
           cnames <- if nofIxs /= 0 || (Info.defAbstract i == AbstractDef) then return Nothing else do
             cxt <- getContextTelescope
             escapeContext (size cxt) $ do
-              names <- replicateM (size fields) (freshAbstractQName noFixity' (A.nameConcrete $ A.qnameName c))
+              names <- forM [0 .. size fields - 1] (\ i -> freshAbstractQName'_ (P.prettyShow (A.qnameName c) ++ "-" ++ show i))
               let params = abstract cxt tel
                   fsT    = fields
                   t   = applySubst (strengthenS __IMPOSSIBLE__ (size fields)) tgt
@@ -342,6 +342,7 @@ defineCompData d con params names fsT t = do
             , clauseLHSRange  = noRange
             , clauseCatchall = False
             , clauseBody = Just $ Con con ConOSystem (map argN bodies) -- abstract gamma $ Body $ Con con (map argN bodies)
+            , clauseUnreachable = Just False
             }
         cs = [clause]
     addClauses compName cs
@@ -382,6 +383,7 @@ defineProjections dataname con params names fsT t = do
           , clauseLHSRange  = noRange
           , clauseCatchall = False
           , clauseBody = Just $ var i
+          , clauseUnreachable = Just False
           }
 
     noMutualBlock $ do
@@ -398,6 +400,10 @@ defineProjections dataname con params names fsT t = do
           { defNoCompilation = True }
       inTopContext $ do
         reportSDoc "tc.data.proj.fun" 20 $ sep [ text "proj" <+> prettyTCM i, nest 2 $ text . show $ fun ]
+
+
+freshAbstractQName'_ :: String -> TCM QName
+freshAbstractQName'_ s = freshAbstractQName noFixity' (C.Name noRange [C.Id $ s])
 
 -- invariant: resulting tel Γ is such that Γ = ... , (φ : I), (u : ...) , (a0 : ...)
 --            where u and a0 have types matching the arguments of primComp.
@@ -423,7 +429,7 @@ defineCompForFields applyProj name params fsT fns rect = do
   reportSDoc "comp.rec" 20 $ text $ show params
   reportSDoc "comp.rec" 20 $ text $ show deltaI
   reportSDoc "comp.rec" 10 $ text $ show fsT
-  compName <- freshAbstractQName noFixity' (C.Name noRange [C.Id $ "comp-" ++ P.prettyShow (A.qnameName name)])
+  compName <- freshAbstractQName'_ $ "comp-" ++ P.prettyShow (A.qnameName name)
   reportSLn "comp.rec" 5 $ ("Generated name: " ++ show compName ++ " " ++ showQNameId compName)
   compType <- (abstract deltaI <$>) $ runNamesT [] $ do
               rect' <- open (runNames [] $ bind "i" $ \ x -> let _ = x `asTypeOf` pure (undefined :: Term) in
