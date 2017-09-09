@@ -29,7 +29,7 @@ import Agda.Syntax.Internal as I
 import Agda.Syntax.Internal.Pattern
 import Agda.Syntax.Abstract (IsProjP(..))
 import qualified Agda.Syntax.Abstract as A
-import Agda.Syntax.Abstract.Views (asView)
+import Agda.Syntax.Abstract.Views (asView, deepUnscope)
 import Agda.Syntax.Common as Common
 import Agda.Syntax.Info as A
 import Agda.Syntax.Position
@@ -102,7 +102,7 @@ class IsFlexiblePattern a where
 instance IsFlexiblePattern A.Pattern where
   maybeFlexiblePattern p = do
     reportSDoc "tc.lhs.flex" 30 $ text "maybeFlexiblePattern" <+> prettyA p
-    reportSDoc "tc.lhs.flex" 60 $ text "maybeFlexiblePattern (raw) " <+> (text . show) p
+    reportSDoc "tc.lhs.flex" 60 $ text "maybeFlexiblePattern (raw) " <+> (text . show . deepUnscope) p
     case p of
       A.DotP{}  -> return DotFlex
       A.VarP{}  -> return ImplicitFlex
@@ -151,7 +151,7 @@ updateInPatterns as ps qs = do
   reportSDoc "tc.lhs.top" 20 $ text "updateInPatterns" <+> nest 2 (vcat
     [ text "as      =" <+> prettyList (map prettyTCM as)
     , text "ps      =" <+> prettyList (map prettyA ps)
-    , text "qs      =" <+> prettyList (map (text . show) qs)
+    , text "qs      =" <+> prettyList (map pretty qs)
     ])
   first (map snd . IntMap.toDescList) <$> updates as ps qs
   where
@@ -322,7 +322,7 @@ noShadowingOfConstructors mkCall problem =
       [ text $ "checking whether pattern variable " ++ prettyShow x ++ " shadows a constructor"
       , nest 2 $ text "type of variable =" <+> prettyTCM t
       ]
-    reportSLn "tc.lhs.shadow" 70 $ "  t = " ++ show t
+    reportSDoc "tc.lhs.shadow" 70 $ nest 2 $ text "t =" <+> pretty t
     t <- reduce t
     case t of
       Def t _ -> do
@@ -375,9 +375,9 @@ checkDotPattern (DPI _ (Just e) v (Dom{domInfo = info, unDom = a})) =
     u <- checkExpr e a
     reportSDoc "tc.lhs.dot" 50 $
       sep [ text "equalTerm"
-          , nest 2 $ text $ show a
-          , nest 2 $ text $ show u
-          , nest 2 $ text $ show v
+          , nest 2 $ pretty a
+          , nest 2 $ pretty u
+          , nest 2 $ pretty v
           ]
     -- Should be ok to do noConstraints here
     noConstraints $ equalTerm a u v
@@ -479,11 +479,11 @@ checkLeftoverDotPatterns ps vs as dpi = do
      reportSDoc "tc.lhs.dot" 40 $ vcat
        [ text "undotImplicitVar"
        , nest 2 $ vcat
-         [ text $ "i  =  " ++ show i
-         , text   "fs = " <+> sep (map (prettyTCM . snd) fs)
-         , text   "a  = " <+> prettyTCM a
-         , text $ "raw=  "  ++ show a
-         , text $ "idv=  "  ++ show idv
+         [ text "i  =" <+> pshow i
+         , text "fs =" <+> sep (map (prettyTCM . snd) fs)
+         , text "a  =" <+> prettyTCM a
+         , text "raw=" <+> pretty a
+         , text "idv=" <+> pshow idv
          ]
        ]
      case lookupImplicitDotVar (i,fs) idv of
@@ -679,9 +679,9 @@ checkLeftHandSide c f ps a withSub' strippedDots = Bench.billToCPS [Bench.Typing
       reportSDoc "tc.lhs.top" 10 $ text "asb' = " <+> (brackets $ fsep $ punctuate comma $ map prettyTCM asb')
 
       reportSDoc "tc.lhs.top" 10 $ text "bound pattern variables"
-      reportSDoc "tc.lhs.top" 60 $ nest 2 $ text "context = " <+> ((text . show) =<< getContext)
+      reportSDoc "tc.lhs.top" 60 $ nest 2 $ text "context = " <+> (pretty =<< getContextTelescope)
       reportSDoc "tc.lhs.top" 10 $ nest 2 $ text "type  = " <+> prettyTCM b'
-      reportSDoc "tc.lhs.top" 60 $ nest 2 $ text "type  = " <+> text (show b')
+      reportSDoc "tc.lhs.top" 60 $ nest 2 $ text "type  = " <+> pretty b'
 
       let notProj ProjP{} = False
           notProj _       = True
@@ -733,10 +733,7 @@ checkLHS f st@(LHSState problem dpi psplit sbe) = do
   problem <- insertImplicitProblem problem
   -- Note: inserting implicits no longer preserve solvedness,
   -- since we might insert eta expanded record patterns.
-  let
-    hasFinite = any domFinite $ telToList $ problemTel problem
-    handledFinite = if hasFinite then not . null $ psplit else True
-  if isSolvedProblem problem && handledFinite then return $ st { lhsProblem = problem } else do
+  if isSolvedProblem problem then return $ st { lhsProblem = problem } else do
 
     unlessM (optPatternMatching <$> gets getPragmaOptions) $
       unless (problemAllVariables problem) $
@@ -766,12 +763,8 @@ checkLHS f st@(LHSState problem dpi psplit sbe) = do
       -- (see Issue 939).
       applyRelevanceToContext (getRelevance projPat) $ do
         checkLHS f st'
-    trySplit (Split p0 (Arg ai (PartialFocus (Left p) ip a)) p1) ret | Nothing `elem` psplit = ret
-    trySplit (Split p0 (Arg ai (PartialFocus (Left p) ip a)) p1) ret = do
-      st' <- updateProblemRest (LHSState problem dpi (psplit ++ [Nothing]) sbe)
-      checkLHS f st'
 
-    trySplit (Split p0 (Arg ai (PartialFocus (Right ts) ip a)) p1) ret = do
+    trySplit (Split p0 (Arg ai (PartialFocus ts ip a)) p1) ret = do
       tel <- getContextTelescope
       reportSDoc "tc.top.tel" 10 $ text "pfocus tel = " <+> prettyTCM tel
       tInterval <- elInf primInterval
@@ -796,9 +789,12 @@ checkLHS f st@(LHSState problem dpi psplit sbe) = do
                                         -- TODO Andrea type error or something.
                    _  -> foldl (\ x y -> primIMin <@> x <@> y) primIOne (map pure ts)
          phi <- reduce phi
-         [(gamma,sigma)] <- forallFaceMaps phi (\ bs m t -> typeError $ GenericError $ "face blocked on meta")
+         refined <- forallFaceMaps phi (\ bs m t -> typeError $ GenericError $ "face blocked on meta")
                             (\ sigma -> (,sigma) <$> getContextTelescope)
-         return (gamma,sigma)
+         case refined of
+           [(gamma,sigma)] -> return (gamma,sigma)
+           []              -> typeError $ GenericError $ "The face constraint is unsatisfiable."
+           _               -> typeError $ GenericError $ "Cannot have disjunctions in a face constraint."
       itisone <- primItIsOne
       -- substitute the literal in p1 and dpi
       reportSDoc "tc.lhs.faces" 10 $ text $ show sigma
@@ -927,7 +923,7 @@ checkLHS f st@(LHSState problem dpi psplit sbe) = do
           , nest 2 $ vcat
             [ text "delta1 = " <+> prettyTCM delta1
             , text "typeOfSplitVar =" <+> addContext delta1 (prettyTCM typeOfSplitVar)
-            , text "focusOutPat =" <+> (text . show) ip
+            , text "focusOutPat =" <+> pretty ip
             , text "delta2 = " <+> addContext delta1 (addContext ("x",domFromArg typeOfSplitVar) (prettyTCM delta2))
             ]
           ]
@@ -1073,7 +1069,7 @@ checkLHS f st@(LHSState problem dpi psplit sbe) = do
                             newPats
 
           reportSDoc "tc.lhs.top" 20 $ addContext delta1' $ nest 2 $ vcat
-            [ text "p0'     =" <+> text (show p0')
+            [ text "p0'     =" <+> text (show $ deepUnscope p0')
             , text "newDpi  =" <+> brackets (fsep $ punctuate comma $ map prettyTCM newDpi)
             ]
 
@@ -1107,9 +1103,9 @@ checkLHS f st@(LHSState problem dpi psplit sbe) = do
             ]
 
           reportSDoc "tc.lhs.top" 70 $ addContext delta1' $ nest 2 $ vcat
-            [ text "crho2   =" <+> text (show crho2)
-            , text "rho3    =" <+> text (show rho3)
-            , text "delta2' =" <+> text (show delta2')
+            [ text "crho2   =" <+> pretty crho2
+            , text "rho3    =" <+> pretty rho3
+            , text "delta2' =" <+> pretty delta2'
             ]
 
           reportSDoc "tc.lhs.top" 15 $ nest 2 $ vcat
@@ -1141,7 +1137,7 @@ checkLHS f st@(LHSState problem dpi psplit sbe) = do
 
           reportSDoc "tc.lhs.top" 15 $ addContext delta' $
             nest 2 $ vcat
-              [ text "ip' =" <+> text (show ip) ]
+              [ text "ip' =" <+> pretty ip ]
 
           -- Construct the new problem
           let problem' = Problem ps' ip' delta' rest'
@@ -1156,7 +1152,7 @@ checkLHS f st@(LHSState problem dpi psplit sbe) = do
             , nest 2 $ vcat
               [ text "ps'     =" <+> fsep (map prettyA ps')
               , text "delta'  =" <+> prettyTCM delta'
-              , text "ip'     =" <+> text (show ip')
+              , text "ip'     =" <+> pretty ip'
               ]
             ]
           checkLHS f st'

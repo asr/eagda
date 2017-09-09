@@ -330,7 +330,7 @@ checkLambda b@(Arg info (A.TBind _ xs typ)) body target = do
             if cubical then checkPath b body t
                        else typeError $ GenericError $ "Option --cubical needed to build a path with a lambda abstraction"
 
-    postpone = \ m tgt -> postponeTypeCheckingProblem_ $ CheckExpr (A.Lam A.exprNoRange (A.DomainFull (A.TypedBindings noRange b)) body) tgt
+    postpone = \ m tgt -> postponeTypeCheckingProblem_ $ CheckExpr (A.Lam A.defaultLamInfo_ (A.DomainFull (A.TypedBindings noRange b)) body) tgt
     dontUseTargetType = do
       -- Checking λ (xs : argsT) → body : target
       verboseS "tc.term.lambda" 5 $ tick "lambda-no-target-type"
@@ -483,7 +483,7 @@ insertHiddenLambdas h target postpone ret = do
 
 -- | @checkAbsurdLambda i h e t@ checks absurd lambda against type @t@.
 --   Precondition: @e = AbsurdLam i h@
-checkAbsurdLambda :: A.ExprInfo -> Hiding -> A.Expr -> Type -> TCM Term
+checkAbsurdLambda :: A.LamInfo -> Hiding -> A.Expr -> Type -> TCM Term
 checkAbsurdLambda i h e t = do
   t <- instantiateFull t
   ifBlockedType t (\ m t' -> postponeTypeCheckingProblem_ $ CheckExpr e t') $ \ t' -> do
@@ -533,7 +533,7 @@ checkAbsurdLambda i h e t = do
 
 -- | @checkExtendedLambda i di qname cs e t@ check pattern matching lambda.
 -- Precondition: @e = ExtendedLam i di qname cs@
-checkExtendedLambda :: A.ExprInfo -> A.DefInfo -> QName -> [A.Clause] ->
+checkExtendedLambda :: A.LamInfo -> A.DefInfo -> QName -> [A.Clause] ->
                        A.Expr -> Type -> TCM Term
 checkExtendedLambda i di qname cs e t = do
    -- Andreas, 2016-06-16 issue #2045
@@ -884,7 +884,7 @@ checkExpr e t0 =
         A.ScopedExpr scope e -> __IMPOSSIBLE__ -- setScope scope >> checkExpr e t
 
         -- a meta variable without arguments: type check directly for efficiency
-        A.QuestionMark i ii -> checkQuestionMark (newValueMeta' DontRunMetaOccursCheck) t0 i ii
+        A.QuestionMark i ii -> checkQuestionMark (newValueMeta' RunMetaOccursCheck) t0 i ii
         A.Underscore i -> checkUnderscore t0 i
 
         A.WithApp _ e es -> typeError $ NotImplemented "type checking of with application"
@@ -1056,7 +1056,7 @@ checkExpr e t0 =
     doInsert info y = do
       x <- unshadowName <=< freshName rx $ notInScopeName y
       reportSLn "tc.term.expr.impl" 15 $ "Inserting implicit lambda"
-      checkExpr (A.Lam (A.ExprRange re) (domainFree info x) e) t
+      checkExpr (A.Lam (A.defaultLamInfo re) (domainFree info x) e) t
 
     hiddenLambdaOrHole h e = case e of
       A.AbsurdLam _ h'        -> sameHiding h h'
@@ -1654,6 +1654,8 @@ inferDef mkTerm x =
     -- since x is considered living in the top-level, we have to
     -- apply it to the current context
     vs <- freeVarsToApply x
+    reportSDoc "tc.term.def" 60 $ do
+      text "freeVarsToApply to def " <+> hsep (map (text . show) vs)
     reportSDoc "tc.term.def" 10 $ do
       text "inferred def " <+> prettyTCM x <+> hsep (map prettyTCM vs)
     let t = defType d

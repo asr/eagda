@@ -910,9 +910,19 @@ checkSectionApplication' i m1 (A.SectionApp ptel m2 args) copyInfo = do
   -- Type-check the LHS (ptel) of the module macro.
   checkTelescope ptel $ \ ptel -> do
     -- We are now in the context @ptel@.
-    -- Get the correct parameter telescope of @m2@.
+    -- Get the correct parameter telescope of @m2@. This is the fully lifted
+    -- telescope obtained by `lookupSection` instantiated with the module
+    -- parameters of `m2` currently in scope. For instance
+    -- ```
+    --  module _ (A : Set) where
+    --    module M (B : Set) where ...
+    --    module M' = M B
+    -- ```
+    -- In the application `M' = M B`, `tel = (A B : Set)` and
+    -- `moduleParamsToApply M = [A]`, so the resulting parameter telescope is
+    -- `tel' = (B : Set)`.
     tel <- lookupSection m2
-    vs  <- moduleParamsToApply $ qnameModule $ mnameToQName m2
+    vs  <- moduleParamsToApply m2
     let tel'  = apply tel vs
     -- Compute the remaining parameter telescope after stripping of
     -- the initial parameters that are determined by the @args@.
@@ -960,7 +970,7 @@ checkSectionApplication' i m1 (A.SectionApp ptel m2 args) copyInfo = do
 checkSectionApplication' i m1 (A.RecordModuleIFS x) copyInfo = do
   let name = mnameToQName x
   tel' <- lookupSection x
-  vs   <- moduleParamsToApply $ qnameModule name
+  vs   <- moduleParamsToApply x
   let tel = tel' `apply` vs
       args = teleArgs tel
 

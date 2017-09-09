@@ -1,3 +1,6 @@
+Release notes for Agda version 2.5.4
+====================================
+
 Release notes for Agda version 2.5.3
 ====================================
 
@@ -366,13 +369,13 @@ Compiler backends
   --- | ---
   `{-# COMPILED f e #-}` | `{-# COMPILE GHC f = e #-}`
   `{-# COMPILED_TYPE A T #-}` | `{-# COMPILE GHC A = type T #-}`
-  `{-# COMPILED_DATA A D C1 .. CN #-}` | `{-# COMPILE GHC A = data D (C1 | .. | CN) #-}`
+  `{-# COMPILED_DATA A D C1 .. CN #-}` | `{-# COMPILE GHC A = data D (C1 \| .. \| CN) #-}`
   `{-# COMPILED_DECLARE_DATA #-}` | obsolete, removed
   `{-# COMPILED_EXPORT f g #-}` | `{-# COMPILE GHC f as g #-}`
   `{-# IMPORT M #-}` | `{-# FOREIGN GHC import qualified M #-}`
   `{-# HASKELL code #-}` | `{-# FOREIGN GHC code #-}`
   `{-# COMPILED_UHC f e #-}` | `{-# COMPILE UHC f = e #-}`
-  `{-# COMPILED_DATA_UHC A D C1 .. CN #-}` | `{-# COMPILE UHC A = data D (C1 | .. | CN) #-}`
+  `{-# COMPILED_DATA_UHC A D C1 .. CN #-}` | `{-# COMPILE UHC A = data D (C1 \| .. \| CN) #-}`
   `{-# IMPORT_UHC M #-}` | `{-# FOREIGN UHC __IMPORT__ M #-}`
   `{-# COMPILED_JS f e #-}` | `{-# COMPILE JS f = e #-}`
 
@@ -414,14 +417,14 @@ HTML backend
   identifiers themselves rather than just the file position
   [Issue [#2604](https://github.com/agda/agda/issues/2604)].
 
-  The new, symbolic anchors look like
+  Symbolic anchors look like
   ```html
-  <a name="test1">
-  <a name="M.bla">
+  <a id="test1">
+  <a id="M.bla">
   ```
-  while the old anchors just give the character position in the file:
+  while other anchors just give the character position in the file:
   ```html
-  <a name="42">
+  <a id="42">
   ```
 
   Top-level module names do not get a symbolic anchor, since the position of
@@ -455,6 +458,14 @@ HTML backend
     test5 : Set₁           -- Character position anchor
     test5 = M.bla
   ```
+
+* Some generated HTML files now have different file names [Issue
+  [#2725](https://github.com/agda/agda/issues/2725)].
+
+  Agda now uses an encoding that amounts to first converting the
+  module names to UTF-8, and then percent-encoding the resulting
+  bytes. For instance, HTML for the module `Σ` is placed in
+  `%CE%A3.html`.
 
 LaTeX backend
 -------------
@@ -512,7 +523,9 @@ LaTeX backend
 
 * Some spacing issues
   [[#2353](https://github.com/agda/agda/issues/2353),
-  [#2441](https://github.com/agda/agda/issues/2441)] have been fixed.
+  [#2441](https://github.com/agda/agda/issues/2441),
+  [#2733](https://github.com/agda/agda/issues/2733),
+  [#2740](https://github.com/agda/agda/issues/2740)] have been fixed.
 
 * The user can now control the typesetting of (certain) individual tokens
   by redefining the `\AgdaFormat` command. Example:
@@ -530,6 +543,20 @@ LaTeX backend
   Note the use of `\DeclareRobustCommand`. The first argument to
   `\AgdaFormat` is the token, and the second argument the thing to
   be typeset.
+
+* One can now instruct the agda package not to select any fonts.
+
+  If the `nofontsetup` option is used, then some font packages are
+  loaded, but specific fonts are not selected:
+  ```latex
+  \usepackage[nofontsetup]{agda}
+  ```
+
+* The height of empty lines is now configurable
+  [[#2734](https://github.com/agda/agda/issues/2734)].
+
+  The height is controlled by the length `\AgdaEmptySkip`, which by
+  default is `\baselineskip`.
 
 * The alignment feature regards the string `+̲`, containing `+` and a
   combining character, as having length two. However, it seems more
@@ -615,9 +642,8 @@ Pragmas and options
 List of fixed issues
 --------------------
 
-For 2.5.3, the following additional issues have been fixed
+For 2.5.3, the following issues have been fixed
 (see [bug tracker](https://github.com/agda/agda/issues)):
-
 
   - [#142](https://github.com/agda/agda/issues/142): Inherited dot patterns in with functions are not checked
   - [#623](https://github.com/agda/agda/issues/623): Error message points to importing module rather than imported module
@@ -648,6 +674,7 @@ For 2.5.3, the following additional issues have been fixed
   - [#2229](https://github.com/agda/agda/issues/2229): Absence or presence of top-level module header affects scope
   - [#2253](https://github.com/agda/agda/issues/2253): Wrong scope error for abstract constructors
   - [#2261](https://github.com/agda/agda/issues/2261): Internal error in Auto/CaseSplit.hs:284
+  - [#2270](https://github.com/agda/agda/issues/2270): Printer does not use sections.
   - [#2329](https://github.com/agda/agda/issues/2329): Size solver does not use type `Size< i` to gain the necessary information
   - [#2354](https://github.com/agda/agda/issues/2354): Interaction between instance search, size solver, and ordinary constraint solver.
   - [#2355](https://github.com/agda/agda/issues/2355): Literate Agda parser does not recognize TeX comments
@@ -663,6 +690,7 @@ For 2.5.3, the following additional issues have been fixed
   - [#2377](https://github.com/agda/agda/issues/2377): open public is useless before module header
   - [#2381](https://github.com/agda/agda/issues/2381): Search (`C-c C-z`) panics on pattern synonyms
   - [#2386](https://github.com/agda/agda/issues/2386): Relax requirements of BUILTIN EQUALITY
+  - [#2389](https://github.com/agda/agda/issues/2389): BUILTIN REFL not needed
   - [#2400](https://github.com/agda/agda/issues/2400): LaTeX backend error on LaTeX comments
   - [#2402](https://github.com/agda/agda/issues/2402): Parameters not dropped when reporting incomplete patterns
   - [#2403](https://github.com/agda/agda/issues/2403): Termination checker should reduce arguments in structural order check
@@ -683,6 +711,7 @@ For 2.5.3, the following additional issues have been fixed
   - [#2444](https://github.com/agda/agda/issues/2444): Generalising compiler pragmas
   - [#2445](https://github.com/agda/agda/issues/2445): The LaTeX backend is slow
   - [#2447](https://github.com/agda/agda/issues/2447): Cache loaded interfaces even if a type error is encountered
+  - [#2449](https://github.com/agda/agda/issues/2449): Agda depends on additional C library icu
   - [#2451](https://github.com/agda/agda/issues/2451): Agda panics when attempting to rewrite a typeclass Eq
   - [#2456](https://github.com/agda/agda/issues/2456): Internal error when postulating instance
   - [#2458](https://github.com/agda/agda/issues/2458): Regression: Agda-2.5.3 loops where Agda-2.5.2 passes
@@ -740,6 +769,7 @@ For 2.5.3, the following additional issues have been fixed
   - [#2597](https://github.com/agda/agda/issues/2597): Inline record definitions confuse the reflection API
   - [#2602](https://github.com/agda/agda/issues/2602): Debug output messes up AgdaInfo buffer
   - [#2603](https://github.com/agda/agda/issues/2603): Internal error in MetaVars.hs
+  - [#2604](https://github.com/agda/agda/issues/2604): Use QNames as anchors in generated HTML
   - [#2605](https://github.com/agda/agda/issues/2605): HTML backend generates anchors for whitespace
   - [#2606](https://github.com/agda/agda/issues/2606): Check that LHS of a rewrite rule doesn't reduce is too strict
   - [#2612](https://github.com/agda/agda/issues/2612): `exact-split` documentation is outdated and incomplete
@@ -772,11 +802,28 @@ For 2.5.3, the following additional issues have been fixed
   - [#2684](https://github.com/agda/agda/issues/2684): Bad error message for abstract constructor
   - [#2686](https://github.com/agda/agda/issues/2686): Abstract constructors should be ignored when resolving overloading
   - [#2690](https://github.com/agda/agda/issues/2690): [regression?] Agda engages in deep search instead of immediately failing
+  - [#2700](https://github.com/agda/agda/issues/2700): Add a command to check against goal type (and normalise)
+  - [#2703](https://github.com/agda/agda/issues/2703): Regression: Internal error for underapplied indexed constructor
   - [#2705](https://github.com/agda/agda/issues/2705): The GHC backend might diverge in infinite file creation
+  - [#2708](https://github.com/agda/agda/issues/2708): Why is the `name` field in .agda-lib files mandatory?
+  - [#2710](https://github.com/agda/agda/issues/2710): Type checker hangs
+  - [#2712](https://github.com/agda/agda/issues/2712): Compiler Pragma for headers
   - [#2714](https://github.com/agda/agda/issues/2714): Option --no-main should be allowed as file-local option
   - [#2717](https://github.com/agda/agda/issues/2717): internal error at DisplayForm.hs:197
+  - [#2718](https://github.com/agda/agda/issues/2718): Interactive 'give' doesn't insert enough parenthesis
   - [#2721](https://github.com/agda/agda/issues/2721): Without-K doesn't prevent heterogeneous conflict between literals
   - [#2723](https://github.com/agda/agda/issues/2723): Unreachable clauses in definition by copattern matching trip clause compiler
+  - [#2725](https://github.com/agda/agda/issues/2725): File names for generated HTML files
+  - [#2726](https://github.com/agda/agda/issues/2726): Old regression related to with
+  - [#2727](https://github.com/agda/agda/issues/2727): Internal errors related to rewrite
+  - [#2729](https://github.com/agda/agda/issues/2729): Regression: case splitting uses variable name variants instead of the unused original names
+  - [#2730](https://github.com/agda/agda/issues/2730): Command to give in spite of termination errors
+  - [#2731](https://github.com/agda/agda/issues/2731): Agda fails to build with happy 1.19.6
+  - [#2733](https://github.com/agda/agda/issues/2733): Avoid some uses of \AgdaIndent?
+  - [#2734](https://github.com/agda/agda/issues/2734): Make height of empty lines configurable
+  - [#2736](https://github.com/agda/agda/issues/2736): Segfault using Alex 3.2.2 and cpphs
+  - [#2740](https://github.com/agda/agda/issues/2740): Indenting every line of code should be a no-op
+
 
 Release notes for Agda version 2.5.2
 ====================================
