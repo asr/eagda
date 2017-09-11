@@ -376,11 +376,11 @@ data OpenShortHand = DoOpen | DontOpen
 -- Pragmas ----------------------------------------------------------------
 
 data Pragma
-  = OptionsPragma          Range [String]
+  = OptionsPragma             Range [String]
   -- ASR TODO (07 July 2014): Move to the end. We wrote it here for
   -- avoiding conflicts when merging master.
-  | ATPPragma Range TPTPRole [QName]
-  | BuiltinPragma             Range String Expr
+  | ATPPragma Range TPTPRole  [QName]
+  | BuiltinPragma             Range String QName
   | RewritePragma             Range [QName]
   | CompiledDataPragma        Range QName String [String]
   | CompiledTypePragma        Range QName String

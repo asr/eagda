@@ -142,7 +142,10 @@ library
                 -- in hashtables 1.2.0.0/1.2.0.1. This bug seems to
                 -- have made Agda much slower (infinitely slower?) in
                 -- some cases.
-                , hashtables >= 1.0.1.8 && < 1.2 || >= 1.2.0.2 && < 1.3
+
+                -- hashtables 1.2.2.0 is not compatible with GHC 7.8.4
+                -- (see Issue #2745).
+                , hashtables >= 1.2.0.2 && < 1.2.2
                 , haskeline >= 0.7.1.3 && < 0.8
                 , ieee754 >= 0.7.8 && < 0.9
                 , monadplus >= 1.4 && < 1.5
@@ -190,8 +193,8 @@ library
 
   -- We don't write upper bounds for Alex nor Happy because the
   -- `build-tools` field can not be modified in Hackage. Agda doesn't
-  -- build with Alex 3.2.0.
-  build-tools:  alex >= 3.1.0 && < 3.2.0 || >= 3.2.1
+  -- build with Alex 3.2.0 and segfaults with 3.2.2.
+  build-tools:  alex >= 3.1.0 && < 3.2.0 || == 3.2.1 || >= 3.2.3
               , happy >= 1.19.4
 
   exposed-modules:  Agda.Auto.Auto

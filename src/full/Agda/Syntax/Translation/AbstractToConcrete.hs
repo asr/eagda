@@ -58,6 +58,7 @@ import qualified Agda.Utils.AssocList as AssocList
 import Agda.Utils.Either
 import Agda.Utils.Function
 import Agda.Utils.Functor
+import Agda.Utils.List
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.Null
@@ -398,6 +399,19 @@ instance ToConcrete A.QName C.QName where
 
 instance ToConcrete A.ModuleName C.QName where
   toConcrete = lookupModule
+
+instance ToConcrete AbstractName C.QName where
+  toConcrete = toConcrete . anameName
+
+-- | Assumes name is not 'UnknownName'.
+instance ToConcrete ResolvedName C.QName where
+  toConcrete = \case
+    VarName x _         -> C.QName <$> lookupName x
+    DefinedName _ x     -> toConcrete x
+    FieldName xs        -> toConcrete $ maybe __IMPOSSIBLE__ anameName $ headMaybe xs
+    ConstructorName xs  -> toConcrete $ maybe __IMPOSSIBLE__ anameName $ headMaybe xs
+    PatternSynResName x -> toConcrete x
+    UnknownName         -> __IMPOSSIBLE__
 
 -- Expression instance ----------------------------------------------------
 
@@ -872,9 +886,8 @@ instance ToConcrete RangeAndPragma C.Pragma where
     -- for avoiding conflicts when merging master.
     A.ATPPragma role qs -> C.ATPPragma r role <$> mapM toConcrete qs
     A.OptionsPragma xs  -> return $ C.OptionsPragma r xs
-    A.BuiltinPragma b e      -> C.BuiltinPragma r b <$> toConcrete e
-    A.BuiltinNoDefPragma b x -> C.BuiltinPragma r b . C.Ident <$>
-      toConcrete x
+    A.BuiltinPragma b x      -> C.BuiltinPragma r b <$> toConcrete x
+    A.BuiltinNoDefPragma b x -> C.BuiltinPragma r b <$> toConcrete x
     A.RewritePragma x        -> C.RewritePragma r . singleton <$> toConcrete x
     A.CompiledTypePragma x hs -> do
       x <- toConcrete x
@@ -1277,4 +1290,3 @@ instance ToConcrete InteractionId C.Expr where
 instance ToConcrete NamedMeta C.Expr where
     toConcrete i = do
       return $ C.Underscore noRange (Just $ prettyShow i)
-
