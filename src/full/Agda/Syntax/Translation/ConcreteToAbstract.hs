@@ -1915,15 +1915,11 @@ instance ToAbstract C.Pragma [A.Pragma] where
         let aHints :: [A.Expr] -> Maybe [A.QName]
             aHints [] = Just []
             aHints (A.Def h : hs) =
-              case aHints hs of
-                Nothing -> Nothing
-                Just aqs -> Just (h : aqs)
+              maybe Nothing (\xs -> Just (h : xs)) $ aHints hs
             -- TODO: Is it correct to use only the first ambiguous
             -- name?
             aHints (A.Con amqs : hs) =
-              case aHints hs of
-                Nothing -> Nothing
-                Just aqs -> Just (headAmbQ amqs : aqs)
+              maybe Nothing (\xs -> Just (headAmbQ amqs : xs)) $ aHints hs
             aHints _  = Nothing
 
         case aHints es of
