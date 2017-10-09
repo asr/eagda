@@ -29,7 +29,7 @@ import Data.Generics.Geniplate
 import qualified Data.Map as Map
 import Data.Maybe
 import Data.List ((\\), isPrefixOf)
-import qualified Data.Foldable as Fold (fold, foldMap)
+import qualified Data.Foldable as Fold (fold, foldMap, toList)
 import qualified Data.IntMap as IntMap
 import Data.Void
 
@@ -57,6 +57,7 @@ import qualified Agda.Syntax.Literal as L
 import qualified Agda.Syntax.Parser as Pa
 import qualified Agda.Syntax.Parser.Tokens as T
 import qualified Agda.Syntax.Position as P
+import Agda.Syntax.Position (getRange)
 
 import Agda.Utils.FileName
 import Agda.Utils.Function
@@ -213,7 +214,7 @@ generateAndPrintSyntaxInfo decl hlLevel updateState = do
   -- All names mentioned in the syntax tree (not bound variables).
   names :: [A.AmbiguousQName]
   names =
-    (map (A.AmbQ . (:[])) $
+    (map I.unambiguous $
      filter (not . extendedLambda) $
      universeBi decl) ++
     universeBi decl
@@ -238,11 +239,12 @@ generateAndPrintSyntaxInfo decl hlLevel updateState = do
     , Fold.foldMap getNamedArg    $ universeBi decl
     ]
     where
-    bound n = nameToFile modMap file [] (A.nameConcrete n) P.noRange
+    bound (A.BindName n) = nameToFile modMap file [] (A.nameConcrete n) P.noRange
                          (\isOp -> mempty { aspect = Just $ Name (Just Bound) isOp })
                          (Just $ A.nameBindingSite n)
 
-    patsyn n = nameToFileA modMap file n True $ \isOp ->
+    patsyn n =               -- TODO: resolve overloading
+              nameToFileA modMap file (I.headAmbQ n) True $ \isOp ->
                   mempty { aspect = Just $ Name (Just $ Constructor Common.Inductive) isOp }
 
     macro n = nameToFileA modMap file n True $ \isOp ->
@@ -266,7 +268,7 @@ generateAndPrintSyntaxInfo decl hlLevel updateState = do
                  (Just $ applyWhen isTopLevelModule P.beginningOfFile $ A.nameBindingSite n)
 
     getVarAndField :: A.Expr -> File
-    getVarAndField (A.Var x)            = bound x
+    getVarAndField (A.Var x)            = bound $ A.BindName x
     getVarAndField (A.Rec       _ fs)   = mconcat [ field [] x | Left (FieldAssignment x _) <- fs ]
     getVarAndField (A.RecUpdate _ _ fs) = mconcat [ field [] x |      (FieldAssignment x _) <- fs ]
     getVarAndField _                    = mempty
@@ -292,7 +294,7 @@ generateAndPrintSyntaxInfo decl hlLevel updateState = do
     getTyped A.TLet{}         = mempty
 
     getPatSynArgs :: A.Declaration -> File
-    getPatSynArgs (A.PatternSynDef _ xs _) = mconcat $ map (bound . Common.unArg) xs
+    getPatSynArgs (A.PatternSynDef _ xs _) = mconcat $ map (bound . A.BindName . Common.unArg) xs
     getPatSynArgs _                        = mempty
 
     getPattern' :: A.Pattern' e -> File
@@ -506,7 +508,7 @@ generateConstructorInfo modMap file kinds decl = do
         constrs = IntMap.elems m2
 
     -- Return suitable syntax highlighting information.
-    let files = for constrs $ \ q -> generate modMap file kinds $ A.AmbQ [q]
+    let files = for constrs $ \ q -> generate modMap file kinds $ I.unambiguous q
     return $ Fold.fold files
 
 printSyntaxInfo :: P.Range -> TCM ()
@@ -554,10 +556,10 @@ warningHighlighting w = case tcWarning w of
   UnreachableClauses{}       -> unreachableErrorHighlighting $ P.getRange w
   CoverageIssue{}            -> coverageErrorHighlighting $ P.getRange w
   CoverageNoExactSplit{}     -> catchallHighlighting $ P.getRange w
+  UnsolvedConstraints cs     -> constraintsHighlighting cs
   -- expanded catch-all case to get a warning for new constructors
   UnsolvedMetaVariables{}    -> mempty
   UnsolvedInteractionMetas{} -> mempty
-  UnsolvedConstraints{}      -> mempty
   OldBuiltin{}               -> mempty
   EmptyRewritePragma{}       -> mempty
   UselessPublic{}            -> mempty
@@ -639,15 +641,27 @@ computeUnsolvedMetaWarnings = do
                    (mempty { otherAspects = [UnsolvedMeta] })
 
 -- | Generates syntax highlighting information for unsolved constraints
--- that are not connected to a meta variable.
+--   (ideally: that are not connected to a meta variable).
 
 computeUnsolvedConstraints :: TCM File
-computeUnsolvedConstraints = do
-  cs <- getAllConstraints
-  -- get ranges of emptyness constraints
-  let rs = [ r | PConstr{ theConstraint = Closure{ clValue = IsEmpty r t }} <- cs ]
-  return $ several (map (rToR . P.continuousPerLine) rs)
-                   (mempty { otherAspects = [UnsolvedConstraint] })
+computeUnsolvedConstraints = constraintsHighlighting <$> getAllConstraints
+
+constraintsHighlighting :: Constraints -> File
+constraintsHighlighting cs =
+  several (map (rToR . P.continuousPerLine) rs)
+          (mempty { otherAspects = [UnsolvedConstraint] })
+  where
+  -- get ranges of interesting unsolved constraints
+  rs = (`mapMaybe` (map theConstraint cs)) $ \case
+    Closure{ clValue = IsEmpty r t           } -> Just r
+    Closure{ clEnv = e, clValue = ValueCmp{} } -> Just $ getRange (envRange e)
+    Closure{ clEnv = e, clValue = ElimCmp{}  } -> Just $ getRange (envRange e)
+    Closure{ clEnv = e, clValue = TypeCmp{}  } -> Just $ getRange (envRange e)
+    Closure{ clEnv = e, clValue = TelCmp{}   } -> Just $ getRange (envRange e)
+    Closure{ clEnv = e, clValue = SortCmp{}  } -> Just $ getRange (envRange e)
+    Closure{ clEnv = e, clValue = LevelCmp{} } -> Just $ getRange (envRange e)
+    Closure{ clEnv = e, clValue = CheckSizeLtSat{} } -> Just $ getRange (envRange e)
+    _ -> Nothing
 
 -- | Generates a suitable file for a possibly ambiguous name.
 
@@ -659,9 +673,9 @@ generate :: SourceToModule
          -> A.AmbiguousQName
          -> File
 generate modMap file kinds (A.AmbQ qs) =
-  mconcat $ map (\q -> nameToFileA modMap file q include m) qs
+  Fold.foldMap (\ q -> nameToFileA modMap file q include m) qs
   where
-    ks   = map kinds qs
+    ks   = map kinds (Fold.toList qs)
     -- Ulf, 2014-06-03: [issue1064] It's better to pick the first rather
     -- than doing no highlighting if there's an ambiguity between an
     -- inductive and coinductive constructor.
@@ -675,7 +689,7 @@ generate modMap file kinds (A.AmbQ qs) =
     -- concrete name, so either they are all operators, or none of
     -- them are.
     m isOp  = mempty { aspect = Just $ Name kind isOp }
-    include = allEqual (map bindingSite qs)
+    include = allEqual (map bindingSite $ Fold.toList qs)
 
 -- | Converts names to suitable 'File's.
 

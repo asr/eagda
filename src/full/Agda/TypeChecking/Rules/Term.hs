@@ -88,6 +88,7 @@ import Agda.Utils.List
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.Null
+import Agda.Utils.NonemptyList
 import Agda.Utils.Permutation
 import Agda.Utils.Pretty ( prettyShow )
 import qualified Agda.Utils.Pretty as P
@@ -253,7 +254,8 @@ checkTypedBindings lamOrPi (A.TypedBindings i (Arg info b)) ret =
     ret $ telFromList bs
 
 checkTypedBinding :: LamOrPi -> ArgInfo -> A.TypedBinding -> (ListTel -> TCM a) -> TCM a
-checkTypedBinding lamOrPi info (A.TBind i xs e) ret = do
+checkTypedBinding lamOrPi info (A.TBind i xs' e) ret = do
+    let xs = map (fmap A.unBind) xs'
     -- Andreas, 2011-04-26 irrelevant function arguments may appear
     -- non-strictly in the codomain type
     -- 2011-10-04 if flag --experimental-irrelevance is set
@@ -280,7 +282,9 @@ ifPath ty fallback work = do
   if isPathType pv then work else fallback
 
 checkPath :: Arg A.TypedBinding -> A.Expr -> Type -> TCM Term
-checkPath b@(Arg info (A.TBind _ xs typ)) body ty = do
+checkPath b@(Arg info (A.TBind _ xs' typ)) body ty = do
+    let xs = map (fmap A.unBind) xs'
+        [WithHiding h x] = xs
     PathType s path level typ lhs rhs <- pathView ty
     interval <- elInf primInterval
     v <- addContext' (xs, defaultDom interval) $ checkExpr body (El (raise 1 s) (raise 1 (unArg typ) `apply` [argN $ var 0]))
@@ -294,8 +298,6 @@ checkPath b@(Arg info (A.TBind _ xs typ)) body ty = do
       equalTerm (btyp iZero) lhs' (unArg lhs)
       equalTerm (btyp iOne) rhs' (unArg rhs)
       return t
-  where
-    [WithHiding h x] = xs
 checkPath b body ty = __IMPOSSIBLE__
 ---------------------------------------------------------------------------
 -- * Lambda abstractions
@@ -306,7 +308,7 @@ checkPath b body ty = __IMPOSSIBLE__
 checkLambda :: Arg A.TypedBinding -> A.Expr -> Type -> TCM Term
 checkLambda (Arg _ (A.TLet _ lbs)) body target =
   checkLetBindings lbs (checkExpr body target)
-checkLambda b@(Arg info (A.TBind _ xs typ)) body target = do
+checkLambda b@(Arg info (A.TBind _ xs' typ)) body target = do
   reportSLn "tc.term.lambda" 60 $ "checkLambda   xs = " ++ prettyShow xs
   let numbinds = length xs
       possiblePath = numbinds == 1
@@ -320,6 +322,7 @@ checkLambda b@(Arg info (A.TBind _ xs typ)) body target = do
     then (if possiblePath then trySeeingIfPath else dontUseTargetType)
     else useTargetType tel btyp
   where
+    xs = map (fmap A.unBind) xs'
     trySeeingIfPath = do
       cubical <- optCubical <$> pragmaOptions
       reportSLn "tc.term.lambda" 60 $ "trySeeingIfPath for " ++ show xs
@@ -330,7 +333,7 @@ checkLambda b@(Arg info (A.TBind _ xs typ)) body target = do
             if cubical then checkPath b body t
                        else typeError $ GenericError $ "Option --cubical needed to build a path with a lambda abstraction"
 
-    postpone = \ m tgt -> postponeTypeCheckingProblem_ $ CheckExpr (A.Lam A.defaultLamInfo_ (A.DomainFull (A.TypedBindings noRange b)) body) tgt
+    postpone = \ m tgt -> postponeTypeCheckingProblem_ $ CheckExpr (A.Lam A.exprNoRange (A.DomainFull (A.TypedBindings noRange b)) body) tgt
     dontUseTargetType = do
       -- Checking λ (xs : argsT) → body : target
       verboseS "tc.term.lambda" 5 $ tick "lambda-no-target-type"
@@ -483,7 +486,7 @@ insertHiddenLambdas h target postpone ret = do
 
 -- | @checkAbsurdLambda i h e t@ checks absurd lambda against type @t@.
 --   Precondition: @e = AbsurdLam i h@
-checkAbsurdLambda :: A.LamInfo -> Hiding -> A.Expr -> Type -> TCM Term
+checkAbsurdLambda :: A.ExprInfo -> Hiding -> A.Expr -> Type -> TCM Term
 checkAbsurdLambda i h e t = do
   t <- instantiateFull t
   ifBlockedType t (\ m t' -> postponeTypeCheckingProblem_ $ CheckExpr e t') $ \ t' -> do
@@ -514,7 +517,7 @@ checkAbsurdLambda i h e t = do
                   [ Clause
                     { clauseLHSRange  = getRange e
                     , clauseFullRange = getRange e
-                    , clauseTel       = telFromList [fmap ("()",) dom]
+                    , clauseTel       = telFromList [fmap (absurdPatternName,) dom]
                     , namedClausePats = [Arg info' $ Named (Just $ unranged $ absName b) $ AbsurdP $ debruijnNamedVar absurdPatternName 0]
                     , clauseBody      = Nothing
                     , clauseType      = Just $ setRelevance rel $ defaultArg $ absBody b
@@ -533,7 +536,7 @@ checkAbsurdLambda i h e t = do
 
 -- | @checkExtendedLambda i di qname cs e t@ check pattern matching lambda.
 -- Precondition: @e = ExtendedLam i di qname cs@
-checkExtendedLambda :: A.LamInfo -> A.DefInfo -> QName -> [A.Clause] ->
+checkExtendedLambda :: A.ExprInfo -> A.DefInfo -> QName -> [A.Clause] ->
                        A.Expr -> Type -> TCM Term
 checkExtendedLambda i di qname cs e t = do
    -- Andreas, 2016-06-16 issue #2045
@@ -808,7 +811,7 @@ checkRecordUpdate ei recexpr fs e t = do
   where
     replaceFields :: Name -> A.ExprInfo -> Arg A.QName -> Maybe A.Expr -> Maybe A.Expr
     replaceFields n ei a@(Arg _ p) Nothing | visible a =
-        Just $ A.App ei (A.Def p) $ defaultNamedArg $ A.Var n
+        Just $ A.App (A.defaultAppInfo $ getRange ei) (A.Def p) $ defaultNamedArg $ A.Var n
     replaceFields _ _  (Arg _ _) Nothing  = Nothing
     replaceFields _ _  _         (Just e) = Just $ e
 
@@ -911,12 +914,12 @@ checkExpr e t0 =
           | A.Quote _ <- unScope q, visible ai -> do
           let quoted (A.Def x) = return x
               quoted (A.Macro x) = return x
-              quoted (A.Proj o (AmbQ [x])) = return x
-              quoted (A.Proj o (AmbQ xs))  =
-                typeError $ GenericError $ "quote: Ambigous name: " ++ prettyShow xs
-              quoted (A.Con (AmbQ [x])) = return x
-              quoted (A.Con (AmbQ xs))  =
-                typeError $ GenericError $ "quote: Ambigous name: " ++ prettyShow xs
+              quoted (A.Proj o p) | Just x <- getUnambiguous p = return x
+              quoted (A.Proj o p)  =
+                typeError $ GenericError $ "quote: Ambigous name: " ++ prettyShow (unAmbQ p)
+              quoted (A.Con c) | Just x <- getUnambiguous c = return x
+              quoted (A.Con c)  =
+                typeError $ GenericError $ "quote: Ambigous name: " ++ prettyShow (unAmbQ c)
               quoted (A.ScopedExpr _ e) = quoted e
               quoted _                  =
                 typeError $ GenericError $ "quote: not a defined name"
@@ -945,7 +948,7 @@ checkExpr e t0 =
 
         A.Lam i (A.DomainFull (A.TypedBindings _ b)) e -> checkLambda b e t
 
-        A.Lam i (A.DomainFree info x) e0 -> checkExpr (A.Lam i (domainFree info x) e0) t
+        A.Lam i (A.DomainFree info x) e0 -> checkExpr (A.Lam i (domainFree info $ A.unBind x) e0) t
 
         A.Lit lit    -> checkLiteral lit t
         A.Let i ds e -> checkLetBindings ds $ checkExpr e t
@@ -1011,8 +1014,9 @@ checkExpr e t0 =
             (Right quotedCtx, Right quotedGoal) -> do
               quotedCtx  <- defaultNamedArg <$> reify quotedCtx
               quotedGoal <- defaultNamedArg <$> reify quotedGoal
-              let tac    = foldl (A.App i) (A.App i (A.App i e quotedCtx) quotedGoal) xs
-                  result = foldl (A.App i) (A.Unquote i) (defaultNamedArg tac : ys)
+              let ai     = A.defaultAppInfo (getRange i)
+                  tac    = foldl (A.App ai) (A.App ai (A.App ai e quotedCtx) quotedGoal) xs
+                  result = foldl (A.App ai) (A.Unquote i) (defaultNamedArg tac : ys)
               checkExpr result t
 
         A.ETel _   -> __IMPOSSIBLE__
@@ -1056,7 +1060,7 @@ checkExpr e t0 =
     doInsert info y = do
       x <- unshadowName <=< freshName rx $ notInScopeName y
       reportSLn "tc.term.expr.impl" 15 $ "Inserting implicit lambda"
-      checkExpr (A.Lam (A.defaultLamInfo re) (domainFree info x) e) t
+      checkExpr (A.Lam (A.ExprRange re) (domainFree info x) e) t
 
     hiddenLambdaOrHole h e = case e of
       A.AbsurdLam _ h'        -> sameHiding h h'
@@ -1143,13 +1147,13 @@ unquoteTactic tac hole goal k = do
 -- | Inferring the type of an overloaded projection application.
 --   See 'inferOrCheckProjApp'.
 
-inferProjApp :: A.Expr -> ProjOrigin -> [QName] -> A.Args -> TCM (Term, Type)
+inferProjApp :: A.Expr -> ProjOrigin -> NonemptyList QName -> A.Args -> TCM (Term, Type)
 inferProjApp e o ds args0 = inferOrCheckProjApp e o ds args0 Nothing
 
 -- | Checking the type of an overloaded projection application.
 --   See 'inferOrCheckProjApp'.
 
-checkProjApp  :: A.Expr -> ProjOrigin -> [QName] -> A.Args -> Type -> TCM Term
+checkProjApp  :: A.Expr -> ProjOrigin -> NonemptyList QName -> A.Args -> Type -> TCM Term
 checkProjApp e o ds args0 t = do
   (v, ti) <- inferOrCheckProjApp e o ds args0 (Just t)
   coerce v ti t
@@ -1164,8 +1168,8 @@ inferOrCheckProjApp
      -- ^ The whole expression which constitutes the application.
   -> ProjOrigin
      -- ^ The origin of the projection involved in this projection application.
-  -> [QName]
-     -- ^ The projection name (potentially ambiguous).  List must not be empty.
+  -> NonemptyList QName
+     -- ^ The projection name (potentially ambiguous).
   -> A.Args
      -- ^ The arguments to the projection.
   -> Maybe Type
@@ -1183,7 +1187,7 @@ inferOrCheckProjApp e o ds args mt = do
   let refuse :: String -> TCM (Term, Type)
       refuse reason = typeError $ GenericError $
         "Cannot resolve overloaded projection "
-        ++ prettyShow (A.nameConcrete $ A.qnameName $ fromMaybe __IMPOSSIBLE__ $ headMaybe ds)
+        ++ prettyShow (A.nameConcrete $ A.qnameName $ headNe ds)
         ++ " because " ++ reason
       refuseNotApplied = refuse "it is not applied to a visible argument"
       refuseNoMatching = refuse "no matching candidate found"
@@ -1219,11 +1223,11 @@ inferOrCheckProjApp e o ds args mt = do
       caseMaybeM (isRecordType ta) refuseNotRecordType $ \ (_q, _pars, defn) -> do
       case defn of
         Record { recFields = fs } -> do
-          case catMaybes $ for fs $ \ (Arg _ f) -> List.find (f ==) ds of
+          case catMaybes $ for fs $ \ (Arg _ f) -> List.find (f ==) (toList ds) of
             [] -> refuseNoMatching
             [d] -> do
               storeDisambiguatedName d
-              (,t) <$> checkHeadApplication e t (A.Proj o $ AmbQ [d]) args
+              (,t) <$> checkHeadApplication e t (A.Proj o $ unambiguous d) args
             _ -> __IMPOSSIBLE__
         _ -> __IMPOSSIBLE__
 
@@ -1294,7 +1298,7 @@ inferOrCheckProjApp e o ds args mt = do
               -- guard (size tel == size pars)
               return (orig, (d, (pars, (dom, u, tb))))
 
-          cands <- groupOn fst . catMaybes <$> mapM (runMaybeT . try) ds
+          cands <- groupOn fst . catMaybes <$> mapM (runMaybeT . try) (toList ds)
           case cands of
             [] -> refuseNoMatching
             [[]] -> refuseNoMatching
@@ -1351,16 +1355,21 @@ checkApplication hd args e t = do
     , nest 2 $ text $ "t    = " ++ show t
     ]
   case unScope hd of
-    A.Proj _ (AmbQ []) -> __IMPOSSIBLE__
-
     -- Subcase: unambiguous projection
-    A.Proj _ (AmbQ [_]) -> checkHeadApplication e t hd args
+    A.Proj _ p | Just _ <- getUnambiguous p -> checkHeadApplication e t hd args
 
     -- Subcase: ambiguous projection
-    A.Proj o (AmbQ ds@(_:_:_)) -> checkProjApp e o ds args t
+    A.Proj o p -> checkProjApp e o (unAmbQ p) args t
+
+    -- Subcase: unambiguous constructor
+    A.Con ambC | Just c <- getUnambiguous ambC -> do
+      -- augment c with record fields, but do not revert to original name
+      con <- fromRightM (sigError __IMPOSSIBLE_VERBOSE__ (typeError $ AbstractConstructorNotInScope c)) =<<
+        getOrigConHead c
+      checkConstructorApplication e t con args
 
     -- Subcase: ambiguous constructor
-    A.Con (AmbQ cs0@(_:_:_)) -> do
+    A.Con (AmbQ cs0) -> do
       -- First we should figure out which constructor we want.
       reportSLn "tc.check.term" 40 $ "Ambiguous constructor: " ++ prettyShow cs0
 
@@ -1374,11 +1383,10 @@ checkApplication hd args e t = do
       -- See issue 279.
       -- Andreas, 2017-08-13, issue #2686: ignore abstract constructors
       (cs, cons)  <- unzip . snd . partitionEithers <$> do
-         forM cs0 $ \ c -> mapRight (c,) <$> getConForm c
+         forM (toList cs0) $ \ c -> mapRight (c,) <$> getConForm c
       reportSLn "tc.check.term" 40 $ "  reduced: " ++ prettyShow cons
       case cons of
-        []  -> typeError $ AbstractConstructorNotInScope $
-                 fromMaybe __IMPOSSIBLE__ $ headMaybe cs0
+        []    -> typeError $ AbstractConstructorNotInScope $ headNe cs0
         [con] -> do
           let c = setConName (fromMaybe __IMPOSSIBLE__ $ headMaybe cs) con
           reportSLn "tc.check.term" 40 $ "  only one non-abstract constructor: " ++ prettyShow c
@@ -1411,17 +1419,10 @@ checkApplication hd args e t = do
             Just c  -> checkConstructorApplication e t c args
             Nothing -> postponeTypeCheckingProblem (CheckExpr e t) unblock
 
-    -- Subcase: non-ambiguous constructor
-    A.Con (AmbQ [c]) -> do
-      -- augment c with record fields, but do not revert to original name
-      con <- fromRightM (sigError __IMPOSSIBLE_VERBOSE__ (typeError $ AbstractConstructorNotInScope c)) =<<
-        getOrigConHead c
-      checkConstructorApplication e t con args
-
     -- Subcase: pattern synonym
     A.PatternSyn n -> do
       (ns, p) <- lookupPatternSyn n
-      p <- setRange (getRange n) . killRange <$> expandPatternSynonyms (vacuous p)  -- expand recursive pattern synonyms
+      p <- return $ setRange (getRange n) $ killRange $ vacuous p   -- Pattern' Void -> Pattern' Expr
       -- Expand the pattern synonym by substituting for
       -- the arguments we have got and lambda-lifting
       -- over the ones we haven't.
@@ -1447,10 +1448,10 @@ checkApplication hd args e t = do
           mkArg :: Type -> NamedArg A.Expr -> NamedArg A.Expr
           mkArg t a | unEl t == tTerm =
             (fmap . fmap)
-              (A.App (A.ExprRange (getRange a)) (A.QuoteTerm A.exprNoRange) . defaultNamedArg) a
+              (A.App (A.defaultAppInfo (getRange a)) (A.QuoteTerm A.exprNoRange) . defaultNamedArg) a
           mkArg t a | unEl t == tName =
             (fmap . fmap)
-              (A.App (A.ExprRange (getRange a)) (A.Quote A.exprNoRange) . defaultNamedArg) a
+              (A.App (A.defaultAppInfo (getRange a)) (A.Quote A.exprNoRange) . defaultNamedArg) a
           mkArg t a | otherwise = a
 
           makeArgs :: [Dom (String, Type)] -> [NamedArg A.Expr] -> ([NamedArg A.Expr], [NamedArg A.Expr])
@@ -1464,7 +1465,7 @@ checkApplication hd args e t = do
               NoInsertNeeded -> first (mkArg (snd $ unDom d) arg :) $ makeArgs (tail tel) args
 
           (macroArgs, otherArgs) = makeArgs argTel args
-          unq = A.App (A.ExprRange $ fuseRange x args) (A.Unquote A.exprNoRange) . defaultNamedArg
+          unq = A.App (A.defaultAppInfo $ fuseRange x args) (A.Unquote A.exprNoRange) . defaultNamedArg
 
           desugared = A.app (unq $ unAppView $ Application (A.Def x) $ macroArgs) otherArgs
 
@@ -1568,7 +1569,7 @@ checkOrInferMeta newMeta mt i = do
 --   by inserting an underscore for the missing type.
 domainFree :: ArgInfo -> A.Name -> A.LamBinding
 domainFree info x =
-  A.DomainFull $ A.TypedBindings r $ Arg info $ A.TBind r [pure x] $ A.Underscore underscoreInfo
+  A.DomainFull $ A.TypedBindings r $ Arg info $ A.TBind r [pure $ A.BindName x] $ A.Underscore underscoreInfo
   where
     r = getRange x
     underscoreInfo = A.MetaInfo
@@ -1597,7 +1598,7 @@ inferHeadDef o x = do
 inferHead :: A.Expr -> TCM (Elims -> Term, Type)
 inferHead e = do
   case e of
-    (A.Var x) -> do -- traceCall (InferVar x) $ do
+    A.Var x -> do -- traceCall (InferVar x) $ do
       (u, a) <- getVarInfo x
       reportSDoc "tc.term.var" 20 $ hsep
         [ text "variable" , prettyTCM x
@@ -1607,10 +1608,13 @@ inferHead e = do
       when (unusableRelevance $ getRelevance a) $
         typeError $ VariableIsIrrelevant x
       return (applyE u, unDom a)
-    (A.Def x) -> inferHeadDef ProjPrefix x
-    (A.Proj o (AmbQ [d])) -> inferHeadDef o d
-    (A.Proj{}) -> __IMPOSSIBLE__ -- inferHead will only be called on unambiguous projections
-    (A.Con (AmbQ [c])) -> do
+
+    A.Def x -> inferHeadDef ProjPrefix x
+
+    A.Proj o ambP | Just d <- getUnambiguous ambP -> inferHeadDef o d
+    A.Proj{} -> __IMPOSSIBLE__ -- inferHead will only be called on unambiguous projections
+
+    A.Con ambC | Just c <- getUnambiguous ambC -> do
 
       -- Constructors are polymorphic internally.
       -- So, when building the constructor term
@@ -1629,9 +1633,9 @@ inferHead e = do
 
       -- So when applying the constructor throw away the parameters.
       return (applyE u . drop n, a)
-    (A.Con _) -> __IMPOSSIBLE__  -- inferHead will only be called on unambiguous constructors
-    (A.QuestionMark i ii) -> inferMeta (newQuestionMark ii) i
-    (A.Underscore i)   -> inferMeta (newValueMeta RunMetaOccursCheck) i
+    A.Con{} -> __IMPOSSIBLE__  -- inferHead will only be called on unambiguous constructors
+    A.QuestionMark i ii -> inferMeta (newQuestionMark ii) i
+    A.Underscore i   -> inferMeta (newValueMeta RunMetaOccursCheck) i
     e -> do
       (term, t) <- inferExpr e
       return (applyE term, t)
@@ -1728,7 +1732,7 @@ checkConstructorApplication org t c args = do
         reportSDoc "tc.term.con" 50 $ nest 2 $ text "we are not at a datatype, falling back"
         fallback
   where
-    fallback = checkHeadApplication org t (A.Con (AmbQ [conName c])) args
+    fallback = checkHeadApplication org t (A.Con (unambiguous $ conName c)) args
 
     -- Check if there are explicitly given hidden arguments,
     -- in which case we fall back to default type checking.
@@ -1809,11 +1813,11 @@ checkHeadApplication e t hd args = do
   pComp       <- fmap primFunName <$> getPrimitive' "primComp"
   mglue     <- getPrimitiveName' builtin_glue
   case hd of
-    A.Con (AmbQ [c]) | Just c == (nameOfSharp <$> kit) -> do
+    A.Con cs | Just c <- getUnambiguous cs, Just c == (nameOfSharp <$> kit) -> do
       -- Type checking # generated #-wrapper. The # that the user can write will be a Def,
       -- but the sharp we generate in the body of the wrapper is a Con.
       defaultResult
-    A.Con (AmbQ [c]) -> do
+    A.Con cs | Just c <- getUnambiguous cs -> do
       (f, t0) <- inferHead hd
       reportSDoc "tc.term.con" 5 $ vcat
         [ text "checkHeadApplication inferred" <+>
@@ -1935,7 +1939,7 @@ checkHeadApplication e t hd args = do
         abs <- aModeToDef <$> asks envAbstractMode
         let info   = A.mkDefInfo (A.nameConcrete $ A.qnameName c') noFixity'
                                  PublicAccess abs noRange
-            core   = A.LHSProj { A.lhsDestructor = AmbQ [flat]
+            core   = A.LHSProj { A.lhsDestructor = unambiguous flat
                                , A.lhsFocus      = defaultNamedArg $ A.LHSHead c' []
                                , A.lhsPatsRight  = [] }
             clause = A.Clause (A.LHS (A.LHSRange noRange) core []) [] []
@@ -2231,7 +2235,7 @@ inferExpr' exh e = do
     ]
   if not $ defOrVar hd then fallback else traceCall (InferExpr e) $ do
     case unScope $ hd of
-      A.Proj o (AmbQ ds@(_:_:_)) -> inferProjApp e o ds args
+      A.Proj o p | isAmbiguous p -> inferProjApp e o (unAmbQ p) args
       _ -> do
         (f, t0) <- inferHead hd
         res <- runExceptT $ checkArguments exh (getRange hd) args t0 (sort Prop)
@@ -2336,7 +2340,7 @@ checkLetBinding b@(A.LetBind i info x t e) ret =
   traceCallCPS_ (CheckLetBinding b) ret $ \ret -> do
     t <- isType_ t
     v <- applyRelevanceToContext (getRelevance info) $ checkDontExpandLast e t
-    addLetBinding info x v t ret
+    addLetBinding info (A.unBind x) v t ret
 
 checkLetBinding b@(A.LetPatBind i p e) ret =
   traceCallCPS_ (CheckLetBinding b) ret $ \ret -> do

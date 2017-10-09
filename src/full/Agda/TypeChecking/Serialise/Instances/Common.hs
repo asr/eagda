@@ -57,8 +57,10 @@ import Agda.Utils.HashMap (HashMap)
 import qualified Agda.Utils.HashMap as HMap
 import Agda.Utils.FileName
 import Agda.Utils.Maybe
+import Agda.Utils.NonemptyList
 import qualified Agda.Utils.Maybe.Strict as Strict
-import Agda.Utils.Trie
+import Agda.Utils.Trie (Trie(..))
+import qualified Agda.Utils.Trie as Trie
 
 import Agda.Utils.Except
 
@@ -220,6 +222,10 @@ instance EmbPrj a => EmbPrj [a] where
 --   value = vcase valu where valu []      = valu0 []
 --                            valu [x, xs] = valu2 (:) x xs
 --                            valu _       = malformed
+
+instance EmbPrj a => EmbPrj (NonemptyList a) where
+  icod_ = icod_ . toList
+  value = listCaseNe malformed return <=< value
 
 instance (Ord a, Ord b, EmbPrj a, EmbPrj b) => EmbPrj (BiMap a b) where
   icod_ m = icode (BiMap.toList m)
@@ -430,14 +436,12 @@ instance EmbPrj Hiding where
 instance EmbPrj Relevance where
   icod_ Relevant       = return 0
   icod_ Irrelevant     = return 1
-  icod_ (Forced Small) = return 2
-  icod_ (Forced Big)   = return 3
+  icod_ Forced         = return 2
   icod_ NonStrict      = return 4
 
   value 0 = return Relevant
   value 1 = return Irrelevant
-  value 2 = return (Forced Small)
-  value 3 = return (Forced Big)
+  value 2 = return Forced
   value 4 = return NonStrict
   value _ = malformed
 

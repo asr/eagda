@@ -96,7 +96,9 @@ checkDataDef i name ps cs =
               -- However, it might give the dreaded "Cannot instantiate meta..."
               -- error which we replace by a more understandable error
               -- in case of a suspected dependency.
-              s <- newSortMetaBelowInf
+              -- Jesper, 2017-09-14: since Set i depends non-strictly on i,
+              -- we need to create the new meta in a nonstrict context.
+              s <- applyRelevanceToContext NonStrict newSortMetaBelowInf
               catchError_ (addContext ixTel $ equalType s0 $ raise nofIxs $ sort s) $ \ err ->
                   if any (`freeIn` s0) [0..nofIxs - 1] then typeError . GenericDocError =<<
                      fsep [ text "The sort of" <+> prettyTCM name
@@ -106,9 +108,6 @@ checkDataDef i name ps cs =
                   else throwError err
               return s
 
-            -- the small parameters are taken into consideration for --without-K
-            smallPars <- smallParams tel s
-
             reportSDoc "tc.data.sort" 20 $ vcat
               [ text "checking datatype" <+> prettyTCM name
               , nest 2 $ vcat
@@ -117,7 +116,6 @@ checkDataDef i name ps cs =
                 , text "sort:   " <+> prettyTCM s
                 , text "indices:" <+> text (show nofIxs)
                 , text "params:"  <+> text (show $ deepUnscope ps)
-                , text "small params:" <+> text (show smallPars)
                 ]
               ]
             let npars = size tel
@@ -125,8 +123,6 @@ checkDataDef i name ps cs =
             -- Change the datatype from an axiom to a datatype with no constructors.
             let dataDef = Datatype
                   { dataPars       = npars
-                  , dataSmallPars  = Perm npars smallPars
-                  , dataNonLinPars = Drop 0 $ Perm npars []
                   , dataIxs        = nofIxs
                   , dataInduction  = Inductive
                   , dataClause     = Nothing
@@ -143,19 +139,10 @@ checkDataDef i name ps cs =
                 -- polarity and argOcc.s determined by the positivity checker
 
             -- Check the types of the constructors
-            -- collect the non-linear parameters of each constructor
-            nonLins <- mapM (checkConstructor name tel' nofIxs s) cs
-            -- compute the ascending list of non-linear parameters of the data type
-            let nonLinPars0 = Set.toAscList $ Set.unions $ map Set.fromList nonLins
-                -- The constructors are analyzed in the absolute context,
-                -- but the data definition happens in the relative module context,
-                -- so we apply to the free module variables.
-                -- Unfortunately, we lose precision here, since 'abstract', which
-                -- is then performed by addConstant, cannot restore the linearity info.
-                nonLinPars  = Drop freeVars $ Perm (npars + freeVars) nonLinPars0
+            mapM_ (checkConstructor name tel' nofIxs s) cs
 
             -- Return the data definition
-            return dataDef{ dataNonLinPars = nonLinPars }
+            return dataDef
 
         let s      = dataSort dataDef
             cons   = map A.axiomName cs  -- get constructor names
@@ -181,29 +168,11 @@ forceSort :: Type -> TCM Sort
 forceSort t = case ignoreSharing $ unEl t of
   Sort s -> return s
   _      -> do
-    s <- newSortMetaBelowInf
+    -- Universes depend non-strictly on their argument
+    s <- applyRelevanceToContext NonStrict newSortMetaBelowInf
     equalType t (sort s)
     return s
 
-
--- | A parameter is small if its sort fits into the data sort.
---   @smallParams@ overapproximates the small parameters (in doubt: small).
-smallParams :: Telescope -> Sort -> TCM [Int]
-smallParams tel s = do
-  -- get the types of the parameters
-  let as = map (snd . unDom) $ telToList tel
-  -- get the big parameters
-  concat <$> do
-    forM (zip [0..] as) $ \ (i, a) -> do
-      -- A type is small if it is not Level or its sort is <= the data sort.
-      -- In doubt (unsolvable constraints), a type is small.
-      -- So, only if we have a solid error, the type is big.
-      localTCState $ do
-        ([] <$ do equalTerm topSort (unEl a) =<< primLevel)  -- NB: if primLevel fails, the next alternative is picked
-        <|> ([i] <$ (getSort a `leqSort` s))
-        <|> return []
-  where
-    (<|>) m1 m2 = m1 `catchError_` (const m2)
 
 -- | Type check a constructor declaration. Checks that the constructor targets
 --   the datatype and that it fits inside the declared sort.
@@ -214,7 +183,7 @@ checkConstructor
   -> Nat           -- ^ Number of indices of the data type.
   -> Sort          -- ^ Sort of the data type.
   -> A.Constructor -- ^ Constructor declaration (type signature).
-  -> TCM [Int]     -- ^ Non-linear parameters.
+  -> TCM ()
 checkConstructor d tel nofIxs s (A.ScopedDecl scope [con]) = do
   setScope scope
   checkConstructor d tel nofIxs s con
@@ -232,12 +201,11 @@ checkConstructor d tel nofIxs s con@(A.Axiom _ i ai Nothing c e) =
           Irrelevant -> typeError $ GenericError $ "Irrelevant constructors are not supported"
           _ -> __IMPOSSIBLE__
         -- check that the type of the constructor is well-formed
-        t <- isType_ e
+        t <- workOnTypes $ isType_ e
         -- check that the type of the constructor ends in the data type
         n <- getContextSize
         debugEndsIn t d n
-        nonLinPars <- constructs n t d
-        debugNonLinPars nonLinPars
+        constructs n t d
         -- check which constructor arguments are determined by the type ('forcing')
         t' <- addForcingAnnotations t
         -- check that the sort (universe level) of the constructor type
@@ -284,7 +252,6 @@ checkConstructor d tel nofIxs s con@(A.Axiom _ i ai Nothing c e) =
         when (Info.defInstance i == InstanceDef) $ do
           addNamedInstance c d
 
-        return nonLinPars
   where
     debugEnter c e =
       reportSDoc "tc.data.con" 5 $ vcat
@@ -298,9 +265,6 @@ checkConstructor d tel nofIxs s con@(A.Axiom _ i ai Nothing c e) =
               ]
         , nest 2 $ text "nofPars =" <+> text (show n)
         ]
-    debugNonLinPars ks =
-      reportSDoc "tc.data.con" 15 $
-        text "these constructor parameters are non-linear:" <+> text (show ks)
     debugFitsIn s =
       reportSDoc "tc.data.con" 15 $ sep
         [ text "checking that the type fits in"
@@ -571,7 +535,7 @@ bindParameters' ts0 ps0@(A.DomainFree info x : ps) t ret = do
             ts <- caseList ts0 (return []) $ \ t0 ts -> do
               equalType t0 a
               return ts
-            continue ts ps x
+            continue ts ps $ A.unBind x
 
          | visible info, notVisible info' ->
             continue ts0 ps0 =<< freshName_ (absName b)
@@ -624,15 +588,10 @@ fitsIn t s = do
 -- | Check that a type constructs something of the given datatype. The first
 --   argument is the number of parameters to the datatype.
 --
---   As a side effect, return the parameters that occur free in indices.
---   E.g. in @data Eq (A : Set)(a : A) : A -> Set where refl : Eq A a a@
---   this would include parameter @a@, but not @A@.
---
---   TODO: what if there's a meta here?
-constructs :: Int -> Type -> QName -> TCM [Int]
+constructs :: Int -> Type -> QName -> TCM ()
 constructs nofPars t q = constrT 0 t
     where
-        constrT :: Nat -> Type -> TCM [Int]
+        constrT :: Nat -> Type -> TCM ()
         constrT n t = do
             t <- reduce t
             case ignoreSharing $ unEl t of
@@ -644,13 +603,6 @@ constructs nofPars t q = constrT 0 t
                   (pars, ixs) <- normalise $ splitAt nofPars vs
                   -- check that the constructor parameters are the data parameters
                   checkParams n pars
-                  -- compute the non-linear parameters
-                  m <- getContextSize  -- Note: n /= m if NoAbs encountered
-                  let nl = nonLinearParams m pars ixs
-                  -- assert that these are correct indices into the parameter vector
-                  when (any (< 0) nl) __IMPOSSIBLE__
-                  when (any (>= nofPars) nl) __IMPOSSIBLE__
-                  return nl
                 MetaV{} -> do
                   def <- getConstInfo q
                   xs <- newArgsMeta $ defType def
@@ -671,18 +623,6 @@ constructs nofPars t q = constrT 0 t
                     t <- typeOfBV i
                     equalTerm t (unArg arg) (var i)
 
-        -- return the parameters (numbered 0,1,...,size pars-1 from left to right)
-        -- that occur relevantly in the indices
-        nonLinearParams n pars ixs =
-          -- compute the free de Bruijn indices in the data indices
-          -- ALT: Ignore all sorts?
-          let fv = allRelevantVarsIgnoring IgnoreInAnnotations ixs
-          -- keep relevant ones, convert to de Bruijn levels
-          -- note: xs is descending list
-              xs = map ((n-1) -) $ VarSet.toList fv
-          -- keep those that correspond to parameters
-          -- in ascending list
-          in  reverse $ filter (< size pars) xs
 
 {- UNUSED, Andreas 2012-09-13
 -- | Force a type to be a specific datatype.

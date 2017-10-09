@@ -46,7 +46,7 @@ import Agda.Syntax.Abstract.Views (deepUnscope)
 import Agda.Syntax.Internal as I
 import Agda.Syntax.Translation.InternalToAbstract
 import Agda.Syntax.Translation.AbstractToConcrete
-import Agda.Syntax.Scope.Monad (isDatatypeModule)
+import Agda.Syntax.Scope.Monad (isDatatypeModule, withContextPrecedence)
 import Agda.Syntax.Scope.Base
 import Agda.TypeChecking.Monad.Base
 import Agda.TypeChecking.Monad.Closure
@@ -69,6 +69,7 @@ import Agda.Utils.List
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.Null
+import Agda.Utils.NonemptyList
 import Agda.Utils.Pretty ( prettyShow )
 import qualified Agda.Utils.Pretty as P
 import Agda.Utils.Size
@@ -293,7 +294,7 @@ panic s = fwords $ "Panic: " ++ s
 
 nameWithBinding :: QName -> TCM Doc
 nameWithBinding q =
-  sep [ prettyTCM q, text "bound at", prettyTCM r ]
+  (prettyTCM q <+> text "bound at") <?> prettyTCM r
   where
     r = nameBindingSite $ qnameName q
 
@@ -317,6 +318,7 @@ errorString err = case err of
   AmbiguousTopLevelModuleName {}           -> "AmbiguousTopLevelModuleName"
   BadArgumentsToPatternSynonym{}           -> "BadArgumentsToPatternSynonym"
   TooFewArgumentsToPatternSynonym{}        -> "TooFewArgumentsToPatternSynonym"
+  CannotResolveAmbiguousPatternSynonym{}   -> "CannotResolveAmbiguousPatternSynonym"
   BothWithAndRHS                           -> "BothWithAndRHS"
   BuiltinInParameterisedModule{}           -> "BuiltinInParameterisedModule"
   BuiltinMustBeConstructor{}               -> "BuiltinMustBeConstructor"
@@ -352,6 +354,7 @@ errorString err = case err of
   LocalVsImportedModuleClash{}             -> "LocalVsImportedModuleClash"
   MetaCannotDependOn{}                     -> "MetaCannotDependOn"
   MetaOccursInItself{}                     -> "MetaOccursInItself"
+  MetaIrrelevantSolution{}                 -> "MetaIrrelevantSolution"
   ModuleArityMismatch{}                    -> "ModuleArityMismatch"
   ModuleDefinedInOtherFile {}              -> "ModuleDefinedInOtherFile"
   ModuleDoesntExport{}                     -> "ModuleDoesntExport"
@@ -773,6 +776,10 @@ instance PrettyTCM TypeError where
     MetaOccursInItself m -> fsep $
       pwords "Cannot construct infinite solution of metavariable" ++ [prettyTCM $ MetaV m []]
 
+    MetaIrrelevantSolution m _ -> fsep $
+      pwords "Cannot instantiate the metavariable because (part of) the" ++
+      pwords "solution was created in an irrelevant context."
+
     BuiltinMustBeConstructor s e -> fsep $
       [prettyA e] ++ pwords "must be a constructor in the binding to builtin" ++ [text s]
 
@@ -902,14 +909,14 @@ instance PrettyTCM TypeError where
     AmbiguousName x ys -> vcat
       [ fsep $ pwords "Ambiguous name" ++ [pretty x <> text "."] ++
                pwords "It could refer to any one of"
-      , nest 2 $ vcat $ map nameWithBinding ys
+      , nest 2 $ vcat $ map nameWithBinding (toList ys)
       , fwords "(hint: Use C-c C-w (in Emacs) if you want to know why)"
       ]
 
     AmbiguousModule x ys -> vcat
       [ fsep $ pwords "Ambiguous module name" ++ [pretty x <> text "."] ++
                pwords "It could refer to any one of"
-      , nest 2 $ vcat $ map help ys
+      , nest 2 $ vcat $ map help (toList ys)
       , fwords "(hint: Use C-c C-w (in Emacs) if you want to know why)"
       ]
       where
@@ -1024,10 +1031,21 @@ instance PrettyTCM TypeError where
         isPlaceholder NoPlaceholder{} = False
 
     BadArgumentsToPatternSynonym x -> fsep $
-      pwords "Bad arguments to pattern synonym " ++ [prettyTCM x]
+      pwords "Bad arguments to pattern synonym " ++ [prettyTCM $ headAmbQ x]
 
     TooFewArgumentsToPatternSynonym x -> fsep $
-      pwords "Too few arguments to pattern synonym " ++ [prettyTCM x]
+      pwords "Too few arguments to pattern synonym " ++ [prettyTCM $ headAmbQ x]
+
+    CannotResolveAmbiguousPatternSynonym defs -> vcat
+      [ fsep $ pwords "Cannot resolve overloaded pattern synonym" ++ [prettyTCM x <> comma] ++
+               pwords "since candidates have different shapes:"
+      , nest 2 $ vcat $ map prDef (toList defs)
+      , fsep $ pwords "(hint: overloaded pattern synonyms must be equal up to variable and constructor names)"
+      ]
+      where
+        (x, _) = headNe defs
+        prDef (x, (xs, p)) = prettyA (A.PatternSynDef x xs p) <?> (text "at" <+> pretty r)
+          where r = nameBindingSite $ qnameName x
 
     UnusedVariableInPatternSynonym -> fsep $
       pwords "Unused variable in pattern synonym."
@@ -1368,7 +1386,7 @@ instance PrettyTCM UnificationFailure where
 
 
 instance PrettyTCM Call where
-  prettyTCM c = case c of
+  prettyTCM c = withContextPrecedence TopCtx $ case c of
     CheckClause t cl -> do
       reportSLn "error.checkclause" 60 $ "prettyTCM CheckClause: cl = " ++ show (deepUnscope cl)
       clc <- abstractToConcrete_ cl
@@ -1483,7 +1501,7 @@ instance PrettyTCM Call where
 
     where
     hPretty :: Arg (Named_ Expr) -> TCM Doc
-    hPretty a = pretty =<< abstractToConcreteCtx (hiddenArgumentCtx (getHiding a)) a
+    hPretty a = pretty =<< abstractToConcreteHiding a a
 
 ---------------------------------------------------------------------------
 -- * Natural language

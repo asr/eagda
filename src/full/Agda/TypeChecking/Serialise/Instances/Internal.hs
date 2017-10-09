@@ -289,7 +289,7 @@ instance EmbPrj Defn where
   icod_ (Axiom       a b)                         = icodeN 0 Axiom a b
   icod_ (Function    a b t c d e f g h i j k m n) =
     icodeN 1 (\ a b -> Function a b t) a b c d e f g h i j k m n
-  icod_ (Datatype    a b c d e f g h i j k)       = icodeN 2 Datatype a b c d e f g h i j k
+  icod_ (Datatype    a b c d e f g h i)           = icodeN 2 Datatype a b c d e f g h i
   icod_ (Record      a b c d e f g h i j k)       = icodeN 3 Record a b c d e f g h i j k
   icod_ (Constructor a b c d e f g h i)           = icodeN 4 Constructor a b c d e f g h i
   icod_ (Primitive   a b c d)                     = icodeN 5 Primitive a b c d
@@ -298,7 +298,7 @@ instance EmbPrj Defn where
   value = vcase valu where
     valu [0, a, b]                                  = valuN Axiom a b
     valu [1, a, b, c, d, e, f, g, h, i, j, k, m, n] = valuN (\ a b -> Function a b Nothing) a b c d e f g h i j k m n
-    valu [2, a, b, c, d, e, f, g, h, i, j, k]       = valuN Datatype a b c d e f g h i j k
+    valu [2, a, b, c, d, e, f, g, h, i]             = valuN Datatype a b c d e f g h i
     valu [3, a, b, c, d, e, f, g, h, i, j, k]       = valuN Record  a b c d e f g h i j k
     valu [4, a, b, c, d, e, f, g, h, i]             = valuN Constructor a b c d e f g h i
     valu [5, a, b, c, d]                            = valuN Primitive   a b c d

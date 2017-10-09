@@ -760,7 +760,7 @@ checkRHS i x aps t lhsResult@(LHSResult _ delta ps trhs _ _asb _) rhs0 = handleR
         -- Process 'rewrite' clause like a suitable 'with' clause.
 
         -- The REFL constructor might have an argument
-        let reflPat  = A.ConP (ConPatInfo ConOCon patNoRange) (AmbQ [conName reflCon]) $
+        let reflPat  = A.ConP (ConPatInfo ConOCon patNoRange) (unambiguous $ conName reflCon) $
               maybeToList $ fmap (\ ai -> Arg ai $ unnamed $ A.WildP patNoRange) reflInfo
 
         -- Andreas, 2015-12-25  Issue #1740:
@@ -930,13 +930,12 @@ checkWithFunction cxtNames (WithFunction f aux t delta delta1 delta2 vs as b qs 
   -- Check generated type directly in internal syntax.
   setCurrentRange cs
     (traceCall NoHighlighting $   -- To avoid flicker.
-      checkType withFunType)
+     checkType withFunType)
     `catchError` \err -> case err of
       TypeError s e -> do
         put s
         wt <- reify withFunType
-        enterClosure e $ do
-          traceCall (CheckWithFunctionType wt) . typeError
+        enterClosure e $ traceCall (CheckWithFunctionType wt) . typeError
       err           -> throwError err
 
   -- With display forms are closed

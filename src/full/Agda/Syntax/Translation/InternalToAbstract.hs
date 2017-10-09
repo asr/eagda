@@ -99,17 +99,17 @@ apps e = elims e . map I.Apply
 nelims :: Expr -> [I.Elim' (Named_ Expr)] -> TCM Expr
 nelims e [] = return e
 nelims e (I.IApply x y r : es) =
-  nelims (A.App noExprInfo e $ defaultArg r) es
+  nelims (A.App defaultAppInfo_ e $ defaultArg r) es
 nelims e (I.Apply arg : es) = do
   arg <- reify arg  -- This replaces the arg by _ if irrelevant
   dontShowImp <- not <$> showImplicitArguments
   let hd | notVisible arg && dontShowImp = e
-         | otherwise                     = A.App noExprInfo e arg
+         | otherwise                     = A.App defaultAppInfo_ e arg
   nelims hd es
 nelims e (I.Proj o@ProjPrefix d  : es) =
-  nelims (A.App noExprInfo (A.Proj o $ AmbQ [d]) $ defaultNamedArg e) es
+  nelims (A.App defaultAppInfo_ (A.Proj o $ unambiguous d) $ defaultNamedArg e) es
 nelims e (I.Proj o d  : es) =
-  nelims (A.App noExprInfo e (defaultNamedArg $ A.Proj o $ AmbQ [d])) es
+  nelims (A.App defaultAppInfo_ e (defaultNamedArg $ A.Proj o $ unambiguous d)) es
 
 -- | Drops hidden arguments unless --show-implicit.
 elims :: Expr -> [I.Elim' Expr] -> TCM Expr
@@ -168,7 +168,7 @@ instance Reify DisplayTerm Expr where
   reify d = case d of
     DTerm v -> reifyTerm False v
     DDot  v -> reify v
-    DCon c ci vs -> apps (A.Con (AmbQ [conName c])) =<< reify vs
+    DCon c ci vs -> apps (A.Con (unambiguous (conName c))) =<< reify vs
     DDef f es -> elims (A.Def f) =<< reify es
     DWithApp u us es0 -> do
       (e, es) <- reify (u, us)
@@ -296,17 +296,17 @@ reifyDisplayFormP lhs@(A.SpineLHS i f ps wps) =
         elimToPat :: I.Elim' DisplayTerm -> TCM (NamedArg A.Pattern)
         elimToPat (I.IApply _ _ r) = argToPat (Arg defaultArgInfo r)
         elimToPat (I.Apply arg) = argToPat arg
-        elimToPat (I.Proj o d)  = return $ defaultNamedArg $ A.ProjP patNoRange o $ AmbQ [d]
+        elimToPat (I.Proj o d)  = return $ defaultNamedArg $ A.ProjP patNoRange o $ unambiguous d
 
         termToPat :: DisplayTerm -> TCM (Named_ A.Pattern)
 
         termToPat (DTerm (I.Var n [])) = return $ unArg $ fromMaybe __IMPOSSIBLE__ $ ps !!! n
 
         termToPat (DCon c ci vs)          = fmap unnamed <$> tryRecPFromConP =<< do
-           A.ConP (ConPatInfo ci patNoRange) (AmbQ [conName c]) <$> mapM argToPat vs
+           A.ConP (ConPatInfo ci patNoRange) (unambiguous (conName c)) <$> mapM argToPat vs
 
         termToPat (DTerm (I.Con c ci vs)) = fmap unnamed <$> tryRecPFromConP =<< do
-           A.ConP (ConPatInfo ci patNoRange) (AmbQ [conName c]) <$> mapM (argToPat . fmap DTerm) vs
+           A.ConP (ConPatInfo ci patNoRange) (unambiguous (conName c)) <$> mapM (argToPat . fmap DTerm) vs
 
         termToPat (DTerm (I.Def _ [])) = return $ unnamed $ A.WildP patNoRange
         termToPat (DDef _ [])          = return $ unnamed $ A.WildP patNoRange
@@ -332,7 +332,7 @@ reifyDisplayFormP lhs@(A.SpineLHS i f ps wps) =
           -- After unSpine, a Proj elimination is __IMPOSSIBLE__!
           case unSpine v of
             I.Con c ci vs ->
-              apps (A.Con (AmbQ [conName c])) =<< argsToExpr vs
+              apps (A.Con (unambiguous (conName c))) =<< argsToExpr vs
             I.Def f es -> do
               let vs = fromMaybe __IMPOSSIBLE__ $ mapM isApplyElim es
               apps (A.Def f) =<< argsToExpr vs
@@ -393,7 +393,7 @@ reifyTerm expandAnonDefs0 v = do
           -- the number of parameters is greater (if the data decl has
           -- extra parameters) or equal (if not) to n
           when (n > np) __IMPOSSIBLE__
-          let h = A.Con (AmbQ [x])
+          let h = A.Con (unambiguous x)
           if null vs then return h else do
             es <- reify vs
             -- Andreas, 2012-04-20: do not reify parameter arguments of constructor
@@ -428,7 +428,7 @@ reifyTerm expandAnonDefs0 v = do
 --    I.Lam info b | isAbsurdBody b -> return $ A. AbsurdLam noExprInfo $ getHiding info
     I.Lam info b    -> do
       (x,e) <- reify b
-      return $ A.Lam (setOrigin (getOrigin info) defaultLamInfo_) (DomainFree info x) e
+      return $ A.Lam exprNoRange (DomainFree info $ BindName x) e
       -- Andreas, 2011-04-07 we do not need relevance information at internal Lambda
     I.Lit l        -> reify l
     I.Level l      -> reify l
@@ -447,7 +447,7 @@ reifyTerm expandAnonDefs0 v = do
       where
         mkPi b (Arg info a) = do
           (x, b) <- reify b
-          return $ A.Pi noExprInfo [TypedBindings noRange $ Arg info (TBind noRange [pure x] a)] b
+          return $ A.Pi noExprInfo [TypedBindings noRange $ Arg info (TBind noRange [pure $ BindName x] a)] b
         -- We can omit the domain type if it doesn't have any free variables
         -- and it's mentioned in the target type.
         domainFree a b = do
@@ -505,7 +505,7 @@ reifyTerm expandAnonDefs0 v = do
                 | isAbsurdLambdaName x -> do
                   -- get hiding info from last pattern, which should be ()
                   let h = getHiding $ last $ namedClausePats cl
-                  elims (A.AbsurdLam defaultLamInfo_ h) =<< reify (drop n es)
+                  elims (A.AbsurdLam exprNoRange h) =<< reify (drop n es)
 
       -- Otherwise (no absurd lambda):
        _ -> do
@@ -591,7 +591,7 @@ reifyTerm expandAnonDefs0 v = do
              [ "  pad = " ++ show pad
              , "  nes = " ++ show nes
              ]
-           let hd = List.foldl' (A.App noExprInfo) (A.Def x) pad
+           let hd = List.foldl' (A.App defaultAppInfo_) (A.Def x) pad
            nelims hd =<< reify nes
 
     -- Andreas, 2016-07-06 Issue #2047
@@ -632,7 +632,7 @@ reifyTerm expandAnonDefs0 v = do
                (reify . QNamed x . (`applyE` pars))
       let cx    = nameConcrete $ qnameName x
           dInfo = mkDefInfo cx noFixity' PublicAccess ConcreteDef (getRange x)
-      elims (A.ExtendedLam defaultLamInfo_ dInfo x cls) =<< reify rest
+      elims (A.ExtendedLam exprNoRange dInfo x cls) =<< reify rest
 
 -- | @nameFirstIfHidden (x:a) ({e} es) = {x = e} es@
 nameFirstIfHidden :: Dom (ArgName, t) -> [Elim' a] -> [Elim' (Named_ a)]
@@ -891,7 +891,7 @@ instance Binder A.LHSCore where
 
 instance Binder A.Pattern where
   varsBoundIn = foldAPattern $ \case
-    A.VarP x            -> if prettyShow x == "()" then empty else singleton x -- TODO: get rid of this hack?
+    A.VarP x            -> singleton $ unBind x
     A.AsP _ x _         -> empty
     A.ConP _ _ _        -> empty
     A.ProjP{}           -> empty
@@ -905,7 +905,7 @@ instance Binder A.Pattern where
     A.EqualP{}          -> empty
 
 instance Binder A.LamBinding where
-  varsBoundIn (A.DomainFree _ x) = singleton x
+  varsBoundIn (A.DomainFree _ x) = singleton $ unBind x
   varsBoundIn (A.DomainFull b)   = varsBoundIn b
 
 instance Binder TypedBindings where
@@ -916,7 +916,7 @@ instance Binder TypedBinding where
   varsBoundIn (TLet _ bs)    = varsBoundIn bs
 
 instance Binder LetBinding where
-  varsBoundIn (LetBind _ _ x _ _) = singleton x
+  varsBoundIn (LetBind _ _ x _ _) = singleton $ unBind x
   varsBoundIn (LetPatBind _ p _)  = varsBoundIn p
   varsBoundIn LetApply{}          = empty
   varsBoundIn LetOpen{}           = empty
@@ -924,6 +924,9 @@ instance Binder LetBinding where
 
 instance Binder (WithHiding Name) where
   varsBoundIn (WithHiding _ x) = singleton x
+
+instance Binder (WithHiding BindName) where
+  varsBoundIn (WithHiding _ x) = singleton $ unBind x
 
 instance Binder a => Binder (FieldAssignment' a) where
 instance Binder a => Binder (Arg a)              where
@@ -951,14 +954,14 @@ reifyPatterns = mapM $ stripNameFromExplicit <.> traverse (traverse reifyPat)
       I.VarP x -> do
         n <- liftTCM $ nameOfBV $ dbPatVarIndex x
         case dbPatVarName x of
-          "_"  -> return $ A.VarP n
+          "_"  -> return $ A.VarP $ BindName n
           -- Andreas, 2017-09-03: TODO for #2580
           -- Patterns @VarP "()"@ should have been replaced by @AbsurdP@, but the
           -- case splitter still produces them.
-          y    -> if prettyShow (nameConcrete n) == "()" then return $ A.VarP n else
+          y    -> if prettyShow (nameConcrete n) == "()" then return $ A.VarP $ BindName n else
             -- Andreas, 2017-09-03, issue #2729
             -- Restore original pattern name.  AbstractToConcrete picks unique names.
-            return $ A.VarP n { nameConcrete = C.Name noRange [ C.Id y ] }
+            return $ A.VarP $ BindName $ n { nameConcrete = C.Name noRange [ C.Id y ] }
       I.DotP v -> do
         t <- liftTCM $ reify v
         -- This is only used for printing purposes, so the Origin shouldn't be
@@ -968,10 +971,10 @@ reifyPatterns = mapM $ stripNameFromExplicit <.> traverse (traverse reifyPat)
         -- Crashes on -v 100.
       I.AbsurdP p -> return $ A.AbsurdP patNoRange
       I.LitP l  -> return $ A.LitP l
-      I.ProjP o d     -> return $ A.ProjP patNoRange o $ AmbQ [d]
+      I.ProjP o d     -> return $ A.ProjP patNoRange o $ unambiguous d
       I.ConP c cpi ps -> do
         liftTCM $ reportSLn "reify.pat" 60 $ "reifying pattern " ++ show p
-        tryRecPFromConP =<< do A.ConP ci (AmbQ [conName c]) <$> reifyPatterns ps
+        tryRecPFromConP =<< do A.ConP ci (unambiguous (conName c)) <$> reifyPatterns ps
         where
           ci = ConPatInfo origin patNoRange
           origin = fromMaybe ConOCon $ I.conPRecord cpi
@@ -983,8 +986,8 @@ tryRecPFromConP :: MonadTCM tcm => A.Pattern -> tcm A.Pattern
 tryRecPFromConP p = do
   let fallback = return p
   case p of
-    A.ConP ci (AmbQ [c]) ps -> do
-        caseMaybeM (liftTCM $ isRecordConstructor c) fallback $ \ (r, def) -> do
+    A.ConP ci c ps -> do
+        caseMaybeM (liftTCM $ isRecordConstructor $ headAmbQ c) fallback $ \ (r, def) -> do
           -- If the record constructor is generated or the user wrote a record pattern,
           -- print record pattern.
           -- Otherwise, print constructor pattern.
@@ -1066,7 +1069,7 @@ instance Reify Sort Expr where
         I.Type (I.Max [I.ClosedLevel n]) -> return $ A.Set noExprInfo n
         I.Type a -> do
           a <- reify a
-          return $ A.App noExprInfo (A.Set noExprInfo 0) (defaultNamedArg a)
+          return $ A.App defaultAppInfo_ (A.Set noExprInfo 0) (defaultNamedArg a)
         I.Prop       -> return $ A.Prop noExprInfo
         I.Inf       -> A.Var <$> freshName_ ("Setω" :: String)
         I.SizeUniv  -> do
@@ -1075,12 +1078,16 @@ instance Reify Sort Expr where
         I.DLub s1 s2 -> do
           lub <- freshName_ ("dLub" :: String) -- TODO: hack
           (e1,e2) <- reify (s1, I.Lam defaultArgInfo $ fmap Sort s2)
-          let app x y = A.App noExprInfo x (defaultNamedArg y)
+          let app x y = A.App defaultAppInfo_ x (defaultNamedArg y)
           return $ A.Var lub `app` e1 `app` e2
 
 instance Reify Level Expr where
   reifyWhen = reifyWhenE
-  reify l = reify =<< reallyUnLevelView l
+  reify l   = ifM haveLevels (reify =<< reallyUnLevelView l) $ {-else-} do
+    -- Andreas, 2017-09-18, issue #2754
+    -- While type checking the level builtins, they are not
+    -- available for debug printing.  Thus, print some garbage instead.
+    A.Var <$> freshName_ (".#Lacking_Level_Builtins#" :: String)
 
 instance (Free i, Reify i a) => Reify (Abs i) (Name, a) where
   reify (NoAbs x v) = (,) <$> freshName_ x <*> reify v
@@ -1101,7 +1108,7 @@ instance Reify I.Telescope A.Telescope where
     Arg info e <- reify arg
     (x,bs)  <- reify tel
     let r = getRange e
-    return $ TypedBindings r (Arg info (TBind r [pure x] e)) : bs
+    return $ TypedBindings r (Arg info (TBind r [pure $ BindName x] e)) : bs
 
 instance Reify i a => Reify (Dom i) (Arg a) where
     reify (Dom{domInfo = info, unDom = i}) = Arg info <$> reify i

@@ -82,6 +82,7 @@ import Agda.Utils.Lens
 import Agda.Utils.List
 import Agda.Utils.ListT
 import Agda.Utils.Monad
+import Agda.Utils.NonemptyList
 import Agda.Utils.Null
 import Agda.Utils.Permutation
 import Agda.Utils.Pretty hiding ((<>))
@@ -1549,8 +1550,6 @@ data Defn = Axiom
             }
           | Datatype
             { dataPars           :: Nat            -- ^ Number of parameters.
-            , dataSmallPars      :: Permutation    -- ^ Parameters that are maybe small.
-            , dataNonLinPars     :: Drop Permutation  -- ^ Parameters that appear in indices.
             , dataIxs            :: Nat            -- ^ Number of indices.
             , dataInduction      :: Induction      -- ^ @data@ or @codata@ (legacy).
             , dataClause         :: (Maybe Clause) -- ^ This might be in an instantiated module.
@@ -1660,8 +1659,6 @@ instance Pretty Defn where
   pretty Datatype{..} =
     text "Datatype {" <?> vcat
       [ text "dataPars       =" <?> pshow dataPars
-      , text "dataSmallPars  =" <?> pshow dataSmallPars
-      , text "dataNonLinPars =" <?> pshow dataNonLinPars
       , text "dataIxs        =" <?> pshow dataIxs
       , text "dataInduction  =" <?> pshow dataInduction
       , text "dataClause     =" <?> pretty dataClause
@@ -1845,9 +1842,12 @@ allReductions = [minBound..pred maxBound]
 data PrimFun = PrimFun
         { primFunName           :: QName
         , primFunArity          :: Arity
-        , primFunImplementation :: [Arg Term] -> ReduceM (Reduced MaybeReducedArgs Term)
+        , primFunImplementation :: [Arg Term] -> Int -> ReduceM (Reduced MaybeReducedArgs Term)
         }
     deriving (Typeable)
+
+primFun :: QName -> Arity -> ([Arg Term] -> ReduceM (Reduced MaybeReducedArgs Term)) -> PrimFun
+primFun q ar imp = PrimFun q ar (\ args _ -> imp args)
 
 defClauses :: Definition -> [Clause]
 defClauses Defn{theDef = Function{funClauses = cs}}        = cs
@@ -2705,6 +2705,7 @@ data TypeError
             -- ^ The arguments are the meta variable, the parameters it can
             --   depend on and the paratemeter that it wants to depend on.
         | MetaOccursInItself MetaId
+        | MetaIrrelevantSolution MetaId Term
         | GenericError String
         | GenericDocError Doc
         | BuiltinMustBeConstructor String A.Expr
@@ -2755,8 +2756,8 @@ data TypeError
         | AbstractConstructorNotInScope A.QName
         | NotInScope [C.QName]
         | NoSuchModule C.QName
-        | AmbiguousName C.QName [A.QName]
-        | AmbiguousModule C.QName [A.ModuleName]
+        | AmbiguousName C.QName (NonemptyList A.QName)
+        | AmbiguousModule C.QName (NonemptyList A.ModuleName)
         | UninstantiatedModule C.QName
         | ClashingDefinition C.QName A.QName
         | ClashingModule A.ModuleName A.ModuleName
@@ -2777,8 +2778,9 @@ data TypeError
         | NothingAppliedToHiddenArg C.Expr
         | NothingAppliedToInstanceArg C.Expr
     -- Pattern synonym errors
-        | BadArgumentsToPatternSynonym A.QName
-        | TooFewArgumentsToPatternSynonym A.QName
+        | BadArgumentsToPatternSynonym A.AmbiguousQName
+        | TooFewArgumentsToPatternSynonym A.AmbiguousQName
+        | CannotResolveAmbiguousPatternSynonym (NonemptyList (A.QName, A.PatternSynDefn))
         | UnusedVariableInPatternSynonym
     -- Operator errors
         | NoParseForApplication [C.Expr]
@@ -3285,7 +3287,7 @@ instance KillRange Defn where
       AbstractDefn{} -> __IMPOSSIBLE__ -- only returned by 'getConstInfo'!
       Function cls comp tt inv mut isAbs delayed proj flags term extlam with copat role ->
         killRange14 Function cls comp tt inv mut isAbs delayed proj flags term extlam with copat role
-      Datatype a b c d e f g h i j k -> killRange11 Datatype a b c d e f g h i j k
+      Datatype a b c d e f g h i     -> killRange9 Datatype a b c d e f g h i
       Record a b c d e f g h i j k   -> killRange11 Record a b c d e f g h i j k
       Constructor a b c d e f g h i  -> killRange9 Constructor a b c d e f g h i
       Primitive a b c d              -> killRange4 Primitive a b c d

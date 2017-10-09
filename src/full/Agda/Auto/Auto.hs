@@ -33,7 +33,7 @@ import qualified Agda.TypeChecking.Pretty as TCM
 import Agda.Syntax.Position
 import qualified Agda.Syntax.Internal as I
 import Agda.Syntax.Translation.InternalToAbstract
-import Agda.Syntax.Translation.AbstractToConcrete (abstractToConcreteEnv, abstractToConcrete_, makeEnv, runAbsToCon, toConcrete)
+import Agda.Syntax.Translation.AbstractToConcrete (abstractToConcreteScope, abstractToConcrete_, runAbsToCon, toConcrete)
 import Agda.Interaction.BasicOps hiding (refine)
 import Agda.TypeChecking.Reduce (normalise)
 import Agda.Syntax.Common
@@ -71,8 +71,8 @@ insertAbsurdPattern (c:s) = c : insertAbsurdPattern s
 getHeadAsHint :: A.Expr -> Maybe Hint
 getHeadAsHint (A.ScopedExpr _ e) = getHeadAsHint e
 getHeadAsHint (A.Def qname)      = Just $ Hint False qname
-getHeadAsHint (A.Proj _ qname)   = Just $ Hint False $ head $ I.unAmbQ qname
-getHeadAsHint (A.Con qname)      = Just $ Hint True  $ head $ I.unAmbQ qname
+getHeadAsHint (A.Proj _ qname)   = Just $ Hint False $ AN.headAmbQ qname
+getHeadAsHint (A.Con qname)      = Just $ Hint True  $ AN.headAmbQ qname
 getHeadAsHint _ = Nothing
 
 -- | Result type: Progress & potential Message for the user
@@ -338,7 +338,7 @@ auto ii rng argstr = do
                          Just ii' -> do ae <- give WithoutForce ii' Nothing expr
                                         mv <- lookupMeta mi
                                         let scope = getMetaScope mv
-                                        ce <- abstractToConcreteEnv (makeEnv scope) ae
+                                        ce <- abstractToConcreteScope scope ae
                                         let cmnt = if ii' == ii then agsyinfo ticks else ""
                                         return (Just (ii', show ce ++ cmnt), Nothing)
                            -- Andreas, 2015-05-17, Issue 1504

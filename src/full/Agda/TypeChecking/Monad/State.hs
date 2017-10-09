@@ -18,6 +18,7 @@ import qualified Data.Map as Map
 import Data.Monoid
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Data.Traversable (traverse)
 
 import Agda.Benchmarking
 
@@ -29,6 +30,7 @@ import Agda.Syntax.Common
 import Agda.Syntax.Scope.Base
 import qualified Agda.Syntax.Concrete.Name as C
 import Agda.Syntax.Abstract (PatternSynDefn, PatternSynDefns)
+import Agda.Syntax.Abstract.PatternSynonyms
 import Agda.Syntax.Abstract.Name
 import Agda.Syntax.Internal
 
@@ -43,6 +45,7 @@ import Agda.Utils.Hash
 import qualified Agda.Utils.HashMap as HMap
 import Agda.Utils.Lens
 import Agda.Utils.Monad (bracket_)
+import Agda.Utils.NonemptyList
 import Agda.Utils.Pretty
 import Agda.Utils.Tuple
 
@@ -377,8 +380,19 @@ modifyPatternSyns f = stPatternSyns %= f
 getPatternSynImports :: TCM PatternSynDefns
 getPatternSynImports = use stPatternSynImports
 
-lookupPatternSyn :: QName -> TCM PatternSynDefn
-lookupPatternSyn x = do
+-- | Get both local and imported pattern synonyms
+getAllPatternSyns :: TCM PatternSynDefns
+getAllPatternSyns = Map.union <$> getPatternSyns <*> getPatternSynImports
+
+lookupPatternSyn :: AmbiguousQName -> TCM PatternSynDefn
+lookupPatternSyn (AmbQ xs) = do
+  defs <- traverse lookupSinglePatternSyn xs
+  case mergePatternSynDefs defs of
+    Just def   -> return def
+    Nothing    -> typeError $ CannotResolveAmbiguousPatternSynonym (zipNe xs defs)
+
+lookupSinglePatternSyn :: QName -> TCM PatternSynDefn
+lookupSinglePatternSyn x = do
     s <- getPatternSyns
     case Map.lookup x s of
         Just d  -> return d

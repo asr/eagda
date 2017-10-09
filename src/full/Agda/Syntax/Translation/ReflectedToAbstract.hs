@@ -68,14 +68,14 @@ instance ToAbstract [Arg Term] [NamedArg Expr] where
 instance ToAbstract r Expr => ToAbstract (Dom r, Name) (A.TypedBindings) where
   toAbstract (Dom{domInfo = i,unDom = x}, name) = do
     dom <- toAbstract x
-    return $ TypedBindings noRange $ Arg i $ TBind noRange [pure name] dom
+    return $ TypedBindings noRange $ Arg i $ TBind noRange [pure $ BindName name] dom
 
 instance ToAbstract (Expr, Elim) Expr where
   toAbstract (f, Apply arg) = do
     arg     <- toAbstract arg
     showImp <- lift showImplicitArguments
     return $ if showImp || visible arg
-             then App (ExprRange noRange) f arg
+             then App (setOrigin Reflected defaultAppInfo_) f arg
              else f
 
 instance ToAbstract (Expr, Elims) Expr where
@@ -98,14 +98,14 @@ instance ToAbstract Term Expr where
           names <- asks $ drop (size cxt) . reverse
           lift $ withShowAllArguments' False $ typeError $ DeBruijnIndexOutOfScope i cxt names
         Just name -> toAbstract (A.Var name, es)
-    R.Con c es -> toAbstract (A.Con (AmbQ [killRange c]), es)
+    R.Con c es -> toAbstract (A.Con (unambiguous $ killRange c), es)
     R.Def f es -> do
       af <- lift $ mkDef (killRange f)
       toAbstract (af, es)
     R.Lam h t  -> do
       (e, name) <- toAbstract t
       let info  = setHiding h $ setOrigin Reflected defaultArgInfo
-      return $ A.Lam (setOrigin Reflected defaultLamInfo_) (DomainFree info name) e
+      return $ A.Lam exprNoRange (DomainFree info $ BindName name) e
     R.ExtLam cs es -> do
       name <- freshName_ extendedLambdaName
       m    <- lift $ getCurrentModule
@@ -113,7 +113,7 @@ instance ToAbstract Term Expr where
           cname   = nameConcrete name
           defInfo = mkDefInfo cname noFixity' PublicAccess ConcreteDef noRange
       cs <- toAbstract $ map (QNamed qname) cs
-      toAbstract (A.ExtendedLam (setOrigin Reflected defaultLamInfo_) defInfo qname cs, es)
+      toAbstract (A.ExtendedLam exprNoRange defInfo qname cs, es)
     R.Pi a b   -> do
       (b, name) <- toAbstract b
       a         <- toAbstract (a, name)
@@ -131,7 +131,7 @@ mkDef f =
       (return $ A.Def f)
 
 mkSet :: Expr -> Expr
-mkSet e = App exprNoRange (A.Set exprNoRange 0) $ defaultNamedArg e
+mkSet e = App (setOrigin Reflected defaultAppInfo_) (A.Set exprNoRange 0) $ defaultNamedArg e
 
 instance ToAbstract Sort Expr where
   toAbstract (SetS x) = mkSet <$> toAbstract x
@@ -142,16 +142,16 @@ instance ToAbstract R.Pattern (Names, A.Pattern) where
   toAbstract pat = case pat of
     R.ConP c args -> do
       (names, args) <- toAbstractPats args
-      return (names, A.ConP (ConPatInfo ConOCon patNoRange) (AmbQ [killRange c]) args)
+      return (names, A.ConP (ConPatInfo ConOCon patNoRange) (unambiguous $ killRange c) args)
     R.DotP    -> return ([], A.WildP patNoRange)
-    R.VarP s | isNoName s -> withName "z" $ \ name -> return ([name], A.VarP name)
+    R.VarP s | isNoName s -> withName "z" $ \ name -> return ([name], A.VarP $ BindName name)
         -- Ulf, 2016-08-09: Also bind noNames (#2129). This to make the
         -- behaviour consistent with lambda and pi.
         -- return ([], A.WildP patNoRange)
-    R.VarP s  -> withName s $ \ name -> return ([name], A.VarP name)
+    R.VarP s  -> withName s $ \ name -> return ([name], A.VarP $ BindName name)
     R.LitP l  -> return ([], A.LitP l)
     R.AbsurdP -> return ([], A.AbsurdP patNoRange)
-    R.ProjP d -> return ([], A.ProjP patNoRange ProjSystem $ AmbQ [killRange d])
+    R.ProjP d -> return ([], A.ProjP patNoRange ProjSystem $ unambiguous $ killRange d)
 
 toAbstractPats :: [Arg R.Pattern] -> WithNames (Names, [NamedArg A.Pattern])
 toAbstractPats pats = case pats of

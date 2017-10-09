@@ -70,6 +70,7 @@ import Agda.Utils.List
 import Agda.Utils.ListT
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
+import Agda.Utils.NonemptyList
 import Agda.Utils.Permutation
 import Agda.Utils.Pretty (prettyShow)
 import Agda.Utils.Size
@@ -108,9 +109,9 @@ instance IsFlexiblePattern A.Pattern where
       A.VarP{}  -> return ImplicitFlex
       A.WildP{} -> return ImplicitFlex
       A.AsP _ _ p -> maybeFlexiblePattern p
-      A.ConP _ (A.AmbQ [c]) qs
-        -> ifM (isNothing <$> isRecordConstructor c) (return OtherFlex) {-else-}
-             (maybeFlexiblePattern qs)
+      A.ConP _ cs qs | Just c <- getUnambiguous cs ->
+        ifM (isNothing <$> isRecordConstructor c) (return OtherFlex) {-else-}
+            (maybeFlexiblePattern qs)
       A.LitP{}  -> return OtherFlex
       _ -> mzero
 
@@ -168,8 +169,9 @@ updateInPatterns as ps qs = do
       DotP u     -> case snd $ asView $ namedThing (unArg p) of
         A.DotP _ _ e -> return (IntMap.empty, [DPI Nothing  (Just e) u a])
         A.WildP _  -> return (IntMap.empty, [DPI Nothing  Nothing  u a])
-        A.VarP x   -> return (IntMap.empty, [DPI (Just x) Nothing  u a])
-        p@(A.ConP _ (A.AmbQ [c]) qs) -> ifM (isNothing <$> isRecordConstructor c)
+        A.VarP x   -> return (IntMap.empty, [DPI (Just $ A.unBind x) Nothing  u a])
+        p@(A.ConP _ cs qs) | Just c <- getUnambiguous cs ->
+          ifM (isNothing <$> isRecordConstructor c)
           (return (IntMap.empty, [DPI Nothing (Just $ A.patternToExpr p) u a]))
           (do
             Def r es  <- ignoreSharing <$> reduce (unEl $ unDom a)
@@ -203,7 +205,7 @@ updateInPatterns as ps qs = do
               where
                 mkDPI v = case namedThing $ unArg p of
                   A.DotP _ _ e -> [DPI Nothing (Just e) v a]
-                  A.VarP x   -> [DPI (Just x) Nothing v a]
+                  A.VarP x   -> [DPI (Just $ A.unBind x) Nothing v a]
                   A.WildP _  -> [DPI Nothing  Nothing v a]
                   _        -> []
 
@@ -223,7 +225,7 @@ updateInPatterns as ps qs = do
               where
                 mkDPI v = case namedThing $ unArg p of
                   A.DotP _ _ e -> [DPI Nothing (Just e) v a]
-                  A.VarP x     -> [DPI (Just x) Nothing v a]
+                  A.VarP x     -> [DPI (Just $ A.unBind x) Nothing v a]
                   _            -> []
         second (dpi++) <$>
           updates as (projectInPat p fs) (map (fmap namedThing) qs)
@@ -317,7 +319,7 @@ noShadowingOfConstructors mkCall problem =
   noShadowing (A.AsP       {}) t = __IMPOSSIBLE__ -- removed by asView
   noShadowing (A.LitP      {}) t = __IMPOSSIBLE__
   noShadowing (A.PatternSynP {}) t = __IMPOSSIBLE__
-  noShadowing (A.VarP x)       t = do
+  noShadowing (A.VarP (A.BindName x)) t = do
     reportSDoc "tc.lhs.shadow" 30 $ vcat
       [ text $ "checking whether pattern variable " ++ prettyShow x ++ " shadows a constructor"
       , nest 2 $ text "type of variable =" <+> prettyTCM t
@@ -348,7 +350,7 @@ noShadowingOfConstructors mkCall problem =
       Var   {} -> return ()
       Pi    {} -> return ()
       Sort  {} -> return ()
-      Shared p -> noShadowing (A.VarP x) $ derefPtr p
+      Shared p -> noShadowing (A.VarP (A.BindName x)) $ derefPtr p
       MetaV {} -> return ()
       -- TODO: If the type is a meta-variable, should the test be
       -- postponed? If there is a problem, then it will be caught when
@@ -526,7 +528,7 @@ bindLHSVars (p : ps) tel0@(ExtendTel a tel) ret = do
   unless (sameHiding p a) $ typeError WrongHidingInLHS
 
   case namedArg p of
-    A.VarP x      -> addContext (x, a) $ bindLHSVars ps (absBody tel) ret
+    A.VarP x      -> addContext (A.unBind x, a) $ bindLHSVars ps (absBody tel) ret
     A.WildP _     -> bindDummy (absName tel)
                  -- @bindDummy underscore@ does not fix issue 819, but
                  -- introduces unwanted underscores in error messages
@@ -622,7 +624,7 @@ checkLeftHandSide c f ps a withSub' strippedDots = Bench.billToCPS [Bench.Typing
   -- context telescope.
   cxt <- reverse <$> getContext
   let tel = telFromList' prettyShow cxt
-      cps = [ unnamed . A.VarP . fst <$> setOrigin Inserted (argFromDom d)
+      cps = [ unnamed . A.VarP . A.BindName . fst <$> setOrigin Inserted (argFromDom d)
             | d <- cxt ]
   problem0 <- problemFromPats (cps ++ ps) (telePi tel a)
   -- Andreas, 2013-03-15 deactivating the following test allows
@@ -880,7 +882,7 @@ checkLHS f st@(LHSState problem dpi psplit sbe) = do
         , nest 2 $ text "var  =" <+> addContext tel (prettyTCM $ var i)
         , nest 2 $ text "type =" <+> addContext tel (prettyTCM a)
         ]
-      let rho = liftS i $ consS (AbsurdP $ VarP $ DBPatVar "()" 0) $ raiseS 1
+      let rho = liftS i $ consS (AbsurdP $ VarP $ DBPatVar absurdPatternName 0) $ raiseS 1
       checkLHS f $ st
             { lhsProblem = problem
               { problemInPat  = (problemInPat p0) ++
@@ -904,7 +906,7 @@ checkLHS f st@(LHSState problem dpi psplit sbe) = do
                       , focusType     = a
                       }
                )) p1) tryNextSplit = do
-      traceCall (CheckPattern (A.ConP (ConPatInfo porigin $ PatRange r) (A.AmbQ [c]) qs)
+      traceCall (CheckPattern (A.ConP (ConPatInfo porigin $ PatRange r) (unambiguous c) qs)
                                        (problemTel p0)
                                        (El Prop $ Def d $ map Apply $ vs ++ ws)) $ do
 

@@ -190,7 +190,7 @@ lhsToPath acc (LHSProj f lhs ps) = do
     let xs = fromMaybe __IMPOSSIBLE__ $ mapM (T.mapM (T.mapM fromVarP)) ps
     lhsToPath (ProjEntry f xs : acc) $ namedArg lhs
   where fromVarP :: Pattern -> Maybe Name
-        fromVarP (VarP n) = Just n
+        fromVarP (VarP n) = Just $ unBind n
         fromVarP _        = Nothing
 
 -- | Expects a sorted list.
@@ -207,13 +207,12 @@ pathToRecord pps =
 
         where
           abstractions :: (ProjEntry, Expr) -> ScopeM RecordAssign
-          abstractions (ProjEntry (AmbQ []) xs, e) = __IMPOSSIBLE__
-          abstractions (ProjEntry (AmbQ (p:_)) xs, e) = Left . FieldAssignment (C.unqualify $ qnameToConcrete p) <$>
+          abstractions (ProjEntry p xs, e) = Left . FieldAssignment (C.unqualify $ qnameToConcrete $ headAmbQ p) <$>
             foldr abstract (return e) xs
 
           abstract :: NamedArg Name -> ScopeM Expr -> ScopeM Expr
           abstract (Arg info (Named Nothing x)) me =
-            Lam defaultLamInfo_ (DomainFree info x) <$> me
+            Lam exprNoRange (DomainFree info $ BindName x) <$> me
           abstract (Arg _ (Named Just{} _)) me = typeError $ NotImplemented $
             "named arguments in projection patterns"
 
@@ -256,6 +255,9 @@ instance Rename QName where
 
 instance Rename Name where
   rename rho x = fromMaybe x (rho x)
+
+instance Rename BindName where
+  rename rho (BindName x) = BindName $ rename rho x
 
 instance Rename Expr where
   rename rho e =
@@ -379,11 +381,11 @@ instance Alpha Name where
 instance Alpha (Pattern' e) where
   alpha' p p' =
     case (p,p') of
-      ((VarP x)             , (VarP x')             ) -> tell1 (x, x')
+      ((VarP x)             , (VarP x')             ) -> tell1 (unBind x, unBind x')
       ((ConP _ x ps)        , (ConP _ x' ps')       ) -> guard (x == x') >> alpha' ps ps'
       ((DefP _ x ps)        , (DefP _ x' ps')       ) -> guard (x == x') >> alpha' ps ps'
       ((WildP _)            , (WildP _)             ) -> return ()
-      ((AsP _ x p)          , (AsP _ x' p')         ) -> tell1 (x, x') >> alpha' p p'
+      ((AsP _ x p)          , (AsP _ x' p')         ) -> tell1 (unBind x, unBind x') >> alpha' p p'
       ((DotP _ _ _)         , (DotP _ _ _)          ) -> return ()
       (AbsurdP{}            , AbsurdP{}             ) -> return ()
       ((LitP l)             , (LitP l')             ) -> guard (l == l')

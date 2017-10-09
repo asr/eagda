@@ -24,6 +24,10 @@
 --
 --   * Report basic well-formedness error,
 --     when one of the above transformation fails.
+--     When possible, errors should be deferred to the scope checking phase
+--     (ConcreteToAbstract), where we are in the TCM and can produce more
+--     informative error messages.
+
 
 module Agda.Syntax.Concrete.Definitions
     ( NiceDeclaration(..)
@@ -174,8 +178,6 @@ data DeclarationException
         | DuplicateDefinition Name
         | MissingDefinition Name
         | MissingWithClauses Name
-        | MissingTypeSignature LHS -- Andreas 2012-06-02: currently unused, remove after a while -- Fredrik 2012-09-20: now used, can we keep it?
-        | MissingDataSignature Name
         | WrongDefinition Name DataRecOrFun DataRecOrFun
         | WrongParameters Name Params Params
           -- ^ 'Name' of symbol, 'Params' of signature, 'Params' of definition.
@@ -206,6 +208,12 @@ data DeclarationWarning
   | UselessPrivate Range
   | UselessAbstract Range
   | UselessInstance Range
+  | EmptyMutual Range     -- ^ Empty @mutual@    block.
+  | EmptyAbstract Range   -- ^ Empty @abstract@  block.
+  | EmptyPrivate Range    -- ^ Empty @private@   block.
+  | EmptyInstance Range   -- ^ Empty @instance@  block
+  | EmptyMacro Range      -- ^ Empty @macro@     block.
+  | EmptyPostulate Range  -- ^ Empty @postulate@ block.
   deriving (Typeable, Data, Show)
 
 -- | Several declarations expect only type signatures as sub-declarations.  These are:
@@ -225,8 +233,6 @@ instance HasRange DeclarationException where
   getRange (DuplicateDefinition x)              = getRange x
   getRange (MissingDefinition x)                = getRange x
   getRange (MissingWithClauses x)               = getRange x
-  getRange (MissingTypeSignature x)             = getRange x
-  getRange (MissingDataSignature x)             = getRange x
   getRange (WrongDefinition x k k')             = getRange x
   getRange (WrongParameters x _ _)              = getRange x
   getRange (AmbiguousFunClauses lhs xs)         = getRange lhs
@@ -249,6 +255,12 @@ instance HasRange DeclarationWarning where
   getRange (UselessPrivate r)                   = r
   getRange (UselessAbstract r)                  = r
   getRange (UselessInstance r)                  = r
+  getRange (EmptyMutual r)                      = r
+  getRange (EmptyAbstract r)                    = r
+  getRange (EmptyPrivate r)                     = r
+  getRange (EmptyInstance r)                    = r
+  getRange (EmptyMacro r)                       = r
+  getRange (EmptyPostulate r)                   = r
 
 instance HasRange NiceDeclaration where
   getRange (Axiom r _ _ _ _ _ _ _ _)         = r
@@ -290,10 +302,7 @@ instance Pretty DeclarationException where
     pwords "Missing definition for" ++ [pretty x]
   pretty (MissingWithClauses x) = fsep $
     pwords "Missing with-clauses for function" ++ [pretty x]
-  pretty (MissingTypeSignature x) = fsep $
-    pwords "Missing type signature for left hand side" ++ [pretty x]
-  pretty (MissingDataSignature x) = fsep $
-    pwords "Missing type signature for " ++ [pretty x]
+
   pretty (WrongDefinition x k k') = fsep $ pretty x :
     pwords ("has been declared as a " ++ show k ++
       ", but is being defined as a " ++ show k')
@@ -346,6 +355,12 @@ instance Pretty DeclarationWarning where
     pwords "Using abstract here has no effect. Abstract applies to only definitions like data definitions, record type definitions and function clauses."
   pretty (UselessInstance _)      = fsep $
     pwords "Using instance here has no effect. Instance applies only to declarations that introduce new identifiers into the module, like type signatures and axioms."
+  pretty (EmptyMutual    _) = fsep $ pwords "Empty mutual block."
+  pretty (EmptyAbstract  _) = fsep $ pwords "Empty abstract block."
+  pretty (EmptyPrivate   _) = fsep $ pwords "Empty private block."
+  pretty (EmptyInstance  _) = fsep $ pwords "Empty instance block."
+  pretty (EmptyMacro     _) = fsep $ pwords "Empty macro block."
+  pretty (EmptyPostulate _) = fsep $ pwords "Empty postulate block."
 
 declName :: NiceDeclaration -> String
 declName Axiom{}             = "Postulates"
@@ -779,7 +794,7 @@ niceDeclarations ds = do
     inferMutualBlocks (d : ds) =
       case declKind d of
         OtherDecl    -> (d :) <$> inferMutualBlocks ds
-        LoneDefs _ xs -> __IMPOSSIBLE__
+        LoneDefs{}   -> (d :) <$> inferMutualBlocks ds  -- Andreas, 2017-10-09, issue #2576: report error in ConcreteToAbstract
         LoneSig k x  -> do
           addLoneSig x k
           ((tcs, pcs), (ds0, ds1)) <- untilAllDefined ([terminationCheck k], [positivityCheck k]) ds
@@ -832,8 +847,11 @@ niceDeclarations ds = do
       (xs ++) <$> nice ys
 
     nice1 :: [Declaration] -> Nice ([NiceDeclaration], [Declaration])
-    nice1 []     = __IMPOSSIBLE__
-    nice1 (d:ds) = case d of
+    nice1 []     = return ([], []) -- Andreas, 2017-09-16, issue #2759: no longer __IMPOSSIBLE__
+    nice1 (d:ds) = do
+      let justWarning w = do niceWarning w; nice1 ds
+
+      case d of
 
         (TypeSig info x t)            -> do
           termCheck <- use terminationCheckPragma
@@ -911,21 +929,27 @@ niceDeclarations ds = do
                     niceDeclarations r x ((tel,) <$> mt) (Just (tel, cs))
               <*> return ds
 
+        Mutual r []  -> justWarning $ EmptyMutual r
         Mutual r ds' ->
           (,ds) <$> (singleton <$> (mkOldMutual r =<< nice ds'))
 
+        Abstract r []  -> justWarning $ EmptyAbstract r
         Abstract r ds' ->
           (,ds) <$> (abstractBlock r =<< nice ds')
 
+        Private r UserWritten []  -> justWarning $ EmptyPrivate r
         Private r o ds' ->
           (,ds) <$> (privateBlock r o =<< nice ds')
 
+        InstanceB r []  -> justWarning $ EmptyInstance r
         InstanceB r ds' ->
           (,ds) <$> (instanceBlock r =<< nice ds')
 
+        Macro r []  -> justWarning $ EmptyMacro r
         Macro r ds' ->
           (,ds) <$> (macroBlock r =<< nice ds')
 
+        Postulate r []  -> justWarning $ EmptyPostulate r
         Postulate _ ds' ->
           (,ds) <$> (mapM setPolarity =<< niceAxioms PostulateBlock ds')
           where
@@ -1051,7 +1075,7 @@ niceDeclarations ds = do
     defaultTypeSig :: DataRecOrFun -> Name -> Maybe Expr -> Nice (Maybe Expr)
     defaultTypeSig k x t@Just{} = return t
     defaultTypeSig k x Nothing  = do
-      caseMaybeM (getSig x) (throwError $ MissingDataSignature x) $ \ k' -> do
+      caseMaybeM (getSig x) (return Nothing) $ \ k' -> do
         unless (sameKind k k') $ throwError $ WrongDefinition x k' k
         unless (k == k') $ matchParameters x k' k
         Nothing <$ removeLoneSig x
@@ -1267,24 +1291,29 @@ niceDeclarations ds = do
     mkOldMutual r ds = do
         -- Check that there aren't any missing definitions
         checkLoneSigs loneNames
+
         -- Check that there are no declarations that aren't allowed in old style mutual blocks
-        case filter notAllowedInMutual ds of
-          []  -> return ()
-          (NiceFunClause _ _ _ _ s_ (FunClause lhs _ _ _)):_ -> throwError $ MissingTypeSignature lhs
-          d:_ -> throwError $ NotAllowedInMutual d
+        forM_ ds $ \case
+          -- Andreas, 2013-11-23 allow postulates in mutual blocks
+          Axiom{} -> return ()
+          -- Andreas, 2017-10-09, issue #2576, raise error about missing type signature
+          -- in ConcreteToAbstract rather than here.
+          NiceFunClause{} -> return ()
+          -- Otherwise, only categorized signatures and definitions are allowed (data/record/fun)
+          d -> when (declKind d == OtherDecl) $ throwError $ NotAllowedInMutual d
+
+        -- Compute termination checking flag for mutual block
         tc0 <- use terminationCheckPragma
         let tcs = map termCheck ds
         tc <- combineTermChecks r (tc0:tcs)
 
+        -- Compute positivity checking flag for mutual block
         pc0 <- use positivityCheckPragma
         let pc :: PositivityCheck
             pc = pc0 && all positivityCheckOldMutual ds
 
         return $ NiceMutual r tc pc $ sigs ++ other
       where
-        -- Andreas, 2013-11-23 allow postulates in mutual blocks
-        notAllowedInMutual Axiom{} = False
-        notAllowedInMutual d       = declKind d == OtherDecl
         -- Pull type signatures to the top
         (sigs, other) = List.partition isTypeSig ds
         isTypeSig Axiom{}                     = True
@@ -1364,7 +1393,7 @@ niceDeclarations ds = do
         Axiom r f p a i rel mp x e       -> (\ i -> Axiom r f p a i rel mp x e) <$> setInstance i
         FunSig r f p a i m rel tc x e    -> (\ i -> FunSig r f p a i m rel tc x e) <$> setInstance i
         NiceUnquoteDecl r f p a i tc x e -> (\ i -> NiceUnquoteDecl r f p a i tc x e) <$> setInstance i
-        NiceMutual{}                     -> return d
+        NiceMutual r termCheck pc ds     -> NiceMutual r termCheck pc <$> mapM mkInstance ds
         NiceFunClause{}                  -> return d
         FunDef r ds f a i tc x cs        -> (\ i -> FunDef r ds f a i tc x cs) <$> setInstance i
         NiceField{}                      -> return d  -- Field instance are handled by the parser
@@ -1627,7 +1656,7 @@ fixitiesAndPolarities = foldMap $ \ d -> case d of
 -- | (Approximately) convert a 'NiceDeclaration' back to a list of
 -- 'Declaration's.
 notSoNiceDeclarations :: NiceDeclaration -> [Declaration]
-notSoNiceDeclarations d =
+notSoNiceDeclarations d = fixityDecl d ++
   case d of
     Axiom _ _ _ _ i rel mp x e       -> (case mp of
                                            Nothing   -> []
@@ -1655,6 +1684,32 @@ notSoNiceDeclarations d =
   where
     inst InstanceDef    ds = [InstanceB (getRange ds) ds]
     inst NotInstanceDef ds = ds
+
+    fixityDecl d = nameAndFixity >>= \ (x, f) -> infixDecl (theFixity f) x ++ syntaxDecl (theNotation f) x
+      where
+        nameAndFixity = case d of
+          Axiom _ f _ _ _ _ _ x _           -> [(x, f)]
+          NiceField _ f _ _ _ x _           -> [(x, f)]
+          PrimitiveFunction _ f _ _ x _     -> [(x, f)]
+          NiceRecSig _ f _ _ _ x _ _        -> [(x, f)]
+          NiceDataSig _ f _ _ _ x _ _       -> [(x, f)]
+          FunSig _ f _ _ _ _ _ _ x _        -> [(x, f)]
+          NicePatternSyn _ f x _ _          -> [(x, f)]
+          NiceUnquoteDecl _ fs _ _ _ _ xs _ -> zip xs fs
+          NiceUnquoteDef _ fs _ _ _ xs _    -> zip xs fs
+          NiceMutual{}      -> []
+          NiceModule{}      -> []
+          NiceModuleMacro{} -> []
+          NiceOpen{}        -> []
+          NiceImport{}      -> []
+          NicePragma{}      -> []
+          NiceFunClause{}   -> []
+          FunDef{}          -> []  -- use the fixity from the FunSig/DataSig/RecSig
+          DataDef{}         -> []
+          RecDef{}          -> []
+
+    infixDecl  f x = [Infix f [x] | notElem f [defaultFixity, noFixity]]
+    syntaxDecl n x = [Syntax x n  | not (null n) ]
 
 -- | Has the 'NiceDeclaration' a field of type 'IsAbstract'?
 niceHasAbstract :: NiceDeclaration -> Maybe IsAbstract

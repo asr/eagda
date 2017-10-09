@@ -48,8 +48,7 @@ import qualified Agda.Interaction.FindFile as Find
 import Agda.Interaction.Highlighting.Precise
 import Agda.TypeChecking.Monad (TCM, Interface(..))
 import qualified Agda.TypeChecking.Monad as TCM
-import Agda.Interaction.Options
-  (optGHCiInteraction, optLaTeXDir, optCountClusters)
+import qualified Agda.Interaction.Options as O
 import Agda.Compiler.CallCompiler
 import qualified Agda.Utils.IO.UTF8 as UTF8
 import Agda.Utils.FileName (filePath, AbsolutePath, mkAbsolute)
@@ -422,9 +421,11 @@ processLayers = mapM_ $ \(layerRole,toks) -> do
     L.Code    -> processCode    toks
 
 processMarkup, processComment, processCode :: Tokens -> LaTeX ()
--- | Deals with markup. Markup does not produce output, but may advance
---   the internal column counter.
-processMarkup  = mapM_ moveColumnForToken
+
+-- | Deals with markup, which is output verbatim.
+processMarkup = mapM_ $ \t -> do
+  moveColumnForToken t
+  output (Text (text t))
 
 -- | Deals with literate text, which is output verbatim
 processComment = mapM_ $ \t -> do
@@ -435,11 +436,11 @@ processComment = mapM_ $ \t -> do
 -- | Deals with code blocks. Every token, except spaces, is pretty
 -- printed as a LaTeX command.
 processCode toks' = do
-  output $ Text $ beginCode <+> nl
+  output $ Text nl
   enterCode
   mapM_ go toks'
   ptOpenWhenColumnZero =<< gets column
-  output $ Text $ ptClose <+> nl <+> endCode
+  output $ Text $ ptClose <+> nl
   leaveCode
 
   where
@@ -617,12 +618,12 @@ generateLaTeX i = do
 
   options <- TCM.commandLineOptions
 
-  dir <- case optGHCiInteraction options of
-    False -> return $ optLaTeXDir options
+  dir <- case O.optGHCiInteraction options of
+    False -> return $ O.optLaTeXDir options
     True  -> do
       sourceFile <- Find.findFile mod
       return $ filePath (projectRoot sourceFile mod)
-                 </> optLaTeXDir options
+                 </> O.optLaTeXDir options
   liftIO $ createDirectoryIfMissing True dir
 
   (code, _, _) <- liftIO $ readProcessWithExitCode
@@ -645,7 +646,7 @@ generateLaTeX i = do
   liftIO $ do
     source <- UTF8.readTextFile inAbsPath
     latex <- E.encodeUtf8 `fmap`
-               toLaTeX (optCountClusters options)
+               toLaTeX (O.optCountClusters $ O.optPragmaOptions options)
                        (mkAbsolute inAbsPath) source hi
     createDirectoryIfMissing True $ dir </> takeDirectory outPath
     BS.writeFile (dir </> outPath) latex

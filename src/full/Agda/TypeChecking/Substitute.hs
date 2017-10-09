@@ -33,6 +33,7 @@ import Data.Monoid
 import Data.Typeable (Typeable)
 
 import Debug.Trace (trace)
+import Language.Haskell.TH.Syntax (thenCmp) -- lexicographic combination of Ordering
 
 import Agda.Syntax.Common
 import Agda.Syntax.Internal
@@ -294,13 +295,9 @@ instance Apply Defn where
           }
       where args' = [last args]  -- the record value
 -}
-    Datatype{ dataPars = np, dataSmallPars = sps, dataNonLinPars = nlps, dataClause = cl
-            {-, dataArgOccurrences = occ-} } ->
+    Datatype{ dataPars = np, dataClause = cl } ->
       d { dataPars = np - size args
-        , dataSmallPars  = apply sps args
-        , dataNonLinPars = apply nlps args
         , dataClause     = apply cl args
---        , dataArgOccurrences = List.drop (length args) occ
         }
     Record{ recPars = np, recClause = cl, recTel = tel
           {-, recArgOccurrences = occ-} } ->
@@ -613,10 +610,8 @@ instance Abstract Defn where
           d' = d { funProjection = Just $ abstract tel p }
           tel1 = telFromList $ drop (size tel - 1) $ telToList tel
 
-    Datatype{ dataPars = np, dataSmallPars = sps, dataNonLinPars = nlps, dataClause = cl } ->
+    Datatype{ dataPars = np, dataClause = cl } ->
       d { dataPars       = np + size tel
-        , dataSmallPars  = abstract tel sps
-        , dataNonLinPars = abstract tel nlps
         , dataClause     = abstract tel cl
         }
     Record{ recPars = np, recClause = cl, recTel = tel' } ->
@@ -1181,7 +1176,7 @@ instance Ord Term where
   Shared a   `compare` Shared x | a == x = EQ
   Shared a   `compare` x          = compare (derefPtr a) x
   a          `compare` Shared x   = compare a (derefPtr x)
-  Var a b    `compare` Var x y    = compare (a, b) (x, y)
+  Var a b    `compare` Var x y    = compare x a `thenCmp` compare b y -- sort de Bruijn indices down (#2765)
   Var{}      `compare` _          = LT
   _          `compare` Var{}      = GT
   Def a b    `compare` Def x y    = compare (a, b) (x, y)
@@ -1210,9 +1205,29 @@ instance Ord Term where
   _          `compare` MetaV{}    = GT
   DontCare{} `compare` DontCare{} = EQ
 
+-- Andreas, 2017-10-04, issue #2775, ignore irrelevant arguments during with-abstraction.
+--
+-- For reasons beyond my comprehension, the following Eq instances are not employed
+-- by with-abstraction in TypeChecking.Abstract.isPrefixOf.
+-- Instead, I modified the general Eq instance for Arg to ignore the argument
+-- if irrelevant.
+
+-- -- | Ignore irrelevant arguments in equality check.
+-- --   Also ignore origin.
+-- instance {-# OVERLAPPING #-} Eq (Arg Term) where
+--   a@(Arg (ArgInfo h r _o) t) == a'@(Arg (ArgInfo h' r' _o') t') = trace ("Eq (Arg Term) on " ++ show a ++ " and " ++ show a') $
+--     h == h' && ((r == Irrelevant) || (r' == Irrelevant) || (t == t'))
+--     -- Andreas, 2017-10-04: According to Syntax.Common, equality on Arg ignores Relevance and Origin.
+
+-- instance {-# OVERLAPPING #-} Eq Args where
+--   us == vs = length us == length vs && and (zipWith (==) us vs)
+
+-- instance {-# OVERLAPPING #-} Eq Elims where
+--   us == vs = length us == length vs && and (zipWith (==) us vs)
+
 -- | Equality of binders relies on weakening
---   which is a specical case of renaming
---   which is a specical case of substitution.
+--   which is a special case of renaming
+--   which is a special case of substitution.
 instance (Subst t a, Eq a) => Eq (Abs a) where
   NoAbs _ a == NoAbs _ b = a == b
   Abs   _ a == Abs   _ b = a == b

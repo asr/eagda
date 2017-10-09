@@ -60,6 +60,7 @@ import Agda.Utils.ListT
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.Null
+import Agda.Utils.NonemptyList
 import Agda.Utils.Permutation
 import Agda.Utils.Pretty (prettyShow)
 import qualified Agda.Utils.Pretty as P
@@ -111,9 +112,9 @@ splitProblem mf (Problem ps qs tel pr) = do
         ]
       -- If the pattern is not a projection pattern, that's an error.
       -- Probably then there were too many arguments.
-      caseMaybe (maybePostfixProjP p) failure $ \ (o, AmbQ ds) -> do
+      caseMaybe (maybePostfixProjP p) failure $ \ (o, ambD@(AmbQ ds)) -> do
         -- So it is a projection pattern (d = projection name), is it?
-        projs <- lift $ mapMaybeM (\ d -> fmap (d,) <$> isProjection d) ds
+        projs <- lift $ mapMaybeM (\ d -> fmap (d,) <$> isProjection d) (toList ds)
         when (null projs) notProjP
         -- If the target is not a record type, that's an error.
         -- It could be a meta, but since we cannot postpone lhs checking, we crash here.
@@ -131,7 +132,7 @@ splitProblem mf (Problem ps qs tel pr) = do
                 ai   = getArgInfo p
             -- Try the projection candidates.
             -- Fail hard for the last candidate.
-            msum $ mapAwareLast (tryProj o ai self fs r vs $ length ds >= 2) projs
+            msum $ mapAwareLast (tryProj o ai self fs r vs $ isAmbiguous ambD) projs
             -- -- This fails softly on all (if more than one) candidates.
             -- msum $ map (tryProj o ai self fs r vs (length projs >= 2)) projs
 
@@ -359,9 +360,9 @@ splitProblem mf (Problem ps qs tel pr) = do
             }) `mplus` keepGoing
 
         -- Case: constructor pattern.
-        p@(A.ConP ci (A.AmbQ cs) args) -> do
+        p@(A.ConP ci ambC args) -> do
           let tryInstantiate a'
-                | [c] <- cs = do
+                | Just c <- getUnambiguous ambC = do
                   lift $ reportSDoc "tc.lhs.split" 30 $
                     text "split ConP: type is blocked"
                     -- Type is blocked by a meta and constructor is unambiguous,
@@ -415,9 +416,9 @@ splitProblem mf (Problem ps qs tel pr) = do
                       -- Check that we construct something in the right datatype
                       c <- lift $ do
                           -- Andreas, 2017-08-13, issue #2686: ignore abstract constructors
-                          (cs1, cs') <- unzip . snd . partitionEithers <$> do
-                            forM cs $ \ c -> mapRight ((c,) . conName) <$> getConHead c
-                          when (null cs1) $ typeError $ AbstractConstructorNotInScope $ head cs
+                          (cs1, cs') <- unzip . snd . partitionEithers . toList <$> do
+                            forM (unAmbQ ambC) $ \ c -> mapRight ((c,) . conName) <$> getConHead c
+                          when (null cs1) $ typeError $ AbstractConstructorNotInScope $ headAmbQ ambC
                           d'  <- canonicalName d
                           cs0 <- (theDef <$> getConstInfo d') <&> \case
                                 Datatype{dataCons = cs0} -> cs0
@@ -427,7 +428,7 @@ splitProblem mf (Problem ps qs tel pr) = do
                             [c]   -> do
                               -- If constructor pattern was ambiguous,
                               -- remember our choice for highlighting info.
-                              when (length cs >= 2) $ storeDisambiguatedName c
+                              when (isAmbiguous ambC) $ storeDisambiguatedName c
                               return c
                             []    -> typeError $ ConstructorPatternInWrongDatatype (head cs1) d
                             cs3   -> -- if there are more than one we give up (they might have different types)
