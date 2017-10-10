@@ -164,7 +164,6 @@ Solving awake constraints. 0 remaining.
 }
 Solving awake constraints. 0 remaining.
 Solving awake constraints. 0 remaining.
-Removed 0 unused definitions.
 checking declaration
 module Agda.Primitive.Cubical where
   {-# BUILTIN INTERVAL I #-}
@@ -1470,7 +1469,6 @@ Solving awake constraints. 0 remaining.
 Solving awake constraints. 0 remaining.
 Solving awake constraints. 0 remaining.
 Solving awake constraints. 0 remaining.
-Removed 0 unused definitions.
 checking declaration
 module Issue2754 where
 checking section Issue2754
@@ -1478,4 +1476,3 @@ adding section: Issue2754 0
     actual tele:
 Solving awake constraints. 0 remaining.
 Solving awake constraints. 0 remaining.
-Removed 0 unused definitions.
