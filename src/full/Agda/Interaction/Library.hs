@@ -28,7 +28,6 @@ module Agda.Interaction.Library
   ) where
 
 import Control.Arrow (first, second)
-import Control.Applicative
 import Control.Exception
 import Control.Monad.Writer
 import Data.Char
@@ -167,7 +166,7 @@ getDefaultLibraries root optDefaultLibs = mkLibM [] $ do
   libs <- lift $ findAgdaLibFiles root
   if null libs
     then (,[]) <$> if optDefaultLibs then (libNameForCurrentDir :) <$> readDefaultsFile else return []
-    else libsAndPaths <$> parseLibFiles Nothing (zip (repeat 0) libs)
+    else libsAndPaths <$> parseLibFiles Nothing (map (0,) libs)
   where
     libsAndPaths ls = (concatMap libDepends ls, concatMap libIncludes ls)
 

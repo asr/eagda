@@ -159,11 +159,11 @@ instantiateTel s tel = liftTCM $ do
             rho i []            = raiseS i
 
 -- | Produce a nice error message when splitting failed
-nothingToSplitError :: Problem -> TCM a
-nothingToSplitError (Problem ps _ tel pr) = splitError ps tel
+nothingToSplitError :: LHSState -> TCM a
+nothingToSplitError (LHSState tel _ (Problem ps rps _ _) _ _) = splitError ps tel
   where
     splitError []       EmptyTel    = do
-      if null $ restPats pr then __IMPOSSIBLE__ else do
+      if null rps then __IMPOSSIBLE__ else do
         typeError $ GenericError $ "Arguments left we cannot split on. TODO: better error message"
     splitError (_:_)    EmptyTel    = __IMPOSSIBLE__
     splitError []       ExtendTel{} = __IMPOSSIBLE__
@@ -182,7 +182,8 @@ nothingToSplitError (Problem ps _ tel pr) = splitError ps tel
           A.WildP{}   -> False
           A.AbsurdP{} -> False
           A.EqualP{}      -> True -- __IMPOSSIBLE__ -- cubical constraints do not go through the splitter.
-          A.ProjP{}        -> __IMPOSSIBLE__  -- Projection pattern gives CannotEliminateWithPattern
+          A.ProjP{}       -> __IMPOSSIBLE__  -- Projection pattern gives CannotEliminateWithPattern
           A.DefP{}        -> __IMPOSSIBLE__
           A.AsP{}         -> __IMPOSSIBLE__
           A.PatternSynP{} -> __IMPOSSIBLE__
+          A.WithAppP{}    -> __IMPOSSIBLE__

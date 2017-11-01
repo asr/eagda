@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP               #-}
+{-# LANGUAGE CPP #-}
 
 -- | Generic traversal and reduce for concrete syntax,
 --   in the style of "Agda.Syntax.Internal.Generic".
@@ -6,8 +6,6 @@
 --   However, here we use the terminology of 'Data.Traversable'.
 
 module Agda.Syntax.Concrete.Generic where
-
-import Control.Applicative
 
 import Data.Traversable
 import Data.Monoid
@@ -28,13 +26,7 @@ class ExprLike a where
   mapExpr :: (Expr -> Expr) -> a -> a
   -- ^ This corresponds to 'map'.
 
-  traverseExpr
-#if __GLASGOW_HASKELL__ <= 708
-    :: (Applicative m, Monad m)
-#else
-    :: Monad m
-#endif
-    => (Expr -> m Expr) -> a -> m a
+  traverseExpr :: Monad m => (Expr -> m Expr) -> a -> m a
   -- ^ This corresponds to 'mapM'.
 
   foldExpr :: Monoid m => (Expr -> m) -> a -> m
@@ -143,6 +135,7 @@ instance ExprLike Expr where
      Let r ds e         -> f $ Let r       (mapE ds)  $ mapE e
      Paren r e          -> f $ Paren r                $ mapE e
      IdiomBrackets r e  -> f $ IdiomBrackets r        $ mapE e
+     DoBlock r ss       -> f $ DoBlock r              $ mapE ss
      Absurd{}           -> f $ e0
      As r x e           -> f $ As r x                 $ mapE e
      Dot r e            -> f $ Dot r                  $ mapE e
@@ -155,6 +148,7 @@ instance ExprLike Expr where
      Unquote{}          -> f $ e0
      DontCare e         -> f $ DontCare               $ mapE e
      Equal{}            -> f $ e0
+     Ellipsis{}         -> f $ e0
    where mapE e = mapExpr f e
 
 instance ExprLike FieldAssignment where
@@ -187,8 +181,16 @@ instance ExprLike TypedBindings where
 instance ExprLike LHS where
   mapExpr f e0 = case e0 of
      LHS    ps wps res wes -> LHS    ps wps (mapE res) $ mapE wes
-     Ellipsis r ps res wes -> Ellipsis r ps (mapE res) $ mapE wes
    where mapE e = mapExpr f e
+
+instance ExprLike LamClause where
+  mapExpr f (LamClause lhs rhs wh ca) =
+    LamClause (mapExpr f lhs) (mapExpr f rhs) (mapExpr f wh) (mapExpr f ca)
+
+instance ExprLike DoStmt where
+  mapExpr f (DoBind r p e cs) = DoBind r p (mapExpr f e) (mapExpr f cs)
+  mapExpr f (DoThen e)        = DoThen (mapExpr f e)
+  mapExpr f (DoLet r ds)      = DoLet r (mapExpr f ds)
 
 instance ExprLike ModuleApplication where
   mapExpr f e0 = case e0 of

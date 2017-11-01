@@ -6,8 +6,6 @@
 
 module Agda.TypeChecking.Rules.Builtin.Coinduction where
 
-import Control.Applicative
-
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 
@@ -102,6 +100,7 @@ bindBuiltinSharp x =
                     , conAbstr  = ConcreteDef
                     , conInd    = CoInductive
                     , conComp   = Nothing
+                    , conForced = []
                     , conErased = []
                     , conTPTPRole = Nothing
                     }
@@ -162,6 +161,7 @@ bindBuiltinFlat x =
                    { funClauses      = [clause]
                    , funCompiled     = Just $ cc
                    , funProjection   = Just projection
+                   , funMutual       = Just []
                    , funTerminates   = Just True
                    , funCopatternLHS = isCopatternLHS [clause]
                    , funTPTPRole     = Nothing

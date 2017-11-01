@@ -9,7 +9,7 @@ import Agda.Syntax.Literal (Literal)
 import Agda.Syntax.Position
 
 data Keyword
-        = KwLet | KwIn | KwWhere | KwData | KwCoData
+        = KwLet | KwIn | KwWhere | KwData | KwCoData | KwDo
         -- ASR TODO (24 October 2014). Move to the end. We wrote it
         -- here for avoiding conflicts when merging master.
         | KwATP
@@ -39,7 +39,7 @@ data Keyword
 
 layoutKeywords :: [Keyword]
 layoutKeywords =
-    [ KwLet, KwWhere, KwPostulate, KwMutual, KwAbstract, KwPrivate, KwInstance, KwMacro, KwPrimitive, KwField ]
+    [ KwLet, KwWhere, KwDo, KwPostulate, KwMutual, KwAbstract, KwPrivate, KwInstance, KwMacro, KwPrimitive, KwField ]
 
 data Symbol
         = SymDot | SymSemi | SymVirtualSemi | SymBar

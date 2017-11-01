@@ -3,7 +3,6 @@
 
 module Agda.TypeChecking.Rules.Data where
 
-import Control.Applicative
 import Control.Monad
 
 import Data.List (genericTake)
@@ -206,33 +205,47 @@ checkConstructor d tel nofIxs s con@(A.Axiom _ i ai Nothing c e) =
         n <- getContextSize
         debugEndsIn t d n
         constructs n t d
-        -- check which constructor arguments are determined by the type ('forcing')
-        t' <- addForcingAnnotations t
+        -- compute which constructor arguments are forced
+        forcedArgs <- computeForcingAnnotations t
         -- check that the sort (universe level) of the constructor type
         -- is contained in the sort of the data type
         -- (to avoid impredicative existential types)
         debugFitsIn s
-        arity <- t' `fitsIn` s
-        debugAdd c t'
+        arity <- fitsIn forcedArgs t s
+        debugAdd c t
 
-        TelV fields tgt <- telView t'
+        TelV fields _ <- telView t
+
+        -- We assume that the current context matches the parameters
+        -- of the datatype in an empty context (c.f. getContextSize above).
+        params <- getContextTelescope
+
         -- add parameters to constructor type and put into signature
         let con = ConHead c Inductive [] -- data constructors have no projectable fields and are always inductive
         escapeContext (size tel) $ do
 
           cnames <- if nofIxs /= 0 || (Info.defAbstract i == AbstractDef) then return Nothing else do
-            cxt <- getContextTelescope
-            escapeContext (size cxt) $ do
+            inTopContext $ do
               names <- forM [0 .. size fields - 1] (\ i -> freshAbstractQName'_ (P.prettyShow (A.qnameName c) ++ "-" ++ show i))
-              let params = abstract cxt tel
-                  fsT    = fields
-                  t   = applySubst (strengthenS __IMPOSSIBLE__ (size fields)) tgt
-              defineProjections d con params names fsT t
-              comp <- defineCompData d con params names fsT t
+
+              -- nofIxs == 0 means the data type can be reconstructed
+              -- by appling the QName d to the parameters.
+              dataT <- El <$> (dataSort . theDef <$> getConstInfo d)
+                          <*> (pure $ Def d $ map Apply $ teleArgs params)
+
+              reportSDoc "tc.data.con.comp" 5 $ vcat $
+                [ text "params =" <+> pretty params
+                , text "dataT  =" <+> pretty dataT
+                , text "fields =" <+> pretty fields
+                , text "names  =" <+> pretty names
+                ]
+
+              defineProjections d con params names fields dataT
+              comp <- defineCompData d con params names fields dataT
               return $ fmap (\ x -> (x,names)) comp
 
           addConstant c $
-            defaultDefn defaultArgInfo c (telePi tel t') $ Constructor
+            defaultDefn defaultArgInfo c (telePi tel t) $ Constructor
               { conPars   = size tel
               , conArity  = arity
               , conSrcCon = con
@@ -240,6 +253,7 @@ checkConstructor d tel nofIxs s con@(A.Axiom _ i ai Nothing c e) =
               , conAbstr  = Info.defAbstract i
               , conInd    = Inductive
               , conComp   = cnames
+              , conForced = forcedArgs
               , conErased = []  -- computed during compilation to treeless
               , conTPTPRole = Nothing
               }
@@ -555,8 +569,8 @@ bindParameters' ts0 ps0@(A.DomainFree info x : ps) t ret = do
 --
 --   As a side effect, return the arity of the constructor.
 
-fitsIn :: Type -> Sort -> TCM Int
-fitsIn t s = do
+fitsIn :: [IsForced] -> Type -> Sort -> TCM Int
+fitsIn forceds t s = do
   reportSDoc "tc.data.fits" 10 $
     sep [ text "does" <+> prettyTCM t
         , text "of sort" <+> prettyTCM (getSort t)
@@ -570,16 +584,13 @@ fitsIn t s = do
   case ignoreSharing $ unEl t of
     Pi dom b -> do
       withoutK <- optWithoutK <$> pragmaOptions
-      -- Forced constructor arguments are ignored in size-checking.
-      when (withoutK || notForced (getRelevance dom)) $ do
+      let (forced,forceds') = nextIsForced forceds
+      unless (isForced forced && not withoutK) $ do
         sa <- reduce $ getSort dom
         unless (sa == SizeUniv) $ sa `leqSort` s
       addContext (absName b, dom) $ do
-        succ <$> fitsIn (absBody b) (raise 1 s)
+        succ <$> fitsIn forceds' (absBody b) (raise 1 s)
     _ -> return 0 -- getSort t `leqSort` s  -- Andreas, 2013-04-13 not necessary since constructor type ends in data type
-  where
-    notForced Forced{} = False
-    notForced _        = True
 
 -- | Return the parameters that share variables with the indices
 -- nonLinearParameters :: Int -> Type -> TCM [Int]

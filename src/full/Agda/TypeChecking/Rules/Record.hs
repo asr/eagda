@@ -208,6 +208,7 @@ checkRecDef i name ind eta con ps contel fields =
               , conAbstr  = Info.defAbstract conInfo
               , conInd    = conInduction
               , conComp   = Nothing -- filled in later
+              , conForced = []
               , conErased = []
               , conTPTPRole = Nothing
               }
@@ -217,7 +218,7 @@ checkRecDef i name ind eta con ps contel fields =
         addNamedInstance conName name
 
       -- Check that the fields fit inside the sort
-      _ <- contype `fitsIn` s
+      _ <- fitsIn [] contype s
 
       {- Andreas, 2011-04-27 WRONG because field types are checked again
          and then non-stricts should not yet be irrelevant
@@ -524,7 +525,6 @@ checkRecordProjections m r hasNamedCon con tel ftel fs = do
               Relevant   -> id
               NonStrict  -> id
               Irrelevant -> DontCare
-              _          -> __IMPOSSIBLE__
 
         let -- Andreas, 2010-09-09: comment for existing code
             -- split the telescope into parameters (ptel) and the type or the record
@@ -590,6 +590,7 @@ checkRecordProjections m r hasNamedCon con tel ftel fs = do
                 { funClauses        = [clause]
                 , funCompiled       = Just cc
                 , funProjection     = Just projection
+                , funMutual         = Just []  -- Projections are not mutually recursive with anything
                 , funTerminates     = Just True
                 , funCopatternLHS   = isCopatternLHS [clause]
                 })

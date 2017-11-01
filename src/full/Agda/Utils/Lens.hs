@@ -9,7 +9,7 @@ module Agda.Utils.Lens
   , (<&>) -- reexported from Agda.Utils.Functor
   ) where
 
-import Control.Applicative
+import Control.Applicative ( Const(Const), getConst )
 import Control.Monad.State
 import Control.Monad.Reader
 import Control.Monad.Writer
@@ -27,6 +27,10 @@ import Agda.Utils.Functor ((<&>))
 --   Mnemoic: "Lens inner outer".
 type Lens' i o = forall f. Functor f => (i -> f i) -> o -> f o
 
+type LensGet i o = o -> i
+type LensSet i o = i -> o -> o
+type LensMap i o = (i -> i) -> o -> o
+
 -- * Some simple lenses.
 
 lFst :: Lens' a (a, b)
@@ -43,11 +47,11 @@ infixl 8 ^.
 o ^. l = getConst $ l Const o
 
 -- | Set inner part @i@ of structure @o@ as designated by @Lens' i o@.
-set :: Lens' i o -> i -> o -> o
+set :: Lens' i o -> LensSet i o
 set l = over l . const
 
 -- | Modify inner part @i@ of structure @o@ using a function @i -> i@.
-over :: Lens' i o -> (i -> i) -> o -> o
+over :: Lens' i o -> LensMap i o
 over l f o = runIdentity $ l (Identity . f) o
 
 
@@ -70,24 +74,12 @@ l %= f = modify $ over l f
 
 infix 4 %==
 -- | Modify a part of the state monadically.
-(%==)
-#if __GLASGOW_HASKELL__ <= 708
-  :: (Functor m, MonadState o m)
-#else
-  :: MonadState o m
-#endif
-  => Lens' i o -> (i -> m i) -> m ()
+(%==) :: MonadState o m => Lens' i o -> (i -> m i) -> m ()
 l %== f = put =<< l f =<< get
 
 infix 4 %%=
 -- | Modify a part of the state monadically, and return some result.
-(%%=)
-#if __GLASGOW_HASKELL__ <= 708
-  :: (Functor m, MonadState o m)
-#else
-  :: MonadState o m
-#endif
-  => Lens' i o -> (i -> m (i, r)) -> m r
+(%%=) :: MonadState o m => Lens' i o -> (i -> m (i, r)) -> m r
 l %%= f = do
   o <- get
   (o', r) <- runWriterT $ l (WriterT . f) o

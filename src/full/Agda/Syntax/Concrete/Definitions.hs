@@ -48,10 +48,6 @@ import Control.Arrow ((***), first, second)
 import Control.Applicative hiding (empty)
 import Control.Monad.State
 
-#if __GLASGOW_HASKELL__ <= 708
-import Data.Foldable ( foldMap )
-#endif
-
 import qualified Data.Map as Map
 import Data.Map (Map)
 import Data.Maybe
@@ -62,9 +58,9 @@ import Data.Traversable (Traversable, traverse)
 import qualified Data.Traversable as Trav
 
 import Data.Data (Data)
-import Data.Typeable (Typeable)
 
 import Agda.Syntax.Concrete
+import Agda.Syntax.Concrete.Pattern
 import Agda.Syntax.Common hiding (TerminationCheck())
 import qualified Agda.Syntax.Common as Common
 import Agda.Syntax.Position
@@ -150,7 +146,7 @@ data NiceDeclaration
   | NicePatternSyn Range Fixity' Name [Arg Name] Pattern
   | NiceUnquoteDecl Range [Fixity'] Access IsAbstract IsInstance TerminationCheck [Name] Expr
   | NiceUnquoteDef Range [Fixity'] Access IsAbstract TerminationCheck [Name] Expr
-  deriving (Typeable, Data, Show)
+  deriving (Data, Show)
 
 type TerminationCheck = Common.TerminationCheck Measure
 
@@ -168,7 +164,7 @@ type NiceTypeSignature  = NiceDeclaration
 -- | One clause in a function definition. There is no guarantee that the 'LHS'
 --   actually declares the 'Name'. We will have to check that later.
 data Clause = Clause Name Catchall LHS RHS WhereClause [Clause]
-    deriving (Typeable, Data, Show)
+    deriving (Data, Show)
 
 -- | The exception type.
 data DeclarationException
@@ -186,19 +182,15 @@ data DeclarationException
         | DeclarationPanic String
         | WrongContentBlock KindOfBlock Range
         | AmbiguousFunClauses LHS [Name] -- ^ in a mutual block, a clause could belong to any of the @[Name]@ type signatures
-        | InvalidTerminationCheckPragma Range
         | InvalidMeasureMutual Range
           -- ^ In a mutual block, all or none need a MEASURE pragma.
           --   Range is of mutual block.
         | PragmaNoTerminationCheck Range
           -- ^ Pragma @{-# NO_TERMINATION_CHECK #-}@ has been replaced
           --   by {-# TERMINATING #-} and {-# NON_TERMINATING #-}.
-        | InvalidCatchallPragma Range
         | UnquoteDefRequiresSignature [Name]
         | BadMacroDef NiceDeclaration
-        | InvalidNoPositivityCheckPragma Range
-
-    deriving (Typeable, Data, Show)
+    deriving (Data, Show)
 
 -- | Non-fatal errors encountered in the Nicifier
 data DeclarationWarning
@@ -214,7 +206,16 @@ data DeclarationWarning
   | EmptyInstance Range   -- ^ Empty @instance@  block
   | EmptyMacro Range      -- ^ Empty @macro@     block.
   | EmptyPostulate Range  -- ^ Empty @postulate@ block.
-  deriving (Typeable, Data, Show)
+  | InvalidTerminationCheckPragma Range
+      -- ^ A {-# TERMINATING #-} and {-# NON_TERMINATING #-} pragma
+      --   that does not apply to any function.
+  | InvalidNoPositivityCheckPragma Range
+      -- ^ A {-# NO_POSITIVITY_CHECK #-} pragma
+      --   that does not apply to any data or record type.
+  | InvalidCatchallPragma Range
+      -- ^ A {-# CATCHALL #-} pragma
+      --   that does not precede a function clause.
+  deriving (Data, Show)
 
 -- | Several declarations expect only type signatures as sub-declarations.  These are:
 data KindOfBlock
@@ -223,7 +224,7 @@ data KindOfBlock
   | InstanceBlock   -- ^ @instance@.  Actually, here all kinds of sub-declarations are allowed a priori.
   | FieldBlock      -- ^ @field@.  Ensured by parser.
   | DataBlock       -- ^ @data ... where@.  Here we got a bad error message for Agda-2.5 (Issue 1698).
-  deriving (Typeable, Data, Eq, Ord, Show)
+  deriving (Data, Eq, Ord, Show)
 
 
 instance HasRange DeclarationException where
@@ -240,13 +241,10 @@ instance HasRange DeclarationException where
   getRange (Codata r)                           = r
   getRange (DeclarationPanic _)                 = noRange
   getRange (WrongContentBlock _ r)              = r
-  getRange (InvalidTerminationCheckPragma r)    = r
   getRange (InvalidMeasureMutual r)             = r
   getRange (PragmaNoTerminationCheck r)         = r
-  getRange (InvalidCatchallPragma r)            = r
   getRange (UnquoteDefRequiresSignature x)      = getRange x
   getRange (BadMacroDef d)                      = getRange d
-  getRange (InvalidNoPositivityCheckPragma r)   = r
 
 instance HasRange DeclarationWarning where
   getRange (UnknownNamesInFixityDecl xs)        = getRange . head $ xs
@@ -261,6 +259,9 @@ instance HasRange DeclarationWarning where
   getRange (EmptyInstance r)                    = r
   getRange (EmptyMacro r)                       = r
   getRange (EmptyPostulate r)                   = r
+  getRange (InvalidTerminationCheckPragma r)    = r
+  getRange (InvalidNoPositivityCheckPragma r)   = r
+  getRange (InvalidCatchallPragma r)            = r
 
 instance HasRange NiceDeclaration where
   getRange (Axiom r _ _ _ _ _ _ _ _)         = r
@@ -323,12 +324,8 @@ instance Pretty DeclarationException where
       _ -> "Unexpected declaration"
   pretty (PragmaNoTerminationCheck _) = fsep $
     pwords "Pragma {-# NO_TERMINATION_CHECK #-} has been removed.  To skip the termination check, label your definitions either as {-# TERMINATING #-} or {-# NON_TERMINATING #-}."
-  pretty (InvalidTerminationCheckPragma _) = fsep $
-    pwords "Termination checking pragmas can only precede a mutual block or a function definition."
   pretty (InvalidMeasureMutual _) = fsep $
     pwords "In a mutual block, either all functions must have the same (or no) termination checking pragma."
-  pretty (InvalidCatchallPragma _) = fsep $
-    pwords "The CATCHALL pragma can only preceed a function clause."
   pretty (UnquoteDefRequiresSignature xs) = fsep $
     pwords "Missing type signatures for unquoteDef" ++ map pretty xs
   pretty (BadMacroDef nd) = fsep $
@@ -339,8 +336,6 @@ instance Pretty DeclarationException where
     "The codata construction has been removed. " ++
     "Use the INFINITY builtin instead."
   pretty (DeclarationPanic s) = text s
-  pretty (InvalidNoPositivityCheckPragma _) = fsep $
-    pwords "No positivity checking pragmas can only precede a mutual block or a data/record definition."
 
 instance Pretty DeclarationWarning where
   pretty (UnknownNamesInFixityDecl xs) = fsep $
@@ -361,6 +356,12 @@ instance Pretty DeclarationWarning where
   pretty (EmptyInstance  _) = fsep $ pwords "Empty instance block."
   pretty (EmptyMacro     _) = fsep $ pwords "Empty macro block."
   pretty (EmptyPostulate _) = fsep $ pwords "Empty postulate block."
+  pretty (InvalidTerminationCheckPragma _) = fsep $
+    pwords "Termination checking pragmas can only precede a function definition or a mutual block (that contains a function definition)."
+  pretty (InvalidNoPositivityCheckPragma _) = fsep $
+    pwords "No positivity checking pragmas can only precede a data/record definition or a mutual block (that contains a data/record definition)."
+  pretty (InvalidCatchallPragma _) = fsep $
+    pwords "The CATCHALL pragma can only precede a function clause."
 
 declName :: NiceDeclaration -> String
 declName Axiom{}             = "Postulates"
@@ -401,7 +402,7 @@ data DataRecOrFun
     -- ^ Name of a record type with parameters.
   | FunName  TerminationCheck
     -- ^ Name of a function.
-  deriving (Typeable, Data)
+  deriving Data
 
 -- Ignore pragmas when checking equality
 instance Eq DataRecOrFun where
@@ -1000,8 +1001,9 @@ niceDeclarations ds = do
     nicePragma (TerminationCheckPragma r (TerminationMeasure _ x)) ds =
       if canHaveTerminationMeasure ds then
         withTerminationCheckPragma (TerminationMeasure r x) $ nice1 ds
-      else
-        throwError $ InvalidTerminationCheckPragma r
+      else do
+        niceWarning $ InvalidTerminationCheckPragma r
+        nice1 ds
 
     nicePragma (TerminationCheckPragma r NoTerminationCheck) ds =
       throwError $ PragmaNoTerminationCheck r
@@ -1009,20 +1011,23 @@ niceDeclarations ds = do
     nicePragma (TerminationCheckPragma r tc) ds =
       if canHaveTerminationCheckPragma ds then
         withTerminationCheckPragma tc $ nice1 ds
-      else
-        throwError $ InvalidTerminationCheckPragma r
+      else do
+        niceWarning $ InvalidTerminationCheckPragma r
+        nice1 ds
 
     nicePragma (CatchallPragma r) ds =
       if canHaveCatchallPragma ds then
         withCatchallPragma True $ nice1 ds
-      else
-        throwError $ InvalidCatchallPragma r
+      else do
+        niceWarning $ InvalidCatchallPragma r
+        nice1 ds
 
     nicePragma (NoPositivityCheckPragma r) ds =
       if canHaveNoPositivityCheckPragma ds then
         withPositivityCheckPragma False $ nice1 ds
-      else
-        throwError $ InvalidNoPositivityCheckPragma r
+      else do
+        niceWarning $ InvalidNoPositivityCheckPragma r
+        nice1 ds
 
     nicePragma (PolarityPragma{}) ds = return ([], ds)
 
@@ -1038,7 +1043,7 @@ niceDeclarations ds = do
     canHaveTerminationCheckPragma :: [Declaration] -> Bool
     canHaveTerminationCheckPragma []     = False
     canHaveTerminationCheckPragma (d:ds) = case d of
-      Mutual{}      -> True
+      Mutual _ ds   -> any (canHaveTerminationCheckPragma . singleton) ds
       TypeSig{}     -> True
       FunClause{}   -> True
       UnquoteDecl{} -> True
@@ -1055,7 +1060,7 @@ niceDeclarations ds = do
     canHaveNoPositivityCheckPragma :: [Declaration] -> Bool
     canHaveNoPositivityCheckPragma []     = False
     canHaveNoPositivityCheckPragma (d:ds) = case d of
-      Mutual{}                    -> True
+      Mutual _ ds                 -> any (canHaveNoPositivityCheckPragma . singleton) ds
       (Data _ Inductive _ _ _ _)  -> True
       (DataSig _ Inductive _ _ _) -> True
       Record{}                    -> True
@@ -1149,14 +1154,14 @@ niceDeclarations ds = do
 
     expandEllipsis :: [Declaration] -> [Declaration]
     expandEllipsis [] = []
-    expandEllipsis (d@(FunClause Ellipsis{} _ _ _) : ds) =
-      d : expandEllipsis ds
-    expandEllipsis (d@(FunClause lhs@(LHS p ps _ _) _ _ _) : ds) =
-      d : expand (wipe p) (map wipe ps) ds
+    expandEllipsis (d@(FunClause lhs@(LHS p ps _ _) _ _ _) : ds)
+      | isEllipsis p = d : expandEllipsis ds
+      | otherwise    = d : expand (wipe p) (map wipe ps) ds
       where
         expand _ _ [] = []
         expand p ps (d@(Pragma (CatchallPragma r)) : ds) = d : expand p ps ds
-        expand p ps (FunClause (Ellipsis r ps' eqs es) rhs wh ca : ds) =
+        expand p ps (FunClause (LHS p0 ps' eqs es) rhs wh ca : ds)
+          | isEllipsis p0, let r = getRange p0 =
           FunClause (LHS (setRange r p) ((setRange r ps) ++ ps') eqs es) rhs wh ca
             : expand p (applyUnless (null es) (++ (map wipe ps')) ps) ds
                        -- If we have with-expressions (es /= []) then the following
@@ -1178,31 +1183,40 @@ niceDeclarations ds = do
     wipe :: Pattern -> Pattern
     wipe = killRange . setInserted
 
+    -- Set origin of all patterns inside the given pattern to 'Inserted'.
     setInserted :: Pattern -> Pattern
-    setInserted p = case p of
-      IdentP{} -> p
-      QuoteP{} -> p
-      AppP p q -> AppP (setInserted p) (fmap (fmap setInserted) q)
-      RawAppP r ps -> RawAppP r (map setInserted ps)
-      OpAppP r c ns ps -> OpAppP r c ns (map (fmap $ fmap setInserted) ps)
-      HiddenP r p -> HiddenP r (fmap setInserted p)
-      InstanceP r p -> InstanceP r (fmap setInserted p)
-      ParenP r p -> ParenP r (setInserted p)
-      WildP{} -> p
-      AbsurdP{} -> p
-      AsP r n p -> AsP r n (setInserted p)
-      DotP r _ e -> DotP r Inserted e
-      EqualP{}   -> p
-      LitP{} -> p
-      RecP r fs -> RecP r (map (fmap setInserted) fs)
+    setInserted = mapCPattern $ \ p -> case p of
+      -- Currently only DotP has an origin:
+      DotP r _ e     -> DotP r Inserted e
+      -- Hence, the other patterns remain unchanged:
+      IdentP _       -> p
+      QuoteP _       -> p
+      AppP _ _       -> p
+      RawAppP _ _    -> p
+      OpAppP _ _ _ _ -> p
+      HiddenP _ _    -> p
+      InstanceP _ _  -> p
+      ParenP _ _     -> p
+      WildP _        -> p
+      AbsurdP _      -> p
+      AsP _ _ _      -> p
+      EqualP _ _     -> p
+      LitP _         -> p
+      RecP _ _       -> p
+      EllipsisP _    -> p
+      WithAppP _ _ _ -> p
 
     -- Turn function clauses into nice function clauses.
     mkClauses :: Name -> [Declaration] -> Catchall -> Nice [Clause]
     mkClauses _ [] _ = return []
-    mkClauses x (Pragma (CatchallPragma r) : cs) True  = throwError $ InvalidCatchallPragma r
-    mkClauses x (Pragma (CatchallPragma r) : cs) False = do
-      when (null cs) $ throwError $ InvalidCatchallPragma r
+    mkClauses x (Pragma (CatchallPragma r) : cs) True  = do
+      niceWarning $ InvalidCatchallPragma r
       mkClauses x cs True
+    mkClauses x (Pragma (CatchallPragma r) : cs) False = do
+      when (null cs) $ niceWarning $ InvalidCatchallPragma r
+      mkClauses x cs True
+    mkClauses x (FunClause lhs rhs wh ca : cs) catchall | isEllipsis lhs =
+      (Clause x (ca || catchall) lhs rhs wh [] :) <$> mkClauses x cs False   -- Will result in an error later.
     mkClauses x (FunClause lhs@(LHS _ _ _ []) rhs wh ca : cs) catchall =
       (Clause x (ca || catchall) lhs rhs wh [] :) <$> mkClauses x cs False
     mkClauses x (FunClause lhs@(LHS _ ps _ es) rhs wh ca : cs) catchall = do
@@ -1216,25 +1230,21 @@ niceDeclarations ds = do
         -- greater or equal to the current number of with-patterns plus the
         -- number of with arguments.
         subClauses :: [Declaration] -> ([Declaration],[Declaration])
-        subClauses (c@(FunClause (LHS _ ps' _ _) _ _ _) : cs)
-         | length ps' >= length ps + length es = mapFst (c:) (subClauses cs)
+        subClauses (c@(FunClause (LHS p0 ps' _ _) _ _ _) : cs)
+         | isEllipsis p0 ||
+           length ps' >= length ps + length es = mapFst (c:) (subClauses cs)
          | otherwise                           = ([], c:cs)
-        subClauses (c@(FunClause (Ellipsis _ ps' _ _) _ _ _) : cs)
-         = mapFst (c:) (subClauses cs)
         subClauses (c@(Pragma (CatchallPragma r)) : cs) = case subClauses cs of
           ([], cs') -> ([], c:cs')
           (cs, cs') -> (c:cs, cs')
         subClauses [] = ([],[])
         subClauses _  = __IMPOSSIBLE__
-    mkClauses x (FunClause lhs@Ellipsis{} rhs wh ca : cs) catchall =
-      (Clause x (ca || catchall) lhs rhs wh [] :) <$> mkClauses x cs False   -- Will result in an error later.
     mkClauses _ _ _ = __IMPOSSIBLE__
 
     -- for finding clauses for a type sig in mutual blocks
     couldBeFunClauseOf :: Maybe Fixity' -> Name -> Declaration -> Bool
     couldBeFunClauseOf mFixity x (Pragma (CatchallPragma{})) = True
-    couldBeFunClauseOf mFixity x (FunClause Ellipsis{} _ _ _) = True
-    couldBeFunClauseOf mFixity x (FunClause (LHS p _ _ _) _ _ _) =
+    couldBeFunClauseOf mFixity x (FunClause (LHS p _ _ _) _ _ _) = isEllipsis p ||
       let
       pns        = patternNames p
       xStrings   = nameStringParts x
@@ -1259,20 +1269,6 @@ niceDeclarations ds = do
         -- not a notation, not first id: give up
         _ -> False -- trace ("couldBe not (case default)") $ False
     couldBeFunClauseOf _ _ _ = False -- trace ("couldBe not (fun default)") $ False
-
-    -- ASR (27 May 2014). Commented out unused code.
-    -- @isFunClauseOf@ is for non-mutual blocks where clauses must follow the
-    -- type sig immediately
-    -- isFunClauseOf :: Name -> Declaration -> Bool
-    -- isFunClauseOf x (FunClause Ellipsis{} _ _) = True
-    -- isFunClauseOf x (FunClause (LHS p _ _ _) _ _) =
-    --  -- p is the whole left hand side, excluding "with" patterns and clauses
-    --   case removeSingletonRawAppP p of
-    --     IdentP (QName q)    -> x == q  -- lhs is just an identifier
-    --     _                   -> True
-    --         -- more complicated lhss must come with type signatures, so we just assume
-    --         -- it's part of the current definition
-    -- isFunClauseOf _ _ = False
 
     isSingleIdentifierP :: Pattern -> Maybe Name
     isSingleIdentifierP p = case removeSingletonRawAppP p of

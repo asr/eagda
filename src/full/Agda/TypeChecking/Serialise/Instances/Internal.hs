@@ -4,7 +4,6 @@
 
 module Agda.TypeChecking.Serialise.Instances.Internal where
 
-import Control.Applicative
 import Control.Monad.State.Strict
 
 import Agda.Syntax.Internal as I
@@ -260,6 +259,14 @@ instance EmbPrj Polarity where
   value 3 = return Nonvariant
   value _ = malformed
 
+instance EmbPrj IsForced where
+  icod_ Forced    = return 0
+  icod_ NotForced = return 1
+
+  value 0 = return Forced
+  value 1 = return NotForced
+  value _ = malformed
+
 instance EmbPrj Occurrence where
   icod_ StrictPos = return 0
   icod_ Mixed     = return 1
@@ -291,16 +298,16 @@ instance EmbPrj Defn where
     icodeN 1 (\ a b -> Function a b t) a b c d e f g h i j k m n
   icod_ (Datatype    a b c d e f g h i)           = icodeN 2 Datatype a b c d e f g h i
   icod_ (Record      a b c d e f g h i j k)       = icodeN 3 Record a b c d e f g h i j k
-  icod_ (Constructor a b c d e f g h i)           = icodeN 4 Constructor a b c d e f g h i
+  icod_ (Constructor a b c d e f g h i j)         = icodeN 4 Constructor a b c d e f g h i j
   icod_ (Primitive   a b c d)                     = icodeN 5 Primitive a b c d
-  icod_ AbstractDefn{}                          = __IMPOSSIBLE__
+  icod_ AbstractDefn{}                            = __IMPOSSIBLE__
 
   value = vcase valu where
     valu [0, a, b]                                  = valuN Axiom a b
     valu [1, a, b, c, d, e, f, g, h, i, j, k, m, n] = valuN (\ a b -> Function a b Nothing) a b c d e f g h i j k m n
     valu [2, a, b, c, d, e, f, g, h, i]             = valuN Datatype a b c d e f g h i
     valu [3, a, b, c, d, e, f, g, h, i, j, k]       = valuN Record  a b c d e f g h i j k
-    valu [4, a, b, c, d, e, f, g, h, i]             = valuN Constructor a b c d e f g h i
+    valu [4, a, b, c, d, e, f, g, h, i, j]          = valuN Constructor a b c d e f g h i j
     valu [5, a, b, c, d]                            = valuN Primitive   a b c d
     valu _                                          = malformed
 
@@ -375,7 +382,7 @@ instance EmbPrj a => EmbPrj (I.Pattern' a) where
   icod_ (VarP a    ) = icodeN' VarP a
   icod_ (ConP a b c) = icodeN 1 ConP a b c
   icod_ (LitP a    ) = icodeN 2 LitP a
-  icod_ (DotP a    ) = icodeN 3 DotP a
+  icod_ (DotP a b  ) = icodeN 3 DotP a b
   icod_ (ProjP a b ) = icodeN 4 ProjP a b
   icod_ (AbsurdP a ) = icodeN 5 AbsurdP a
 
@@ -383,7 +390,7 @@ instance EmbPrj a => EmbPrj (I.Pattern' a) where
     valu [a]       = valuN VarP a
     valu [1, a, b, c] = valuN ConP a b c
     valu [2, a]    = valuN LitP a
-    valu [3, a]    = valuN DotP a
+    valu [3, a, b] = valuN DotP a b
     valu [4, a, b] = valuN ProjP a b
     valu [5, a]    = valuN AbsurdP a
     valu _         = malformed

@@ -45,6 +45,7 @@ import Agda.Utils.Except
   , runExceptT
   )
 
+import Agda.Utils.Function
 import Agda.Utils.Lens
 import Agda.Utils.List
 import Agda.Utils.Maybe
@@ -374,7 +375,7 @@ blockTypeOnProblem (El s a) pid = El s <$> blockTermOnProblem (El Inf $ Sort s) 
 --
 --   Auxiliary function to create a postponed type checking problem.
 unblockedTester :: Type -> TCM Bool
-unblockedTester t = ifBlockedType t (\ m t -> return False) (\ t -> return True)
+unblockedTester t = ifBlockedType t (\ m t -> return False) (\ _ t -> return True)
 
 -- | Create a postponed type checking problem @e : t@ that waits for type @t@
 --   to unblock (become instantiated or its constraints resolved).
@@ -483,7 +484,7 @@ etaExpandMeta kinds m = whenM (asks envAssignMetas `and2M` isEtaExpandable kinds
     -- eta expand now, we have to postpone this.  Once @x@ is
     -- instantiated, we can continue eta-expanding m.  This is realized
     -- by adding @m@ to the listeners of @x@.
-    ifBlocked (unEl b) (\ x _ -> waitFor x) $ \ t -> case ignoreSharing t of
+    ifBlocked (unEl b) (\ x _ -> waitFor x) $ \ _ t -> case ignoreSharing t of
       lvl@(Def r es) ->
         ifM (isEtaRecord r) {- then -} (do
           let ps = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
@@ -658,7 +659,7 @@ assign dir x args v = do
             return (Set.toList $ allFreeVars args, empty, empty)
           else do
             let vars  = allFreeVarsWithOcc args
-                relVL       = IntMap.keys $ IntMap.filter isRelevantOrForced vars
+                relVL       = IntMap.keys $ IntMap.filter isRelevant vars
                 nonstrictVL = IntMap.keys $ IntMap.filter isNonStrict vars
             -- Andreas, 2011-10-06 only irrelevant vars that are direct
             -- arguments to the meta, hence, can be abstracted over, may
@@ -1171,9 +1172,12 @@ inverseSubst args = map (mapFst unArg) <$> loop (zip args terms)
               | length fs == length vs -> do
                 let aux (Arg _ v) (Arg info' f) = (Arg ai v,) $ t `applyE` [Proj ProjSystem f] where
                      ai = ArgInfo
-                       { argInfoHiding       = min (getHiding info) (getHiding info')
-                       , argInfoRelevance    = max (getRelevance info) (getRelevance info')
-                       , argInfoOrigin       = min (getOrigin info) (getOrigin info')
+                       { argInfoHiding   = min (getHiding info) (getHiding info')
+                       , argInfoModality = Modality
+                         { modRelevance  = max (getRelevance info) (getRelevance info')
+                         , modQuantity   = max (getQuantity  info) (getQuantity  info')
+                         }
+                       , argInfoOrigin   = min (getOrigin info) (getOrigin info')
                        }
                 res <- loop $ zipWith aux vs fs
                 return $ res `append` vars
@@ -1207,13 +1211,11 @@ inverseSubst args = map (mapFst unArg) <$> loop (zip args terms)
 
     -- adding an irrelevant entry only if not present
     cons :: (Arg Nat, Term) -> Res -> Res
-    cons a@(Arg (ArgInfo _ Irrelevant _) i, t) vars
-      | any ((i==) . unArg . fst) vars  = vars
-      | otherwise                       = a : vars
-    -- adding a relevant entry:
-    cons a@(Arg info i, t) vars = a :
-      -- filter out duplicate irrelevants
-      filter (not . (\ a@(Arg info j, t) -> isIrrelevant info && i == j)) vars
+    cons a@(Arg ai i, t) vars
+      | isIrrelevant ai = applyUnless (any ((i==) . unArg . fst) vars) (a :) vars
+      | otherwise       = a :  -- adding a relevant entry
+          -- filter out duplicate irrelevants
+          filter (not . (\ a@(Arg info j, t) -> isIrrelevant info && i == j)) vars
 
 -- UNUSED
 -- -- | Used in 'Agda.Interaction.BasicOps.giveExpr'.

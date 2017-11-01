@@ -27,7 +27,6 @@ import Data.Set (Set)
 import qualified Data.Set as Set -- hiding (singleton, null, empty)
 import Data.Semigroup (Semigroup, Monoid, (<>), mempty, mappend, Any(..))
 import Data.Data (Data, toConstr)
-import Data.Typeable (Typeable)
 import Data.Foldable (Foldable)
 import Data.Traversable
 import Data.IORef
@@ -106,9 +105,6 @@ data TCState = TCSt
   , stPersistentState :: !PersistentTCState
     -- ^ State which is forever, like a diamond.
   }
-#if __GLASGOW_HASKELL__ <= 708
-  deriving Typeable
-#endif
 
 class Monad m => ReadTCState m where
   getTCState :: m TCState
@@ -558,7 +554,7 @@ instance HasFresh Int where
   freshLens = stFreshInt
 
 newtype ProblemId = ProblemId Nat
-  deriving (Typeable, Data, Eq, Ord, Enum, Real, Integral, Num)
+  deriving (Data, Eq, Ord, Enum, Real, Integral, Num)
 
 -- TODO: 'Show' should output Haskell-parseable representations.
 -- The following instance is deprecated, and Pretty[TCM] should be used
@@ -661,7 +657,7 @@ type VisitedModules = Map C.TopLevelModuleName ModuleInfo
 type DecodedModules = Map C.TopLevelModuleName Interface
 
 data ForeignCode = ForeignCode Range String
-  deriving (Show, Typeable)
+  deriving Show
 
 data Interface = Interface
   { iSourceHash      :: Hash
@@ -692,7 +688,7 @@ data Interface = Interface
   , iPatternSyns     :: A.PatternSynDefns
   , iWarnings        :: [TCWarning]
   }
-  deriving (Typeable, Show)
+  deriving Show
 
 instance Pretty Interface where
   pretty (Interface sourceH importedM moduleN scope insideS signature display builtin
@@ -732,7 +728,7 @@ data Closure a = Closure
       --   a substitution @Γ ⊢ ρ_M : Γ_M@ from the current context @Γ = envContext (clEnv)@.
   , clValue            :: a
   }
-    deriving (Typeable, Data, Functor, Foldable)
+    deriving (Data, Functor, Foldable)
 
 instance Show a => Show (Closure a) where
   show cl = "Closure { clValue = " ++ show (clValue cl) ++ " }"
@@ -758,7 +754,7 @@ data ProblemConstraint = PConstr
   { constraintProblems :: Set ProblemId
   , theConstraint      :: Closure Constraint
   }
-  deriving (Typeable, Data, Show)
+  deriving (Data, Show)
 
 instance HasRange ProblemConstraint where
   getRange = getRange . theConstraint
@@ -766,7 +762,7 @@ instance HasRange ProblemConstraint where
 data Constraint
   = ValueCmp Comparison Type Term Term
   | ValueCmpOnFace Comparison Term Type Term Term
-  | ElimCmp [Polarity] Type Term [Elim] [Elim]
+  | ElimCmp [Polarity] [IsForced] Type Term [Elim] [Elim]
   | TypeCmp Comparison Type Type
   | TelCmp Type Type Comparison Telescope Telescope -- ^ the two types are for the error message only
   | SortCmp Comparison Sort Sort
@@ -784,7 +780,7 @@ data Constraint
     --   on which the constraint may be blocked on and the third one is the list
     --   of candidates (or Nothing if we haven’t determined the list of
     --   candidates yet)
-  deriving (Typeable, Data, Show)
+  deriving (Data, Show)
 
 instance HasRange Constraint where
   getRange (IsEmpty r t) = r
@@ -806,7 +802,7 @@ instance Free Constraint where
     case c of
       ValueCmp _ t u v      -> freeVars' (t, (u, v))
       ValueCmpOnFace _ p t u v -> freeVars' (p, (t, (u, v)))
-      ElimCmp _ t u es es'  -> freeVars' ((t, u), (es, es'))
+      ElimCmp _ _ t u es es'  -> freeVars' ((t, u), (es, es'))
       TypeCmp _ t t'        -> freeVars' (t, t')
       TelCmp _ _ _ tel tel' -> freeVars' (tel, tel')
       SortCmp _ s s'        -> freeVars' (s, s')
@@ -821,7 +817,7 @@ instance TermLike Constraint where
   foldTerm f = \case
       ValueCmp _ t u v       -> foldTerm f (t, u, v)
       ValueCmpOnFace _ p t u v -> foldTerm f (p, t, u, v)
-      ElimCmp _ t u es es'   -> foldTerm f (t, u, es, es')
+      ElimCmp _ _ t u es es' -> foldTerm f (t, u, es, es')
       TypeCmp _ t t'         -> foldTerm f (t, t')
       LevelCmp _ l l'        -> foldTerm f (l, l')
       IsEmpty _ t            -> foldTerm f t
@@ -835,7 +831,7 @@ instance TermLike Constraint where
 
 
 data Comparison = CmpEq | CmpLeq
-  deriving (Eq, Typeable, Data, Show)
+  deriving (Eq, Data, Show)
 
 instance Pretty Comparison where
   pretty CmpEq  = text "="
@@ -843,7 +839,7 @@ instance Pretty Comparison where
 
 -- | An extension of 'Comparison' to @>=@.
 data CompareDirection = DirEq | DirLeq | DirGeq
-  deriving (Eq, Typeable, Show)
+  deriving (Eq, Show)
 
 instance Pretty CompareDirection where
   pretty = text . \case
@@ -876,7 +872,7 @@ dirToCmp cont DirGeq = flip $ cont CmpLeq
 
 -- | A thing tagged with the context it came from.
 data Open a = OpenThing { openThingCtxIds :: [CtxId], openThing :: a }
-    deriving (Typeable, Data, Show, Functor, Foldable, Traversable)
+    deriving (Data, Show, Functor, Foldable, Traversable)
 
 instance Decoration Open where
   traverseF f (OpenThing cxt x) = OpenThing cxt <$> f x
@@ -884,7 +880,7 @@ instance Decoration Open where
 data Local a = Local ModuleName a   -- ^ Local to a given module, the value
                                     -- should have module parameters as free variables.
              | Global a             -- ^ Global value, should be closed.
-    deriving (Typeable, Data, Show, Functor, Foldable, Traversable)
+    deriving (Data, Show, Functor, Foldable, Traversable)
 
 isGlobal :: Local a -> Bool
 isGlobal Global{} = True
@@ -904,7 +900,6 @@ instance Decoration Local where
 data Judgement a
   = HasType { jMetaId :: a, jMetaType :: Type }
   | IsSort  { jMetaId :: a, jMetaType :: Type } -- Andreas, 2011-04-26: type needed for higher-order sort metas
-  deriving (Typeable)
 
 instance Show a => Show (Judgement a) where
     show (HasType a t) = show a ++ " : " ++ show t
@@ -926,11 +921,9 @@ data MetaVariable =
                 , mvListeners     :: Set Listener -- ^ meta variables scheduled for eta-expansion but blocked by this one
                 , mvFrozen        :: Frozen -- ^ are we past the point where we can instantiate this meta variable?
                 }
-    deriving (Typeable)
 
 data Listener = EtaExpand MetaId
               | CheckConstraint Nat ProblemConstraint
-  deriving (Typeable)
 
 instance Eq Listener where
   EtaExpand       x   == EtaExpand       y   = x == y
@@ -958,7 +951,6 @@ data MetaInstantiation
         | OpenIFS            -- ^ open, to be instantiated as "implicit from scope"
         | BlockedConst Term  -- ^ solution blocked by unsolved constraints
         | PostponedTypeCheckingProblem (Closure TypeCheckingProblem) (TCM Bool)
-    deriving (Typeable)
 
 data TypeCheckingProblem
   = CheckExpr A.Expr Type
@@ -972,7 +964,6 @@ data TypeCheckingProblem
     --   we want to postpone @(λ (y : Fin n) → e) : ?@ where @Fin n@
     --   is a 'Type' rather than an 'A.Expr'.
   | UnquoteTactic Term Term Type   -- ^ First argument is computation and the others are hole and goal type
-  deriving (Typeable)
 
 instance Show MetaInstantiation where
   show (InstV tel t) = "InstV " ++ show tel ++ " (" ++ show t ++ ")"
@@ -987,24 +978,12 @@ instance Show MetaInstantiation where
 --
 --   Higher value means higher priority to be instantiated.
 newtype MetaPriority = MetaPriority Int
-    deriving ( Eq
-             , Ord
-             , Show
-#if __GLASGOW_HASKELL__ <= 708
-             , Typeable
-#endif
-             )
+    deriving (Eq , Ord , Show)
 
 data RunMetaOccursCheck
   = RunMetaOccursCheck
   | DontRunMetaOccursCheck
-  deriving (Eq
-           , Ord
-           , Show
-#if __GLASGOW_HASKELL__ <= 708
-           , Typeable
-#endif
-           )
+  deriving (Eq , Ord , Show)
 
 -- | @MetaInfo@ is cloned from one meta to the next during pruning.
 data MetaInfo = MetaInfo
@@ -1015,9 +994,6 @@ data MetaInfo = MetaInfo
     -- ^ Used for printing.
     --   @Just x@ if meta-variable comes from omitted argument with name @x@.
   }
-#if __GLASGOW_HASKELL__ <= 708
-  deriving Typeable
-#endif
 
 -- | Name suggestion for meta variable.  Empty string means no suggestion.
 type MetaNameSuggestion = String
@@ -1086,9 +1062,6 @@ data InteractionPoint = InteractionPoint
       -- ^ The clause of the interaction point (if any).
       --   Used for case splitting.
   }
-#if __GLASGOW_HASKELL__ <= 708
-  deriving Typeable
-#endif
 
 instance Eq InteractionPoint where (==) = (==) `on` ipMeta
 
@@ -1105,7 +1078,7 @@ data IPClause = IPClause
   , ipcClause   :: A.RHS  -- ^ The original AST clause rhs.
   }
   | IPNoClause -- ^ The interaction point is not in the rhs of a clause.
-  deriving (Typeable, Data)
+  deriving Data
 
 instance Eq IPClause where
   IPNoClause     == IPNoClause       = True
@@ -1121,7 +1094,7 @@ data Signature = Sig
       , _sigDefinitions :: Definitions
       , _sigRewriteRules:: RewriteRuleMap  -- ^ The rewrite rules defined in this file.
       }
-  deriving (Typeable, Data, Show)
+  deriving (Data, Show)
 
 sigSections :: Lens' Sections Signature
 sigSections f s =
@@ -1144,7 +1117,7 @@ type RewriteRuleMap = HashMap QName RewriteRules
 type DisplayForms = HashMap QName [LocalDisplayForm]
 
 newtype Section = Section { _secTelescope :: Telescope }
-  deriving (Typeable, Data, Show)
+  deriving (Data, Show)
 
 instance Pretty Section where
   pretty = pretty . _secTelescope
@@ -1181,7 +1154,7 @@ data DisplayForm = Display
   , dfRHS      :: DisplayTerm
     -- ^ Right hand side, with @n@ free variables.
   }
-  deriving (Typeable, Data, Show)
+  deriving (Data, Show)
 
 type LocalDisplayForm = Local DisplayForm
 
@@ -1203,7 +1176,7 @@ data DisplayTerm
     -- ^ @.v@.
   | DTerm Term
     -- ^ @v@.
-  deriving (Typeable, Data, Show)
+  deriving (Data, Show)
 
 instance Free DisplayForm where
   freeVars' (Display n ps t) = bind (freeVars' ps) `mappend` bind' n (freeVars' t)
@@ -1236,7 +1209,7 @@ defaultDisplayForm :: QName -> [LocalDisplayForm]
 defaultDisplayForm c = []
 
 defRelevance :: Definition -> Relevance
-defRelevance = argInfoRelevance . defArgInfo
+defRelevance = getRelevance . defArgInfo
 
 -- | Non-linear (non-constructor) first-order pattern.
 data NLPat
@@ -1255,13 +1228,13 @@ data NLPat
     -- ^ Matches @x es@ where x is a lambda-bound variable
   | PTerm Term
     -- ^ Matches the term modulo β (ideally βη).
-  deriving (Typeable, Data, Show)
+  deriving (Data, Show)
 type PElims = [Elim' NLPat]
 
 data NLPType = NLPType
   { nlpTypeLevel :: NLPat  -- always PWild or PVar (with all bound variables in scope)
   , nlpTypeUnEl  :: NLPat
-  } deriving (Typeable, Data, Show)
+  } deriving (Data, Show)
 
 type RewriteRules = [RewriteRule]
 
@@ -1275,7 +1248,7 @@ data RewriteRule = RewriteRule
   , rewRHS     :: Term       -- ^ @Γ ⊢ rhs : t@.
   , rewType    :: Type       -- ^ @Γ ⊢ t@.
   }
-    deriving (Typeable, Data, Show)
+    deriving (Data, Show)
 
 data Definition = Defn
   { defArgInfo        :: ArgInfo -- ^ Hiding should not be used.
@@ -1343,7 +1316,7 @@ data Definition = Defn
     -- ^ Should the def be treated as injective by the pattern matching unifier?
   , theDef            :: Defn
   }
-    deriving (Typeable, Data, Show)
+    deriving (Data, Show)
 
 theDefLens :: Lens' Defn Definition
 theDefLens f d = f (theDef d) <&> \ df -> d { theDef = df }
@@ -1373,7 +1346,7 @@ data Polarity
   | Contravariant  -- ^ antitone
   | Invariant      -- ^ no information (mixed variance)
   | Nonvariant     -- ^ constant
-  deriving (Typeable, Data, Show, Eq)
+  deriving (Data, Show, Eq)
 
 instance Pretty Polarity where
   pretty = text . \case
@@ -1382,9 +1355,15 @@ instance Pretty Polarity where
     Invariant     -> "*"
     Nonvariant    -> "_"
 
+-- | Information about whether an argument is forced by the type of a function.
+data IsForced
+  = Forced
+  | NotForced
+  deriving (Data, Show, Eq)
+
 -- | The backends are responsible for parsing their own pragmas.
 data CompilerPragma = CompilerPragma Range String
-  deriving (Typeable, Data, Show, Eq)
+  deriving (Data, Show, Eq)
 
 instance HasRange CompilerPragma where
   getRange (CompilerPragma r _) = r
@@ -1416,14 +1395,14 @@ data System = System
     -- ^ the telescope Δ, binding vars for the clauses, Γ ⊢ Δ
   , systemClauses :: [(Face,Term)]
     -- ^ a system [φ₁ u₁, ... , φₙ uₙ] where Γ, Δ ⊢ φᵢ and Γ, Δ, φᵢ ⊢ uᵢ
-  } deriving (Typeable, Data, Show)
+  } deriving (Data, Show)
 
 -- | Additional information for extended lambdas.
 data ExtLamInfo = ExtLamInfo
   { extLamNumHidden :: Int  -- Number of hidden args to be dropped when printing.
   , extLamNumNonHid :: Int  -- Number of visible args to be dropped when printing.
   , extLamSys :: !(Maybe System)
-  } deriving (Typeable, Data, Show)
+  } deriving (Data, Show)
 
 modifySystem :: (System -> System) -> ExtLamInfo -> ExtLamInfo
 modifySystem f e = let !e' = e { extLamSys = f <$> extLamSys e } in e'
@@ -1455,11 +1434,11 @@ data Projection = Projection
     --   (Invariant: the number of abstractions equals 'projIndex'.)
     --   In case of a projection-like function, just the function symbol
     --   is returned as 'Def':  @t = \ pars -> f@.
-  } deriving (Typeable, Data, Show)
+  } deriving (Data, Show)
 
 -- | Abstractions to build projection function (dropping parameters).
 newtype ProjLams = ProjLams { getProjLams :: [Arg ArgName] }
-  deriving (Typeable, Data, Show, Null)
+  deriving (Data, Show, Null)
 
 -- | Building the projection function (which drops the parameters).
 projDropPars :: Projection -> ProjOrigin -> Term
@@ -1484,7 +1463,7 @@ projArgInfo (Projection _ _ _ _ lams) =
 data EtaEquality
   = Specified !Bool  -- ^ User specifed 'eta-equality' or 'no-eta-equality'.
   | Inferred !Bool   -- ^ Positivity checker inferred whether eta is safe.
-  deriving (Typeable, Data, Show, Eq)
+  deriving (Data, Show, Eq)
 
 etaEqualityToBool :: EtaEquality -> Bool
 etaEqualityToBool (Specified b) = b
@@ -1499,7 +1478,7 @@ data FunctionFlag
   = FunStatic  -- ^ Should calls to this function be normalised at compile-time?
   | FunInline  -- ^ Should calls to this function be inlined by the compiler?
   | FunMacro   -- ^ Is this function a macro?
-  deriving (Typeable, Data, Eq, Ord, Enum, Show)
+  deriving (Data, Eq, Ord, Enum, Show)
 
 data Defn = Axiom
             { axTPTPRole  :: Maybe TPTPRole
@@ -1603,6 +1582,7 @@ data Defn = Axiom
             , conAbstr    :: IsAbstract
             , conInd      :: Induction   -- ^ Inductive or coinductive?
             , conComp     :: Maybe (QName,[QName]) -- ^ (cubical composition, projections)
+            , conForced   :: [IsForced]  -- ^ Which arguments are forced (i.e. determined by the type of the constructor)?
             , conErased   :: [Bool]      -- ^ Which arguments are erased at runtime (computed during compilation to treeless)
             , conTPTPRole :: Maybe TPTPRole  -- ^ TPTP axiom?
             }
@@ -1616,7 +1596,7 @@ data Defn = Axiom
               --   @'Just' something@ for builtin functions.
             }
             -- ^ Primitive or builtin functions.
-    deriving (Typeable, Data, Show)
+    deriving (Data, Show)
 
 instance Pretty Definition where
   pretty Defn{..} =
@@ -1767,7 +1747,7 @@ defConstructors Record{recConHead = c} = [conName c]
 defConstructors _ = __IMPOSSIBLE__
 
 newtype Fields = Fields [(C.Name, Type)]
-  deriving (Typeable, Null)
+  deriving Null
 
 -- | Did we encounter a simplifying reduction?
 --   In terms of CIC, that would be a iota-reduction.
@@ -1777,7 +1757,7 @@ newtype Fields = Fields [(C.Name, Type)]
 --   (unfolding of definitions) does not count as simplifying?
 
 data Simplification = YesSimplification | NoSimplification
-  deriving (Typeable, Data, Eq, Show)
+  deriving (Data, Eq, Show)
 
 instance Null Simplification where
   empty = NoSimplification
@@ -1792,7 +1772,7 @@ instance Monoid Simplification where
   mappend = (<>)
 
 data Reduced no yes = NoReduction no | YesReduction Simplification yes
-    deriving (Typeable, Functor)
+    deriving Functor
 
 -- | Three cases: 1. not reduced, 2. reduced, but blocked, 3. reduced, not blocked.
 data IsReduced
@@ -1831,7 +1811,7 @@ data AllowedReduction
   | LevelReductions          -- ^ Reduce @'Level'@ terms.
   | UnconfirmedReductions    -- ^ Functions whose termination has not (yet) been confirmed.
   | NonTerminatingReductions -- ^ Functions that have failed termination checking.
-  deriving (Show, Eq, Ord, Enum, Bounded, Typeable, Data)
+  deriving (Show, Eq, Ord, Enum, Bounded, Data)
 
 type AllowedReductions = [AllowedReduction]
 
@@ -1844,7 +1824,6 @@ data PrimFun = PrimFun
         , primFunArity          :: Arity
         , primFunImplementation :: [Arg Term] -> Int -> ReduceM (Reduced MaybeReducedArgs Term)
         }
-    deriving (Typeable)
 
 primFun :: QName -> Arity -> ([Arg Term] -> ReduceM (Reduced MaybeReducedArgs Term)) -> PrimFun
 primFun q ar imp = PrimFun q ar (\ args _ -> imp args)
@@ -1896,6 +1875,16 @@ defAbstract d = case theDef d of
     Constructor{conAbstr = a} -> a
     Primitive{primAbstr = a}  -> a
 
+defForced :: Definition -> [IsForced]
+defForced d = case theDef d of
+    Constructor{conForced = fs} -> fs
+    Axiom{}                     -> []
+    AbstractDefn{}              -> []
+    Function{}                  -> []
+    Datatype{}                  -> []
+    Record{}                    -> []
+    Primitive{}                 -> []
+
 ---------------------------------------------------------------------------
 -- ** Injectivity
 ---------------------------------------------------------------------------
@@ -1905,12 +1894,12 @@ type FunctionInverse = FunctionInverse' Clause
 data FunctionInverse' c
   = NotInjective
   | Inverse (Map TermHead c)
-  deriving (Typeable, Data, Show, Functor)
+  deriving (Data, Show, Functor)
 
 data TermHead = SortHead
               | PiHead
               | ConsHead QName
-  deriving (Typeable, Data, Eq, Ord, Show)
+  deriving (Data, Eq, Ord, Show)
 
 instance Pretty TermHead where
   pretty = \case
@@ -1923,7 +1912,7 @@ instance Pretty TermHead where
 ---------------------------------------------------------------------------
 
 newtype MutualId = MutId Int32
-  deriving (Typeable, Data, Eq, Ord, Show, Num, Enum)
+  deriving (Data, Eq, Ord, Show, Num, Enum)
 
 ---------------------------------------------------------------------------
 -- ** Statistics
@@ -1963,7 +1952,7 @@ data Call = CheckClause Type A.SpineClause
           | NoHighlighting
           | ModuleContents  -- ^ Interaction command: show module contents.
           | SetRange Range  -- ^ used by 'setCurrentRange'
-    deriving (Typeable, Data)
+    deriving Data
 
 instance Pretty Call where
     pretty CheckClause{}             = text "CheckClause"
@@ -2066,7 +2055,7 @@ type BuiltinThings pf = Map String (Builtin pf)
 data Builtin pf
         = Builtin Term
         | Prim pf
-    deriving (Typeable, Show, Functor, Foldable, Traversable)
+    deriving (Show, Functor, Foldable, Traversable)
 
 ---------------------------------------------------------------------------
 -- * Highlighting levels
@@ -2081,7 +2070,7 @@ data HighlightingLevel
     -- ^ This includes both non-interactive highlighting and
     -- interactive highlighting of the expression that is currently
     -- being type-checked.
-    deriving (Eq, Ord, Show, Read, Typeable, Data)
+    deriving (Eq, Ord, Show, Read, Data)
 
 -- | How should highlighting be sent to the user interface?
 
@@ -2090,7 +2079,7 @@ data HighlightingMethod
     -- ^ Via stdout.
   | Indirect
     -- ^ Both via files and via stdout.
-    deriving (Eq, Show, Read, Typeable, Data)
+    deriving (Eq, Show, Read, Data)
 
 -- | @ifTopLevelAndHighlightingLevelIs l b m@ runs @m@ when we're
 -- type-checking the top-level module and either the highlighting
@@ -2120,7 +2109,7 @@ ifTopLevelAndHighlightingLevelIs l =
 data ModuleParameters = ModuleParams
   { mpSubstitution :: Substitution
       -- ^ @Δ ⊢ σ : Γ@ for a @module M Γ@ where @Δ@ is the current context @envContext@.
-  } deriving (Typeable, Data, Show)
+  } deriving (Data, Show)
 
 defaultModuleParameters :: ModuleParameters
 defaultModuleParameters = ModuleParams IdS
@@ -2218,7 +2207,7 @@ data TCEnv =
                 -- ^ Until we get a termination checker for instance search (#1743) we
                 --   limit the search depth to ensure termination.
           }
-    deriving (Typeable, Data)
+    deriving Data
 
 initEnv :: TCEnv
 initEnv = TCEnv { envContext             = []
@@ -2269,7 +2258,7 @@ disableDestructiveUpdate = local $ \e -> e { envAllowDestructiveUpdate = False }
 
 data UnquoteFlags = UnquoteFlags
   { _unquoteNormalise :: Bool }
-  deriving (Typeable, Data)
+  deriving Data
 
 defaultUnquoteFlags :: UnquoteFlags
 defaultUnquoteFlags = UnquoteFlags
@@ -2386,10 +2375,10 @@ type Context      = [ContextEntry]
 data ContextEntry = Ctx { ctxId    :: CtxId
                         , ctxEntry :: Dom (Name, Type)
                         }
-  deriving (Typeable, Data)
+  deriving Data
 
 newtype CtxId     = CtxId Nat
-  deriving (Typeable, Data, Eq, Ord, Show, Enum, Real, Integral, Num)
+  deriving (Data, Eq, Ord, Show, Enum, Real, Integral, Num)
 
 ---------------------------------------------------------------------------
 -- ** Let bindings
@@ -2405,7 +2394,7 @@ data AbstractMode
   = AbstractMode        -- ^ Abstract things in the current module can be accessed.
   | ConcreteMode        -- ^ No abstract things can be accessed.
   | IgnoreAbstractMode  -- ^ All abstract things can be accessed.
-  deriving (Typeable, Data, Show, Eq)
+  deriving (Data, Show, Eq)
 
 aDefToMode :: IsAbstract -> AbstractMode
 aDefToMode AbstractDef = AbstractMode
@@ -2423,12 +2412,12 @@ aModeToDef _ = __IMPOSSIBLE__
 data ExpandHidden
   = ExpandLast      -- ^ Add implicit arguments in the end until type is no longer hidden 'Pi'.
   | DontExpandLast  -- ^ Do not append implicit arguments.
-  deriving (Eq, Typeable, Data)
+  deriving (Eq, Data)
 
 data ExplicitToInstance
   = ExplicitToInstance    -- ^ Explicit arguments are considered as instance arguments
   | ExplicitStayExplicit
-    deriving (Eq, Show, Typeable, Data)
+    deriving (Eq, Show, Data)
 
 -- | A candidate solution for an instance meta is a term with its type.
 --   It may be the case that the candidate is not fully applied yet or
@@ -2438,7 +2427,7 @@ data Candidate  = Candidate { candidateTerm :: Term
                             , candidateEti  :: ExplicitToInstance
                             , candidateOverlappable :: Bool
                             }
-  deriving (Show, Typeable, Data)
+  deriving (Show, Data)
 
 instance Free Candidate where
   freeVars' (Candidate t u _ _) = freeVars' (t, u)
@@ -2487,12 +2476,7 @@ data Warning
   | DeprecationWarning String String String
     -- ^ `DeprecationWarning old new version`:
     --   `old` is deprecated, use `new` instead. This will be an error in Agda `version`.
-  deriving ( Show
-           , Data
-#if __GLASGOW_HASKELL__ <= 708
-           , Typeable
-#endif
-           )
+  deriving (Show , Data)
 
 data TCWarning
   = TCWarning
@@ -2503,11 +2487,8 @@ data TCWarning
     , tcWarningPrintedWarning :: Doc
         -- ^ The warning printed in the state and environment where it was raised
     }
-  deriving ( Show
-#if __GLASGOW_HASKELL__ <= 708
-           , Typeable
-#endif
-           )
+  deriving Show
+
 
 tcWarningOrigin :: TCWarning -> SrcFile
 tcWarningOrigin = rangeFile . tcWarningRange
@@ -2546,7 +2527,7 @@ data CallInfo = CallInfo
     -- ^ Range of the target function.
   , callInfoCall :: Closure Term
     -- ^ To be formatted representation of the call.
-  } deriving (Typeable, Data, Show)
+  } deriving (Data, Show)
 
 -- no Eq, Ord instances: too expensive! (see issues 851, 852)
 
@@ -2579,7 +2560,7 @@ data TerminationError = TerminationError
     -- automatically generated functions.)
   , termErrCalls :: [CallInfo]
     -- ^ The problematic call sites.
-  } deriving (Typeable, Data, Show)
+  } deriving (Data, Show)
 
 -- | Error when splitting a pattern variable into possible constructor patterns.
 data SplitError
@@ -2805,7 +2786,7 @@ data TypeError
         | NonFatalErrors [TCWarning]
     -- Instance search errors
         | InstanceSearchDepthExhausted Term Type Int
-          deriving (Typeable, Show)
+          deriving Show
 
 -- | Distinguish error message when parsing lhs or pattern synonym, resp.
 data LHSOrPatSyn = IsLHS | IsPatSyn deriving (Eq, Show)
@@ -2827,7 +2808,6 @@ data TCErr
       -- ^ The exception which is usually caught.
       --   Raised for pattern violations during unification ('assignV')
       --   but also in other situations where we want to backtrack.
-  deriving (Typeable)
 
 instance Error TCErr where
   strMsg = Exception noRange . text . strMsg
@@ -3287,10 +3267,10 @@ instance KillRange Defn where
       AbstractDefn{} -> __IMPOSSIBLE__ -- only returned by 'getConstInfo'!
       Function cls comp tt inv mut isAbs delayed proj flags term extlam with copat role ->
         killRange14 Function cls comp tt inv mut isAbs delayed proj flags term extlam with copat role
-      Datatype a b c d e f g h i     -> killRange9 Datatype a b c d e f g h i
-      Record a b c d e f g h i j k   -> killRange11 Record a b c d e f g h i j k
-      Constructor a b c d e f g h i  -> killRange9 Constructor a b c d e f g h i
-      Primitive a b c d              -> killRange4 Primitive a b c d
+      Datatype a b c d e f g h i      -> killRange9 Datatype a b c d e f g h i
+      Record a b c d e f g h i j k    -> killRange11 Record a b c d e f g h i j k
+      Constructor a b c d e f g h i j -> killRange10 Constructor a b c d e f g h i j
+      Primitive a b c d               -> killRange4 Primitive a b c d
 
 instance KillRange MutualId where
   killRange = id
@@ -3321,6 +3301,9 @@ instance KillRange DisplayForm where
   killRange (Display n es dt) = killRange3 Display n es dt
 
 instance KillRange Polarity where
+  killRange = id
+
+instance KillRange IsForced where
   killRange = id
 
 instance KillRange DisplayTerm where

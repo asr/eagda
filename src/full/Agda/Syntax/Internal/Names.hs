@@ -11,8 +11,6 @@ import qualified Data.Map as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
 
-import Control.Applicative
-
 import Agda.Syntax.Common
 import Agda.Syntax.Literal
 import Agda.Syntax.Internal
@@ -93,7 +91,7 @@ instance NamesIn (Pattern' a) where
   namesIn p = case p of
     VarP{}        -> Set.empty
     LitP l        -> namesIn l
-    DotP v        -> namesIn v
+    DotP _ v      -> namesIn v
     AbsurdP p     -> namesIn p
     ConP c _ args -> namesIn (c, args)
     ProjP _ f     -> namesIn f
@@ -189,6 +187,7 @@ instance NamesIn (A.Pattern' a) where
     A.RecP _ fs            -> namesIn fs
     A.DotP{}               -> __IMPOSSIBLE__    -- Dot patterns are not allowed in pattern synonyms
     A.EqualP{}             -> __IMPOSSIBLE__    -- Andrea: should we allow these in pattern synonyms?
+    A.WithAppP _ p ps      -> namesIn (p, ps)
 
 instance NamesIn AmbiguousQName where
   namesIn (AmbQ cs) = namesIn cs

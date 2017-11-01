@@ -557,6 +557,15 @@ bindAndSetHaskellCode b hs t = do
 bindBuiltinBool :: Term -> TCM ()
 bindBuiltinBool = bindAndSetHaskellCode builtinBool "= type Bool"
 
+-- | Check that we're not trying to bind true and false to the same
+-- constructor.
+checkBuiltinBool :: TCM ()
+checkBuiltinBool = do
+  true  <- getBuiltin' builtinTrue
+  false <- getBuiltin' builtinFalse
+  when (true == false) $
+    genericError "Cannot bind TRUE and FALSE to the same constructor"
+
 bindBuiltinInt :: Term -> TCM ()
 bindBuiltinInt = bindAndSetHaskellCode builtinInteger "= type Integer"
 
@@ -671,7 +680,10 @@ bindBuiltinInfo (BuiltinInfo s d) e = do
 
         let v@(Con h _ []) = name v0
             c = conName h
+
         bindBuiltinName s v
+
+        when (s `elem` [builtinFalse, builtinTrue]) checkBuiltinBool
 
       BuiltinPrim pfname axioms -> do
         case e of
@@ -760,6 +772,7 @@ bindBuiltinNoDef b q = do
         def | b == builtinSizeUniv = emptyFunction
                 { funClauses = [ (empty :: Clause) { clauseBody = Just $ Sort sSizeUniv } ]
                 , funCompiled = Just (CC.Done [] $ Sort sSizeUniv)
+                , funMutual    = Just []
                 , funTerminates = Just True
                 }
             | otherwise = Axiom Nothing []
@@ -776,7 +789,7 @@ bindBuiltinNoDef b q = do
       d <- return $! getPrimName $ unEl t
       let
         ch = ConHead q Inductive []
-        def = Constructor 0 0 ch d ConcreteDef Inductive Nothing [] Nothing -- Andrea TODO: fix zeros
+        def = Constructor 0 0 ch d ConcreteDef Inductive Nothing [] [] Nothing -- Andrea TODO: fix zeros
 
       addConstant q $ defaultDefn defaultArgInfo q t def
       addDataCons d [q]

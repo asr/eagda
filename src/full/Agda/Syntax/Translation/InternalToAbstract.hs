@@ -22,7 +22,6 @@ module Agda.Syntax.Translation.InternalToAbstract
   ) where
 
 import Prelude hiding (mapM_, mapM, null)
-import Control.Applicative hiding (empty)
 import Control.Monad.State hiding (mapM_, mapM)
 import Control.Monad.Reader hiding (mapM_, mapM)
 
@@ -372,6 +371,7 @@ reifyTerm expandAnonDefs0 v = do
         x  <- liftTCM $ nameOfBV n `catchError` \_ -> freshName_ ("@" ++ show n)
         elims (A.Var x) =<< reify es
     I.Def x es   -> do
+      reportSLn "reify.def" 100 $ "reifying def " ++ prettyShow x
       reifyDisplayForm x es $ reifyDef expandAnonDefs x es
     I.Con c ci vs -> do
       let x = conName c
@@ -650,7 +650,7 @@ instance Reify i a => Reify (Named n i) (Named n a) where
 instance (Reify i a) => Reify (Arg i) (Arg a) where
   reify (Arg info i) = Arg info <$> (flip reifyWhen i =<< condition)
     where condition = (return (argInfoHiding info /= Hidden) `or2M` showImplicitArguments)
-              `and2M` (return (argInfoRelevance info /= Irrelevant) `or2M` showIrrelevantArguments)
+              `and2M` (return (getRelevance info /= Irrelevant) `or2M` showIrrelevantArguments)
   reifyWhen b i = traverse (reifyWhen b) i
 
 -- instance Reify Elim Expr where
@@ -747,6 +747,7 @@ stripImplicits (ps, wps) = do          -- v if show-implicit we don't need the n
             A.PatternSynP _ _ _ -> __IMPOSSIBLE__ -- p
             A.RecP i fs   -> A.RecP i $ map (fmap stripPat) fs  -- TODO Andreas: is this right?
             A.EqualP{}    -> p
+            A.WithAppP i p ps -> A.WithAppP i (stripPat p) $ map stripPat ps -- TODO #2822: right?
 
           varOrDot A.VarP{}      = True
           varOrDot A.WildP{}     = True
@@ -815,6 +816,7 @@ instance BlankVars A.Pattern where
     A.PatternSynP _ _ _ -> __IMPOSSIBLE__
     A.RecP i fs   -> A.RecP i $ blank bound fs
     A.EqualP i es -> A.EqualP i (blank bound es)  -- Andrea TODO: is this correct?
+    A.WithAppP i p ps -> A.WithAppP i (blank bound p) $ blank bound ps
 
 instance BlankVars A.Expr where
   blank bound e = case e of
@@ -903,6 +905,7 @@ instance Binder A.Pattern where
     A.PatternSynP _ _ _ -> empty
     A.RecP _ _          -> empty
     A.EqualP{}          -> empty
+    A.WithAppP _ _ _    -> empty
 
 instance Binder A.LamBinding where
   varsBoundIn (A.DomainFree _ x) = singleton $ unBind x
@@ -962,11 +965,11 @@ reifyPatterns = mapM $ stripNameFromExplicit <.> traverse (traverse reifyPat)
             -- Andreas, 2017-09-03, issue #2729
             -- Restore original pattern name.  AbstractToConcrete picks unique names.
             return $ A.VarP $ BindName $ n { nameConcrete = C.Name noRange [ C.Id y ] }
-      I.DotP v -> do
+      I.DotP o v -> do
         t <- liftTCM $ reify v
         -- This is only used for printing purposes, so the Origin shouldn't be
         -- used after this point anyway.
-        return $ A.DotP patNoRange Inserted t
+        return $ A.DotP patNoRange o t
         -- WAS: return $ A.DotP patNoRange __IMPOSSIBLE__ t
         -- Crashes on -v 100.
       I.AbsurdP p -> return $ A.AbsurdP patNoRange

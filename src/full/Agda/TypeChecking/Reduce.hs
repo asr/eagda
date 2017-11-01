@@ -6,7 +6,6 @@ module Agda.TypeChecking.Reduce where
 
 import Prelude hiding (mapM)
 import Control.Monad.Reader hiding (mapM)
-import Control.Applicative
 
 import qualified Data.List as List
 import Data.Maybe
@@ -187,8 +186,8 @@ instance Instantiate Constraint where
   instantiate' (ValueCmpOnFace cmp p t u v) = do
     ((p,t),u,v) <- instantiate' ((p,t),u,v)
     return $ ValueCmpOnFace cmp p t u v
-  instantiate' (ElimCmp cmp t v as bs) =
-    ElimCmp cmp <$> instantiate' t <*> instantiate' v <*> instantiate' as <*> instantiate' bs
+  instantiate' (ElimCmp cmp fs t v as bs) =
+    ElimCmp cmp fs <$> instantiate' t <*> instantiate' v <*> instantiate' as <*> instantiate' bs
   instantiate' (LevelCmp cmp u v)   = uncurry (LevelCmp cmp) <$> instantiate' (u,v)
   instantiate' (TypeCmp cmp a b)    = uncurry (TypeCmp cmp) <$> instantiate' (a,b)
   instantiate' (TelCmp a b cmp tela telb) = uncurry (TelCmp a b cmp)  <$> instantiate' (tela,telb)
@@ -222,18 +221,18 @@ instance Instantiate EqualityView where
 
 -- | Case on whether a term is blocked on a meta (or is a meta).
 --   That means it can change its shape when the meta is instantiated.
-ifBlocked :: MonadTCM tcm =>  Term -> (MetaId -> Term -> tcm a) -> (Term -> tcm a) -> tcm a
+ifBlocked :: MonadTCM tcm =>  Term -> (MetaId -> Term -> tcm a) -> (NotBlocked -> Term -> tcm a) -> tcm a
 ifBlocked t blocked unblocked = do
   t <- liftTCM $ reduceB t
   case ignoreSharing <$> t of
     Blocked m _              -> blocked m (ignoreBlocking t)
     NotBlocked _ (MetaV m _) -> blocked m (ignoreBlocking t)
-    NotBlocked{}             -> unblocked (ignoreBlocking t)
+    NotBlocked nb _          -> unblocked nb (ignoreBlocking t)
 
 -- | Case on whether a type is blocked on a meta (or is a meta).
-ifBlockedType :: MonadTCM tcm => Type -> (MetaId -> Type -> tcm a) -> (Type -> tcm a) -> tcm a
+ifBlockedType :: MonadTCM tcm => Type -> (MetaId -> Type -> tcm a) -> (NotBlocked -> Type -> tcm a) -> tcm a
 ifBlockedType (El s t) blocked unblocked =
-  ifBlocked t (\ m v -> blocked m $ El s v) (\ v -> unblocked $ El s v)
+  ifBlocked t (\ m v -> blocked m $ El s v) (\ nb v -> unblocked nb $ El s v)
 
 class Reduce t where
     reduce'  :: t -> ReduceM t
@@ -676,8 +675,8 @@ instance Reduce Constraint where
   reduce' (ValueCmpOnFace cmp p t u v) = do
     ((p,t),u,v) <- reduce' ((p,t),u,v)
     return $ ValueCmpOnFace cmp p t u v
-  reduce' (ElimCmp cmp t v as bs) =
-    ElimCmp cmp <$> reduce' t <*> reduce' v <*> reduce' as <*> reduce' bs
+  reduce' (ElimCmp cmp fs t v as bs) =
+    ElimCmp cmp fs <$> reduce' t <*> reduce' v <*> reduce' as <*> reduce' bs
   reduce' (LevelCmp cmp u v)    = uncurry (LevelCmp cmp) <$> reduce' (u,v)
   reduce' (TypeCmp cmp a b)     = uncurry (TypeCmp cmp) <$> reduce' (a,b)
   reduce' (TelCmp a b cmp tela telb) = uncurry (TelCmp a b cmp)  <$> reduce' (tela,telb)
@@ -824,8 +823,8 @@ instance Simplify Constraint where
   simplify' (ValueCmpOnFace cmp p t u v) = do
     ((p,t),u,v) <- simplify' ((p,t),u,v)
     return $ ValueCmp cmp t u v
-  simplify' (ElimCmp cmp t v as bs) =
-    ElimCmp cmp <$> simplify' t <*> simplify' v <*> simplify' as <*> simplify' bs
+  simplify' (ElimCmp cmp fs t v as bs) =
+    ElimCmp cmp fs <$> simplify' t <*> simplify' v <*> simplify' as <*> simplify' bs
   simplify' (LevelCmp cmp u v)    = uncurry (LevelCmp cmp) <$> simplify' (u,v)
   simplify' (TypeCmp cmp a b)     = uncurry (TypeCmp cmp) <$> simplify' (a,b)
   simplify' (TelCmp a b cmp tela telb) = uncurry (TelCmp a b cmp) <$> simplify' (tela,telb)
@@ -971,8 +970,8 @@ instance Normalise Constraint where
   normalise' (ValueCmpOnFace cmp p t u v) = do
     ((p,t),u,v) <- normalise' ((p,t),u,v)
     return $ ValueCmpOnFace cmp p t u v
-  normalise' (ElimCmp cmp t v as bs) =
-    ElimCmp cmp <$> normalise' t <*> normalise' v <*> normalise' as <*> normalise' bs
+  normalise' (ElimCmp cmp fs t v as bs) =
+    ElimCmp cmp fs <$> normalise' t <*> normalise' v <*> normalise' as <*> normalise' bs
   normalise' (LevelCmp cmp u v)    = uncurry (LevelCmp cmp) <$> normalise' (u,v)
   normalise' (TypeCmp cmp a b)     = uncurry (TypeCmp cmp) <$> normalise' (a,b)
   normalise' (TelCmp a b cmp tela telb) = uncurry (TelCmp a b cmp) <$> normalise' (tela,telb)
@@ -1003,7 +1002,7 @@ instance Normalise a => Normalise (Pattern' a) where
     VarP x       -> VarP <$> normalise' x
     LitP _       -> return p
     ConP c mt ps -> ConP c <$> normalise' mt <*> normalise' ps
-    DotP v       -> DotP <$> normalise' v
+    DotP o v     -> DotP o <$> normalise' v
     AbsurdP x    -> AbsurdP <$> normalise' x
     ProjP{}      -> return p
 
@@ -1119,7 +1118,7 @@ instance InstantiateFull DBPatVar where
 
 instance InstantiateFull a => InstantiateFull (Pattern' a) where
     instantiateFull' (VarP x)       = VarP <$> instantiateFull' x
-    instantiateFull' (DotP t)       = DotP <$> instantiateFull' t
+    instantiateFull' (DotP o t)     = DotP o <$> instantiateFull' t
     instantiateFull' (AbsurdP p)    = AbsurdP <$> instantiateFull' p
     instantiateFull' (ConP n mt ps) = ConP n <$> instantiateFull' mt <*> instantiateFull' ps
     instantiateFull' l@LitP{}       = return l
@@ -1165,8 +1164,8 @@ instance InstantiateFull Constraint where
     ValueCmpOnFace cmp p t u v -> do
       ((p,t),u,v) <- instantiateFull' ((p,t),u,v)
       return $ ValueCmpOnFace cmp p t u v
-    ElimCmp cmp t v as bs ->
-      ElimCmp cmp <$> instantiateFull' t <*> instantiateFull' v <*> instantiateFull' as <*> instantiateFull' bs
+    ElimCmp cmp fs t v as bs ->
+      ElimCmp cmp fs <$> instantiateFull' t <*> instantiateFull' v <*> instantiateFull' as <*> instantiateFull' bs
     LevelCmp cmp u v    -> uncurry (LevelCmp cmp) <$> instantiateFull' (u,v)
     TypeCmp cmp a b     -> uncurry (TypeCmp cmp) <$> instantiateFull' (a,b)
     TelCmp a b cmp tela telb -> uncurry (TelCmp a b cmp) <$> instantiateFull' (tela,telb)

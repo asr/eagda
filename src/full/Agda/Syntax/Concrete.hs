@@ -1,5 +1,8 @@
 {-# LANGUAGE CPP                #-}
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE DeriveFunctor      #-}
+{-# LANGUAGE DeriveFoldable     #-}
+{-# LANGUAGE DeriveTraversable  #-}
 
 {-| The concrete syntax is a raw representation of the program text
     without any desugaring at all.  This is what the parser produces.
@@ -36,16 +39,15 @@ module Agda.Syntax.Concrete
   , AsName(..)
   , OpenShortHand(..), RewriteEqn, WithExpr
   , LHS(..), Pattern(..), LHSCore(..)
+  , LamClause(..)
   , RHS, RHS'(..), WhereClause, WhereClause'(..), ExprWhere(..)
+  , DoStmt(..)
   , Pragma(..)
   , Module
   , ThingWithFixity(..)
+  , HoleContent, HoleContent'(..)
   , topLevelModuleName
   , spanAllowedBeforeModule
-    -- * Pattern tools
-  , patternNames, patternQNames
-    -- * Lenses
-  , mapLhsOriginalPattern
   )
   where
 
@@ -58,7 +60,6 @@ import Data.List hiding (null)
 import Data.Set (Set)
 import Data.Monoid
 
-import Data.Typeable (Typeable)
 import Data.Data (Data)
 
 import Agda.Syntax.Position
@@ -83,14 +84,14 @@ data OpApp e
     -- ^ An abstraction inside a special syntax declaration
     --   (see Issue 358 why we introduce this).
   | Ordinary e
-  deriving (Typeable, Data, Functor, Foldable, Traversable)
+  deriving (Data, Functor, Foldable, Traversable)
 
 fromOrdinary :: e -> OpApp e -> e
 fromOrdinary d (Ordinary e) = e
 fromOrdinary d _            = d
 
 data FieldAssignment' a = FieldAssignment { _nameFieldA :: Name, _exprFieldA :: a }
-  deriving (Typeable, Data, Functor, Foldable, Traversable, Show, Eq)
+  deriving (Data, Functor, Foldable, Traversable, Show, Eq)
 
 type FieldAssignment = FieldAssignment' Expr
 
@@ -99,7 +100,7 @@ data ModuleAssignment  = ModuleAssignment
                            , _exprModA      :: [Expr]
                            , _importDirModA :: ImportDirective
                            }
-  deriving (Typeable, Data)
+  deriving Data
 type RecordAssignment  = Either FieldAssignment ModuleAssignment
 type RecordAssignments = [RecordAssignment]
 
@@ -140,7 +141,7 @@ data Expr
   | InstanceArg Range (Named_ Expr)            -- ^ ex: @{{e}}@ or @{{x=e}}@
   | Lam Range [LamBinding] Expr                -- ^ ex: @\\x {y} -> e@ or @\\(x:A){y:B} -> e@
   | AbsurdLam Range Hiding                     -- ^ ex: @\\ ()@
-  | ExtendedLam Range [(LHS,RHS,WhereClause,Bool)]  -- ^ ex: @\\ { p11 .. p1a -> e1 ; .. ; pn1 .. pnz -> en }@
+  | ExtendedLam Range [LamClause]              -- ^ ex: @\\ { p11 .. p1a -> e1 ; .. ; pn1 .. pnz -> en }@
   | Fun Range Expr Expr                        -- ^ ex: @e -> e@ or @.e -> e@ (NYI: @{e} -> e@)
   | Pi Telescope Expr                          -- ^ ex: @(xs:e) -> e@ or @{xs:e} -> e@
   | Set Range                                  -- ^ ex: @Set@
@@ -148,9 +149,10 @@ data Expr
   | SetN Range Integer                         -- ^ ex: @Set0, Set1, ..@
   | Rec Range RecordAssignments                -- ^ ex: @record {x = a; y = b}@, or @record { x = a; M1; M2 }@
   | RecUpdate Range Expr [FieldAssignment]     -- ^ ex: @record e {x = a; y = b}@
-  | Let Range [Declaration] Expr               -- ^ ex: @let Ds in e@
+  | Let Range [Declaration] (Maybe Expr)       -- ^ ex: @let Ds in e@, missing body when parsing do-notation let
   | Paren Range Expr                           -- ^ ex: @(e)@
   | IdiomBrackets Range Expr                   -- ^ ex: @(| e |)@
+  | DoBlock Range [DoStmt]                     -- ^ ex: @do x <- m1; m2@
   | Absurd Range                               -- ^ ex: @()@ or @{}@, only in patterns
   | As Range Name Expr                         -- ^ ex: @x\@p@, only in patterns
   | Dot Range Expr                             -- ^ ex: @.p@, only in patterns
@@ -163,7 +165,8 @@ data Expr
   | Unquote Range                              -- ^ ex: @unquote@, should be applied to a term of type @Term@
   | DontCare Expr                              -- ^ to print irrelevant things
   | Equal Range Expr Expr                      -- ^ ex: @a = b@, used internally in the parser
-  deriving (Typeable, Data)
+  | Ellipsis Range                             -- ^ @...@, used internally to parse patterns.
+  deriving Data
 
 -- | Concrete patterns. No literals in patterns at the moment.
 data Pattern
@@ -190,14 +193,22 @@ data Pattern
   | LitP Literal                           -- ^ @0@, @1@, etc.
   | RecP Range [FieldAssignment' Pattern]  -- ^ @record {x = p; y = q}@
   | EqualP Range [(Expr,Expr)]             -- ^ @i = i1@ i.e. cubical face lattice generator
-  deriving (Typeable, Data)
+  | EllipsisP Range                        -- ^ @...@, only as left-most pattern.
+  | WithAppP Range Pattern [Pattern]       -- ^ @p | p1 | ... | pn@, for with-patterns.
+  deriving Data
+
+data DoStmt
+  = DoBind Range Pattern Expr [LamClause]   -- ^ @p ← e where cs@
+  | DoThen Expr
+  | DoLet Range [Declaration]
+  deriving Data
 
 -- | A lambda binding is either domain free or typed.
 type LamBinding = LamBinding' TypedBindings
 data LamBinding' a
   = DomainFree ArgInfo BoundName  -- ^ . @x@ or @{x}@ or @.x@ or @.{x}@ or @{.x}@
   | DomainFull a                  -- ^ . @(xs : e)@ or @{xs : e}@
-  deriving (Typeable, Data, Functor, Foldable, Traversable)
+  deriving (Data, Functor, Foldable, Traversable)
 
 
 -- | A sequence of typed bindings with hiding information. Appears in dependent
@@ -210,14 +221,14 @@ type TypedBindings = TypedBindings' TypedBinding
 
 data TypedBindings' a = TypedBindings Range (Arg a)
      -- ^ . @(xs : e)@ or @{xs : e}@ or something like @(x {y} _ : e)@.
-  deriving (Typeable, Data, Functor, Foldable, Traversable)
+  deriving (Data, Functor, Foldable, Traversable)
 
 data BoundName = BName
   { boundName   :: Name
   , boundLabel  :: Name    -- ^ for implicit function types the label matters and can't be alpha-renamed
   , bnameFixity :: Fixity'
   }
-  deriving (Typeable, Data, Eq, Show)
+  deriving (Data, Eq, Show)
 
 mkBoundName_ :: Name -> BoundName
 mkBoundName_ x = mkBoundName x noFixity'
@@ -232,7 +243,7 @@ type TypedBinding = TypedBinding' Expr
 data TypedBinding' e
   = TBind Range [WithHiding BoundName] e  -- ^ Binding @(x1 ... xn : A)@.
   | TLet  Range [Declaration]  -- ^ Let binding @(let Ds)@ or @(open M args)@.
-  deriving (Typeable, Data, Functor, Foldable, Traversable)
+  deriving (Data, Functor, Foldable, Traversable)
 
 -- | A telescope is a sequence of typed bindings. Bound variables are in scope
 --   in later types.
@@ -259,9 +270,7 @@ data LHS
         , lhsWithExpr        :: [WithExpr]    -- ^ @with e@ (many)
         }
     -- ^ original pattern, with-patterns, rewrite equations and with-expressions
-  | Ellipsis Range [Pattern] [RewriteEqn] [WithExpr]
-    -- ^ new with-patterns, rewrite equations and with-expressions
-  deriving (Typeable, Data)
+  deriving Data
 
 type RewriteEqn = Expr
 type WithExpr   = Expr
@@ -277,13 +286,12 @@ data LHSCore
              , lhsFocus      :: NamedArg LHSCore    -- ^ main branch
              , lhsPatsRight  :: [NamedArg Pattern]  -- ^ side patterns
              }
-  deriving (Typeable)
 
 type RHS = RHS' Expr
 data RHS' e
   = AbsurdRHS -- ^ No right hand side because of absurd match.
   | RHS e
-  deriving (Typeable, Data, Functor, Foldable, Traversable)
+  deriving (Data, Functor, Foldable, Traversable)
 
 
 type WhereClause = WhereClause' [Declaration]
@@ -294,7 +302,13 @@ data WhereClause' decls
     -- ^ Named where: @module M where@.
     --   The 'Access' flag applies to the 'Name' (not the module contents!)
     --   and is propagated from the parent function.
-  deriving (Typeable, Data, Functor, Foldable, Traversable)
+  deriving (Data, Functor, Foldable, Traversable)
+
+data LamClause = LamClause { lamLHS      :: LHS
+                           , lamRHS      :: RHS
+                           , lamWhere    :: WhereClause -- ^ always 'NoWhere' (see parser)
+                           , lamCatchAll :: Bool }
+  deriving Data
 
 -- | An expression followed by a where clause.
 --   Currently only used to give better a better error message in interaction.
@@ -315,7 +329,7 @@ data AsName = AsName
   , asRange :: Range
     -- ^ The range of the \"as\" keyword.  Retained for highlighting purposes.
   }
-  deriving (Typeable, Data, Show)
+  deriving (Data, Show)
 
 {--------------------------------------------------------------------------
     Declarations
@@ -361,17 +375,17 @@ data Declaration
   | UnquoteDecl Range [Name] Expr
   | UnquoteDef  Range [Name] Expr
   | Pragma      Pragma
-  deriving (Typeable, Data)
+  deriving Data
 
 data ModuleApplication
   = SectionApp Range [TypedBindings] Expr
     -- ^ @tel. M args@
   | RecordModuleIFS Range QName
     -- ^ @M {{...}}@
-  deriving (Typeable, Data)
+  deriving Data
 
 data OpenShortHand = DoOpen | DontOpen
-  deriving (Typeable, Data, Eq, Show)
+  deriving (Data, Eq, Show)
 
 -- Pragmas ----------------------------------------------------------------
 
@@ -400,15 +414,20 @@ data Pragma
   | ImportUHCPragma           Range String
     -- ^ same as above, but for the UHC backend
   | ImpossiblePragma          Range
+    -- ^ Throws an internal error in the scope checker.
   | EtaPragma                 Range QName
     -- ^ For coinductive records, use pragma instead of regular
     --   @eta-equality@ definition (as it is might make Agda loop).
   | TerminationCheckPragma    Range (TerminationCheck Name)
+    -- ^ Applies to the following function (and all that are mutually recursive with it)
+    --   or to the functions in the following mutual block.
   | CatchallPragma            Range
+    -- ^ Applies to the following function clause.
   | DisplayPragma             Range Pattern Expr
   | NoPositivityCheckPragma   Range
+    -- ^ Applies to the following data/record type or mutual block.
   | PolarityPragma            Range Name [Occurrence]
-  deriving (Typeable, Data)
+  deriving Data
 
 ---------------------------------------------------------------------------
 
@@ -444,13 +463,16 @@ spanAllowedBeforeModule = span isAllowedBeforeModule
     isAllowedBeforeModule _              = False
 
 {--------------------------------------------------------------------------
-    Lenses
+    Things we parse but are not part of the Agda file syntax
  --------------------------------------------------------------------------}
 
-mapLhsOriginalPattern :: (Pattern -> Pattern) -> LHS -> LHS
-mapLhsOriginalPattern f lhs@Ellipsis{}                    = lhs
-mapLhsOriginalPattern f lhs@LHS{ lhsOriginalPattern = p } =
-  lhs { lhsOriginalPattern = f p }
+-- | Extended content of an interaction hole.
+data HoleContent' e
+  = HoleContentExpr    e   -- ^ @e@
+  | HoleContentRewrite [e] -- ^ @rewrite e0 | ... | en@
+  deriving (Functor, Foldable, Traversable)
+
+type HoleContent = HoleContent' Expr
 
 {--------------------------------------------------------------------------
     Views
@@ -471,34 +493,6 @@ appView e =
     arg (HiddenArg   _ e) = hide         $ defaultArg e
     arg (InstanceArg _ e) = makeInstance $ defaultArg e
     arg e                 = defaultArg (unnamed e)
-
-{--------------------------------------------------------------------------
-    Patterns
- --------------------------------------------------------------------------}
-
--- | Get all the identifiers in a pattern in left-to-right order.
-patternQNames :: Pattern -> [QName]
-patternQNames p =
-  case p of
-    IdentP x               -> [x]
-    AppP p p'              -> concatMap patternQNames [p, namedArg p']
-    RawAppP _ ps           -> concatMap patternQNames  ps
-    OpAppP _ x _ ps        -> x : concatMap (patternQNames . namedArg) ps
-    HiddenP _ (namedPat)   -> patternQNames (namedThing namedPat)
-    ParenP _ p             -> patternQNames p
-    WildP _                -> []
-    AbsurdP _              -> []
-    AsP _ x p              -> patternQNames p
-    DotP{}                 -> []
-    LitP _                 -> []
-    QuoteP _               -> []
-    InstanceP _ (namedPat) -> patternQNames (namedThing namedPat)
-    RecP _ fs              -> concatMap (patternQNames . (^. exprFieldA)) fs
-    EqualP{}               -> [] -- Andrea: cargo culted from DotP
-
--- | Get all the identifiers in a pattern in left-to-right order.
-patternNames :: Pattern -> [Name]
-patternNames = map unqualify . patternQNames
 
 {--------------------------------------------------------------------------
     Instances
@@ -563,6 +557,7 @@ instance HasRange Expr where
       Let r _ _          -> r
       Paren r _          -> r
       IdiomBrackets r _  -> r
+      DoBlock r _        -> r
       As r _ _           -> r
       Dot r _            -> r
       Absurd r           -> r
@@ -579,6 +574,7 @@ instance HasRange Expr where
       Tactic r _ _       -> r
       DontCare{}         -> noRange
       Equal r _ _        -> r
+      Ellipsis r         -> r
 
 -- instance HasRange Telescope where
 --     getRange (TeleBind bs) = getRange bs
@@ -641,7 +637,6 @@ instance HasRange Declaration where
 
 instance HasRange LHS where
   getRange (LHS p ps eqns ws) = fuseRange p (fuseRange ps (eqns ++ ws))
-  getRange (Ellipsis r _ _ _) = r
 
 instance HasRange LHSCore where
   getRange (LHSHead f ps)              = fuseRange f ps
@@ -650,6 +645,14 @@ instance HasRange LHSCore where
 instance HasRange RHS where
   getRange AbsurdRHS = noRange
   getRange (RHS e)   = getRange e
+
+instance HasRange LamClause where
+  getRange (LamClause lhs rhs wh _) = getRange (lhs, rhs, wh)
+
+instance HasRange DoStmt where
+  getRange (DoBind r _ _ _) = r
+  getRange (DoThen e)       = getRange e
+  getRange (DoLet r _)      = r
 
 instance HasRange Pragma where
   -- ASR TODO (07 July 2014): Move to the end. We wrote it here for
@@ -700,6 +703,8 @@ instance HasRange Pattern where
   getRange (DotP r _ _)       = r
   getRange (RecP r _)         = r
   getRange (EqualP r _)       = r
+  getRange (EllipsisP r)      = r
+  getRange (WithAppP r _ _)   = r
 
 -- SetRange instances
 ------------------------------------------------------------------------
@@ -723,6 +728,9 @@ instance SetRange Pattern where
   setRange r (DotP _ o e)       = DotP r o e
   setRange r (RecP _ fs)        = RecP r fs
   setRange r (EqualP _ es)      = EqualP r es
+  setRange r (EllipsisP _)      = EllipsisP r
+  setRange r (WithAppP _ p ps)  = WithAppP r p ps
+
 -- KillRange instances
 ------------------------------------------------------------------------
 
@@ -788,6 +796,7 @@ instance KillRange Expr where
   killRange (Let _ d e)          = killRange2 (Let noRange) d e
   killRange (Paren _ e)          = killRange1 (Paren noRange) e
   killRange (IdiomBrackets _ e)  = killRange1 (IdiomBrackets noRange) e
+  killRange (DoBlock _ ss)       = killRange1 (DoBlock noRange) ss
   killRange (Absurd _)           = Absurd noRange
   killRange (As _ n e)           = killRange2 (As noRange) n e
   killRange (Dot _ e)            = killRange1 (Dot noRange) e
@@ -800,6 +809,7 @@ instance KillRange Expr where
   killRange (Tactic _ t es)      = killRange2 (Tactic noRange) t es
   killRange (DontCare e)         = killRange1 DontCare e
   killRange (Equal _ x y)        = Equal noRange x y
+  killRange (Ellipsis _)         = Ellipsis noRange
 
 instance KillRange LamBinding where
   killRange (DomainFree i b) = killRange2 DomainFree i b
@@ -807,7 +817,14 @@ instance KillRange LamBinding where
 
 instance KillRange LHS where
   killRange (LHS p ps r w)     = killRange4 LHS p ps r w
-  killRange (Ellipsis _ p r w) = killRange3 (Ellipsis noRange) p r w
+
+instance KillRange LamClause where
+  killRange (LamClause a b c d) = killRange4 LamClause a b c d
+
+instance KillRange DoStmt where
+  killRange (DoBind r p e w) = killRange4 DoBind r p e w
+  killRange (DoThen e)       = killRange1 DoThen e
+  killRange (DoLet r ds)     = killRange2 DoLet r ds
 
 instance KillRange ModuleApplication where
   killRange (SectionApp _ t e)    = killRange2 (SectionApp noRange) t e
@@ -819,7 +836,7 @@ instance KillRange e => KillRange (OpApp e) where
 
 instance KillRange Pattern where
   killRange (IdentP q)        = killRange1 IdentP q
-  killRange (AppP p n)        = killRange2 AppP p n
+  killRange (AppP p ps)       = killRange2 AppP p ps
   killRange (RawAppP _ p)     = killRange1 (RawAppP noRange) p
   killRange (OpAppP _ n ns p) = killRange3 (OpAppP noRange) n ns p
   killRange (HiddenP _ n)     = killRange1 (HiddenP noRange) n
@@ -833,6 +850,8 @@ instance KillRange Pattern where
   killRange (QuoteP _)        = QuoteP noRange
   killRange (RecP _ fs)       = killRange1 (RecP noRange) fs
   killRange (EqualP _ es)     = killRange1 (EqualP noRange) es
+  killRange (EllipsisP _)     = EllipsisP noRange
+  killRange (WithAppP _ p ps) = killRange2 (WithAppP noRange) p ps
 
 instance KillRange Pragma where
   -- ASR TODO (07 July 2014): Move to the end. We wrote it here for
@@ -909,6 +928,7 @@ instance NFData Expr where
   rnf (Let _ a b)        = rnf a `seq` rnf b
   rnf (Paren _ a)        = rnf a
   rnf (IdiomBrackets _ a)= rnf a
+  rnf (DoBlock _ a)      = rnf a
   rnf (Absurd _)         = ()
   rnf (As _ a b)         = rnf a `seq` rnf b
   rnf (Dot _ a)          = rnf a
@@ -921,6 +941,7 @@ instance NFData Expr where
   rnf (Unquote _)        = ()
   rnf (DontCare a)       = rnf a
   rnf (Equal _ a b)      = rnf a `seq` rnf b
+  rnf (Ellipsis _)       = ()
 
 -- | Ranges are not forced.
 
@@ -940,6 +961,8 @@ instance NFData Pattern where
   rnf (LitP a) = rnf a
   rnf (RecP _ a) = rnf a
   rnf (EqualP _ es) = rnf es
+  rnf (EllipsisP _) = ()
+  rnf (WithAppP _ a b) = rnf a `seq` rnf b
 
 -- | Ranges are not forced.
 
@@ -1033,7 +1056,6 @@ instance NFData a => NFData (OpApp a) where
 
 instance NFData LHS where
   rnf (LHS a b c d)      = rnf a `seq` rnf b `seq` rnf c `seq` rnf d
-  rnf (Ellipsis _ a b c) = rnf a `seq` rnf b `seq` rnf c
 
 instance NFData a => NFData (FieldAssignment' a) where
   rnf (FieldAssignment a b) = rnf a `seq` rnf b
@@ -1046,6 +1068,9 @@ instance NFData a => NFData (WhereClause' a) where
   rnf (AnyWhere a)    = rnf a
   rnf (SomeWhere a b c) = rnf a `seq` rnf b `seq` rnf c
 
+instance NFData LamClause where
+  rnf (LamClause a b c d) = rnf (a, b, c, d)
+
 instance NFData a => NFData (LamBinding' a) where
   rnf (DomainFree a b) = rnf a `seq` rnf b
   rnf (DomainFull a)   = rnf a
@@ -1056,3 +1081,8 @@ instance NFData BoundName where
 instance NFData a => NFData (RHS' a) where
   rnf AbsurdRHS = ()
   rnf (RHS a)   = rnf a
+
+instance NFData DoStmt where
+  rnf (DoBind _ p e w) = rnf (p, e, w)
+  rnf (DoThen e)       = rnf e
+  rnf (DoLet _ ds)     = rnf ds

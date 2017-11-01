@@ -116,7 +116,6 @@ instance Pretty a => Pretty (WithHiding a) where
   pretty w = prettyHiding w id $ pretty $ dget w
 
 instance Pretty Relevance where
-  pretty Forced{}   = empty
   pretty Relevant   = empty
   pretty Irrelevant = text "."
   pretty NonStrict  = text ".."
@@ -163,13 +162,7 @@ instance Pretty Expr where
             AbsurdLam _ NotHidden  -> lambda <+> text "()"
             AbsurdLam _ Instance{} -> lambda <+> text "{{}}"
             AbsurdLam _ Hidden     -> lambda <+> text "{}"
-            ExtendedLam _ pes ->
-              lambda <+> bracesAndSemicolons (map (\(x,y,z,_) -> prettyClause x y z) pes)
-                   where prettyClause lhs rhs wh = sep [ pretty lhs
-                                                       , nest 2 $ pretty' rhs
-                                                       ] $$ nest 2 (pretty wh)
-                         pretty' (RHS e)   = arrow <+> pretty e
-                         pretty' AbsurdRHS = empty
+            ExtendedLam _ pes -> lambda <+> bracesAndSemicolons (map pretty pes)
             Fun _ e1 e2 ->
                 sep [ pretty e1 <+> arrow
                     , pretty e2
@@ -181,12 +174,13 @@ instance Pretty Expr where
             Set _   -> text "Set"
             Prop _  -> text "Prop"
             SetN _ n    -> text "Set" <> text (showIndex n)
-            Let _ ds e  ->
+            Let _ ds me  ->
                 sep [ text "let" <+> vcat (map pretty ds)
-                    , text "in" <+> pretty e
+                    , maybe empty (\ e -> text "in" <+> pretty e) me
                     ]
             Paren _ e -> parens $ pretty e
             IdiomBrackets _ e -> text "(|" <+> pretty e <+> text "|)"
+            DoBlock _ ss -> text "do" <+> vcat (map pretty ss)
             As _ x e  -> pretty x <> text "@" <> pretty e
             Dot _ e   -> text "." <> pretty e
             Absurd _  -> text "()"
@@ -208,6 +202,7 @@ instance Pretty Expr where
             -- Andreas, 2011-10-03 print irrelevant things as .(e)
             DontCare e -> text "." <> parens (pretty e)
             Equal _ a b -> pretty a <+> text "=" <+> pretty b
+            Ellipsis _  -> text "..."
 
 instance (Pretty a, Pretty b) => Pretty (Either a b) where
   pretty = either pretty pretty
@@ -217,6 +212,15 @@ instance Pretty a => Pretty (FieldAssignment' a) where
 
 instance Pretty ModuleAssignment where
   pretty (ModuleAssignment m es i) = (fsep $ pretty m : map pretty es) <+> pretty i
+
+instance Pretty LamClause where
+  pretty (LamClause lhs rhs wh _) =
+    sep [ pretty lhs
+        , nest 2 $ pretty' rhs
+        ] $$ nest 2 (pretty wh)
+    where
+      pretty' (RHS e)   = arrow <+> pretty e
+      pretty' AbsurdRHS = empty
 
 instance Pretty BoundName where
   pretty BName{ boundName = x, boundLabel = l }
@@ -288,7 +292,6 @@ instance Pretty WhereClause where
 instance Pretty LHS where
   pretty lhs = case lhs of
     LHS p ps eqs es  -> pr (pretty p) ps eqs es
-    Ellipsis _ ps eqs es -> pr (text "...") ps eqs es
     where
       pr d ps eqs es =
         sep [ d
@@ -310,6 +313,15 @@ instance Pretty ModuleApplication where
   pretty (SectionApp _ bs e) = fsep (map pretty bs) <+> text "=" <+> pretty e
   pretty (RecordModuleIFS _ rec) = text "=" <+> pretty rec <+> text "{{...}}"
 
+instance Pretty DoStmt where
+  pretty (DoBind _ p e cs) =
+    ((pretty p <+> text "←") <?> pretty e) <?> prCs cs
+    where
+      prCs [] = empty
+      prCs cs = text "where" <?> vcat (map pretty cs)
+  pretty (DoThen e) = pretty e
+  pretty (DoLet _ ds) = text "let" <+> vcat (map pretty ds)
+
 instance Pretty Declaration where
     prettyList = vcat . map pretty
     pretty d =
@@ -322,7 +334,7 @@ instance Pretty Declaration where
                 sep [ text "field"
                     , nest 2 $ mkInst inst $ mkOverlap i $
                       prettyRelevance i $ prettyHiding i id $
-                        pretty $ TypeSig (i {argInfoRelevance = Relevant}) x e
+                        pretty $ TypeSig (setRelevance Relevant i) x e
                     ]
                 where
                   mkInst InstanceDef    d = sep [ text "instance", nest 2 d ]
@@ -535,8 +547,7 @@ instance Pretty e => Pretty (Named_ e) where
 
 instance Pretty Pattern where
     prettyList = fsep . map pretty
-    pretty p =
-        case p of
+    pretty = \case
             IdentP x        -> pretty x
             AppP p1 p2      -> sep [ pretty p1, nest 2 $ pretty p2 ]
             RawAppP _ ps    -> fsep $ map pretty ps
@@ -552,6 +563,8 @@ instance Pretty Pattern where
             QuoteP _        -> text "quote"
             RecP _ fs       -> sep [ text "record", bracesAndSemicolons (map pretty fs) ]
             EqualP _ es     -> sep $ [ parens (sep [pretty e1, text "=", pretty e2]) | (e1,e2) <- es ]
+            EllipsisP _     -> text "..."
+            WithAppP _ p ps -> fsep $ pretty p : map ((text "|" <+>) . pretty) ps
 
 prettyOpApp :: forall a .
   Pretty a => QName -> [NamedArg (MaybePlaceholder a)] -> [Doc]

@@ -8,10 +8,6 @@
 {-# OPTIONS_GHC -Wno-semigroup    #-}
 #endif
 
-#if __GLASGOW_HASKELL__ <= 708
-{-# LANGUAGE OverlappingInstances #-}
-#endif
-
 module Agda.TypeChecking.Pretty where
 
 import Prelude hiding (null)
@@ -182,6 +178,7 @@ instance PrettyTCM (QNamed Clause) where prettyTCM = prettyA <=< reify
 instance PrettyTCM Level        where prettyTCM = prettyA <=< reify . Level
 instance PrettyTCM Permutation  where prettyTCM = text . show
 instance PrettyTCM Polarity     where prettyTCM = text . show
+instance PrettyTCM IsForced     where prettyTCM = text . show
 instance PrettyTCM R.Term       where prettyTCM = prettyA <=< toAbstractWithoutImplicit
 
 instance (Pretty a, PrettyTCM a, Subst a a) => PrettyTCM (Substitution' a) where
@@ -227,11 +224,7 @@ instance (PrettyTCM k, PrettyTCM v) => PrettyTCM (Map k v) where
   prettyTCM m = text "Map" <> braces (sep $ punctuate comma
     [ hang (prettyTCM k <+> text "=") 2 (prettyTCM v) | (k, v) <- Map.toList m ])
 
-#if __GLASGOW_HASKELL__ >= 710
 instance {-# OVERLAPPING #-} PrettyTCM ArgName where
-#else
-instance PrettyTCM ArgName where
-#endif
   prettyTCM = text . P.prettyShow
 
 -- instance (Reify a e, ToConcrete e c, P.Pretty c, PrettyTCM a) => PrettyTCM (Elim' a) where
@@ -256,7 +249,6 @@ instance PrettyTCM Relevance where
   prettyTCM Irrelevant = text "."
   prettyTCM NonStrict  = text ".."
   prettyTCM Relevant   = empty
-  prettyTCM Forced{}   = empty
 
 instance PrettyTCM ProblemConstraint where
   prettyTCM (PConstr pids c)
@@ -270,7 +262,7 @@ instance PrettyTCM Constraint where
             sep [ prettyTCM p <+> text "|"
                 , prettyCmp (prettyTCM cmp) s t ]
             <?> (text ":" <+> prettyTCMCtx TopCtx ty)
-        ElimCmp cmps t v us vs   -> prettyCmp (text "~~") us vs   <?> (text ":" <+> prettyTCMCtx TopCtx t)
+        ElimCmp cmps fs t v us vs -> prettyCmp (text "~~") us vs   <?> (text ":" <+> prettyTCMCtx TopCtx t)
         LevelCmp cmp a b         -> prettyCmp (prettyTCM cmp) a b
         TypeCmp cmp a b          -> prettyCmp (prettyTCM cmp) a b
         TelCmp a b cmp tela telb -> prettyCmp (prettyTCM cmp) tela telb
@@ -386,7 +378,7 @@ instance PrettyTCM DBPatVar where
 
 instance PrettyTCM a => PrettyTCM (Pattern' a) where
   prettyTCM (VarP x)      = prettyTCM x
-  prettyTCM (DotP t)      = text ".(" <> prettyTCM t <> text ")"
+  prettyTCM (DotP _ t)    = text ".(" <> prettyTCM t <> text ")"
   prettyTCM (AbsurdP _)   = text absurdPatternName
   prettyTCM (ConP c i ps) = (if b then braces else parens) $ prTy $
         prettyTCM c <+> fsep (map (prettyTCM . namedArg) ps)

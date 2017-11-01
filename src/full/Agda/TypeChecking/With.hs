@@ -464,7 +464,7 @@ stripWithClausePatterns cxtNames parent f t delta qs npars perm ps = do
 
         AbsurdP p -> __IMPOSSIBLE__
 
-        DotP v  -> case namedArg p of
+        DotP o v  -> case namedArg p of
           A.DotP r o e  -> do
             (a, _) <- mustBePi t
             tell [Left $ A.StrippedDot e v (unDom a)]
@@ -518,7 +518,9 @@ stripWithClausePatterns cxtNames parent f t delta qs npars perm ps = do
           -- Andreas, 2016-12-29, issue #2363.
           -- Allow _ to stand for the corresponding parent pattern.
           A.WildP{} -> do
-            let ps' = map (updateNamedArg $ const $ A.WildP empty) qs'
+            -- Andreas, 2017-10-13, issue #2803:
+            -- Delete the name, since it can confuse insertImplicitPattern.
+            let ps' = map (unnamed (A.WildP empty) <$) qs'
             stripConP d us b c ConOCon qs' ps'
 
           A.ConP _ (A.AmbQ cs') ps' -> do
@@ -763,7 +765,7 @@ patsToElims = map $ toElim . fmap namedThing
     toTerm p = case p of
       ProjP _ d   -> DDef d [] -- WRONG. TODO: convert spine to non-spine ... DDef d . defaultArg
       VarP x      -> DTerm  $ var $ dbPatVarIndex x
-      DotP t      -> DDot   $ t
+      DotP o t    -> DDot   $ t
       AbsurdP p   -> toTerm p
       ConP c cpi ps -> DCon c (fromConPatternInfo cpi) $ toTerms ps
       LitP l      -> DTerm  $ Lit l

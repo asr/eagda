@@ -3,7 +3,6 @@
 module Agda.TypeChecking.Unquote where
 
 import Control.Arrow ((&&&), (***), first, second)
-import Control.Applicative
 import Control.Monad.State (StateT(..), evalStateT, get, gets, put, modify)
 import Control.Monad.Reader (ReaderT(..), ask, asks)
 import Control.Monad.Writer (WriterT(..), execWriterT, runWriterT, tell)
@@ -139,7 +138,7 @@ isDef f tm = do
 reduceQuotedTerm :: Term -> UnquoteM Term
 reduceQuotedTerm t = do
   b <- liftU $ ifBlocked t (\ m _ -> pure $ Left  m)
-                           (\ t   -> pure $ Right t)
+                           (\ _ t -> pure $ Right t)
   case b of
     Left m  -> do s <- gets snd; throwError $ BlockedOnMeta s m
     Right t -> return t
@@ -185,13 +184,18 @@ pickName a =
               isAlpha c -> [toLower c]
     _        -> "_"
 
+-- TODO: reflect Quantity
+instance Unquote Modality where
+  unquote t = (`Modality` defaultQuantity) <$> unquote t
+
 instance Unquote ArgInfo where
   unquote t = do
     t <- reduceQuotedTerm t
     case ignoreSharing t of
       Con c _ [h,r] -> do
         choice
-          [(c `isCon` primArgArgInfo, ArgInfo <$> unquoteN h <*> unquoteN r <*> pure Reflected)]
+          [(c `isCon` primArgArgInfo,
+              ArgInfo <$> unquoteN h <*> unquoteN r <*> pure Reflected)]
           __IMPOSSIBLE__
       Con c _ _ -> __IMPOSSIBLE__
       _ -> throwError $ NonCanonical "arg info" t

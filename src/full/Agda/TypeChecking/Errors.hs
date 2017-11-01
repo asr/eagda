@@ -21,10 +21,6 @@ import Prelude hiding (null)
 import Control.Monad.Reader
 import Control.Monad.State
 
-#if __GLASGOW_HASKELL__ <= 708
-import Data.Foldable (foldMap)
-#endif
-
 import Data.Function
 import Data.List (nub, sortBy, intersperse, isInfixOf)
 import Data.Maybe
@@ -713,8 +709,6 @@ instance PrettyTCM TypeError where
 
     UnequalRelevance cmp a b -> fsep $
       [prettyTCM a, notCmp cmp, prettyTCM b] ++
--- Andreas 2010-09-21 to reveal Forced annotations, print also uglily
---            [text $ show a, notCmp cmp, text $ show b] ++
       pwords "because one is a relevant function type and the other is an irrelevant function type"
 
     UnequalHiding a b -> fsep $
@@ -1264,7 +1258,7 @@ instance PrettyTCM TypeError where
 
     prettyPat :: Integer -> (I.Pattern' a) -> TCM Doc
     prettyPat _ (I.VarP _) = text "_"
-    prettyPat _ (I.DotP _) = text "._"
+    prettyPat _ (I.DotP _ _) = text "._"
     prettyPat _ (I.AbsurdP _) = text absurdPatternName
     prettyPat n (I.ConP c _ args) =
       mpar n args $
@@ -1501,7 +1495,7 @@ instance PrettyTCM Call where
 
     where
     hPretty :: Arg (Named_ Expr) -> TCM Doc
-    hPretty a = pretty =<< abstractToConcreteHiding a a
+    hPretty a = withContextPrecedence (ArgumentCtx PreferParen) $ pretty =<< abstractToConcreteHiding a a
 
 ---------------------------------------------------------------------------
 -- * Natural language
@@ -1523,7 +1517,6 @@ instance Verbalize Relevance where
       Relevant   -> "relevant"
       Irrelevant -> "irrelevant"
       NonStrict  -> "shape-irrelevant"
-      Forced{}   -> "forced"
 
 -- | Indefinite article.
 data Indefinite a = Indefinite a

@@ -3,7 +3,6 @@
 module Agda.Compiler.Treeless.Erase (eraseTerms, computeErasedConstructorArgs) where
 
 import Control.Arrow ((&&&), (***), first, second)
-import Control.Applicative
 import Control.Monad
 import Control.Monad.State
 import Data.Map (Map)
@@ -171,7 +170,6 @@ sumTypeInfo is = foldr plus Empty is
 
 erasableR :: Relevance -> Bool
 erasableR Relevant   = False
-erasableR Forced{}   = False    -- TODO: should be True but need to transform clauses
 erasableR NonStrict  = True
 erasableR Irrelevant = True
 

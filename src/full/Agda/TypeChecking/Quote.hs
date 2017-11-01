@@ -2,7 +2,6 @@
 
 module Agda.TypeChecking.Quote where
 
-import Control.Applicative
 import Control.Arrow ((&&&))
 import Control.Monad
 import Control.Monad.State (runState, get, put)
@@ -124,10 +123,11 @@ quotingKit = do
       quoteRelevance Relevant   = pure relevant
       quoteRelevance Irrelevant = pure irrelevant
       quoteRelevance NonStrict  = pure relevant
-      quoteRelevance Forced{}   = pure relevant
 
+      -- TODO: quote Quanity
       quoteArgInfo :: ArgInfo -> ReduceM Term
-      quoteArgInfo (ArgInfo h r _) = arginfo !@ quoteHiding h @@ quoteRelevance r
+      quoteArgInfo (ArgInfo h m _) =
+        arginfo !@ quoteHiding h @@ quoteRelevance (getRelevance m)
 
       quoteLit :: Literal -> ReduceM Term
       quoteLit l@LitNat{}    = litNat    !@! Lit l
@@ -163,7 +163,7 @@ quotingKit = do
       quotePat :: DeBruijnPattern -> ReduceM Term
       quotePat (AbsurdP x)       = pure absurdP
       quotePat (VarP x)          = varP !@! quoteString (dbPatVarName x)
-      quotePat (DotP _)          = pure dotP
+      quotePat (DotP _ _)        = pure dotP
       quotePat (ConP c _ ps)     = conP !@ quoteQName (conName c) @@ quotePats ps
       quotePat (LitP l)          = litP !@ quoteLit l
       quotePat (ProjP _ x)       = projP !@ quoteQName x

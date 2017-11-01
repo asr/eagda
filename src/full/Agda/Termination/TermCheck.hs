@@ -408,7 +408,7 @@ termFunction name = do
 -- | To process the target type.
 typeEndsInDef :: MonadTCM tcm => Type -> tcm (Maybe QName)
 typeEndsInDef t = liftTCM $ do
-  TelV _ core <- telView t
+  TelV _ core <- telViewPath t
   case ignoreSharing $ unEl core of
     Def d vs -> return $ Just d
     _        -> return Nothing
@@ -455,10 +455,10 @@ termDef name = terSetCurrent name $ inConcreteOrAbstractMode name $ \ def -> do
 setMasks :: Type -> TerM a -> TerM a
 setMasks t cont = do
   (ds, d) <- liftTCM $ do
-    TelV tel core <- telView t
+    TelV tel core <- telViewPath t
     -- Check argument types
     ds <- forM (telToList tel) $ \ t -> do
-      TelV _ t <- telView $ snd $ unDom t
+      TelV _ t <- telViewPath $ snd $ unDom t
       d <- (isNothing <$> isDataOrRecord (unEl t)) `or2M` (isJust <$> isSizeType t)
       when d $
         reportSDoc "term.mask" 20 $ do
@@ -528,12 +528,12 @@ instance TermToPattern Term DeBruijnPattern where
     Def s [Apply arg] -> do
       suc <- terGetSizeSuc
       if Just s == suc then ConP (ConHead s Inductive []) noConPatternInfo . map (fmap unnamed) <$> termToPattern [arg]
-       else return $ DotP t
+       else return $ DotP Inserted t
     DontCare t  -> termToPattern t -- OR: __IMPOSSIBLE__  -- removed by stripAllProjections
     -- Leaves.
     Var i []    -> VarP . (`DBPatVar` i) . prettyShow <$> nameOfBV i
     Lit l       -> return $ LitP l
-    t           -> return $ DotP t
+    t           -> return $ DotP Inserted t
 
 
 -- | Masks all non-data/record type patterns if --without-K.
@@ -591,8 +591,8 @@ termClause' clause = do
 
   where
     parseDotP = \case
-      DotP t -> termToDBP t
-      p      -> return p
+      DotP o t -> termToDBP t
+      p        -> return p
     stripCoCon p = case p of
       ConP (ConHead c _ _) _ _ -> do
         ifM ((Just c ==) <$> terGetSizeSuc) (return p) $ {- else -} do
@@ -1101,7 +1101,7 @@ subPatterns = foldPattern $ \case
   ConP _ _ ps -> map namedArg ps
   VarP _      -> mempty
   LitP _      -> mempty
-  DotP _      -> mempty
+  DotP _ _    -> mempty
   AbsurdP _   -> mempty
   ProjP _ _   -> mempty
 
@@ -1246,7 +1246,7 @@ subTerm t p = if equal t p then Order.le else properSubTerm t p
     -- Checking for identity here is very fragile.
     -- However, we cannot do much more, as we are not allowed to normalize t.
     -- (It might diverge, and we are just in the process of termination checking.)
-    equal t         (DotP t') = t == t'
+    equal t         (DotP _ t') = t == t'
     equal _ _ = False
 
     properSubTerm t (ConP _ _ ps) =

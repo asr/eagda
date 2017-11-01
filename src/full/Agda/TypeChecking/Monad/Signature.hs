@@ -10,6 +10,7 @@ import Control.Arrow (first, second, (***))
 import Control.Applicative hiding (empty)
 import Control.Monad.State
 import Control.Monad.Reader
+import Control.Monad.Writer
 import Control.Monad.Trans.Maybe
 
 import qualified Data.List as List
@@ -771,6 +772,10 @@ instance HasConstInfo m => HasConstInfo (ExceptT err m) where
   getConstInfo' = lift . getConstInfo'
   getRewriteRulesFor = lift . getRewriteRulesFor
 
+instance (Monoid w, HasConstInfo m) => HasConstInfo (WriterT w m) where
+  getConstInfo' = lift . getConstInfo'
+  getRewriteRulesFor = lift . getRewriteRulesFor
+
 {-# INLINE getConInfo #-}
 getConInfo :: MonadTCM tcm => ConHead -> tcm Definition
 getConInfo = liftTCM . getConstInfo . conName
@@ -791,6 +796,10 @@ setPolarity q pol = do
   reportSLn "tc.polarity.set" 20 $
     "Setting polarity of " ++ prettyShow q ++ " to " ++ prettyShow pol ++ "."
   modifySignature $ updateDefinition q $ updateDefPolarity $ const pol
+
+-- | Look up the forced arguments of a definition.
+getForcedArgs :: QName -> TCM [IsForced]
+getForcedArgs q = defForced <$> getConstInfo q
 
 -- | Get argument occurrence info for argument @i@ of definition @d@ (never fails).
 getArgOccurrence :: QName -> Nat -> TCM Occurrence

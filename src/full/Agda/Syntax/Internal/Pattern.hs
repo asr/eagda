@@ -2,13 +2,8 @@
 {-# LANGUAGE TypeFamilies           #-}  -- because of type equality ~
 {-# LANGUAGE UndecidableInstances   #-}  -- because of func. deps.
 
-#if __GLASGOW_HASKELL__ <= 708
-{-# LANGUAGE OverlappingInstances #-}
-#endif
-
 module Agda.Syntax.Internal.Pattern where
 
-import Control.Applicative
 import Control.Monad.State
 
 import Data.Maybe
@@ -52,11 +47,7 @@ class FunArity a where
 
 -- | Get the number of initial 'Apply' patterns.
 
-#if __GLASGOW_HASKELL__ >= 710
 instance {-# OVERLAPPABLE #-} IsProjP p => FunArity [p] where
-#else
-instance IsProjP p => FunArity [p] where
-#endif
   funArity = length . takeWhile (isNothing . isProjP)
 
 -- | Get the number of initial 'Apply' patterns in a clause.
@@ -64,11 +55,7 @@ instance FunArity Clause where
   funArity = funArity . namedClausePats
 
 -- | Get the number of common initial 'Apply' patterns in a list of clauses.
-#if __GLASGOW_HASKELL__ >= 710
 instance {-# OVERLAPPING #-} FunArity [Clause] where
-#else
-instance FunArity [Clause] where
-#endif
   funArity []  = 0
   funArity cls = minimum $ map funArity cls
 
@@ -101,7 +88,7 @@ instance LabelPatVars Pattern DeBruijnPattern Int where
     case p of
       VarP x       -> do i <- next
                          return $ VarP (DBPatVar x i)
-      DotP t       -> DotP t <$ next
+      DotP o t     -> DotP o t <$ next
       AbsurdP p    -> AbsurdP <$> labelPatVars p
       ConP c mt ps -> ConP c mt <$> labelPatVars ps
       LitP l       -> return $ LitP l
@@ -153,7 +140,7 @@ dbPatPerm' countDots ps = Perm (size ixs) <$> picks
     getIndices :: DeBruijnPattern -> [Maybe Int]
     getIndices (VarP x)      = [Just $ dbPatVarIndex x]
     getIndices (ConP c _ ps) = concatMap (getIndices . namedThing . unArg) ps
-    getIndices (DotP _)      = [Nothing | countDots]
+    getIndices (DotP _ _)    = [Nothing | countDots]
     getIndices (AbsurdP p)   = getIndices p
     getIndices (LitP _)      = []
     getIndices ProjP{}       = []
@@ -175,7 +162,7 @@ patternToElim (Arg ai (VarP x)) = Apply $ Arg ai $ var $ dbPatVarIndex x
 patternToElim (Arg ai (ConP c cpi ps)) = Apply $ Arg ai $ Con c ci $
       map (argFromElim . patternToElim . fmap namedThing) ps
   where ci = fromConPatternInfo cpi
-patternToElim (Arg ai (DotP t)     ) = Apply $ Arg ai t
+patternToElim (Arg ai (DotP o t)   ) = Apply $ Arg ai t
 patternToElim (Arg ai (AbsurdP p))   = patternToElim $ Arg ai p
 patternToElim (Arg ai (LitP l)     ) = Apply $ Arg ai $ Lit l
 patternToElim (Arg ai (ProjP o dest)) = Proj o dest
@@ -207,7 +194,7 @@ instance MapNamedArg Pattern' where
     case namedArg np of
       VarP  x     -> updateNamedArg VarP $ f $ setNamedArg np x
       AbsurdP p   -> updateNamedArg AbsurdP $ mapNamedArg f $ setNamedArg np p
-      DotP  t     -> setNamedArg np $ DotP t     -- just Haskell type conversion
+      DotP  o t   -> setNamedArg np $ DotP o t   -- just Haskell type conversion
       LitP  l     -> setNamedArg np $ LitP l     -- ditto
       ProjP o q   -> setNamedArg np $ ProjP o q  -- ditto
       ConP c i ps -> setNamedArg np $ ConP c i $ map (mapNamedArg f) ps
@@ -232,21 +219,18 @@ class PatternLike a b where
   foldrPattern = foldMap . foldrPattern
 
   -- | Traverse pattern.
-  traversePatternM :: (Monad m
-#if __GLASGOW_HASKELL__ <= 708
-    , Applicative m, Functor m
-#endif
-    ) => (Pattern' a -> m (Pattern' a))  -- ^ @pre@: Modification before recursion.
-      -> (Pattern' a -> m (Pattern' a))  -- ^ @post@: Modification after recursion.
-      -> b -> m b
+  traversePatternM
+    :: Monad m
+    => (Pattern' a -> m (Pattern' a))  -- ^ @pre@: Modification before recursion.
+    -> (Pattern' a -> m (Pattern' a))  -- ^ @post@: Modification after recursion.
+    -> b -> m b
 
-  default traversePatternM :: (Traversable f, PatternLike a p, f p ~ b, Monad m
-#if __GLASGOW_HASKELL__ <= 708
-    , Applicative m, Functor m
-#endif
-    ) => (Pattern' a -> m (Pattern' a))
-      -> (Pattern' a -> m (Pattern' a))
-      -> b -> m b
+  default traversePatternM
+    :: (Traversable f, PatternLike a p, f p ~ b, Monad m)
+    => (Pattern' a -> m (Pattern' a))
+    -> (Pattern' a -> m (Pattern' a))
+    -> b -> m b
+
   traversePatternM pre post = traverse $ traversePatternM pre post
 
 -- | Compute from each subpattern a value and collect them all in a monoid.
@@ -256,22 +240,17 @@ foldPattern f = foldrPattern $ \ p m -> f p `mappend` m
 
 -- | Traverse pattern(s) with a modification before the recursive descent.
 
-preTraversePatternM :: (PatternLike a b, Monad m
-#if __GLASGOW_HASKELL__ <= 708
-  , Applicative m, Functor m
-#endif
-  ) => (Pattern' a -> m (Pattern' a))  -- ^ @pre@: Modification before recursion.
-    -> b -> m b
+preTraversePatternM
+  :: (PatternLike a b, Monad m)
+  => (Pattern' a -> m (Pattern' a))  -- ^ @pre@: Modification before recursion.
+  -> b -> m b
 preTraversePatternM pre = traversePatternM pre return
 
 -- | Traverse pattern(s) with a modification after the recursive descent.
 
-postTraversePatternM :: (PatternLike a b, Monad m
-#if __GLASGOW_HASKELL__ <= 708
-  , Applicative m, Functor m
-#endif
-  ) => (Pattern' a -> m (Pattern' a))  -- ^ @post@: Modification after recursion.
-    -> b -> m b
+postTraversePatternM :: (PatternLike a b, Monad m)
+                     => (Pattern' a -> m (Pattern' a))  -- ^ @post@: Modification after recursion.
+                     -> b -> m b
 postTraversePatternM = traversePatternM return
 
 -- This is where the action is:
@@ -283,7 +262,7 @@ instance PatternLike a (Pattern' a) where
     VarP _      -> mempty
     AbsurdP _   -> mempty
     LitP _      -> mempty
-    DotP _      -> mempty
+    DotP _ _    -> mempty
     ProjP _ _   -> mempty
 
   traversePatternM pre post = pre >=> recurse >=> post
@@ -292,7 +271,7 @@ instance PatternLike a (Pattern' a) where
       ConP c ci ps -> ConP c ci <$> traversePatternM pre post ps
       VarP  _      -> return p
       LitP  _      -> return p
-      DotP  _      -> return p
+      DotP  _ _    -> return p
       AbsurdP _    -> return p
       ProjP _ _    -> return p
 
@@ -301,3 +280,26 @@ instance PatternLike a (Pattern' a) where
 instance PatternLike a b => PatternLike a [b]         where
 instance PatternLike a b => PatternLike a (Arg b)     where
 instance PatternLike a b => PatternLike a (Named x b) where
+
+-- Counting pattern variables ---------------------------------------------
+
+class CountPatternVars a where
+  countPatternVars :: a -> Int
+
+  default countPatternVars :: (Foldable f, CountPatternVars b, f b ~ a) =>
+                              a -> Int
+  countPatternVars = getSum . foldMap (Sum . countPatternVars)
+
+instance CountPatternVars a => CountPatternVars [a] where
+instance CountPatternVars a => CountPatternVars (Arg a) where
+instance CountPatternVars a => CountPatternVars (Named x a) where
+
+instance CountPatternVars (Pattern' x) where
+  countPatternVars p =
+    case p of
+      VarP{}      -> 1
+      ConP _ _ ps -> countPatternVars ps
+      DotP{}      -> 1   -- dot patterns are treated as variables in the clauses
+      AbsurdP p   -> countPatternVars p
+      _           -> 0
+

@@ -193,7 +193,7 @@ give force ii mr e = liftTCM $ do
      giveExpr force (Just ii) mi e
     `catchError` \ case
       -- Turn PatternErr into proper error:
-      PatternErr{} -> typeError . GenericDocError =<< do
+      PatternErr -> typeError . GenericDocError =<< do
         withInteractionId ii $ TP.text "Failed to give" TP.<+> prettyTCM e
       err -> throwError err
   removeInteractionPoint ii
@@ -396,7 +396,7 @@ instance Reify Constraint (OutputConstraint Expr Expr) where
           p <- open p
           t <- open t
           pPi' "o" p (\ o -> t)
-    reify (ElimCmp cmp t v es1 es2) =
+    reify (ElimCmp cmp _ t v es1 es2) =
       CmpElim cmp <$> reify t <*> mapM reifyElimToExpr es1
                               <*> mapM reifyElimToExpr es2
     reify (LevelCmp cmp t t')    = CmpLevels cmp <$> reify t <*> reify t'

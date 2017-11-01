@@ -4,7 +4,6 @@ module Agda.TypeChecking.Injectivity where
 
 import Prelude hiding (mapM)
 
-import Control.Applicative
 import Control.Monad.State hiding (mapM, forM)
 import Control.Monad.Reader hiding (mapM, forM)
 
@@ -158,7 +157,8 @@ useInjectivity cmp a u v = do
           , nest 2 $ text "and type" <+> prettyTCM a
           ]
         pol <- getPolarity' cmp f
-        compareElims pol a (Def f []) fArgs gArgs
+        fs  <- getForcedArgs f
+        compareElims pol fs a (Def f []) fArgs gArgs
       | otherwise -> fallBack
     (Inv f args inv, NoInv) -> do
       a <- defType <$> getConstInfo f
@@ -211,10 +211,11 @@ useInjectivity cmp a u v = do
           -- we can treat 'Nonvariant' as 'Invariant'.
           -- That ensures these metas do not remain unsolved.
           pol <- purgeNonvariant <$> getPolarity' cmp f
+          fs  <- getForcedArgs f
           -- The clause might not give as many patterns as there
           -- are arguments (point-free style definitions).
           let args' = take (length margs) args
-          compareElims pol ftype (Def f []) margs args'
+          compareElims pol fs ftype (Def f []) margs args'
 {- Andreas, 2011-05-09 allow unsolved constraints as long as progress
           unless (null cs) $ do
             reportSDoc "tc.inj.invert" 30 $
@@ -257,7 +258,7 @@ useInjectivity cmp a u v = do
 
     metaArgs args = mapM (traverse $ metaPat . namedThing) args
 
-    metaPat (DotP v)         = dotP v
+    metaPat (DotP _ v)       = dotP v
     metaPat (VarP _)         = nextMeta
     metaPat (AbsurdP p)      = metaPat p
     metaPat (ConP c mt args) = Con c (fromConPatternInfo mt) <$> metaArgs args

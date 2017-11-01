@@ -1,6 +1,11 @@
 Release notes for Agda version 2.5.4
 ====================================
 
+Installation and infrastructure
+-------------------------------
+
+* Removed support for GHC 7.8.4.
+
 Syntax and LaTeX backend
 ------------------------
 
@@ -30,20 +35,92 @@ Syntax and LaTeX backend
 
 * The `--count-clusters` flag can now be given in `OPTIONS` pragmas.
 
-* The `nofontsetup` option was broken, and has (hopefully) been fixed
+* The `nofontsetup` option to the LaTeX package `agda` was broken, and
+  has (hopefully) been fixed
   [Issue [#2773](https://github.com/agda/agda/issues/2773)].
 
   Fewer packages than before are loaded when `nofontsetup` is used,
-  see `agda.sty`.
+  see `agda.sty` for details. Furthermore, if LuaLaTeX or XeLaTeX are
+  not used, then the font encoding is no longer changed.
+
+* The new option `noinputencodingsetup` instructs the LaTeX package
+  `agda` to not change the input encoding, and to not load the `ucs`
+  package.
 
 Language
 --------
 
 ### Syntax
 
+* Do-notation.
+
+  There is now builtin do-notation syntax. This means that `do` is a reserved
+  keyword and cannot be used as an identifier.
+
+  Do-blocks support lets and pattern matching binds. If the pattern in a bind
+  is non-exhaustive the other patterns need to be handled in a `where`-clause
+  (see example below).
+
+  Example:
+
+  ```agda
+  filter : {A : Set} → (A → Bool) → List A → List A
+  filter p xs = do
+    x    ← xs
+    true ← return (p x)
+      where false → []
+    return x
+  ```
+
+  Do-blocks desugar to `_>>=_` and `_>>_` before scope checking, so whatever
+  definitions of these two functions are in scope of the do-block will be used.
+
+  More precisely:
+
+  - Simple bind
+
+    ```agda
+    do x ← m
+       m'
+    ```
+    desugars to `m >>= λ x → m'`.
+
+  - Pattern bind
+
+    ```agda
+    do p ← m where pᵢ → mᵢ
+       m'
+    ```
+    desugars to `m >>= λ { p → m'; pᵢ → mᵢ }`, where `pᵢ → mᵢ` is an arbitrary
+    sequence of clauses and follows the usual layout rules for `where`. If `p`
+    is exhaustive the `where` clause can be omitted.
+
+  - Non-binding operation
+
+    ```agda
+    do m
+       m'
+    ```
+    desugars to `m >> m'`.
+
+  - Let
+
+    ```agda
+    do let ds
+       m
+    ```
+    desugars to `let ds in m`, where `ds` is an arbitrary sequence of valid let-declarations.
+
+  - The last statement in the do block must be a plain expression (no let or bind).
+
+  Bind statements can use either `←` or `<-`. Neither of these are reserved, so
+  code outside do-blocks can use identifiers with these names, but inside a
+  do-block they would need to be used qualified or under different names.
+
 * Infix let declarations. [Issue [#917](https://github.com/agda/agda/issues/917)]
 
   Let declarations can now be defined in infix (or mixfix) style. For instance:
+
   ```agda
     f : Nat → Nat
     f n = let _!_ : Nat → Nat → Nat
@@ -59,6 +136,7 @@ Language
   time.
 
   For instance, the following is accepted:
+
   ```agda
     open import Agda.Builtin.Nat
 
@@ -85,6 +163,39 @@ Language
     vmap f (x ∷ xs) = f x ∷ vmap f xs
   ```
 
+* If the file has no top-level module header, the first module
+  cannot have the same name as the file.
+  [Issues [#2808](https://github.com/agda/agda/issues/2808)
+   and [#1077](https://github.com/agda/agda/issues/1077)]
+
+  This means that the following file `File.agda` is rejected:
+  ```agda
+    -- no module header
+    postulate A : Set
+    module File where -- inner module with the same name as the file
+  ```
+  Agda reports `Illegal declarations(s) before top-level module`
+  at the `postulate`.
+  This is to avoid confusing scope errors in similar situations.
+
+  If a top-level module header is inserted manuall, the file is accepted:
+
+  ```agda
+    module _ where    -- user written module header
+    postulate A : Set
+    module File where -- inner module with the same name as the file, ok
+  ```
+
+
+Pragmas and options
+-------------------
+
+* The `--caching` option is now a valid pragma.
+  You can (sometimes) speed up re-typechecking in `--interaction` mode
+  by adding this option on top of your Agda file.
+  ```agda
+    {-# OPTIONS --caching #-}
+  ```
 
 Release notes for Agda version 2.5.3
 ====================================

@@ -560,7 +560,7 @@ instance ToConcrete A.Expr C.Expr where
                 lift $ reportSLn "extendedlambda" 50 $ "abstractToConcrete extended lambda pattern p = " ++ show p
                 p' <- removeApp p
                 lift $ reportSLn "extendedlambda" 50 $ "abstractToConcrete extended lambda pattern p' = " ++ show p'
-                return (lhs{ lhsOriginalPattern = p' }, rhs, wh, ca)
+                return $ LamClause lhs{ lhsOriginalPattern = p' } rhs wh ca
               decl2clause _ = __IMPOSSIBLE__
           C.ExtendedLam (getRange i) <$> mapM decl2clause decls
     toConcrete (A.Pi _ [] e) = toConcrete e
@@ -599,7 +599,7 @@ instance ToConcrete A.Expr C.Expr where
         bracket lamBrackets
         $ bindToConcrete ds $ \ds' -> do
              e'  <- toConcreteTop e
-             return $ C.Let (getRange i) (concat ds') e'
+             return $ C.Let (getRange i) (concat ds') (Just e')
 
     toConcrete (A.Rec i fs) =
       bracket appBrackets $ do
@@ -809,10 +809,6 @@ instance ToConcrete a C.LHS => ToConcrete (A.Clause' a) [C.Declaration] where
             bindToConcrete (AsWhereDecls wh)  $ \wh' -> do
                 (rhs', eqs, with, wcs) <- toConcreteTop rhs
                 return $ FunClause (C.LHS p wps eqs with) rhs' wh' catchall : wcs
-          C.Ellipsis {} -> __IMPOSSIBLE__
-          -- TODO: Is the case above impossible? Previously there was
-          -- no code for it, but GHC 7's completeness checker spotted
-          -- that the case was not covered.
 
 instance ToConcrete A.ModuleApplication C.ModuleApplication where
   toConcrete (A.SectionApp tel y es) = do
@@ -1026,6 +1022,8 @@ instance ToConcrete (UserPattern A.Pattern) A.Pattern where
       A.AsP i x p            -> bindName' (unBind x) $
                                 bindToConcrete (UserPattern p) $ \ p ->
                                 ret (A.AsP i x p)
+      A.WithAppP i p ps      -> bindToConcrete (UserPattern p, map UserPattern ps) $
+        ret . uncurry (A.WithAppP i)
 
 instance ToConcrete (UserPattern (NamedArg A.Pattern)) (NamedArg A.Pattern) where
   bindToConcrete (UserPattern np) ret =
@@ -1055,6 +1053,8 @@ instance ToConcrete (SplitPattern A.Pattern) A.Pattern where
       A.RecP i args          -> bindToConcrete ((map . fmap) SplitPattern args) $ ret . A.RecP i
       A.AsP i x p            -> bindToConcrete (SplitPattern p)  $ \ p ->
                                 ret (A.AsP i x p)
+      A.WithAppP i p ps      -> bindToConcrete (SplitPattern p, map SplitPattern ps) $
+        ret . uncurry (A.WithAppP i)
 
 instance ToConcrete (SplitPattern (NamedArg A.Pattern)) (NamedArg A.Pattern) where
   bindToConcrete (SplitPattern np) ret =
@@ -1083,6 +1083,8 @@ instance ToConcrete BindingPattern A.Pattern where
       A.AsP i x p            -> bindToConcrete (FreshenName x) $ \ x ->
                                 bindToConcrete (BindingPat p)  $ \ p ->
                                 ret (A.AsP i (BindName x) p)
+      A.WithAppP i p ps      -> bindToConcrete (BindingPat p, map BindingPat ps) $
+        ret . uncurry (A.WithAppP i)
 
 instance ToConcrete A.Pattern C.Pattern where
   bindToConcrete p ret = do
@@ -1133,6 +1135,9 @@ instance ToConcrete A.Pattern C.Pattern where
 
       A.RecP i as ->
         C.RecP (getRange i) <$> mapM (traverse toConcrete) as
+
+      A.WithAppP i p ps -> uncurry (C.WithAppP $ getRange i) <$> toConcrete (p, ps)
+
     where
     tryOp :: A.QName -> (A.Patterns -> A.Pattern) -> A.Patterns -> AbsToCon C.Pattern
     tryOp x f args = do
@@ -1360,7 +1365,10 @@ recoverPatternSyn applySyn match e fallback = do
   doFold <- asks foldPatternSynonyms
   if not doFold then fallback else do
     psyns  <- lift getAllPatternSyns
-    let cands = [ (q, args, score rhs) | (q, psyndef@(_, rhs)) <- reverse $ Map.toList psyns, Just args <- [match psyndef e] ]
+    let isConP ConP{} = True    -- #2828: only fold pattern synonyms with
+        isConP _      = False   --        constructor rhs
+        cands = [ (q, args, score rhs) | (q, psyndef@(_, rhs)) <- reverse $ Map.toList psyns,
+                                         isConP rhs, Just args <- [match psyndef e] ]
         cmp (_, _, x) (_, _, y) = flip compare x y
     case sortBy cmp cands of
       (q, args, _) : _ -> toConcrete $ applySyn q $ (map . fmap) unnamed args

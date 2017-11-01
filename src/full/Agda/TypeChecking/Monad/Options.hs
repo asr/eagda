@@ -4,7 +4,6 @@ module Agda.TypeChecking.Monad.Options where
 
 import Prelude hiding (mapM)
 
-import Control.Applicative
 import Control.Monad.Reader hiding (mapM)
 import Control.Monad.State  hiding (mapM)
 
@@ -284,7 +283,7 @@ sharedType :: HasOptions m => Type -> m Type
 sharedType (El s v) = El s <$> shared v
 
 enableCaching :: TCM Bool
-enableCaching = optCaching <$> commandLineOptions
+enableCaching = optCaching <$> pragmaOptions
 
 showImplicitArguments :: TCM Bool
 showImplicitArguments = optShowImplicit <$> pragmaOptions

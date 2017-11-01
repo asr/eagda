@@ -17,9 +17,9 @@ module Agda.Syntax.Concrete.Operators
     , parsePatternSyn
     ) where
 
+import Control.Applicative ( Alternative((<|>)), liftA2 )
 import Control.Arrow ((***), (&&&), first, second)
 import Control.DeepSeq
-import Control.Applicative
 import Control.Monad
 
 import Data.Either (partitionEithers)
@@ -39,6 +39,7 @@ import Agda.Syntax.Common
 import Agda.Syntax.Concrete hiding (appView)
 import Agda.Syntax.Concrete.Operators.Parser
 import Agda.Syntax.Concrete.Operators.Parser.Monad hiding (parse)
+import Agda.Syntax.Concrete.Pattern
 import qualified Agda.Syntax.Abstract.Name as A
 import Agda.Syntax.Position
 import Agda.Syntax.Fixity
@@ -541,6 +542,12 @@ parsePat prs p = case p of
     IdentP _         -> return p
     RecP r fs        -> RecP r <$> mapM (traverse (parsePat prs)) fs
     EqualP{}         -> return p -- Andrea: cargo culted from DotP
+    EllipsisP _      -> fail "bad ellipsis"
+    WithAppP r p ps  -> fullParen' <$> do
+      liftA2 (WithAppP r)
+        (parsePat prs p)
+        (traverse (parsePat prs) ps)
+
 
 {- Implement parsing of copattern left hand sides, e.g.
 

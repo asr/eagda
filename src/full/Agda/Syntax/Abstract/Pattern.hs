@@ -8,17 +8,26 @@
 
 module Agda.Syntax.Abstract.Pattern where
 
+import Prelude hiding (null)
+
+import Control.Arrow ((***), second)
 import Control.Monad ((>=>))
-import Control.Applicative (Applicative)
+import Control.Monad.Identity
+import Control.Applicative (Applicative, liftA2)
 
 import Data.Foldable (Foldable, foldMap)
 import Data.Traversable (Traversable, traverse)
 import Data.Functor
+import Data.Maybe
 import Data.Monoid
 
 import Agda.Syntax.Common
 import Agda.Syntax.Concrete (FieldAssignment', exprFieldA)
+import qualified Agda.Syntax.Concrete as C
 import Agda.Syntax.Abstract as A
+
+import Agda.Utils.List
+import Agda.Utils.Null
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -53,11 +62,18 @@ instance MapNamedArgPattern NAP where
       -- RecP: we copy the NamedArg info to the subpatterns but discard it after recursion
       RecP i fs          -> f $ setNamedArg p $ RecP i $ map (fmap namedArg) $ mapNamedArgPattern f $ map (fmap (setNamedArg p)) fs
       -- AsP: we hand the NamedArg info to the subpattern
-      AsP i x p0        -> f $ updateNamedArg (AsP i x) $ mapNamedArgPattern f $ setNamedArg p p0
+      AsP i x p0         -> f $ updateNamedArg (AsP i x) $ mapNamedArgPattern f $ setNamedArg p p0
+      -- WithAppP: like RecP
+      WithAppP i p0 ps   -> f $ setNamedArg p $ uncurry (WithAppP i) $
+        namedArg *** map namedArg $
+          mapNamedArgPattern f (setNamedArg p p0, map (setNamedArg p) ps)
 
 instance MapNamedArgPattern a => MapNamedArgPattern [a]                  where
 instance MapNamedArgPattern a => MapNamedArgPattern (FieldAssignment' a) where
 instance MapNamedArgPattern a => MapNamedArgPattern (Maybe a)            where
+
+instance (MapNamedArgPattern a, MapNamedArgPattern b) => MapNamedArgPattern (a,b) where
+  mapNamedArgPattern f (a, b) = (mapNamedArgPattern f a, mapNamedArgPattern f b)
 
 -- | Generic pattern traversal.
 
@@ -76,21 +92,17 @@ class APatternLike a p | p -> a where
   foldrAPattern = foldMap . foldrAPattern
 
   -- | Traverse pattern.
-  traverseAPatternM :: (Monad m
-#if __GLASGOW_HASKELL__ <= 708
-    , Applicative m, Functor m
-#endif
-    ) => (Pattern' a -> m (Pattern' a))  -- ^ @pre@: Modification before recursion.
-      -> (Pattern' a -> m (Pattern' a))  -- ^ @post@: Modification after recursion.
-      -> p -> m p
+  traverseAPatternM
+    :: Monad m
+    => (Pattern' a -> m (Pattern' a))  -- ^ @pre@: Modification before recursion.
+    -> (Pattern' a -> m (Pattern' a))  -- ^ @post@: Modification after recursion.
+    -> p -> m p
 
-  default traverseAPatternM :: (Traversable f, APatternLike a q, f q ~ p, Monad m
-#if __GLASGOW_HASKELL__ <= 708
-    , Applicative m, Functor m
-#endif
-    ) => (Pattern' a -> m (Pattern' a))
-      -> (Pattern' a -> m (Pattern' a))
-      -> p -> m p
+  default traverseAPatternM
+    :: (Traversable f, APatternLike a q, f q ~ p, Monad m)
+    => (Pattern' a -> m (Pattern' a))
+    -> (Pattern' a -> m (Pattern' a))
+    -> p -> m p
   traverseAPatternM pre post = traverse $ traverseAPatternM pre post
 
 -- | Compute from each subpattern a value and collect them all in a monoid.
@@ -100,23 +112,24 @@ foldAPattern f = foldrAPattern $ \ p m -> f p `mappend` m
 
 -- | Traverse pattern(s) with a modification before the recursive descent.
 
-preTraverseAPatternM :: (APatternLike a b, Monad m
-#if __GLASGOW_HASKELL__ <= 708
-  , Applicative m, Functor m
-#endif
-  ) => (Pattern' a -> m (Pattern' a))  -- ^ @pre@: Modification before recursion.
-    -> b -> m b
+preTraverseAPatternM
+  :: (APatternLike a b, Monad m )
+  => (Pattern' a -> m (Pattern' a))  -- ^ @pre@: Modification before recursion.
+  -> b -> m b
 preTraverseAPatternM pre p = traverseAPatternM pre return p
 
 -- | Traverse pattern(s) with a modification after the recursive descent.
 
-postTraverseAPatternM :: (APatternLike a b, Monad m
-#if __GLASGOW_HASKELL__ <= 708
-  , Applicative m, Functor m
-#endif
-  ) => (Pattern' a -> m (Pattern' a))  -- ^ @post@: Modification after recursion.
-    -> b -> m b
+postTraverseAPatternM
+  :: (APatternLike a b, Monad m)
+  => (Pattern' a -> m (Pattern' a))  -- ^ @post@: Modification after recursion.
+  -> b -> m b
 postTraverseAPatternM post p = traverseAPatternM return post p
+
+-- | Map pattern(s) with a modification after the recursive descent.
+
+mapAPattern :: APatternLike a p => (Pattern' a -> Pattern' a) -> p -> p
+mapAPattern f = runIdentity . postTraverseAPatternM (Identity . f)
 
 -- Interesting instance:
 
@@ -128,6 +141,7 @@ instance APatternLike a (Pattern' a) where
       DefP _ _ ps        -> foldrAPattern f ps
       RecP _ ps          -> foldrAPattern f ps
       PatternSynP _ _ ps -> foldrAPattern f ps
+      WithAppP _ p ps    -> foldrAPattern f (p, ps)
       VarP _             -> mempty
       ProjP _ _ _        -> mempty
       WildP _            -> mempty
@@ -153,6 +167,7 @@ instance APatternLike a (Pattern' a) where
       A.AsP         i x  p  -> A.AsP         i x  <$> traverseAPatternM pre post p
       A.RecP        i    ps -> A.RecP        i    <$> traverseAPatternM pre post ps
       A.PatternSynP i x  ps -> A.PatternSynP i x  <$> traverseAPatternM pre post ps
+      A.WithAppP    i p  ps -> uncurry (A.WithAppP i) <$> traverseAPatternM pre post (p, ps)
 
 -- The following instances need UndecidableInstances
 -- for the FunctionalDependency (since injectivity is not taken into account).
@@ -162,6 +177,16 @@ instance APatternLike a b => APatternLike a (Named n b)          where
 instance APatternLike a b => APatternLike a [b]                  where
 instance APatternLike a b => APatternLike a (Maybe b)            where
 instance APatternLike a b => APatternLike a (FieldAssignment' b) where
+
+instance (APatternLike a b, APatternLike a c) => APatternLike a (b,c) where
+  foldrAPattern f (p, p') =
+    foldrAPattern f p `mappend` foldrAPattern f p'
+
+  traverseAPatternM pre post (p, p') =
+    liftA2 (,)
+      (traverseAPatternM pre post p)
+      (traverseAPatternM pre post p')
+
 
 -- * Specific folds
 
@@ -185,6 +210,7 @@ patternVars p = foldAPattern f p `appEndo` []
     A.AbsurdP     {} -> mempty
     A.EqualP      {} -> mempty
     A.PatternSynP {} -> mempty
+    A.WithAppP _ _ _ -> mempty
 
 -- | Check if a pattern contains a specific (sub)pattern.
 
@@ -211,3 +237,45 @@ containsAsPattern = containsAPattern $ \case
     A.PatternSynP{} -> __IMPOSSIBLE__
     A.AsP{}         -> True
     _               -> False
+
+-- | Check if any user-written pattern variables occur more than once,
+--   and throw the given error if they do.
+checkPatternLinearity :: (Monad m, APatternLike a p)
+                      => p -> ([C.Name] -> m ()) -> m ()
+checkPatternLinearity ps err =
+  unlessNull (duplicates $ map nameConcrete $ patternVars ps) $ \ys -> err ys
+
+
+-- * Specific traversals
+
+
+-- | Pattern substitution.
+--
+-- For the embedded expression, the given pattern substitution is turned into
+-- an expression substitution.
+
+substPattern :: [(Name, Pattern)] -> Pattern -> Pattern
+substPattern s = substPattern' (substExpr $ map (second patternToExpr) s) s
+
+-- | Pattern substitution, parametrized by substitution function for embedded expressions.
+
+substPattern'
+  :: (e -> e)              -- ^ Substitution function for expressions.
+  -> [(Name, Pattern' e)]  -- ^ (Parallel) substitution.
+  -> Pattern' e            -- ^ Input pattern.
+  -> Pattern' e
+substPattern' subE s = mapAPattern $ \ p -> case p of
+  VarP x            -> fromMaybe p $ lookup (A.unBind x) s
+  DotP i o e        -> DotP i o $ subE e
+  EqualP i es       -> EqualP i $ map (subE *** subE) es
+  -- No action on the other patterns (besides the recursion):
+  ConP _ _ _        -> p
+  RecP _ _          -> p
+  ProjP _ _ _       -> p
+  WildP _           -> p
+  AbsurdP _         -> p
+  LitP _            -> p
+  DefP _ _ _        -> p
+  AsP _ _ _         -> p -- Note: cannot substitute into as-variable
+  PatternSynP _ _ _ -> p
+  WithAppP _ _ _    -> p

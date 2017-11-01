@@ -13,7 +13,6 @@
 module Agda.TypeChecking.Primitive where
 
 import Control.Monad
-import Control.Applicative
 import Control.Monad.Reader (asks)
 
 import Data.Char
@@ -189,7 +188,6 @@ instance ToTerm ArgInfo where
           Relevant   -> rel
           Irrelevant -> irr
           NonStrict  -> rel
-          Forced{}   -> irr
       ]
 
 instance ToTerm Fixity' where

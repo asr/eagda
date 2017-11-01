@@ -228,8 +228,7 @@ instance IsVarSet FreeVars where
         Free.StronglyRigid -> strongly
       goRel r = case r of
         Relevant   -> id
-        NonStrict  -> id    -- we don't track non-strict and
-        Forced{}   -> id    -- forced in FreeVars
+        NonStrict  -> id    -- we don't track non-strict in FreeVars
         Irrelevant -> irrelevantly
 
 -- In most cases we don't care about the VarOcc.
@@ -286,8 +285,8 @@ newtype RelevantIn a = RelevantIn {getRelevantIn :: a}
 
 instance IsVarSet a => IsVarSet (RelevantIn a) where
   withVarOcc o x
-    | irrelevant (varRelevance o) = mempty
-    | otherwise                   = RelevantIn $ withVarOcc o $ getRelevantIn x
+    | isIrrelevant (varRelevance o) = mempty
+    | otherwise = RelevantIn $ withVarOcc o $ getRelevantIn x
 
 relevantIn' :: Free a => IgnoreSorts -> Nat -> a -> Bool
 relevantIn' ig x t = getAny . getRelevantIn $ runFree (RelevantIn . Any . (x ==)) ig t

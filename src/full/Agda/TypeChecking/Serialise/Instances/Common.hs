@@ -1,18 +1,12 @@
 {-# LANGUAGE CPP                #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 
-#if __GLASGOW_HASKELL__ <= 708
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE OverlappingInstances       #-}
-#endif
-
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Agda.TypeChecking.Serialise.Instances.Common (SerialisedRange(..)) where
 
 import Prelude hiding (mapM)
 
-import Control.Applicative
 import Control.Monad.Reader hiding (mapM)
 import Control.Monad.State.Strict (gets, modify)
 import Control.Exception
@@ -32,10 +26,6 @@ import qualified Data.Set as Set
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import Data.Traversable ( mapM )
-
-#if __GLASGOW_HASKELL__ <= 708
-import Data.Typeable ( Typeable )
-#endif
 
 import Data.Void
 
@@ -70,11 +60,7 @@ import qualified Agda.Utils.Empty as Empty
 #include "undefined.h"
 import Agda.Utils.Impossible
 
-#if __GLASGOW_HASKELL__ >= 710
 instance {-# OVERLAPPING #-} EmbPrj String where
-#else
-instance EmbPrj String where
-#endif
   icod_   = icodeString
   value i = (! i) `fmap` gets stringE
 
@@ -210,11 +196,7 @@ instance EmbPrj TopLevelModuleName where
 
   value = valueN TopLevelModuleName
 
-#if __GLASGOW_HASKELL__ >= 710
 instance {-# OVERLAPPABLE #-} EmbPrj a => EmbPrj [a] where
-#else
-instance EmbPrj a => EmbPrj [a] where
-#endif
   icod_ xs = icodeNode =<< mapM icode xs
   value    = vcase (mapM value)
 --   icode []       = icode0'
@@ -262,9 +244,6 @@ instance EmbPrj Range where
 -- | Ranges that should be serialised properly.
 
 newtype SerialisedRange = SerialisedRange { underlyingRange :: Range }
-#if __GLASGOW_HASKELL__ <= 708
-  deriving (Typeable)
-#endif
 
 instance EmbPrj SerialisedRange where
   icod_ (SerialisedRange r) =
@@ -433,16 +412,29 @@ instance EmbPrj Hiding where
   value 3 = return (Instance YesOverlap)
   value _ = malformed
 
+instance EmbPrj Quantity where
+  icod_ Quantity0 = return 0
+  icod_ Quantityω = return 1
+
+  value 0 = return Quantity0
+  value 1 = return Quantityω
+  value _ = malformed
+
+instance EmbPrj Modality where
+  icod_ (Modality a b) = icodeN' Modality a b
+
+  value = vcase $ \case
+    [a, b] -> valuN Modality a b
+    _ -> malformed
+
 instance EmbPrj Relevance where
   icod_ Relevant       = return 0
   icod_ Irrelevant     = return 1
-  icod_ Forced         = return 2
-  icod_ NonStrict      = return 4
+  icod_ NonStrict      = return 2
 
   value 0 = return Relevant
   value 1 = return Irrelevant
-  value 2 = return Forced
-  value 4 = return NonStrict
+  value 2 = return NonStrict
   value _ = malformed
 
 instance EmbPrj Origin where

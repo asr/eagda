@@ -1,10 +1,6 @@
 {-# LANGUAGE CPP                  #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-#if __GLASGOW_HASKELL__ <= 708
-{-# LANGUAGE OverlappingInstances #-}
-#endif
-
 {-| Translation from "Agda.Syntax.Concrete" to "Agda.Syntax.Abstract". Involves scope analysis,
     figuring out infix operator precedences and tidying up definitions.
 -}
@@ -25,7 +21,7 @@ module Agda.Syntax.Translation.ConcreteToAbstract
     ) where
 
 import Prelude hiding (mapM, null)
-import Control.Applicative
+import Control.Applicative ( liftA2 )
 import Control.Monad.Reader hiding (mapM)
 
 import Data.Foldable (Foldable, traverse_)
@@ -40,8 +36,9 @@ import Data.Void
 import Agda.Syntax.Concrete as C hiding (topLevelModuleName)
 import Agda.Syntax.Concrete.Generic
 import Agda.Syntax.Concrete.Operators
+import Agda.Syntax.Concrete.Pattern ( mapLhsOriginalPatternM )
 import Agda.Syntax.Abstract as A
-import Agda.Syntax.Abstract.Pattern ( patternVars )
+import Agda.Syntax.Abstract.Pattern ( patternVars, checkPatternLinearity )
 import Agda.Syntax.Abstract.Pretty
 import qualified Agda.Syntax.Internal as I
 import Agda.Syntax.Position
@@ -54,6 +51,7 @@ import Agda.Syntax.Notation
 import Agda.Syntax.Scope.Base
 import Agda.Syntax.Scope.Monad
 import Agda.Syntax.Translation.AbstractToConcrete (ToConcrete)
+import Agda.Syntax.DoNotation
 import Agda.Syntax.IdiomBrackets
 
 import Agda.TypeChecking.Monad.Base hiding (ModuleInfo, MetaInfo)
@@ -140,12 +138,6 @@ annotateExpr m = do
   s <- getScope
   return $ ScopedExpr s e
 
--- | Make sure that each variable occurs only once.
-checkPatternLinearity :: [A.Pattern' e] -> ScopeM ()
-checkPatternLinearity ps = do
-  unlessNull (duplicates $ map nameConcrete $ patternVars ps) $ \ ys -> do
-    typeError $ RepeatedVariablesInPattern ys
-
 -- | Make sure that there are no dot patterns (called on pattern synonyms).
 noDotorEqPattern :: String -> A.Pattern' e -> ScopeM (A.Pattern' Void)
 noDotorEqPattern err = dot
@@ -164,6 +156,7 @@ noDotorEqPattern err = dot
       A.DefP i f args        -> A.DefP i f <$> (traverse $ traverse $ traverse dot) args
       A.PatternSynP i c args -> A.PatternSynP i c <$> (traverse $ traverse $ traverse dot) args
       A.RecP i fs            -> A.RecP i <$> (traverse $ traverse dot) fs
+      A.WithAppP i p ps      -> liftA2 (A.WithAppP i) (dot p) (mapM dot ps)
 
 -- | Make sure that there are no dot patterns (WAS: called on pattern synonyms).
 noDotPattern :: String -> A.Pattern' e -> ScopeM (A.Pattern' Void)
@@ -242,7 +235,7 @@ recordConstructorType fields = build <$> mapM validForLet fs
     -- Turn non-field declarations into a let binding.
     -- Smart constructor for C.Let:
     lets [] c = c
-    lets ds c = C.Let (getRange ds) ds c
+    lets ds c = C.Let (getRange ds) ds (Just c)
 
 checkModuleApplication
   :: C.ModuleApplication
@@ -489,11 +482,7 @@ instance (ToAbstract c1 a1, ToAbstract c2 a2, ToAbstract c3 a3) =>
         where
             flatten (x,(y,z)) = (x,y,z)
 
-#if __GLASGOW_HASKELL__ >= 710
 instance {-# OVERLAPPABLE #-} ToAbstract c a => ToAbstract [c] [a] where
-#else
-instance ToAbstract c a => ToAbstract [c] [a] where
-#endif
   toAbstract = mapM toAbstract
 
 instance (ToAbstract c1 a1, ToAbstract c2 a2) =>
@@ -699,7 +688,7 @@ toAbstractLam r bs e ctx = do
     mkLam b e = A.Lam (ExprRange $ fuseRange b e) b e
 
 -- | Scope check extended lambda expression.
-scopeCheckExtendedLam :: Range -> [(C.LHS, C.RHS, WhereClause, Bool)] -> ScopeM A.Expr
+scopeCheckExtendedLam :: Range -> [C.LamClause] -> ScopeM A.Expr
 scopeCheckExtendedLam r cs = do
   whenM isInsideDotPattern $
     genericError "Extended lambdas are not allowed in dot patterns"
@@ -709,22 +698,45 @@ scopeCheckExtendedLam r cs = do
   name  <- freshAbstractName_ cname
   reportSLn "scope.extendedLambda" 10 $ "new extended lambda name: " ++ prettyShow name
   verboseS "scope.extendedLambda" 60 $ do
-    forM_ cs $ \ (lhs, rhs, wh, ca) -> do
-      reportSLn "scope.extendedLambda" 60 $ "extended lambda lhs: " ++ show lhs
+    forM_ cs $ \ c -> do
+      reportSLn "scope.extendedLambda" 60 $ "extended lambda lhs: " ++ show (C.lamLHS c)
   qname <- qualifyName_ name
   bindName (PrivateAccess Inserted) DefName cname qname
 
   -- Compose a function definition and scope check it.
   a <- aModeToDef <$> asks envAbstractMode
   let
-    insertApp (C.RawAppP r es) = C.RawAppP r $ IdentP (C.QName cname) : es
-    insertApp (C.AppP p1 p2)   = (IdentP (C.QName cname) `C.AppP` defaultNamedArg p1) `C.AppP` p2  -- Case occurs in issue #2785
-    insertApp (C.IdentP q    ) = C.RawAppP r $ IdentP (C.QName cname) : [C.IdentP q]
-      where r = getRange q
-    insertApp _ = __IMPOSSIBLE__
-    d = C.FunDef r [] noFixity' {-'-} a NotInstanceDef __IMPOSSIBLE__ cname $
-          for cs $ \ (lhs, rhs, wh, ca) -> -- wh == NoWhere, see parser for more info
-            C.Clause cname ca (mapLhsOriginalPattern insertApp lhs) rhs wh []
+    insertApp :: C.Pattern -> ScopeM C.Pattern
+    insertApp (C.RawAppP r es) = return $ C.RawAppP r $ IdentP (C.QName cname) : es
+    insertApp (C.AppP p1 p2)   = return $ (IdentP (C.QName cname) `C.AppP` defaultNamedArg p1) `C.AppP` p2  -- Case occurs in issue #2785
+    insertApp p = return $ C.RawAppP r $ IdentP (C.QName cname) : [p] -- Issue #2807: C.ParenP also possible
+      where r = getRange p
+      -- Andreas, 2017-10-17 issue #2807: do not raise IMPOSSSIBLE here
+      -- since we are actually not sure what is possible and what not.
+
+    -- insertApp (C.IdentP q    ) = return $ C.RawAppP r $ IdentP (C.QName cname) : [C.IdentP q]
+    --   where r = getRange q
+    -- insertApp p = do
+    --   reportSLn "impossible" 10 $ "scopeCheckExtendedLam: unexpected pattern: " ++
+    --     case p of
+    --       C.QuoteP{}    -> "QuoteP"
+    --       C.OpAppP{}    -> "OpAppP"
+    --       C.HiddenP{}   -> "HiddenP"
+    --       C.InstanceP{} -> "InstanceP"
+    --       C.ParenP{}    -> "ParenP"
+    --       C.WildP{}     -> "WildP"
+    --       C.AbsurdP{}   -> "AbsurdP"
+    --       C.AsP{}       -> "AsP"
+    --       C.DotP{}      -> "DotP"
+    --       C.LitP{}      -> "LitP"
+    --       C.RecP{}      -> "RecP"
+    --       _ -> __IMPOSSIBLE__
+    --   __IMPOSSIBLE__
+
+  d <- C.FunDef r [] noFixity' {-'-} a NotInstanceDef __IMPOSSIBLE__ cname <$> do
+          forM cs $ \ (LamClause lhs rhs wh ca) -> do -- wh == NoWhere, see parser for more info
+            lhs' <- mapLhsOriginalPatternM insertApp lhs
+            return $ C.Clause cname ca lhs' rhs wh []
   scdef <- toAbstract d
 
   -- Create the abstract syntax for the extended lambda.
@@ -852,12 +864,13 @@ instance ToAbstract C.Expr A.Expr where
       C.Prop _   -> return $ A.Prop $ ExprRange $ getRange e
 
   -- Let
-      e0@(C.Let _ ds e) ->
+      e0@(C.Let _ ds (Just e)) ->
         ifM isInsideDotPattern (genericError $ "Let-expressions are not allowed in dot patterns") $
         localToAbstract (LetDefs ds) $ \ds' -> do
           e <- toAbstractCtx TopCtx e
           let info = ExprRange (getRange e0)
           return $ A.Let info ds' e
+      C.Let _ _ Nothing -> genericError "Missing body in let-expression"
 
   -- Record construction
       C.Rec r fs  -> do
@@ -878,6 +891,10 @@ instance ToAbstract C.Expr A.Expr where
       C.IdiomBrackets r e ->
         toAbstractCtx TopCtx =<< parseIdiomBrackets r e
 
+  -- Do notation
+      C.DoBlock r ss ->
+        toAbstractCtx TopCtx =<< desugarDoNotation r ss
+
   -- Post-fix projections
       C.Dot r e  -> A.Dot (ExprRange r) <$> toAbstract e
 
@@ -888,6 +905,7 @@ instance ToAbstract C.Expr A.Expr where
   -- Impossible things
       C.ETel _  -> __IMPOSSIBLE__
       C.Equal{} -> genericError "Parse error: unexpected '='"
+      C.Ellipsis _ -> genericError "Parse error: unexpected '...'"
 
   -- Quoting
       C.QuoteGoal _ x e -> do
@@ -907,6 +925,7 @@ instance ToAbstract C.Expr A.Expr where
 
   -- DontCare
       C.DontCare e -> A.DontCare <$> toAbstract e
+
 
 instance ToAbstract C.ModuleAssignment (A.ModuleName, [A.LetBinding]) where
   toAbstract (C.ModuleAssignment m es i)
@@ -1128,8 +1147,12 @@ instance ToAbstract (TopLevel [C.Declaration]) TopLevelInfo where
                   -- Check if the insideDecls end in a single module which has the same
                   -- name as the file.  In this case, it is highly likely that the user
                   -- put some non-allowed declarations before the top-level module in error.
+                  -- Andreas, 2017-10-19, issue #2808
+                  -- Widen this check to:
+                  -- If the first module of the insideDecls has the same name as the file,
+                  -- report an error.
                   case flip span insideDecls $ \case { C.Module{} -> False; _ -> True } of
-                    (ds0, [ C.Module _ m1 _ _ ])
+                    (ds0, (C.Module _ m1 _ _ : _))
                        | C.toTopLevelModuleName m1 == expectedMName
                          -- If the anonymous module comes from the user,
                          -- the range cannot be the beginningOfFile.
@@ -1182,11 +1205,7 @@ niceDecls ds = do
     Left e   -> throwError $ Exception (getRange e) $ pretty e
     Right ds -> return ds
 
-#if __GLASGOW_HASKELL__ >= 710
 instance {-# OVERLAPPING #-} ToAbstract [C.Declaration] [A.Declaration] where
-#else
-instance ToAbstract [C.Declaration] [A.Declaration] where
-#endif
   toAbstract ds = do
     -- When --safe is active the termination checker (Issue 586) and
     -- positivity checker (Issue 1614) may not be switched off, and
@@ -1258,7 +1277,8 @@ instance ToAbstract LetDef [A.LetBinding] where
           Right p -> do
             rhs <- toAbstract rhs
             p   <- toAbstract p
-            checkPatternLinearity [p]
+            checkPatternLinearity p $ \ys ->
+              typeError $ RepeatedVariablesInPattern ys
             p   <- toAbstract p
             return [ A.LetPatBind (LetRange r) p rhs ]
           -- It's not a record pattern, so it should be a prefix left-hand side
@@ -1285,9 +1305,11 @@ instance ToAbstract LetDef [A.LetBinding] where
               definedName C.QuoteP{}             = Nothing
               definedName C.HiddenP{}            = Nothing -- Not impossible, see issue #2291
               definedName C.InstanceP{}          = Nothing
+              definedName C.WithAppP{}           = Nothing
               definedName C.RawAppP{}            = __IMPOSSIBLE__
               definedName C.AppP{}               = __IMPOSSIBLE__
               definedName C.OpAppP{}             = __IMPOSSIBLE__
+              definedName C.EllipsisP{}          = __IMPOSSIBLE__
 
       -- You can't open public in a let
       NiceOpen r x dirs -> do
@@ -1609,7 +1631,8 @@ instance ToAbstract NiceDeclaration A.Declaration where
       reportSLn "scope.pat" 10 $ "found nice pattern syn: " ++ prettyShow n
       (as, p) <- withLocalVars $ do
          p  <- toAbstract =<< parsePatternSyn p
-         checkPatternLinearity [p]
+         checkPatternLinearity p $ \ys ->
+           typeError $ RepeatedVariablesInPattern ys
          let err = "Dot or equality patterns are not allowed in pattern synonyms. Maybe use '_' instead."
          p <- noDotorEqPattern err p
          as <- (traverse . mapM) (unVarName <=< resolveName . C.QName) as
@@ -1978,7 +2001,6 @@ instance ToAbstract C.Pragma [A.Pragma] where
   toAbstract C.PolarityPragma{} = __IMPOSSIBLE__
 
 instance ToAbstract C.Clause A.Clause where
-  toAbstract (C.Clause top _ C.Ellipsis{} _ _ _) = genericError "bad '...'" -- TODO: error message
   toAbstract (C.Clause top catchall lhs@(C.LHS p wps eqs with) rhs wh wcs) = withLocalVars $ do
     -- Andreas, 2012-02-14: need to reset local vars before checking subclauses
     vars <- getLocalVars
@@ -2114,7 +2136,6 @@ instance ToAbstract LeftHandSide A.LHS where
         lhscore <- toAbstract lhscore
         reportSLn "scope.lhs" 5 $ "parsed lhs patterns: " ++ show lhscore
         wps  <- toAbstract =<< mapM parsePattern wps
-        checkPatternLinearity $ lhsCoreAllPatterns lhscore ++ wps
         printLocals 10 "checked pattern:"
         -- scope check dot patterns
         lhscore <- toAbstract lhscore
@@ -2241,6 +2262,7 @@ instance ToAbstract C.Pattern (A.Pattern' C.Expr) where
     toAbstract (HiddenP _ _)   = __IMPOSSIBLE__
     toAbstract (InstanceP _ _) = __IMPOSSIBLE__
     toAbstract (RawAppP _ _)   = __IMPOSSIBLE__
+    toAbstract (EllipsisP _)   = __IMPOSSIBLE__
 
     toAbstract p@(C.WildP r)    = return $ A.WildP (PatRange r)
     -- Andreas, 2015-05-28 futile attempt to fix issue 819: repeated variable on lhs "_"
@@ -2250,18 +2272,16 @@ instance ToAbstract C.Pattern (A.Pattern' C.Expr) where
     toAbstract p0@(C.AsP r x p) = do
         x <- toAbstract (NewName False x)
         p <- toAbstract p
-        return $ A.AsP info (A.BindName x) p
-        where
-            info = PatRange r
+        return $ A.AsP (PatRange r) (A.BindName x) p
     -- we have to do dot patterns at the end
-    toAbstract p0@(C.DotP r o e) = return $ A.DotP info o e
-        where info = PatRange r
-    toAbstract p0@(C.EqualP r es) = return $ A.EqualP info es
-        where info = PatRange r
-    toAbstract p0@(C.AbsurdP r) = return $ A.AbsurdP info
-        where info = PatRange r
-    toAbstract (C.RecP r fs) = A.RecP (PatRange r) <$>
-      mapM (traverse toAbstract) fs
+    toAbstract p0@(C.DotP r o e)   = return $ A.DotP (PatRange r) o e
+    toAbstract p0@(C.EqualP r es)  = return $ A.EqualP (PatRange r) es
+    toAbstract p0@(C.AbsurdP r)    = return $ A.AbsurdP (PatRange r)
+    toAbstract (C.RecP r fs)       = A.RecP (PatRange r) <$> mapM (traverse toAbstract) fs
+    toAbstract (C.WithAppP r p ps) =
+      liftA2 (A.WithAppP $ PatRange r)
+        (toAbstract p)
+        (mapM toAbstract ps)
 
 -- | An argument @OpApp C.Expr@ to an operator can have binders,
 --   in case the operator is some @syntax@-notation.
@@ -2359,3 +2379,13 @@ toAbstractOpApp op ns es = do
       where
       set :: a -> NamedArg b -> NamedArg a
       set x arg = fmap (fmap (const x)) arg
+
+
+{--------------------------------------------------------------------------
+    Things we parse but are not part of the Agda file syntax
+ --------------------------------------------------------------------------}
+
+-- | Content of interaction hole.
+
+instance ToAbstract C.HoleContent A.HoleContent where
+  toAbstract = mapM toAbstract

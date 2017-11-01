@@ -100,6 +100,18 @@ tele2NamedArgs tel0 tel =
   l  = telToList tel
   l0 = telToList tel0
 
+-- | Split the telescope at the specified position.
+splitTelescopeAt :: Int -> Telescope -> (Telescope,Telescope)
+splitTelescopeAt n tel
+  | n <= 0    = (EmptyTel, tel)
+  | otherwise = splitTelescopeAt' n tel
+    where
+      splitTelescopeAt' _ EmptyTel          = (EmptyTel,EmptyTel)
+      splitTelescopeAt' 1 (ExtendTel a tel) = (ExtendTel a (tel $> EmptyTel), absBody tel)
+      splitTelescopeAt' m (ExtendTel a tel) = (ExtendTel a (tel $> tel'), tel'')
+        where
+          (tel', tel'') = splitTelescopeAt (m - 1) $ absBody tel
+
 -- | Permute telescope: permutes or drops the types in the telescope according
 --   to the given permutation. Assumes that the permutation preserves the
 --   dependencies in the telescope.
@@ -217,7 +229,7 @@ instantiateTelescopeN
             Substitution) -- Γ' ⊢ σ : Γ
 instantiateTelescopeN tel []         = return (tel, IdS)
 instantiateTelescopeN tel ((k,t):xs) = do
-  (tel', sigma, _) <- instantiateTelescope tel k t
+  (tel', sigma, _) <- instantiateTelescope tel k t Inserted
   (tel'', sigma')  <- instantiateTelescopeN tel' (map (subtract 1 -*- applyPatSubst sigma) xs)
   return (tel'', applyPatSubst sigma sigma')
 
@@ -229,10 +241,11 @@ instantiateTelescope
   :: Telescope -- ^ ⊢ Γ
   -> Int       -- ^ Γ ⊢ var k : A
   -> Term      -- ^ Γ ⊢ u : A
+  -> Origin    -- ^ Where does the solution come from?
   -> Maybe (Telescope,           -- ⊢ Γ'
             PatternSubstitution, -- Γ' ⊢ σ : Γ
             Permutation)         -- Γ  ⊢ flipP ρ : Γ'
-instantiateTelescope tel k u = guard ok $> (tel', sigma, rho)
+instantiateTelescope tel k u o = guard ok $> (tel', sigma, rho)
   where
     names = teleNames tel
     ts0   = flattenTel tel
@@ -254,7 +267,7 @@ instantiateTelescope tel k u = guard ok $> (tel', sigma, rho)
     rho   = reverseP perm  -- works on de Bruijn levels
 
     u1    = renameP __IMPOSSIBLE__ perm u -- Γ' ⊢ u1 : A'
-    us    = map (\i -> fromMaybe (DotP u1) (deBruijnVar <$> List.findIndex (i ==) is)) [ 0 .. n-1 ]
+    us    = map (\i -> fromMaybe (DotP o u1) (deBruijnVar <$> List.findIndex (i ==) is)) [ 0 .. n-1 ]
     sigma = us ++# raiseS (n-1)
 
     ts1   = permute rho $ applyPatSubst sigma ts0
@@ -323,7 +336,7 @@ telViewUpToPath n t = do
     Left (a,b)     -> absV a (absName b) <$> telViewUpToPath (n - 1) (absBody b)
     Right (El _ t) | Pi a b <- ignoreSharing t
                    -> absV a (absName b) <$> telViewUpToPath (n - 1) (absBody b)
-    _              -> return $ TelV EmptyTel t
+    Right t        -> return $ TelV EmptyTel t
   where
     absV a x (TelV tel t) = TelV (ExtendTel a (Abs x tel)) t
 
@@ -437,7 +450,7 @@ data OutputTypeName
 getOutputTypeName :: Type -> TCM OutputTypeName
 getOutputTypeName t = do
   TelV tel t' <- telView t
-  ifBlocked (unEl t') (\ _ _ -> return OutputTypeNameNotYetKnown) $ \ v ->
+  ifBlocked (unEl t') (\ _ _ -> return OutputTypeNameNotYetKnown) $ \ _ v ->
     case ignoreSharing v of
       -- Possible base types:
       Def n _  -> return $ OutputTypeName n

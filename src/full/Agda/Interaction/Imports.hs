@@ -14,11 +14,6 @@ import Control.Monad.State
 import Control.Monad.Trans.Maybe
 import qualified Control.Exception as E
 
-#if __GLASGOW_HASKELL__ <= 708
-import Data.Foldable ( Foldable )
-import Data.Traversable ( Traversable, traverse )
-#endif
-
 import Data.Function (on)
 import qualified Data.Map as Map
 import qualified Data.List as List
@@ -300,7 +295,7 @@ getInterface' x isMain = do
     -- Preserve the pragma options unless we are checking the main
     -- interface.
     bracket_ (use stPragmaOptions)
-             (unless (includeStateChanges isMain) . setPragmaOptions) $ do
+             (unless (includeStateChanges isMain) . (stPragmaOptions .=)) $ do
      -- Forget the pragma options (locally).
      setCommandLineOptions . stPersistentOptions . stPersistentState =<< get
 
@@ -711,6 +706,10 @@ createInterface file mname isMain = Bench.billTo [Bench.TopModule mname] $
 
 
     -- Type checking.
+
+    -- Now that all the options are in we can check if caching should
+    -- be on.
+    activateLoadedFileCache
 
     -- invalidate cache if pragmas change, TODO move
     cachingStarts

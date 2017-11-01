@@ -7,7 +7,6 @@
 -}
 module Agda.Syntax.Common where
 
-import Control.Applicative
 import Control.DeepSeq
 
 import Data.ByteString.Char8 (ByteString)
@@ -18,7 +17,6 @@ import qualified Data.Strict.Maybe as Strict
 import Data.Semigroup hiding (Arg)
 import Data.Traversable
 import Data.Data (Data)
-import Data.Typeable (Typeable)
 import Data.Word
 
 import GHC.Generics (Generic)
@@ -26,6 +24,9 @@ import GHC.Generics (Generic)
 import Agda.Syntax.Position
 
 import Agda.Utils.Functor
+import Agda.Utils.Lens
+import Agda.Utils.PartialOrd
+import Agda.Utils.POMonoid
 import Agda.Utils.Pretty hiding ((<>))
 
 #include "undefined.h"
@@ -37,7 +38,7 @@ import Agda.Utils.Impossible
 
 -- | Used to specify whether something should be delayed.
 data Delayed = Delayed | NotDelayed
-  deriving (Typeable, Data, Show, Eq, Ord)
+  deriving (Data, Show, Eq, Ord)
 
 instance KillRange Delayed where
   killRange = id
@@ -47,7 +48,7 @@ instance KillRange Delayed where
 ---------------------------------------------------------------------------
 
 data Induction = Inductive | CoInductive
-  deriving (Typeable, Data, Eq, Ord)
+  deriving (Data, Eq, Ord)
 
 instance Show Induction where
   show Inductive   = "inductive"
@@ -68,10 +69,10 @@ instance NFData Induction where
 ---------------------------------------------------------------------------
 
 data Overlappable = YesOverlap | NoOverlap
-  deriving (Typeable, Data, Show, Eq, Ord)
+  deriving (Data, Show, Eq, Ord)
 
 data Hiding  = Hidden | Instance Overlappable | NotHidden
-  deriving (Typeable, Data, Show, Eq, Ord)
+  deriving (Data, Show, Eq, Ord)
 
 -- | Just for the 'Hiding' instance. Should never combine different
 --   overlapping.
@@ -114,7 +115,7 @@ data WithHiding a = WithHiding
   { whHiding :: !Hiding
   , whThing  :: a
   }
-  deriving (Typeable, Data, Eq, Ord, Show, Functor, Foldable, Traversable)
+  deriving (Data, Eq, Ord, Show, Functor, Foldable, Traversable)
 
 instance Decoration WithHiding where
   traverseF f (WithHiding h a) = WithHiding h <$> f a
@@ -209,6 +210,161 @@ sameHiding x y =
     (hx, hy)                 -> hx == hy
 
 ---------------------------------------------------------------------------
+-- * Modalities
+---------------------------------------------------------------------------
+
+-- | We have a tuple of modalities, which might not be fully orthogonal.
+--   For instance, irrelevant stuff is also run-time irrelevant.
+data Modality = Modality
+  { modRelevance :: Relevance
+      -- ^ Legacy irrelevance.
+      --   See Pfenning, LiCS 2001; Abel/Vezzosi/Winterhalter, ICFP 2017.
+  , modQuantity  :: Quantity
+      -- ^ Cardinality / runtime erasure.
+      --   See Conor McBride, I got plenty o' nutting, Wadlerfest 2016.
+  } deriving (Data, Eq, Ord, Show, Generic)
+
+defaultModality :: Modality
+defaultModality = Modality defaultRelevance defaultQuantity
+
+-- | Pointwise composition.
+instance Semigroup Modality where
+  Modality r q <> Modality r' q' = Modality (r <> r') (q <> q')
+
+-- | Pointwise unit.
+instance Monoid Modality where
+  mempty = Modality mempty mempty
+  mappend = (<>)
+
+-- | Dominance ordering.
+instance PartialOrd Modality where
+  comparable (Modality r q) (Modality r' q') = comparable (r, q) (r', q')
+
+instance POSemigroup Modality where
+instance POMonoid Modality where
+
+-- boilerplate instances
+
+instance KillRange Modality where
+  killRange = id
+
+instance NFData Modality where
+
+class LensModality a where
+
+  getModality :: a -> Modality
+
+  setModality :: Modality -> a -> a
+  setModality = mapModality . const
+
+  mapModality :: (Modality -> Modality) -> a -> a
+  mapModality f a = setModality (f $ getModality a) a
+
+instance LensModality Modality where
+  getModality = id
+  setModality = const
+  mapModality = id
+
+instance LensRelevance Modality where
+  getRelevance = modRelevance
+  setRelevance h m = m { modRelevance = h }
+  mapRelevance f m = m { modRelevance = f (modRelevance m) }
+
+instance LensQuantity Modality where
+  getQuantity = modQuantity
+  setQuantity h m = m { modQuantity = h }
+  mapQuantity f m = m { modQuantity = f (modQuantity m) }
+
+-- default accessors for Relevance
+
+getRelevanceMod :: LensModality a => LensGet Relevance a
+getRelevanceMod = getRelevance . getModality
+
+setRelevanceMod :: LensModality a => LensSet Relevance a
+setRelevanceMod = mapModality . setRelevance
+
+mapRelevanceMod :: LensModality a => LensMap Relevance a
+mapRelevanceMod = mapModality . mapRelevance
+
+-- default accessors for Quantity
+
+getQuantityMod :: LensModality a => LensGet Quantity a
+getQuantityMod = getQuantity . getModality
+
+setQuantityMod :: LensModality a => LensSet Quantity a
+setQuantityMod = mapModality . setQuantity
+
+mapQuantityMod :: LensModality a => LensMap Quantity a
+mapQuantityMod = mapModality . mapQuantity
+
+---------------------------------------------------------------------------
+-- * Quantities
+---------------------------------------------------------------------------
+
+-- | Quantity for linearity.
+data Quantity
+  = Quantity0  -- ^ Zero uses, erased at runtime.
+  -- TODO: | Quantity1  -- ^ Linear use (could be updated destructively).
+  -- (needs postponable constraints between quantities to compute uses).
+  | Quantityω  -- ^ Unrestricted use.
+  deriving (Data, Show, Generic, Eq, Enum, Bounded)
+
+defaultQuantity :: Quantity
+defaultQuantity = Quantityω
+
+-- | Composition of quantities (multiplication).
+--
+-- 'Quantity0' is dominant.
+instance Semigroup Quantity where
+  Quantity0 <> _ = Quantity0
+  _ <> Quantity0 = Quantity0
+  Quantityω <> _ = Quantityω
+  -- _ <> Quantityω = Quantityω  -- redundant
+
+-- | In the absense of finite quantities besides 0, ω is the unit.
+instance Monoid Quantity where
+  mempty = Quantityω
+  mappend = (<>)
+
+-- | Note that the order is @ω ≤ 0@, more relevant is smaller.
+instance Ord Quantity where
+  compare = curry $ \case
+    (Quantityω, Quantityω) -> EQ
+    (Quantityω, Quantity0) -> LT
+    (Quantity0, Quantityω) -> GT
+    (Quantity0, Quantity0) -> EQ
+
+instance PartialOrd Quantity where
+  comparable = comparableOrd
+
+instance POSemigroup Quantity where
+instance POMonoid Quantity where
+
+-- boilerplate instances
+
+class LensQuantity a where
+
+  getQuantity :: a -> Quantity
+
+  setQuantity :: Quantity -> a -> a
+  setQuantity = mapQuantity . const
+
+  mapQuantity :: (Quantity -> Quantity) -> a -> a
+  mapQuantity f a = setQuantity (f $ getQuantity a) a
+
+instance LensQuantity Quantity where
+  getQuantity = id
+  setQuantity = const
+  mapQuantity = id
+
+instance KillRange Quantity where
+  killRange = id
+
+instance NFData Quantity where
+  rnf Quantity0 = ()
+  rnf Quantityω = ()
+
+---------------------------------------------------------------------------
 -- * Relevance
 ---------------------------------------------------------------------------
 
@@ -220,24 +376,21 @@ data Relevance
                 --   Therefore, it is irrelevant at run-time.
                 --   It is treated relevantly during equality checking.
   | Irrelevant  -- ^ The argument is irrelevant at compile- and runtime.
-  | Forced      -- ^ The argument can be skipped during equality checking
-                --   because its value is already determined by the type.
-    deriving (Typeable, Data, Show, Eq, Enum, Bounded)
+    deriving (Data, Show, Eq, Enum, Bounded, Generic)
 
 allRelevances :: [Relevance]
 allRelevances = [minBound..maxBound]
 
+defaultRelevance :: Relevance
+defaultRelevance = Relevant
+
 instance KillRange Relevance where
   killRange rel = rel -- no range to kill
-
-instance Ord Relevance where
-  (<=) = moreRelevant
 
 instance NFData Relevance where
   rnf Relevant   = ()
   rnf NonStrict  = ()
   rnf Irrelevant = ()
-  rnf Forced     = ()
 
 -- | A lens to access the 'Relevance' attribute in data structures.
 --   Minimal implementation: @getRelevance@ and one of @setRelevance@ or @mapRelevance@.
@@ -259,12 +412,6 @@ instance LensRelevance Relevance where
 isRelevant :: LensRelevance a => a -> Bool
 isRelevant a = getRelevance a == Relevant
 
-isRelevantOrForced :: LensRelevance a => a -> Bool
-isRelevantOrForced a = case getRelevance a of
-                 Relevant -> True
-                 Forced{} -> True
-                 _        -> False
-
 isIrrelevant :: LensRelevance a => a -> Bool
 isIrrelevant a = getRelevance a == Irrelevant
 
@@ -273,38 +420,33 @@ isNonStrict a = getRelevance a == NonStrict
 
 -- | Information ordering.
 -- @Relevant  \`moreRelevant\`
---  Forced    \`moreRelevant\`
 --  NonStrict \`moreRelevant\`
 --  Irrelevant@
 moreRelevant :: Relevance -> Relevance -> Bool
-moreRelevant r r' =
-  case (r, r') of
-    -- top
-    (_, Irrelevant) -> True
-    (Irrelevant, _) -> False
-    -- bottom
-    (Relevant, _)   -> True
-    (_, Relevant)   -> False
-    -- second bottom
-    (Forced{}, _)   -> True
-    (_, Forced{})   -> False
-    -- remaining case
-    (NonStrict,NonStrict) -> True
+moreRelevant = (<=)
 
-irrelevant :: Relevance -> Bool
-irrelevant r =
-  case r of
-    Irrelevant -> True
-    NonStrict  -> False
-    Relevant   -> False
-    Forced{}   -> False
+-- | More relevant is smaller.
+instance Ord Relevance where
+  compare = curry $ \case
+    (r, r') | r == r' -> EQ
+    -- top
+    (_, Irrelevant) -> LT
+    (Irrelevant, _) -> GT
+    -- bottom
+    (Relevant, _) -> LT
+    (_, Relevant) -> GT
+    -- redundant case
+    (NonStrict,NonStrict) -> EQ
+
+-- | More relevant is smaller.
+instance PartialOrd Relevance where
+  comparable = comparableOrd
 
 -- | @unusableRelevance rel == True@ iff we cannot use a variable of @rel@.
 unusableRelevance :: LensRelevance a => a -> Bool
 unusableRelevance a = case getRelevance a of
   Irrelevant -> True
   NonStrict  -> True
-  Forced{}   -> False -- @Forced@ has no semantic relevance
   Relevant   -> False
 
 -- | 'Relevance' composition.
@@ -316,8 +458,6 @@ composeRelevance r r' =
     (_, Irrelevant) -> Irrelevant
     (NonStrict, _)  -> NonStrict
     (_, NonStrict)  -> NonStrict
-    (Forced, _)     -> Forced
-    (_, Forced)     -> Forced
     (Relevant, Relevant) -> Relevant
 
 -- | @inverseComposeRelevance r x@ returns the most irrelevant @y@
@@ -330,17 +470,24 @@ inverseComposeRelevance r x =
   case (r, x) of
     (Relevant, x)        -> x          -- going to relevant arg.: nothing changes
     _ | r == x           -> Relevant   -- because Relevant is comp.-neutral
-    (Forced{}, x)          -> x
     (Irrelevant, x)      -> Relevant   -- going irrelevant: every thing usable
     (_, Irrelevant)      -> Irrelevant -- otherwise: irrelevant things remain unusable
     (NonStrict, _)       -> Relevant   -- but @NonStrict@s become usable
 
--- | For comparing @Relevance@ ignoring @Forced@.
-ignoreForced :: Relevance -> Relevance
-ignoreForced Forced{}   = Relevant
-ignoreForced Relevant   = Relevant
-ignoreForced NonStrict  = NonStrict
-ignoreForced Irrelevant = Irrelevant
+-- | 'Relevance' forms a semigroup under composition.
+instance Semigroup Relevance where
+  (<>) = composeRelevance
+
+-- | 'Relevant' is the unit.
+instance Monoid Relevance where
+  mempty  = Relevant
+  mappend = (<>)
+
+instance POSemigroup Relevance where
+instance POMonoid Relevance where
+
+instance LeftClosedPOMonoid Relevance where
+  inverseCompose = inverseComposeRelevance
 
 -- | Irrelevant function arguments may appear non-strictly in the codomain type.
 irrToNonStrict :: Relevance -> Relevance
@@ -367,7 +514,7 @@ data Origin
   | Inserted     -- ^ E.g. inserted hidden arguments.
   | Reflected    -- ^ Produced by the reflection machinery.
   | CaseSplit    -- ^ Produced by an interactive case split.
-  deriving (Typeable, Data, Show, Eq, Ord)
+  deriving (Data, Show, Eq, Ord)
 
 instance KillRange Origin where
   killRange = id
@@ -383,7 +530,7 @@ data WithOrigin a = WithOrigin
   { woOrigin :: !Origin
   , woThing  :: a
   }
-  deriving (Typeable, Data, Eq, Ord, Show, Functor, Foldable, Traversable)
+  deriving (Data, Eq, Ord, Show, Functor, Foldable, Traversable)
 
 instance Decoration WithOrigin where
   traverseF f (WithOrigin h a) = WithOrigin h <$> f a
@@ -431,9 +578,9 @@ instance LensOrigin (WithOrigin a) where
 
 data ArgInfo = ArgInfo
   { argInfoHiding       :: Hiding
-  , argInfoRelevance    :: Relevance
+  , argInfoModality     :: Modality
   , argInfoOrigin       :: Origin
-  } deriving (Typeable, Data, Eq, Ord, Show)
+  } deriving (Data, Eq, Ord, Show)
 
 instance KillRange ArgInfo where
   killRange (ArgInfo h r o) = killRange3 ArgInfo h r o
@@ -458,20 +605,69 @@ instance LensHiding ArgInfo where
   setHiding h ai = ai { argInfoHiding = h }
   mapHiding f ai = ai { argInfoHiding = f (argInfoHiding ai) }
 
-instance LensRelevance ArgInfo where
-  getRelevance = argInfoRelevance
-  setRelevance h ai = ai { argInfoRelevance = h }
-  mapRelevance f ai = ai { argInfoRelevance = f (argInfoRelevance ai) }
+instance LensModality ArgInfo where
+  getModality = argInfoModality
+  setModality m ai = ai { argInfoModality = m }
+  mapModality f ai = ai { argInfoModality = f (argInfoModality ai) }
 
 instance LensOrigin ArgInfo where
   getOrigin = argInfoOrigin
   setOrigin o ai = ai { argInfoOrigin = o }
   mapOrigin f ai = ai { argInfoOrigin = f (argInfoOrigin ai) }
 
+-- inherited instances
+
+instance LensRelevance ArgInfo where
+  getRelevance = getRelevanceMod
+  setRelevance = setRelevanceMod
+  mapRelevance = mapRelevanceMod
+
+instance LensQuantity ArgInfo where
+  getQuantity = getQuantityMod
+  setQuantity = setQuantityMod
+  mapQuantity = mapQuantityMod
+
 defaultArgInfo :: ArgInfo
-defaultArgInfo =  ArgInfo { argInfoHiding       = NotHidden
-                          , argInfoRelevance    = Relevant
-                          , argInfoOrigin       = UserWritten }
+defaultArgInfo =  ArgInfo
+  { argInfoHiding       = NotHidden
+  , argInfoModality     = defaultModality
+  , argInfoOrigin       = UserWritten
+  }
+
+-- Accessing through ArgInfo
+
+-- default accessors for Hiding
+
+getHidingArgInfo :: LensArgInfo a => LensGet Hiding a
+getHidingArgInfo = getHiding . getArgInfo
+
+setHidingArgInfo :: LensArgInfo a => LensSet Hiding a
+setHidingArgInfo = mapArgInfo . setHiding
+
+mapHidingArgInfo :: LensArgInfo a => LensMap Hiding a
+mapHidingArgInfo = mapArgInfo . mapHiding
+
+-- default accessors for Modality
+
+getModalityArgInfo :: LensArgInfo a => LensGet Modality a
+getModalityArgInfo = getModality . getArgInfo
+
+setModalityArgInfo :: LensArgInfo a => LensSet Modality a
+setModalityArgInfo = mapArgInfo . setModality
+
+mapModalityArgInfo :: LensArgInfo a => LensMap Modality a
+mapModalityArgInfo = mapArgInfo . mapModality
+
+-- default accessors for Origin
+
+getOriginArgInfo :: LensArgInfo a => LensGet Origin a
+getOriginArgInfo = getOrigin . getArgInfo
+
+setOriginArgInfo :: LensArgInfo a => LensSet Origin a
+setOriginArgInfo = mapArgInfo . setOrigin
+
+mapOriginArgInfo :: LensArgInfo a => LensMap Origin a
+mapOriginArgInfo = mapArgInfo . mapOrigin
 
 
 ---------------------------------------------------------------------------
@@ -481,7 +677,7 @@ defaultArgInfo =  ArgInfo { argInfoHiding       = NotHidden
 data Arg e  = Arg
   { argInfo :: ArgInfo
   , unArg :: e
-  } deriving (Data, Typeable, Ord, Functor, Foldable, Traversable)
+  } deriving (Data, Ord, Functor, Foldable, Traversable)
 
 instance Decoration Arg where
   traverseF f (Arg ai a) = Arg ai <$> f a
@@ -495,16 +691,19 @@ instance SetRange a => SetRange (Arg a) where
 instance KillRange a => KillRange (Arg a) where
   killRange (Arg info a) = killRange2 Arg info a
 
--- | Ignores 'Relevance' and 'Origin'.
+-- | Ignores 'Quantity', 'Relevance', and 'Origin'.
 --   Ignores content of argument if 'Irrelevant'.
 --
 instance Eq a => Eq (Arg a) where
-  Arg (ArgInfo h1 r1 _) x1 == Arg (ArgInfo h2 r2 _) x2 =
-    h1 == h2 && (r1 == Irrelevant || r2 == Irrelevant || x1 == x2)
+  Arg (ArgInfo h1 m1 _) x1 == Arg (ArgInfo h2 m2 _) x2 =
+    h1 == h2 && (isIrrelevant m1 || isIrrelevant m2 || x1 == x2)
     -- Andreas, 2017-10-04, issue #2775, ignore irrelevant arguments during with-abstraction.
+    -- This is a hack, we should not use '(==)' in with-abstraction
+    -- and more generally not use it on Syntax.
+    -- Andrea: except for caching.
 
 instance Show a => Show (Arg a) where
-    show (Arg (ArgInfo h r o) a) = showR r $ showO o $ showH h $ show a
+    show (Arg (ArgInfo h (Modality r q) o) a) = showQ q $ showR r $ showO o $ showH h $ show a
       where
         showH Hidden       s = "{" ++ s ++ "}"
         showH NotHidden    s = "(" ++ s ++ ")"
@@ -514,8 +713,10 @@ instance Show a => Show (Arg a) where
         showR r s = case r of
           Irrelevant   -> "." ++ s
           NonStrict    -> "?" ++ s
-          Forced       -> "!" ++ s
           Relevant     -> "r" ++ s -- Andreas: I want to see it explicitly
+        showQ q s = case q of
+          Quantity0   -> "0" ++ s
+          Quantityω   -> "ω" ++ s
         showO o s = case o of
           UserWritten -> "u" ++ s
           Inserted    -> "i" ++ s
@@ -525,21 +726,39 @@ instance Show a => Show (Arg a) where
 instance NFData e => NFData (Arg e) where
   rnf (Arg a b) = rnf a `seq` rnf b
 
-instance LensHiding (Arg e) where
-  getHiding = getHiding . argInfo
-  mapHiding = mapArgInfo . mapHiding
-
-instance LensRelevance (Arg e) where
-  getRelevance = getRelevance . argInfo
-  mapRelevance = mapArgInfo . mapRelevance
-
-instance LensOrigin (Arg e) where
-  getOrigin = getOrigin . argInfo
-  mapOrigin = mapArgInfo . mapOrigin
-
 instance LensArgInfo (Arg a) where
   getArgInfo        = argInfo
+  setArgInfo ai arg = arg { argInfo = ai }
   mapArgInfo f arg  = arg { argInfo = f $ argInfo arg }
+
+-- The other lenses are defined through LensArgInfo
+
+instance LensHiding (Arg e) where
+  getHiding = getHidingArgInfo
+  setHiding = setHidingArgInfo
+  mapHiding = mapHidingArgInfo
+
+instance LensModality (Arg e) where
+  getModality = getModalityArgInfo
+  setModality = setModalityArgInfo
+  mapModality = mapModalityArgInfo
+
+instance LensOrigin (Arg e) where
+  getOrigin = getOriginArgInfo
+  setOrigin = setOriginArgInfo
+  mapOrigin = mapOriginArgInfo
+
+-- Since we have LensModality, we get relevance and quantity by default
+
+instance LensRelevance (Arg e) where
+  getRelevance = getRelevanceMod
+  setRelevance = setRelevanceMod
+  mapRelevance = mapRelevanceMod
+
+instance LensQuantity (Arg e) where
+  getQuantity = getQuantityMod
+  setQuantity = setQuantityMod
+  mapQuantity = mapQuantityMod
 
 defaultArg :: a -> Arg a
 defaultArg = Arg defaultArgInfo
@@ -596,7 +815,7 @@ data Dom e = Dom
   { domInfo   :: ArgInfo
   , domFinite :: !Bool
   , unDom     :: e
-  } deriving (Typeable, Data, Ord, Functor, Foldable, Traversable)
+  } deriving (Data, Ord, Functor, Foldable, Traversable)
 
 instance Decoration Dom where
   traverseF f (Dom ai b a) = Dom ai b <$> f a
@@ -607,28 +826,47 @@ instance HasRange a => HasRange (Dom a) where
 instance KillRange a => KillRange (Dom a) where
   killRange (Dom info b a) = killRange3 Dom info b a
 
+-- | Ignores 'Origin'.
 instance Eq a => Eq (Dom a) where
-  Dom (ArgInfo h1 r1 _) b1 x1 == Dom (ArgInfo h2 r2 _) b2 x2 =
-    (h1, ignoreForced r1, b1, x1) == (h2, ignoreForced r2, b2, x2)
+  Dom (ArgInfo h1 m1 _) b1 x1 == Dom (ArgInfo h2 m2 _) b2 x2 =
+    (h1, m1, b1, x1) == (h2, m2, b2, x2)
 
 instance Show a => Show (Dom a) where
   show = show . argFromDom
 
-instance LensHiding (Dom e) where
-  getHiding = getHiding . domInfo
-  mapHiding = mapArgInfo . mapHiding
-
-instance LensRelevance (Dom e) where
-  getRelevance = getRelevance . domInfo
-  mapRelevance = mapArgInfo . mapRelevance
-
 instance LensArgInfo (Dom e) where
-  getArgInfo = domInfo
-  mapArgInfo f arg = arg { domInfo = f $ domInfo arg }
+  getArgInfo        = domInfo
+  setArgInfo ai dom = dom { domInfo = ai }
+  mapArgInfo f  dom = dom { domInfo = f $ domInfo dom }
+
+-- The other lenses are defined through LensArgInfo
+
+instance LensHiding (Dom e) where
+  getHiding = getHidingArgInfo
+  setHiding = setHidingArgInfo
+  mapHiding = mapHidingArgInfo
+
+instance LensModality (Dom e) where
+  getModality = getModalityArgInfo
+  setModality = setModalityArgInfo
+  mapModality = mapModalityArgInfo
 
 instance LensOrigin (Dom e) where
-  getOrigin = getOrigin . getArgInfo
-  mapOrigin = mapArgInfo . mapOrigin
+  getOrigin = getOriginArgInfo
+  setOrigin = setOriginArgInfo
+  mapOrigin = mapOriginArgInfo
+
+-- Since we have LensModality, we get relevance and quantity by default
+
+instance LensRelevance (Dom e) where
+  getRelevance = getRelevanceMod
+  setRelevance = setRelevanceMod
+  mapRelevance = mapRelevanceMod
+
+instance LensQuantity (Dom e) where
+  getQuantity = getQuantityMod
+  setQuantity = setQuantityMod
+  mapQuantity = mapQuantityMod
 
 argFromDom :: Dom a -> Arg a
 argFromDom (Dom i _ a) = Arg i a
@@ -650,7 +888,7 @@ data Named name a =
     Named { nameOf     :: Maybe name
           , namedThing :: a
           }
-    deriving (Eq, Ord, Typeable, Data, Functor, Foldable, Traversable)
+    deriving (Eq, Ord, Data, Functor, Foldable, Traversable)
 
 -- | Standard naming.
 type Named_ = Named RString
@@ -708,7 +946,7 @@ data Ranged a = Ranged
   { rangeOf     :: Range
   , rangedThing :: a
   }
-  deriving (Typeable, Data, Functor, Foldable, Traversable)
+  deriving (Data, Functor, Foldable, Traversable)
 
 -- | Thing with no range info.
 unranged :: a -> Ranged a
@@ -763,7 +1001,7 @@ data ConOrigin
   | ConOCon     -- ^ User wrote a constructor (pattern).
   | ConORec     -- ^ User wrote a record (pattern).
   | ConOSplit   -- ^ Generated by interactive case splitting.
-  deriving (Typeable, Data, Show, Eq, Ord, Enum, Bounded)
+  deriving (Data, Show, Eq, Ord, Enum, Bounded)
 
 instance KillRange ConOrigin where
   killRange = id
@@ -778,13 +1016,13 @@ data ProjOrigin
   = ProjPrefix    -- ^ User wrote a prefix projection.
   | ProjPostfix   -- ^ User wrote a postfix projection.
   | ProjSystem    -- ^ Projection was generated by the system.
-  deriving (Typeable, Data, Show, Eq, Ord, Enum, Bounded)
+  deriving (Data, Show, Eq, Ord, Enum, Bounded)
 
 instance KillRange ProjOrigin where
   killRange = id
 
 data DataOrRecord = IsData | IsRecord
-  deriving (Typeable, Data, Eq, Ord, Show)
+  deriving (Data, Eq, Ord, Show)
 
 ---------------------------------------------------------------------------
 -- * Infixity, access, abstract, etc.
@@ -798,7 +1036,7 @@ data TPTPRole = TPTPAxiom
               | TPTPDefinition
               | TPTPHint
               | TPTPType
-              deriving (Eq, Show, Typeable, Data)
+              deriving (Eq, Show, Data)
 
 instance KillRange TPTPRole where
   killRange = id
@@ -809,7 +1047,7 @@ instance NFData TPTPRole where
 -- | Functions can be defined in both infix and prefix style. See
 --   'Agda.Syntax.Concrete.LHS'.
 data IsInfix = InfixDef | PrefixDef
-    deriving (Typeable, Data, Show, Eq, Ord)
+    deriving (Data, Show, Eq, Ord)
 
 -- | Access modifier.
 data Access
@@ -819,7 +1057,7 @@ data Access
   | PublicAccess
   | OnlyQualified  -- ^ Visible from outside, but not exported when opening the module
                              --   Used for qualified constructors.
-    deriving (Typeable, Data, Show, Eq, Ord)
+    deriving (Data, Show, Eq, Ord)
 
 instance Pretty Access where
   pretty = text . \case
@@ -838,14 +1076,14 @@ instance KillRange Access where
 
 -- | Abstract or concrete
 data IsAbstract = AbstractDef | ConcreteDef
-    deriving (Typeable, Data, Show, Eq, Ord)
+    deriving (Data, Show, Eq, Ord)
 
 instance KillRange IsAbstract where
   killRange = id
 
 -- | Is this definition eligible for instance search?
 data IsInstance = InstanceDef | NotInstanceDef
-    deriving (Typeable, Data, Show, Eq, Ord)
+    deriving (Data, Show, Eq, Ord)
 
 instance KillRange IsInstance where
   killRange = id
@@ -859,7 +1097,7 @@ instance NFData IsInstance where
 
 -- | Is this a macro definition?
 data IsMacro = MacroDef | NotMacroDef
-  deriving (Typeable, Data, Show, Eq, Ord)
+  deriving (Data, Show, Eq, Ord)
 
 instance KillRange IsMacro where killRange = id
 instance HasRange  IsMacro where getRange _ = noRange
@@ -874,7 +1112,7 @@ type Arity  = Nat
 -- | The unique identifier of a name. Second argument is the top-level module
 --   identifier.
 data NameId = NameId {-# UNPACK #-} !Word64 {-# UNPACK #-} !Word64
-    deriving (Eq, Ord, Typeable, Data, Generic)
+    deriving (Eq, Ord, Data, Generic)
 
 instance KillRange NameId where
   killRange = id
@@ -902,7 +1140,7 @@ instance Hashable NameId where
 -- | A meta variable identifier is just a natural number.
 --
 newtype MetaId = MetaId { metaId :: Nat }
-    deriving (Eq, Ord, Num, Real, Enum, Integral, Typeable, Data)
+    deriving (Eq, Ord, Num, Real, Enum, Integral, Data)
 
 instance Pretty MetaId where
   pretty (MetaId n) = text $ "_" ++ show n
@@ -932,7 +1170,7 @@ data PositionInName
     -- @foo_bar@.
   | End
     -- ^ The following underscore is at the end of the name: @foo_@.
-  deriving (Show, Eq, Ord, Typeable, Data)
+  deriving (Show, Eq, Ord, Data)
 
 -- | Placeholders are used to represent the underscores in a section.
 
@@ -941,7 +1179,7 @@ data MaybePlaceholder e
   | NoPlaceholder !(Strict.Maybe PositionInName) e
     -- ^ The second argument is used only (but not always) for name
     -- parts other than underscores.
-  deriving (Typeable, Data, Eq, Ord, Functor, Foldable, Traversable, Show)
+  deriving (Data, Eq, Ord, Functor, Foldable, Traversable, Show)
 
 -- | An abbreviation: @noPlaceholder = 'NoPlaceholder'
 -- 'Strict.Nothing'@.
@@ -973,9 +1211,6 @@ newtype InteractionId = InteractionId { interactionId :: Nat }
              , Real
              , Enum
              , Data
-#if __GLASGOW_HASKELL__ <= 708
-             , Typeable
-#endif
              )
 
 instance Show InteractionId where
@@ -996,10 +1231,10 @@ data ImportDirective' a b = ImportDirective
   , impRenaming    :: [Renaming' a b]
   , publicOpen     :: Bool -- ^ Only for @open@. Exports the opened names from the current module.
   }
-  deriving (Typeable, Data, Eq)
+  deriving (Data, Eq)
 
 data Using' a b = UseEverything | Using [ImportedName' a b]
-  deriving (Typeable, Data, Eq)
+  deriving (Data, Eq)
 
 instance Semigroup (Using' a b) where
   UseEverything <> u             = u
@@ -1022,7 +1257,7 @@ isDefaultImportDir _                                             = False
 data ImportedName' a b
   = ImportedModule  b
   | ImportedName    a
-  deriving (Typeable, Data, Eq, Ord)
+  deriving (Data, Eq, Ord)
 
 setImportedName :: ImportedName' a a -> a -> ImportedName' a a
 setImportedName (ImportedName   x) y = ImportedName   y
@@ -1040,7 +1275,7 @@ data Renaming' a b = Renaming
   , renToRange :: Range
     -- ^ The range of the \"to\" keyword.  Retained for highlighting purposes.
   }
-  deriving (Typeable, Data, Eq)
+  deriving (Data, Eq)
 
 -- ** HasRange instances
 
@@ -1111,7 +1346,7 @@ data TerminationCheck m
     -- ^ Treat as terminating (unsafe).  Same effect as 'NoTerminationCheck'.
   | TerminationMeasure Range m
     -- ^ Skip termination checking but use measure instead.
-    deriving (Typeable, Data, Show, Eq, Functor)
+    deriving (Data, Show, Eq, Functor)
 
 instance KillRange m => KillRange (TerminationCheck m) where
   killRange (TerminationMeasure _ m) = TerminationMeasure noRange (killRange m)
