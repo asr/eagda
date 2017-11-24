@@ -139,6 +139,7 @@ instance NamesIn LevelAtom where
 instance NamesIn Literal where
   namesIn l = case l of
     LitNat{}      -> Set.empty
+    LitWord64{}   -> Set.empty
     LitString{}   -> Set.empty
     LitChar{}     -> Set.empty
     LitFloat{}    -> Set.empty
@@ -187,7 +188,7 @@ instance NamesIn (A.Pattern' a) where
     A.RecP _ fs            -> namesIn fs
     A.DotP{}               -> __IMPOSSIBLE__    -- Dot patterns are not allowed in pattern synonyms
     A.EqualP{}             -> __IMPOSSIBLE__    -- Andrea: should we allow these in pattern synonyms?
-    A.WithAppP _ p ps      -> namesIn (p, ps)
+    A.WithP _ p            -> namesIn p
 
 instance NamesIn AmbiguousQName where
   namesIn (AmbQ cs) = namesIn cs

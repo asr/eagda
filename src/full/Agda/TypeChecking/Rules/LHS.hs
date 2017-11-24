@@ -8,16 +8,16 @@ import Prelude hiding (mapM, sequence)
 import Data.Maybe
 
 import Control.Arrow (first, second, (***))
-import Control.Monad hiding (mapM, forM, sequence)
-import Control.Monad.State hiding (mapM, forM, sequence)
-import Control.Monad.Reader hiding (mapM, forM, sequence)
+import Control.Monad
+import Control.Monad.State
+import Control.Monad.Reader
 import Control.Monad.Writer
 import Control.Monad.Trans.Maybe
 
 import Data.Function (on)
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IntMap
-import Data.List (delete, sortBy, stripPrefix, findIndex)
+import Data.List (delete, sortBy, stripPrefix, (\\), findIndex)
 import Data.Monoid
 import Data.Traversable
 import Data.Map (Map)
@@ -46,6 +46,7 @@ import Agda.TypeChecking.Constraints
 import Agda.TypeChecking.Datatypes
 import Agda.TypeChecking.Irrelevance
 import {-# SOURCE #-} Agda.TypeChecking.Empty
+import Agda.TypeChecking.Forcing
 import Agda.TypeChecking.Patterns.Abstract
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Records
@@ -217,7 +218,7 @@ updateInPatterns as ps qs = do
         A.AbsurdP     _     -> __IMPOSSIBLE__
         A.PatternSynP _ _ _ -> __IMPOSSIBLE__
         A.EqualP{}          -> __IMPOSSIBLE__
-        A.WithAppP    _ _ _ -> __IMPOSSIBLE__
+        A.WithP       _ _   -> __IMPOSSIBLE__
       ConP c cpi [] -> do
         let
             dpi :: [DotPatternInst]
@@ -267,7 +268,7 @@ updateInPatterns as ps qs = do
       A.PatternSynP _ _ _ -> __IMPOSSIBLE__
       A.RecP _ _          -> __IMPOSSIBLE__
       A.EqualP{}          -> __IMPOSSIBLE__
-      A.WithAppP _ _ _    -> __IMPOSSIBLE__
+      A.WithP _ _         -> __IMPOSSIBLE__
       where
         makeWildField pi (Arg fi f) = Arg fi $ unnamed $ A.WildP pi
         makeDotField pi o (Arg fi f) = Arg fi $ unnamed $
@@ -310,7 +311,7 @@ problemAllVariables problem =
     isSolved A.AsP{}         = __IMPOSSIBLE__  -- removed by asView
     isSolved A.PatternSynP{} = __IMPOSSIBLE__  -- expanded before
     isSolved A.EqualP{}      = False -- __IMPOSSIBLE__
-    isSolved A.WithAppP{}    = __IMPOSSIBLE__
+    isSolved A.WithP{}       = __IMPOSSIBLE__
 
 -- | For each user-defined pattern variable in the 'Problem', check
 -- that the corresponding data type (if any) does not contain a
@@ -341,7 +342,7 @@ noShadowingOfConstructors mkCall st =
    A.AsP         {} -> __IMPOSSIBLE__ -- removed by asView
    A.LitP        {} -> __IMPOSSIBLE__
    A.PatternSynP {} -> __IMPOSSIBLE__
-   A.WithAppP    {} -> __IMPOSSIBLE__
+   A.WithP       {} -> __IMPOSSIBLE__
    A.VarP (A.BindName x) -> do
     reportSDoc "tc.lhs.shadow" 30 $ vcat
       [ text $ "checking whether pattern variable " ++ prettyShow x ++ " shadows a constructor"
@@ -477,7 +478,7 @@ checkLeftoverDotPatterns ps vs as dpi = do
       A.RecP _ _   -> __IMPOSSIBLE__
       A.PatternSynP _ _ _ -> __IMPOSSIBLE__
       A.EqualP{}   -> __IMPOSSIBLE__
-      A.WithAppP    _ _ _ -> __IMPOSSIBLE__
+      A.WithP       _ _   -> __IMPOSSIBLE__
 
     gatherImplicitDotVars :: DotPatternInst -> TCM [(Int,Projectns)]
     gatherImplicitDotVars (DPI _ (Just _) _ _) = return [] -- Not implicit
@@ -569,7 +570,7 @@ bindLHSVars (p : ps) tel0@(ExtendTel a tel) ret = do
     A.LitP{}        -> __IMPOSSIBLE__
     A.PatternSynP{} -> __IMPOSSIBLE__
     A.EqualP{}      -> __IMPOSSIBLE__
-    A.WithAppP{}    -> __IMPOSSIBLE__
+    A.WithP{}       -> __IMPOSSIBLE__
     where
       bindDummy s = do
         x <- if isUnderscore s then freshNoName_ else unshadowName =<< freshName_ ("." ++ argNameToString s)
@@ -674,6 +675,11 @@ checkLeftHandSide c f ps a withSub' strippedDots = Bench.billToCPS [Bench.Typing
   inTopContext $ do
     (st@(LHSState delta qs problem@(Problem pxs rps dpi sbe) b' psplit), block)
       <- runWriterT $ checkLHS f st0
+
+    -- Update modalities of delta to match the modalities of the variables
+    -- after the forcing translation. We can't perform the forcing translation
+    -- yet, since that would mess with with-clause stripping.
+    delta <- forceTranslateTelescope delta qs
 
     -- check linearity of the pattern,
     -- we only care about user-written variables here.
@@ -1116,7 +1122,10 @@ checkLHS f st@(LHSState tel ip problem target psplit) = do
           let storedPatternType = applyPatSubst rho1 typeOfSplitVar
           -- Also remember if we are a record pattern and from an implicit pattern.
           isRec <- isRecord d
-          let cpi = ConPatternInfo (isRec $> porigin) False (Just storedPatternType)
+          let cpi = ConPatternInfo { conPRecord = isRec $> porigin
+                                   , conPFallThrough = False
+                                   , conPType   = Just storedPatternType
+                                   , conPLazy   = False }
 
           -- compute final context and permutation
           let crho2   = ConP c cpi $ applySubst rho2 $

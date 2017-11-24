@@ -4,6 +4,8 @@ Release notes for Agda version 2.5.4
 Installation and infrastructure
 -------------------------------
 
+* Added support for GHC 8.2.2.
+
 * Removed support for GHC 7.8.4.
 
 Syntax and LaTeX backend
@@ -178,13 +180,46 @@ Language
   at the `postulate`.
   This is to avoid confusing scope errors in similar situations.
 
-  If a top-level module header is inserted manuall, the file is accepted:
+  If a top-level module header is inserted manually, the file is accepted:
 
   ```agda
     module _ where    -- user written module header
     postulate A : Set
     module File where -- inner module with the same name as the file, ok
   ```
+
+### Builtins
+
+* Added support for built-in 64-bit machine words.
+
+  These are defined in `Agda.Builtin.Word` and come with two primitive
+  operations to convert to and from natural numbers.
+
+  ```agda
+    Word64 : Set
+    primWord64ToNat   : Word64 → Nat
+    primWord64FromNat : Nat → Word64
+  ```
+
+  Converting to a natural number is the trivial embedding, and converting from a natural number
+  gives you the remainder modulo 2^64. The proofs of these theorems are not
+  primitive, but can be defined in a library using `primTrustMe`.
+
+  Basic arithmetic operations can be defined on `Word64` by converting to
+  natural numbers, peforming the corresponding operation, and then converting
+  back. The compiler will optimise these to use 64-bit arithmetic. For
+  instance,
+
+  ```agda
+    addWord : Word64 → Word64 → Word64
+    addWord a b = primWord64FromNat (primWord64ToNat a + primWord64ToNat b)
+
+    subWord : Word64 → Word64 → Word64
+    subWord a b = primWord64FromNat (primWord64ToNat a + 18446744073709551616 - primWord64ToNat b)
+  ```
+
+  These compiles (in the GHC backend) to addition and subtraction on
+  `Data.Word.Word64`.
 
 
 Pragmas and options
@@ -196,6 +231,66 @@ Pragmas and options
   ```agda
     {-# OPTIONS --caching #-}
   ```
+
+* BUILTIN pragmas can now appear before the top-level module header
+  and in parametrized modules.
+  [Issue [#2824](https://github.com/agda/agda/issues/2824)]
+  ```agda
+    {-# OPTIONS --rewriting #-}
+    open import Agda.Builtin.Equality
+    {-# BUILTIN REWRITE _≡_ #-}  -- here
+    module TopLevel (A : Set) where
+    {-# BUILTIN REWRITE _≡_ #-}  -- or here
+  ```
+  Note that the following is still illegal:
+  ```agda
+    module _ {a} {A : Set a} where
+      data _≡_ (x : A) : A → Set a where
+        refl : x ≡ x
+      {-# BUILTIN EQUALITY _≡_ #-}
+  ```
+  We cannot bind a built-in which depends on module parameters whose
+  scope we are still in.
+
+* Builtin `NIL` and `CONS` have been merged with `LIST`.
+
+  When binding the `LIST` builtin, `NIL` and `CONS` are bound to
+  the appropriate constructors automatically. This means that instead
+  of writing
+
+  ```agda
+  {-# BUILTIN LIST List #-}
+  {-# BUILTIN NIL  []   #-}
+  {-# BUILTIN CONS _∷_  #-}
+  ```
+
+  you just write
+
+  ```agda
+  {-# BUILTIN LIST List #-}
+  ```
+
+  Attempting to bind `NIL` or `CONS` results in a warning and has otherwise no
+  effect.
+
+Emacs mode
+----------
+
+* Banana brackets have been added to the Agda input method.
+
+   \((   #x2985  LEFT WHITE PARENTHESIS
+   \))   #x2986  RIGHT WHITE PARENTHESIS
+
+Compiler backends
+-----------------
+
+* The GHC backend now automatically compiles BUILTIN LIST to Haskell lists.
+
+  This means that it's no longer necessary to give a COMPILE GHC pragma for the
+  builtin list type. Indeed, doing so has no effect on the compilation and
+  results in a warning.
+
+
 
 Release notes for Agda version 2.5.3
 ====================================

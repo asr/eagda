@@ -1,4 +1,5 @@
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE NondecreasingIndentation #-}
 
 module Agda.TypeChecking.Rules.Builtin
   ( bindBuiltin
@@ -13,7 +14,8 @@ import Control.Applicative hiding (empty)
 import Control.Monad
 import Control.Monad.Reader (ask)
 import Control.Monad.State (get)
-import Data.List (find)
+import Data.List (find, sortBy)
+import Data.Function (on)
 
 import qualified Agda.Syntax.Abstract as A
 import qualified Agda.Syntax.Abstract.Views as A
@@ -44,6 +46,7 @@ import {-# SOURCE #-} Agda.TypeChecking.Rules.Builtin.Coinduction
 import {-# SOURCE #-} Agda.TypeChecking.Rewriting
 
 import Agda.Utils.Except ( MonadError(catchError) )
+import Agda.Utils.Functor
 import Agda.Utils.List
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
@@ -62,6 +65,9 @@ import Agda.Utils.Impossible
 builtinPostulate :: TCM Type -> BuiltinDescriptor
 builtinPostulate = BuiltinPostulate Relevant
 
+findBuiltinInfo :: String -> Maybe BuiltinInfo
+findBuiltinInfo b = find ((b ==) . builtinName) coreBuiltins
+
 coreBuiltins :: [BuiltinInfo]
 coreBuiltins =
   [ (builtinList               |-> BuiltinData (tset --> tset) [builtinNil, builtinCons])
@@ -71,7 +77,7 @@ coreBuiltins =
   , (builtinBool               |-> BuiltinData tset [builtinTrue, builtinFalse])
   , (builtinNat                |-> BuiltinData tset [builtinZero, builtinSuc])
   , (builtinUnit               |-> BuiltinData tset [builtinUnitUnit])  -- actually record, but they are treated the same
-  , (builtinAgdaLiteral        |-> BuiltinData tset [builtinAgdaLitNat, builtinAgdaLitFloat,
+  , (builtinAgdaLiteral        |-> BuiltinData tset [builtinAgdaLitNat, builtinAgdaLitWord64, builtinAgdaLitFloat,
                                                      builtinAgdaLitChar, builtinAgdaLitString,
                                                      builtinAgdaLitQName, builtinAgdaLitMeta])
   , (builtinAgdaPattern        |-> BuiltinData tset [builtinAgdaPatVar, builtinAgdaPatCon, builtinAgdaPatDot,
@@ -83,6 +89,7 @@ coreBuiltins =
   , (builtinAgdaPatProj        |-> BuiltinDataCons (tqname --> tpat))
   , (builtinAgdaPatAbsurd      |-> BuiltinDataCons tpat)
   , (builtinLevel              |-> builtinPostulate tset)
+  , (builtinWord64             |-> builtinPostulate tset)
   , (builtinInteger            |-> BuiltinData tset [builtinIntegerPos, builtinIntegerNegSuc])
   , (builtinIntegerPos         |-> BuiltinDataCons (tnat --> tinteger))
   , (builtinIntegerNegSuc      |-> BuiltinDataCons (tnat --> tinteger))
@@ -247,6 +254,7 @@ coreBuiltins =
   , (builtinAgdaTermMeta         |-> BuiltinDataCons (tmeta --> targs --> tterm))
   , (builtinAgdaTermUnsupported|-> BuiltinDataCons tterm)
   , (builtinAgdaLitNat    |-> BuiltinDataCons (tnat --> tliteral))
+  , (builtinAgdaLitWord64 |-> BuiltinDataCons (tword64 --> tliteral))
   , (builtinAgdaLitFloat  |-> BuiltinDataCons (tfloat --> tliteral))
   , (builtinAgdaLitChar   |-> BuiltinDataCons (tchar --> tliteral))
   , (builtinAgdaLitString |-> BuiltinDataCons (tstring --> tliteral))
@@ -354,6 +362,7 @@ coreBuiltins =
         terrorpart = el primAgdaErrorPart
         tnat       = el primNat
         tint       = el primInteger
+        tword64    = el primWord64
         tunit      = el primUnit
         tinteger   = el primInteger
         tfloat     = el primFloat
@@ -571,23 +580,32 @@ bindBuiltinInt = bindAndSetHaskellCode builtinInteger "= type Integer"
 
 bindBuiltinNat :: Term -> TCM ()
 bindBuiltinNat t = do
-  nat <- fromMaybe __IMPOSSIBLE__ <$> getDef t
-  def <- theDef <$> getConstInfo nat
-  case def of
-    Datatype { dataCons = [c1, c2] } -> do
-      bindBuiltinName builtinNat t
-      let getArity c = arity <$> (normalise . defType =<< getConstInfo c)
-      [a1, a2] <- mapM getArity [c1, c2]
-      let (zero, suc) | a2 > a1   = (c1, c2)
-                      | otherwise = (c2, c1)
-          tnat = el primNat
-          rerange = setRange (getRange nat)
-      addHaskellPragma nat "= type Integer"
-      bindBuiltinInfo (BuiltinInfo builtinZero $ BuiltinDataCons tnat)
-                      (A.Con $ unambiguous $ rerange zero)
-      bindBuiltinInfo (BuiltinInfo builtinSuc  $ BuiltinDataCons (tnat --> tnat))
-                      (A.Con $ unambiguous $ rerange suc)
-    _ -> __IMPOSSIBLE__
+  bindBuiltinData builtinNat t
+  name <- fromMaybe __IMPOSSIBLE__ <$> getDef t
+  addHaskellPragma name "= type Integer"
+
+-- | Only use for datatypes with distinct arities of constructors.
+--   Binds the constructors together with the datatype.
+bindBuiltinData :: String -> Term -> TCM ()
+bindBuiltinData s t = do
+  bindBuiltinName s t
+  name <- fromMaybe __IMPOSSIBLE__ <$> getDef t
+  Datatype{ dataCons = cs } <- theDef <$> getConstInfo name
+  let getArity c = do
+        Constructor{ conArity = a } <- theDef <$> getConstInfo c
+        return a
+      getBuiltinArity (BuiltinDataCons t) = arity <$> t
+      getBuiltinArity _ = __IMPOSSIBLE__
+      sortByM f xs = map fst . sortBy (compare `on` snd) . zip xs <$> mapM f xs
+  -- Order constructurs by arity
+  cs <- sortByM getArity cs
+  -- Do the same for the builtins
+  let bcis = fromMaybe __IMPOSSIBLE__ $ do
+        BuiltinData _ bcs <- builtinDesc <$> findBuiltinInfo s
+        mapM findBuiltinInfo bcs
+  bcis <- sortByM (getBuiltinArity . builtinDesc) bcis
+  unless (length cs == length bcis) __IMPOSSIBLE__  -- we already checked this
+  zipWithM_ (\ c bci -> bindBuiltinInfo bci (A.Con $ unambiguous $ setRange (getRange name) c)) cs bcis
 
 bindBuiltinUnit :: Term -> TCM ()
 bindBuiltinUnit t = do
@@ -663,6 +681,7 @@ bindBuiltinInfo (BuiltinInfo s d) e = do
            | s == builtinNat      -> bindBuiltinNat      v
            | s == builtinInteger  -> bindBuiltinInt      v
            | s == builtinUnit     -> bindBuiltinUnit     v
+           | s == builtinList     -> bindBuiltinData s   v
            | otherwise            -> bindBuiltinName s   v
 
       BuiltinDataCons t -> do
@@ -720,6 +739,7 @@ bindBuiltinInfo (BuiltinInfo s d) e = do
                 when (s == builtinChar)   $ addHaskellPragma q "= type Char"
                 when (s == builtinString) $ addHaskellPragma q "= type Data.Text.Text"
                 when (s == builtinFloat)  $ addHaskellPragma q "= type Double"
+                when (s == builtinWord64) $ addHaskellPragma q "= type MAlonzo.RTE.Word64"
                 bindBuiltinName s v
               _        -> err
           _ -> err
@@ -734,18 +754,37 @@ bindBuiltinInfo (BuiltinInfo s d) e = do
 -- | Bind a builtin thing to an expression.
 bindBuiltin :: String -> ResolvedName -> TCM ()
 bindBuiltin b x = do
-  unlessM ((0 ==) <$> getContextSize) $ typeError $ BuiltinInParameterisedModule b
+  unlessM ((0 ==) <$> getContextSize) $ do
+    -- Andreas, 2017-11-01, issue #2824
+    -- Only raise an error if the name for the builtin is defined in a parametrized module.
+    let failure = typeError $ BuiltinInParameterisedModule b
+    -- Get the non-empty list of AbstractName for x
+    xs <- case x of
+      VarName{}            -> failure
+      DefinedName _ x      -> return $ x :! []
+      FieldName xs         -> return xs
+      ConstructorName xs   -> return xs
+      PatternSynResName xs -> failure
+      UnknownName          -> failure
+    -- For ambiguous names, we check all of their definitions:
+    unlessM (allM xs $ ((0 ==) . size) <.> lookupSection . qnameModule . anameName) $
+      failure
+  -- Since the name was define in a parameter-free context, we can switch to the empty context.
+  -- (And we should!)
+  inTopContext $ do
   if | b == builtinRefl  -> warning $ OldBuiltin b builtinEquality
-     | b == builtinZero  -> nowNat b
-     | b == builtinSuc   -> nowNat b
+     | b == builtinZero  -> now builtinNat b
+     | b == builtinSuc   -> now builtinNat b
+     | b == builtinNil   -> now builtinList b
+     | b == builtinCons  -> now builtinList b
      | b == builtinInf   -> bindBuiltinInf x
      | b == builtinSharp -> bindBuiltinSharp x
      | b == builtinFlat  -> bindBuiltinFlat x
      | b == builtinEquality -> bindBuiltinEquality x
-     | Just i <- find ((b ==) . builtinName) coreBuiltins -> bindBuiltinInfo i (A.nameExpr x)
+     | Just i <- findBuiltinInfo b -> bindBuiltinInfo i (A.nameExpr x)
      | otherwise -> typeError $ NoSuchBuiltinName b
   where
-    nowNat b = warning $ OldBuiltin b builtinNat
+    now new b = warning $ OldBuiltin b new
 
 isUntypedBuiltin :: String -> Bool
 isUntypedBuiltin b = elem b [builtinFromNat, builtinFromNeg, builtinFromString]
@@ -757,10 +796,13 @@ bindUntypedBuiltin b = \case
   _ -> genericError $ "The argument to BUILTIN " ++ b ++ " must be a defined unambiguous name"
 
 -- | Bind a builtin thing to a new name.
+--
+-- Since their type is closed, it does not matter whether we are in a
+-- parameterized module when we declare them.
+-- We simply ignore the parameters.
 bindBuiltinNoDef :: String -> A.QName -> TCM ()
-bindBuiltinNoDef b q = do
-  unlessM ((0 ==) <$> getContextSize) $ typeError $ BuiltinInParameterisedModule b
-  case lookup b $ map (\ (BuiltinInfo b i) -> (b, i)) coreBuiltins of
+bindBuiltinNoDef b q = inTopContext $ do
+  case builtinDesc <$> findBuiltinInfo b of
     Just (BuiltinPostulate rel mt) -> do
       t <- mt
       addConstant q $ defaultDefn (setRelevance rel defaultArgInfo) q t def

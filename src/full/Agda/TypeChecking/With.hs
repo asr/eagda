@@ -15,9 +15,11 @@ import Data.Monoid
 import Data.Traversable (traverse)
 
 import Agda.Syntax.Common
+import Agda.Syntax.Concrete.Pattern (IsWithP(..))
 import Agda.Syntax.Internal as I
 import Agda.Syntax.Internal.Pattern
 import qualified Agda.Syntax.Abstract as A
+import Agda.Syntax.Abstract.Pattern as A
 import Agda.Syntax.Abstract.Views
 import Agda.Syntax.Info
 import Agda.Syntax.Position
@@ -195,7 +197,6 @@ withArguments vs as = concat $ for (zip vs as) $ \case
   (v, OtherType a) -> [v]
   (prf, eqt@(EqualityType s _eq _pars _t v _v')) -> [unArg v, prf]
 
-
 -- | Compute the clauses for the with-function given the original patterns.
 buildWithFunction
   :: [Name]               -- ^ Names of the module parameters of the parent function.
@@ -214,9 +215,13 @@ buildWithFunction
 buildWithFunction cxtNames f aux t delta qs npars withSub perm n1 n cs = mapM buildWithClause cs
   where
     -- Nested with-functions will iterate this function once for each parent clause.
-    buildWithClause (A.Clause (A.SpineLHS i _ ps wps) inheritedDots inhStrippedDots rhs wh catchall) = do
-      let (wps0, wps1) = splitAt n wps
-          ps0          = map defaultNamedArg wps0
+    buildWithClause (A.Clause (A.SpineLHS i _ allPs) inheritedDots inhStrippedDots rhs wh catchall) = do
+      let (ps, wps)    = splitOffTrailingWithPatterns allPs
+          (wps0, wps1) = splitAt n wps
+          ps0          = map (updateNamedArg fromWithP) wps0
+            where
+            fromWithP (A.WithP _ p) = p
+            fromWithP _ = __IMPOSSIBLE__
       reportSDoc "tc.with" 50 $ text "inheritedDots:" <+> vcat [ prettyTCM x <+> text "=" <+> prettyTCM v <+> text ":" <+> prettyTCM a
                                                                | A.NamedDot x v a <- inheritedDots ]
       rhs <- buildRHS rhs
@@ -225,8 +230,10 @@ buildWithFunction cxtNames f aux t delta qs npars withSub perm n1 n cs = mapM bu
                                   vcat [ prettyTCM e <+> text "==" <+> prettyTCM v <+> (text ":" <+> prettyTCM t)
                                        | A.StrippedDot e v t <- strippedDots ]
       let (ps1, ps2) = splitAt n1 ps'
-      let result = A.Clause (A.SpineLHS i aux (ps1 ++ ps0 ++ ps2) wps1) (inheritedDots ++ namedDots)
-                                                                        (inhStrippedDots ++ strippedDots) rhs wh catchall
+      let result = A.Clause (A.SpineLHS i aux $ ps1 ++ ps0 ++ ps2 ++ wps1)
+                     (inheritedDots ++ namedDots)
+                     (inhStrippedDots ++ strippedDots)
+                     rhs wh catchall
       reportSDoc "tc.with" 20 $ vcat
         [ text "buildWithClause returns" <+> prettyA result
         ]
@@ -250,42 +257,40 @@ buildWithFunction cxtNames f aux t delta qs npars withSub perm n1 n cs = mapM bu
     permuteNamedDots (A.Clause lhs dots sdots rhs wh catchall) =
       A.Clause lhs (applySubst withSub dots) (applySubst withSub sdots) rhs wh catchall
 
+
+-- The arguments of @stripWithClausePatterns@ are documented
+-- at its type signature.
+-- The following is duplicate information, but may help reading the examples below.
+--
+-- [@Δ@]   context bound by lhs of original function.
+-- [@f@]   name of @with@-function.
+-- [@t@]   type of the original function.
+-- [@qs@]  internal patterns for original function.
+-- [@np@]  number of module parameters in @qs@
+-- [@π@]   permutation taking @vars(qs)@ to @support(Δ)@.
+-- [@ps@]  patterns in with clause (eliminating type @t@).
+-- [@ps'@] patterns for with function (presumably of type @Δ@).
+
 {-| @stripWithClausePatterns cxtNames parent f t Δ qs np π ps = ps'@
-
-[@Δ@]   context bound by lhs of original function.
-
-[@f@]   name of @with@-function.
-
-[@t@]   type of the original function.
-
-[@qs@]  internal patterns for original function.
-
-[@np@]  number of module parameters in @qs@
-
-[@π@]   permutation taking @vars(qs)@ to @support(Δ)@.
-
-[@ps@]  patterns in with clause (eliminating type @t@).
-
-[@ps'@] patterns for with function (presumably of type @Δ@).
 
 Example:
 
 @
-record Stream (A : Set) : Set where
-  coinductive
-  constructor delay
-  field       force : A × Stream A
+  record Stream (A : Set) : Set where
+    coinductive
+    constructor delay
+    field       force : A × Stream A
 
-record SEq (s t : Stream A) : Set where
-  coinductive
-  field
-    ~force : let a , as = force s
-                 b , bs = force t
-             in  a ≡ b × SEq as bs
+  record SEq (s t : Stream A) : Set where
+    coinductive
+    field
+      ~force : let a , as = force s
+                   b , bs = force t
+               in  a ≡ b × SEq as bs
 
-test : (s : Nat × Stream Nat) (t : Stream Nat) → SEq (delay s) t → SEq t (delay s)
-~force (test (a     , as) t p) with force t
-~force (test (suc n , as) t p) | b , bs = {!!}
+  test : (s : Nat × Stream Nat) (t : Stream Nat) → SEq (delay s) t → SEq t (delay s)
+  ~force (test (a     , as) t p) with force t
+  ~force (test (suc n , as) t p) | b , bs = {!!}
 @
 
 With function:
@@ -307,24 +312,24 @@ Resulting with-function clause is:
   f t (b , bs) (suc n) as t p
 @
 
-Note: stripWithClausePatterns factors @ps@ through @qs@, thus
+Note: stripWithClausePatterns factors __@ps@__ through __@qs@__, thus
 
 @
   ps = qs[ps']
 @
 
 where @[..]@ is to be understood as substitution.
-The projection patterns have vanished from @ps'@ (as they are already in @qs@).
+The projection patterns have vanished from __@ps'@__ (as they are already in __@qs@__).
 -}
 
 stripWithClausePatterns
-  :: [Name]                   -- ^ Names of the module parameters of the parent function
-  -> QName                    -- ^ Name of the parent function.
-  -> QName                    -- ^ Name of with-function.
+  :: [Name]                   -- ^ __@cxtNames@__ names of the module parameters of the parent function
+  -> QName                    -- ^ __@parent@__ name of the parent function.
+  -> QName                    -- ^ __@f@__   name of with-function.
   -> Type                     -- ^ __@t@__   top-level type of the original function.
   -> Telescope                -- ^ __@Δ@__   context of patterns of parent function.
   -> [NamedArg DeBruijnPattern] -- ^ __@qs@__  internal patterns for original function.
-  -> Nat                      -- ^ __@npars@__ number of module parameters is @qs@.
+  -> Nat                      -- ^ __@npars@__ number of module parameters in @qs@.
   -> Permutation              -- ^ __@π@__   permutation taking @vars(qs)@ to @support(Δ)@.
   -> [NamedArg A.Pattern]     -- ^ __@ps@__  patterns in with clause (eliminating type @t@).
   -> TCM ([A.NamedDotPattern], [A.StrippedDotPattern], [NamedArg A.Pattern]) -- ^ __@ps'@__ patterns for with function (presumably of type @Δ@).
@@ -358,22 +363,7 @@ stripWithClausePatterns cxtNames parent f t delta qs npars perm ps = do
     [ nest 2 $ text "ps' = " <+> fsep (punctuate comma $ map prettyA ps')
     , nest 2 $ text "psp = " <+> fsep (punctuate comma $ map prettyA $ psp)
     ]
-  -- Andreas, 2014-03-05 Issue 142:
-  -- In some cases, permute throws away some dot patterns of ps'
-  -- which are then never checked.
-  if True then return (namedDots, strippedDots, psp) else do
-    -- Andreas, 2014-03-05 Disabled the fix for issue 142, the following is dead code:
-    forM_ (permute (droppedP perm) ps') $ \ p -> setCurrentRange p $ do
-      reportSDoc "tc.with.strip" 10 $ text "warning: dropped pattern " <+> prettyA p
-      reportSDoc "tc.with.strip" 60 $ text $ show p
-      case namedArg p of
-        A.DotP info o e -> case unScope e of
-          A.Underscore{} -> return ()
-          e | o == UserWritten -> typeError $ GenericError $
-            "This inaccessible pattern is never checked, so only _ allowed here"
-          _ -> return ()
-        _ -> return ()
-    return (namedDots, strippedDots, psp)
+  return (namedDots, strippedDots, psp)
   where
 
     strip
@@ -462,7 +452,14 @@ stripWithClausePatterns cxtNames parent f t delta qs npars perm ps = do
 
         VarP x  -> (p :) <$> recurse (var (dbPatVarIndex x))
 
-        AbsurdP p -> __IMPOSSIBLE__
+        AbsurdP (VarP x) -> case namedArg p of
+          A.AbsurdP _info -> (p :) <$> recurse (var (dbPatVarIndex x))
+          A.WildP _info   -> (p :) <$> recurse (var (dbPatVarIndex x))
+          _ -> mismatch
+
+        AbsurdP q -> do
+          reportSDoc "impossible" 10 $ text "AbsurdP" <+> prettyTCM q
+          __IMPOSSIBLE__
 
         DotP o v  -> case namedArg p of
           A.DotP r o e  -> do

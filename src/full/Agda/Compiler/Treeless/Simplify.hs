@@ -81,17 +81,36 @@ simplify FunctionKit{..} = simpl
   where
     simpl = rewrite' >=> unchainCase >=> \ t -> case t of
 
-      TDef{}         -> pure t
-      TPrim{}        -> pure t
-
-      TVar x  -> do
-        v <- lookupVar x
-        pure $ if isAtomic v then v else t
+      TDef{}  -> pure t
+      TPrim{} -> pure t
+      TVar{}  -> pure t
 
       TApp (TDef f) [TLit (LitNat _ 0), m, n, m']
         -- div/mod are equivalent to quot/rem on natural numbers.
         | m == m', Just f == divAux -> simpl $ tOp PQuot n (tPlusK 1 m)
         | m == m', Just f == modAux -> simpl $ tOp PRem n (tPlusK 1 m)
+
+      -- Word64 primitives --
+
+      --  toWord (a ∙ b) == toWord a ∙64 toWord b
+      TPFn PITo64 (TPOp op a b)
+        | Just op64 <- opTo64 op -> simpl $ tOp op64 (TPFn PITo64 a) (TPFn PITo64 b)
+        where
+          opTo64 op = lookup op [(PAdd, PAdd64), (PSub, PSub64), (PMul, PMul64),
+                                 (PQuot, PQuot64), (PRem, PRem64)]
+
+      -- (fromWord a == fromWord b) = (a ==64 b)
+      TPOp op (TPFn P64ToI a) (TPFn P64ToI b)
+        | Just op64 <- opTo64 op -> simpl $ tOp op64 a b
+        where
+          opTo64 op = lookup op [(PEqI, PEq64), (PLt, PLt64)]
+
+      -- toWord/fromWord k == fromIntegral k
+      TPFn PITo64 (TLit (LitNat r n))    -> pure $ TLit (LitWord64 r (fromIntegral n))
+      TPFn P64ToI (TLit (LitWord64 r n)) -> pure $ TLit (LitNat r (fromIntegral n))
+
+      -- toWord (fromWord a) == a
+      TPFn PITo64 (TPFn P64ToI a) -> simpl a
 
       TApp (TPrim _) _ -> pure t  -- taken care of by rewrite'
 
@@ -193,10 +212,14 @@ simplify FunctionKit{..} = simpl
     simplPrim t = pure t
 
     simplPrim' :: TTerm -> TTerm
+    simplPrim' (TApp (TPrim PSeq) [u, v]) | u == v = v
     simplPrim' (TApp (TPrim PLt) [u, v])
       | Just (PAdd, k, u) <- constArithView u,
         Just (PAdd, j, v) <- constArithView v,
         k == j = tOp PLt u v
+      | Just (PAdd, k, v) <- constArithView v,
+        TApp (TPrim P64ToI) [u] <- u,
+        k >= 2^64, Just trueCon <- true = TCon trueCon
     simplPrim' (TApp (TPrim op) [u, v])
       | elem op [PGeq, PLt, PEqI]
       , Just (PAdd, k, u) <- constArithView u
@@ -206,9 +229,17 @@ simplify FunctionKit{..} = simpl
         Just (op2, j, v) <- constArithView v,
         op1 == op2, k == j,
         elem op1 [PAdd, PSub] = tOp PEqI u v
-    simplPrim' (TApp (TPrim PMul) [u, v])
-      | Just 0 <- intView u = tInt 0
-      | Just 0 <- intView v = tInt 0
+    simplPrim' (TPOp op u v)
+      | zeroL, isMul || isDiv = tInt 0
+      | zeroL, isAdd          = v
+      | zeroR, isMul          = tInt 0
+      | zeroR, isAdd || isSub = u
+      where zeroL = Just 0 == intView u || Just 0 == word64View u
+            zeroR = Just 0 == intView v || Just 0 == word64View v
+            isAdd = elem op [PAdd, PAdd64]
+            isSub = elem op [PSub, PSub64]
+            isMul = elem op [PMul, PMul64]
+            isDiv = elem op [PQuot, PQuot64, PRem, PRem64]
     simplPrim' (TApp (TPrim op) [u, v])
       | Just u <- negView u,
         Just v <- negView v,
@@ -281,7 +312,7 @@ simplify FunctionKit{..} = simpl
     tLet e (TVar 0) = e
     tLet e b        = TLet e b
 
-    tCase :: Int -> CaseType -> TTerm -> [TAlt] -> S TTerm
+    tCase :: Int -> CaseInfo -> TTerm -> [TAlt] -> S TTerm
     tCase x t d [] = pure d
     tCase x t d bs
       | isUnreachable d =
@@ -308,11 +339,11 @@ simplify FunctionKit{..} = simpl
         overlapped _              _              = False
 
     -- | Drop unreachable cases for Nat and Int cases.
-    pruneLitCases :: Int -> CaseType -> TTerm -> [TAlt] -> S TTerm
-    pruneLitCases x CTNat d bs =
+    pruneLitCases :: Int -> CaseInfo -> TTerm -> [TAlt] -> S TTerm
+    pruneLitCases x t d bs | CTNat == caseType t =
       case complete bs [] Nothing of
-        Just bs' -> tCase x CTNat tUnreachable bs'
-        Nothing  -> return $ TCase x CTNat d bs
+        Just bs' -> tCase x t tUnreachable bs'
+        Nothing  -> return $ TCase x t d bs
       where
         complete bs small (Just upper)
           | null $ [0..upper - 1] List.\\ small = Just []
@@ -321,8 +352,10 @@ simplify FunctionKit{..} = simpl
         complete (b@(TAGuard (TApp (TPrim PGeq) [TVar y, TLit (LitNat _ j)]) _) : bs) small upper | x == y =
           (b :) <$> complete bs small (Just $ maybe j (min j) upper)
         complete _ _ _ = Nothing
-    pruneLitCases x CTInt d bs = return $ TCase x CTInt d bs -- TODO
-    pruneLitCases x t d bs = return $ TCase x t d bs
+
+    pruneLitCases x t d bs
+      | CTInt == caseType t = return $ TCase x t d bs -- TODO
+      | otherwise           = return $ TCase x t d bs
 
     tCase' x t d [] = return d
     tCase' x t d bs = pruneLitCases x t d bs

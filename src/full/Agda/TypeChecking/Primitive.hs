@@ -25,6 +25,7 @@ import qualified Data.Set as Set
 import Data.Maybe
 import Data.Traversable (traverse)
 import Data.Monoid (mempty)
+import Data.Word
 
 import Numeric.IEEE ( IEEE(identicalIEEE) )
 
@@ -110,6 +111,7 @@ instance PrimTerm a => PrimType a where
 
 class    PrimTerm a       where primTerm :: a -> TCM Term
 instance PrimTerm Integer where primTerm _ = primInteger
+instance PrimTerm Word64  where primTerm _ = primWord64
 instance PrimTerm Bool    where primTerm _ = primBool
 instance PrimTerm Char    where primTerm _ = primChar
 instance PrimTerm Double  where primTerm _ = primFloat
@@ -137,6 +139,7 @@ class ToTerm a where
   toTermR = (pure .) <$> toTerm
 
 instance ToTerm Nat     where toTerm = return $ Lit . LitNat noRange . toInteger
+instance ToTerm Word64  where toTerm = return $ Lit . LitWord64 noRange
 instance ToTerm Lvl     where toTerm = return $ Level . Max . (:[]) . ClosedLevel . unLvl
 instance ToTerm Double  where toTerm = return $ Lit . LitFloat noRange
 instance ToTerm Char    where toTerm = return $ Lit . LitChar noRange
@@ -271,6 +274,11 @@ instance FromTerm Nat where
   fromTerm = fromLiteral $ \l -> case l of
     LitNat _ n -> Just $ fromInteger n
     _          -> Nothing
+
+instance FromTerm Word64 where
+  fromTerm = fromLiteral $ \ case
+    LitWord64 _ n -> Just n
+    _             -> Nothing
 
 instance FromTerm Lvl where
   fromTerm = fromReducedTerm $ \l -> case l of
@@ -459,86 +467,6 @@ imax x y = do
   y' <- y
   intervalUnview (IMax (argN x') (argN y'))
 
--- primCoe :: TCM PrimitiveImpl
--- primCoe = do
---   t    <- runNamesT [] $
---           hPi' "a" (el $ cl primLevel) $ \ a -> let seta = Sort . tmSort <$> a in
---           hPi' "A" (sort . tmSort <$> a) $ \ bA ->
---           hPi' "B" (sort . tmSort <$> a) $ \ bB ->
---           nPi' "Q" (El <$> (sortSuc <$> a) <*> cl primPath <#> (lvlSuc <$> a) <#> seta <@> bA <@> bB) $ \ bQ ->
---           nPi' "p" (elInf $ cl primInterval) $ \ p ->
---           nPi' "q" (elInf $ cl primInterval) $ \ q ->
---           (el' a $ bQ <@@> (bA,bB,p)) -->
---           (el' a $ bQ <@@> (bA,bB,q))
---   return $ PrimImpl t $ primFun __IMPOSSIBLE__ 7 $ \ ts -> do
- --    app <- getPrimitiveTerm' "primPathApply"
- --    case (ts,app) of
- --      ([l,a,b,t,p,q,x],Just app) -> do
- --        let
- --          u = apply app $ map (raise 1) [l,l{- Wrong -},setHiding Hidden a,setHiding Hidden b,t] ++ [defaultArg (var 0)]
- --        (p', q') <- normalise' (p, q)
- --        if p' == q' then redReturn (unArg x)
- --          else do
- --            u' <- normalise' u
- --            if occurrence 0 u' == NoOccurrence then return $ YesReduction YesSimplification (unArg x)
- --                                               else return $ NoReduction (map notReduced ts)
- --      _         -> __IMPOSSIBLE__
- -- where
- --   tmLvlSuc t = Max [Plus 1 $ NeutralLevel mempty $ t]
- --   sortSuc = Type . tmLvlSuc
- --   lvlSuc = Level . tmLvlSuc
-
-primPathAbs' :: TCM PrimitiveImpl
-primPathAbs' = do
-  t <- runNamesT [] $
-       hPi' "a" (el $ cl primLevel) $ \ a ->
-       hPi' "A" (sort . tmSort <$> a) $ \ bA ->
-       nPi' "f" (elInf (cl primInterval) --> el' a bA) $ \ f ->
-       el' a $ cl primPath <#> a <#> bA <@> (f <@> cl primIZero)
-                                        <@> (f <@> cl primIOne)
-  return $ PrimImpl t $ primFun __IMPOSSIBLE__ 3 $ \ ts -> do
-    case ts of
-     [a,bA,f] -> redReturn (unArg f)
-     _ -> __IMPOSSIBLE__
-
-primPathApply :: TCM PrimitiveImpl
-primPathApply = do
-  t <- runNamesT [] $
-           hPi' "a" (el (cl primLevel)) $ \ a ->
-           hPi' "A" (sort . tmSort <$> a) $ \ bA ->
-           hPi' "x" (el' a bA) $ \ x ->
-           hPi' "y" (el' a bA) $ \ y ->
-           (el' a $ cl primPath <#> a <#> bA <@> x <@> y)
-            --> elInf (cl primInterval) --> (el' a bA)
-  return $ PrimImpl t $ primFun __IMPOSSIBLE__ 5 $ \ ts -> do
-    case ts of
-      [l,a,x,y,p] -> do
-        redReturn $ runNames [] $ do
-          [p,x,y] <- mapM (open . unArg) [p,x,y]
-          lam "i" $ \ i -> do
-               [p,x,y,i] <- sequence [p,x,y,i]
-               pure $ p `applyE` [IApply x y i]
-      _ -> __IMPOSSIBLE__
-
-primPathPApply :: TCM PrimitiveImpl
-primPathPApply = do
-  t <- runNamesT [] $
-           hPi' "a" (el (cl primLevel)) $ \ a ->
-           hPi' "A" (elInf (cl primInterval) --> (sort . tmSort <$> a)) $ \ bA ->
-           hPi' "x" (el' a (bA <@> cl primIZero)) $ \ x ->
-           hPi' "y" (el' a (bA <@> cl primIOne)) $ \ y ->
-           (el' a $ cl primPathP <#> a <#> bA <@> x <@> y)
-            --> (nPi' "i" (elInf (cl primInterval)) $ \ i -> (el' a (bA <@> i)))
-  return $ PrimImpl t $ primFun __IMPOSSIBLE__ 5 $ \ ts -> do
-    case ts of
-      [l,a,x,y,p] -> do
-        redReturn $ runNames [] $ do
-          [p,x,y] <- mapM (open . unArg) [p,x,y]
-          lam "i" $ \ i -> do
-               [p,x,y,i] <- sequence [p,x,y,i]
-               pure $ p `applyE` [IApply x y i]
-      _ -> __IMPOSSIBLE__
-
 -- ∀ {a}{c}{A : Set a}{x : A}(C : ∀ y → Id x y → Set c) → C x (conid i1 (\ i → x)) → ∀ {y} (p : Id x y) → C y p
 primIdJ :: TCM PrimitiveImpl
 primIdJ = do
@@ -563,22 +491,24 @@ primIdJ = do
     let imax x y = do x' <- x; y' <- y; pure $ unview (IMax (argN x') (argN y'))
         imin x y = do x' <- x; y' <- y; pure $ unview (IMin (argN x') (argN y'))
         ineg x = unview . INeg . argN <$> x
-    comp   <- getPrimitiveTerm' "primComp"
-    papply <- getPrimitiveTerm' "primPathApply"
-    case (ts,comp,papply) of
-     ([la,lc,a,x,c,d,y,eq], Just comp, Just papply) -> do
+    mcomp <- getPrimitiveTerm' "primComp"
+    case ts of
+     [la,lc,a,x,c,d,y,eq] -> do
        seq    <- reduceB' eq
        case ignoreSharing $ unArg $ ignoreBlocking $ seq of
-         (Def q [Apply la,Apply a,Apply x,Apply y,Apply phi,Apply p]) | Just q == conidn -> do
+         (Def q [Apply la,Apply a,Apply x,Apply y,Apply phi,Apply p])
+           | Just q == conidn, Just comp <- mcomp -> do
           redReturn $ runNames [] $ do
              [lc,c,d,la,a,x,y,phi,p] <- mapM (open . unArg) [lc,c,d,la,a,x,y,phi,p]
-             let w = pure papply <#> la <#> a <#> x <#> y <@> p
+             let w i = do
+                   [x,y,p,i] <- sequence [x,y,p,i]
+                   pure $ p `applyE` [IApply x y i]
              pure comp <#> (lam "i" $ \ _ -> lc)
                        <@> (lam "i" $ \ i ->
-                              c <@> (w <@> i)
-                                <@> (pure conid <#> la <#> a <#> x <#> (w <@> i)
+                              c <@> (w i)
+                                <@> (pure conid <#> la <#> a <#> x <#> (w i)
                                                 <@> (phi `imax` ineg i)
-                                                <@> (lam "j" $ \ j -> w <@> imin i j)))
+                                                <@> (lam "j" $ \ j -> w $ imin i j)))
                        <@> phi
                        <@> (lam "i" $ \ _ -> nolam <$> d) -- TODO block
                        <@> d
@@ -871,6 +801,10 @@ primComp = do
 
   compData l ps sc sphi u a0 = do
     tEmpty <- fromMaybe __IMPOSSIBLE__ <$> getBuiltin' builtinIsOneEmpty
+    constrForm <- do
+      mz <- getBuiltin' builtinZero
+      ms <- getBuiltin' builtinSuc
+      return $ \ t -> fromMaybe t (constructorForm' mz ms t)
     su  <- reduceB' u
     sa0 <- reduceB' a0
     view   <- intervalView'
@@ -888,11 +822,11 @@ primComp = do
                                                             <#> (ilam "o" $ \ _ -> c <@> i)
                    _     -> su
         sameConHead h u = allComponents unview phi u $ \ t ->
-          case ignoreSharing t of
+          case ignoreSharing $ constrForm t of
             Con h' _ _ -> h == h'
             _        -> False
 
-    case ignoreSharing a0 of
+    case ignoreSharing $ constrForm a0 of
       Con h _ args -> do
         ifM (not <$> sameConHead h u) noRed $ do
           Constructor{ conComp = cm } <- theDef <$> getConstInfo (conName h)
@@ -1596,6 +1530,10 @@ primitiveFunctions = Map.fromList
   , "primNatEquality"     |-> mkPrimFun2 ((==) :: Rel Nat)
   , "primNatLess"         |-> mkPrimFun2 ((<)  :: Rel Nat)
 
+  -- Machine words
+  , "primWord64ToNat"     |-> mkPrimFun1 (fromIntegral :: Word64 -> Nat)
+  , "primWord64FromNat"   |-> mkPrimFun1 (fromIntegral :: Nat -> Word64)
+
   -- Level functions
   , "primLevelZero"       |-> mkPrimLevelZero
   , "primLevelSuc"        |-> mkPrimLevelSuc
@@ -1664,19 +1602,15 @@ primitiveFunctions = Map.fromList
   , "primMetaEquality"    |-> mkPrimFun2 ((==) :: Rel MetaId)
   , "primMetaLess"        |-> mkPrimFun2 ((<) :: Rel MetaId)
   , "primShowMeta"        |-> mkPrimFun1 (Str . show . pretty :: MetaId -> Str)
-  , "primPathApply"       |-> primPathApply
-  , "primPathPApply"      |-> primPathPApply
   , "primIMin"            |-> primIMin'
   , "primIMax"            |-> primIMax'
   , "primINeg"            |-> primINeg'
---  , "primCoe"             |-> primCoe
   , "primPOr"             |-> primPOr
   , "primComp"            |-> primComp
   , "primPFrom1"          |-> primPFrom1
   , "primIdJ"             |-> primIdJ
   , "primPartial"         |-> primPartial'
   , "primPartialP"        |-> primPartialP'
-  , "primPathAbs"         |-> primPathAbs'
   , builtinGlue           |-> primGlue'
   , builtin_glue          |-> prim_glue'
   , builtin_unglue        |-> prim_unglue'

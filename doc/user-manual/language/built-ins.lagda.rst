@@ -79,7 +79,7 @@ Booleans
 
   module Agda.Builtin.Bool where
 
-Built-in booleans are bound using the ``BOOLEAN``, ``TRUE`` and ``FALSE`` built-ins::
+Built-in booleans are bound using the ``BOOL``, ``TRUE`` and ``FALSE`` built-ins::
 
   data Bool : Set where
     false true : Bool
@@ -92,8 +92,9 @@ separately. The reason for this is that Agda cannot tell which constructor
 should correspond to true and which to false, since you are free to name them
 whatever you like.
 
-The only effect of binding the boolean type is that you can then use primitive
-functions returning booleans, such as built-in ``NATEQUALS``.
+The effect of binding the boolean type is that you can then use primitive
+functions returning booleans, such as built-in ``NATEQUALS``, and letting the
+:ref:`GHC backend <ghc-backend>` know to compile the type to Haskell `Bool`.
 
 ..
   ::
@@ -201,6 +202,44 @@ properties
 
 
 .. _built-in-integer:
+
+Machine words
+-------------
+
+.. code-block:: agda
+
+  module Agda.Builtin.Word
+
+Agda supports built-in 64-bit machine words, bound with the ``WORD64`` built-in::
+
+  postulate Word64 : Set
+  {-# BUILTIN WORD64 Word64 #-}
+
+Machine words can be converted to and from natural numbers using the following primitives::
+
+  primitive
+    primWord64ToNat   : Word64 → Nat
+    primWord64FromNat : Nat → Word64
+
+Converting to a natural number is the trivial embedding, and converting from a natural number
+gives you the remainder modulo :math:`2^{64}`. The proofs of these theorems are not primitive,
+but can be defined in a library using :ref:`primTrustMe`.
+
+
+Basic arithmetic operations can be defined on ``Word64`` by converting to
+natural numbers, peforming the corresponding operation, and then converting
+back. The compiler will optimise these to use 64-bit arithmetic. For
+instance::
+
+  addWord : Word64 → Word64 → Word64
+  addWord a b = primWord64FromNat (primWord64ToNat a + primWord64ToNat b)
+
+  subWord : Word64 → Word64 → Word64
+  subWord a b = primWord64FromNat ((primWord64ToNat a + 18446744073709551616) - primWord64ToNat b)
+
+These compile to primitive addition and subtraction on 64-bit words, which in the
+:ref:`GHC backend<ghc-backend>` map to operations on Haskell 64-bit words
+(``Data.Word.Word64``).
 
 Integers
 --------
@@ -317,22 +356,21 @@ Lists
 
   module Agda.Builtin.List
 
-Built-in lists are bound using the ``LIST``, ``NIL`` and ``CONS`` built-ins::
+Built-in lists are bound using the ``LIST`` built-in::
 
   data List {a} (A : Set a) : Set a where
     []  : List A
     _∷_ : (x : A) (xs : List A) → List A
   {-# BUILTIN LIST List #-}
-  {-# BUILTIN NIL  []   #-}
-  {-# BUILTIN CONS _∷_  #-}
   infixr 5 _∷_
 
-Even though Agda could easily tell which constructor is ``NIL`` and which is
-``CONS`` you still have to bind them separately.
+The constructors are bound automatically when binding the type. Lists are not
+required to be level polymorphic; ``List : Set → Set`` is also accepted.
 
-As with booleans, the only effect of binding the ``LIST`` built-in is to let
+As with booleans, the effect of binding the ``LIST`` built-in is to let
 you use primitive functions working with lists, such as ``primStringToList``
-and ``primStringFromList``.
+and ``primStringFromList``, and letting the :ref:`GHC backend <ghc-backend>`
+know to compile the List type to Haskell lists.
 
 ..
   ::
@@ -448,6 +486,8 @@ Other variants of the identity type are also accepted as built-in:
     refl : (x : A) → x ≡ x
 
 The type of ``primTrustMe`` has to match the flavor of identity type.
+
+.. _primtrustme:
 
 primTrustMe
 ~~~~~~~~~~~

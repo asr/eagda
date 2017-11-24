@@ -50,6 +50,7 @@ import Agda.Syntax.Literal
 import Agda.TypeChecking.Positivity.Occurrence hiding (tests)
 
 import Agda.Utils.Either hiding (tests)
+import Agda.Utils.Functor
 import Agda.Utils.Hash
 import Agda.Utils.List ( spanJust, chopWhen )
 import Agda.Utils.Monad
@@ -1840,9 +1841,48 @@ mkName (i, s) = do
         isValidId Hole   = return ()
         isValidId (Id y) = do
           let x = rawNameToString y
+              err = "in the name " ++ s ++ ", the part " ++ x ++ " is not valid"
           case parse defaultParseFlags [0] (lexer return) x of
             ParseOk _ (TokId _) -> return ()
-            _                   -> fail $ "in the name " ++ s ++ ", the part " ++ x ++ " is not valid"
+            ParseFailed{} -> fail err
+            ParseOk _ t   -> fail . ((err ++ " because it is ") ++) $ case t of
+              TokId{}       -> __IMPOSSIBLE__
+              TokQId{}      -> __IMPOSSIBLE__ -- "qualified"
+              TokKeyword{}  -> "a keyword"
+              TokLiteral{}  -> "a literal"
+              TokSymbol s _ -> case s of
+                SymDot               -> __IMPOSSIBLE__ -- "reserved"
+                SymSemi              -> __IMPOSSIBLE__ -- "used to separate declarations"
+                SymVirtualSemi       -> __IMPOSSIBLE__
+                SymBar               -> "used for with-arguments"
+                SymColon             -> "part of declaration syntax"
+                SymArrow             -> "the function arrow"
+                SymEqual             -> "part of declaration syntax"
+                SymLambda            -> "used for lambda-abstraction"
+                SymUnderscore        -> __IMPOSSIBLE__
+                SymQuestionMark      -> "a meta variable"
+                SymAs                -> __IMPOSSIBLE__ -- "used for as-patterns"
+                SymOpenParen         -> __IMPOSSIBLE__ -- "used to parenthesize expressions"
+                SymCloseParen        -> __IMPOSSIBLE__ -- "used to parenthesize expressions"
+                SymOpenIdiomBracket  -> "an idiom bracket"
+                SymCloseIdiomBracket -> "an idiom bracket"
+                SymDoubleOpenBrace   -> "used for instance arguments"
+                SymDoubleCloseBrace  -> "used for instance arguments"
+                SymOpenBrace         -> __IMPOSSIBLE__ -- "used for hidden arguments"
+                SymCloseBrace        -> __IMPOSSIBLE__ -- "used for hidden arguments"
+                SymOpenVirtualBrace  -> __IMPOSSIBLE__
+                SymCloseVirtualBrace -> __IMPOSSIBLE__
+                SymOpenPragma        -> __IMPOSSIBLE__ -- "used for pragmas"
+                SymClosePragma       -> __IMPOSSIBLE__ -- "used for pragmas"
+                SymEllipsis          -> __IMPOSSIBLE__ -- "used for function clauses"
+                SymDotDot            -> __IMPOSSIBLE__ -- "a modality"
+                SymEndComment        -> __IMPOSSIBLE__ -- "the end-of-comment brace"
+              TokString{}   -> __IMPOSSIBLE__
+              TokSetN{}     -> "a type universe"
+              TokTeX{}      -> __IMPOSSIBLE__  -- used by the LaTeX backend only
+              TokComment{}  -> __IMPOSSIBLE__
+              TokDummy{}    -> __IMPOSSIBLE__
+              TokEOF{}      -> __IMPOSSIBLE__
 
         -- we know that there are no two Ids in a row
         alternating (Hole : Hole : _) = False
@@ -2031,9 +2071,7 @@ validHaskellModuleName = all ok . splitOnDots
 
 -- | Turn an expression into a left hand side.
 exprToLHS :: Expr -> Parser ([Expr] -> [Expr] -> LHS)
-exprToLHS e = case e of
-  WithApp r e es -> LHS <$> exprToPattern e <*> mapM exprToPattern es
-  _              -> LHS <$> exprToPattern e <*> return []
+exprToLHS e = LHS <$> exprToPattern e
 
 -- | Turn an expression into a pattern. Fails if the expression is not a
 --   valid pattern.
@@ -2061,7 +2099,12 @@ exprToPattern e = do
           RecP r <$> T.mapM (T.mapM exprToPattern) fs
         Equal r e1 e2           -> return $ EqualP r [(e1, e2)]
         Ellipsis r              -> return $ EllipsisP r
-        _                       -> failure
+        -- WithApp has already lost the range information of the bars '|'
+        WithApp r e es          -> do
+          p  <- exprToPattern e
+          ps <- forM es $ \ e -> defaultNamedArg . WithP (getRange e) <$> exprToPattern e  -- TODO #2822: Range!
+          return $ foldl AppP p ps
+        _ -> failure
 
 opAppExprToPattern :: OpApp Expr -> Parser Pattern
 opAppExprToPattern (SyntaxBindingLambda _ _ _) = parseError "Syntax binding lambda cannot appear in a pattern"
@@ -2127,17 +2170,17 @@ funClauseOrTypeSigs lhs mrhs wh = do
     JustRHS rhs   -> return [FunClause lhs rhs wh False]
     TypeSigsRHS e -> case wh of
       NoWhere -> case lhs of
-        LHS p _ _ _ | isEllipsis p -> parseError "The ellipsis ... cannot have a type signature"
-        LHS _ _ _ (_:_) -> parseError "Illegal: with in type signature"
-        LHS _ _ (_:_) _ -> parseError "Illegal: rewrite in type signature"
-        LHS _ (_:_) _ _ -> parseError "Illegal: with patterns in type signature"
-        LHS p [] [] []  -> map (\ (x, y) -> TypeSig x y e) <$> patternToNames p
+        LHS p _ _ | hasEllipsis p -> parseError "The ellipsis ... cannot have a type signature"
+        LHS _ _ (_:_) -> parseError "Illegal: with in type signature"
+        LHS _ (_:_) _ -> parseError "Illegal: rewrite in type signature"
+        LHS p _ _ | hasWithPatterns p -> parseError "Illegal: with patterns in type signature"
+        LHS p [] []  -> map (\ (x, y) -> TypeSig x y e) <$> patternToNames p
       _ -> parseError "A type signature cannot have a where clause"
 
 parseDisplayPragma :: Range -> Position -> String -> Parser Pragma
 parseDisplayPragma r pos s =
   case parsePosString pos defaultParseFlags [normal] funclauseParser s of
-    ParseOk s [FunClause (LHS lhs [] [] []) (RHS rhs) NoWhere ca] | null (parseInp s) ->
+    ParseOk s [FunClause (LHS lhs [] []) (RHS rhs) NoWhere ca] | null (parseInp s) ->
       return $ DisplayPragma r lhs rhs
     _ -> parseError "Invalid DISPLAY pragma. Should have form {-# DISPLAY LHS = RHS #-}."
 
