@@ -403,6 +403,7 @@ compileTerm' kit t = go t
       T.TSort -> unit
       T.TErased -> unit
       T.TError T.TUnreachable -> return Undefined
+      T.TCoerce t -> go t
 
     unit = return $ Integer 0
 
@@ -530,6 +531,7 @@ primitives = Set.fromList
   [ "primExp"
   , "primFloatDiv"
   , "primFloatEquality"
+  , "primFloatLess"
   , "primFloatNumericalEquality"
   , "primFloatNumericalLess"
   , "primFloatNegate"

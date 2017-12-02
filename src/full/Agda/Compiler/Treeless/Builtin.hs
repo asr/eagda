@@ -99,8 +99,8 @@ transform BuiltinKit{..} = tr
         --       builtin minus is monus. The simplifier will do it if it can see
         --       that it won't underflow.
 
-      TApp (TDef q) [_, _, _, _, e, f]
-        | isForce q -> tr $ TLet e $ tOp PSeq (TVar 0) $ mkTApp (raise 1 f) [TVar 0]
+      TApp (TDef q) (_ : _ : _ : _ : e : f : es)
+        | isForce q -> tr $ TLet e $ mkTApp (tOp PSeq (TVar 0) $ mkTApp (raise 1 f) [TVar 0]) es
 
       TApp (TCon s) [e] | isSuc s ->
         case tr e of
@@ -178,6 +178,8 @@ transform BuiltinKit{..} = tr
       TSort{}   -> t
       TErased{} -> t
       TError{}  -> t
+
+      TCoerce a -> TCoerce (tr a)
 
       TLam b                  -> TLam (tr b)
       TApp a bs               -> TApp (tr a) (map tr bs)

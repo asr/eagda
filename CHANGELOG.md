@@ -221,6 +221,14 @@ Language
   These compiles (in the GHC backend) to addition and subtraction on
   `Data.Word.Word64`.
 
+* New primitive primFloatLess and changed semantics of primFloatNumericalLess.
+
+  `primFloatNumericalLess` now uses standard IEEE `<`, so for instance
+  `NaN < x = x < NaN = false`.
+
+  On the other hand `primFloatLess` provides a total order on `Float`, with
+  `-Inf < NaN < -1.0 < -0.0 < 0.0 < 1.0 < Inf`.
+
 
 Pragmas and options
 -------------------
@@ -290,6 +298,11 @@ Compiler backends
   builtin list type. Indeed, doing so has no effect on the compilation and
   results in a warning.
 
+* The GHC backend performance improvements.
+
+  Generated Haskell code now contains approximate type signatures, which lets
+  GHC get rid of many of the `unsafeCoerce`s. This leads to performance
+  improvements of up to 50% of compiled code.
 
 
 Release notes for Agda version 2.5.3

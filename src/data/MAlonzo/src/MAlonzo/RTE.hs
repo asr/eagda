@@ -1,12 +1,20 @@
+{-# LANGUAGE CPP #-}
 module MAlonzo.RTE where
 
 import Unsafe.Coerce
-import GHC.Prim
+#if __GLASGOW_HASKELL__ >= 802
+import qualified GHC.Exts as GHC (Any)
+#else
+import qualified GHC.Prim as GHC (Any)
+#endif
 import qualified Data.Word
 import Numeric.IEEE ( IEEE(identicalIEEE) )
 
+type AgdaAny = GHC.Any
+
 -- Special version of coerce that plays well with rules.
 {-# INLINE [1] coe #-}
+coe :: a -> b
 coe = unsafeCoerce
 {-# RULES "coerce-id" forall (x :: a) . coe x = x #-}
 
@@ -62,6 +70,9 @@ eqFloat x y = identicalIEEE x y || (isNaN x && isNaN y)
 eqNumFloat :: Double -> Double -> Bool
 eqNumFloat = (==)
 
+ltNumFloat :: Double -> Double -> Bool
+ltNumFloat = (<)
+
 negativeZero :: Double
 negativeZero = -0.0
 
@@ -86,12 +97,13 @@ compareFloat x y
   | isNaN x && isNaN y         = EQ
   | isNaN x                    = LT
   | isNaN y                    = GT
-  | otherwise                  = compare x y
+  | otherwise                  = compare (x, isNegZero y) (y, isNegZero x)
   where
-    isNegInf z = z < 0 && isInfinite z
+    isNegInf  z = z < 0 && isInfinite z
+    isNegZero z = identicalIEEE z negativeZero
 
-ltNumFloat :: Double -> Double -> Bool
-ltNumFloat x y = case compareFloat x y of
+ltFloat :: Double -> Double -> Bool
+ltFloat x y = case compareFloat x y of
                 LT -> True
                 _  -> False
 

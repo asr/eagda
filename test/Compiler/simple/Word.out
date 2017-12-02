@@ -30,17 +30,13 @@ out >             d = 2 in
 out >         quot64 c d in
 out >   a +64 b
 out > Word.test =
-out >   let a =
-out >         let c = Word.2^63
-out >             d = 100 in
-out >         c +64 d
-out >       b =
-out >         let c = Word.2^63
-out >             d = 1 in
-out >         c +64 d in
+out >   let a = Word.2^63 +64 100
+out >       b = Word.2^63 +64 1 in
 out >   a +64 b
 out > Word.prf = _
 out > Word.prf' = _
 out > Word.main = Word.putStrLn (Word.showWord Word.test)
+out > Word.ltDouble = λ a b → let c = 2 *64 a in c <64 b
+out > Word.lt4x = λ a _ → let b = 2 *64 a in seq b (Word.ltDouble b) b
 out > 101
 out >
