@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP                  #-}
 {-# LANGUAGE DoAndIfThenElse      #-}
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE OverloadedStrings    #-}
@@ -10,6 +9,7 @@ import qualified Compiler.Tests as COMP
 import qualified Succeed.Tests as SUCCEED
 import qualified Fail.Tests as FAIL
 import qualified Interactive.Tests as INTERACTIVE
+import qualified Internal.Tests as INTERNAL
 import qualified LaTeXAndHTML.Tests as LATEXHTML
 import qualified LibSucceed.Tests as LIBSUCCEED
 import qualified UserManual.Tests as USERMANUAL
@@ -17,10 +17,6 @@ import qualified UserManual.Tests as USERMANUAL
 import Test.Tasty as T
 import Test.Tasty.Silver.Interactive as TM
 import Test.Tasty.Silver.Filter (RegexFilter)
-
-#if __GLASGOW_HASKELL__ <= 708
-import Control.Applicative ((<$>))
-#endif
 
 import System.Exit
 
@@ -54,6 +50,7 @@ tests = do
              , SUCCEED.tests
              , LIBSUCCEED.tests
              , USERMANUAL.tests
+             , return INTERNAL.tests
              ]
 
 disabledTests :: [RegexFilter]

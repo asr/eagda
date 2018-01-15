@@ -67,7 +67,7 @@ Further, Agda 2 has received contributions by, amongst others, Stevan
 Andjelkovic, Marcin Benke, Jean-Philippe Bernardy, Guillaume Brunerie,
 James Chapman, Dominique Devriese, Péter Diviánszki, Olle Fredriksson,
 Adam Gundry, Daniel Gustafsson, Kuen-Bang Hou (favonia), Patrik
-Jansson, Alan Jeffrey, Wolfram Kahl, Pepijn Kokke, Fredrik Lindblad,
+Jansson, Alan Jeffrey, Wolfram Kahl, Wen Kokke, Fredrik Lindblad,
 Francesco Mazzoli, Stefan Monnier, Darin Morrison, Guilhem Moulin,
 Nicolas Pouillard, Nobuo Yamashita, Christian Sattler, and Makoto
 Takeyama.  The full list of contributors is available at
@@ -304,7 +304,7 @@ latex_elements = {
 # (source start file, target name, title,
 #  author, documentclass [howto, manual, or own class]).
 latex_documents = [
-    (master_doc, 'Agda.tex', u'Agda Documentation', u'The Agda Team', 'manual'),
+    (master_doc, 'Agda.tex', u'Agda User Manual', u'The Agda Team', 'manual'),
 ]
 
 # The name of an image file (relative to this directory) to place at the top of

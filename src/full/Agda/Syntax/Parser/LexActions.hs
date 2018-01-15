@@ -60,11 +60,14 @@ lexToken =
             AlexEOF                     -> returnEOF inp
             AlexSkip inp' len           -> skipTo (newInput inp inp' len)
             AlexToken inp' len action   -> fmap postToken $ action inp (newInput inp inp' len) len
-            AlexError i                 -> parseError $ "Lexical error" ++
-              (case lexInput i of
-                 '\t' : _ -> " (you may want to replace tabs with spaces)"
-                 _        -> "") ++
-              ":"
+            AlexError i                 -> parseError $ concat
+              [ "Lexical error"
+              , case headMaybe $ lexInput i of
+                  Just '\t'                -> " (you may want to replace tabs with spaces)"
+                  Just c | not (isPrint c) -> " (unprintable character)"
+                  _ -> ""
+              , ":"
+              ]
 
 postToken :: Token -> Token
 postToken (TokId (r, "\x03bb")) = TokSymbol SymLambda r
@@ -79,7 +82,7 @@ postToken (TokId (r, s))
   | set == "Set" && all isSub n = TokSetN (r, readSubscript n)
   where
     (set, n)      = splitAt 3 s
-    isSub c       = c `elem` ['\x2080'..'\x2089']
+    isSub c       = '\x2080' <= c && c <= '\x2089'
     readSubscript = read . map (\c -> toEnum (fromEnum c - 0x2080 + fromEnum '0'))
 postToken t = t
 

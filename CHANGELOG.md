@@ -8,6 +8,8 @@ Installation and infrastructure
 
 * Removed support for GHC 7.8.4.
 
+* Included user manual in PDF format in `doc/user-manual.pdf`.
+
 Syntax and LaTeX backend
 ------------------------
 
@@ -281,6 +283,12 @@ Pragmas and options
   Attempting to bind `NIL` or `CONS` results in a warning and has otherwise no
   effect.
 
+* The `--no-unicode` pragma prevents Agda from introducing unicode characters
+  when pretty printing a term. Lambda, Arrows and Forall quantifiers are all
+  replaced by their ascii only version. Instead of resorting to subscript
+  suffixes, Agda uses ascii digit characters.
+
+
 Emacs mode
 ----------
 
@@ -288,6 +296,24 @@ Emacs mode
 
    \((   #x2985  LEFT WHITE PARENTHESIS
    \))   #x2986  RIGHT WHITE PARENTHESIS
+
+* Result splitting will introduce the trailing hidden arguments,
+  if there is nothing else todo
+  [Issue [#2871](https://github.com/agda/agda/issues/2871)].
+  Example:
+  ```agda
+    data Fun (A : Set) : Set where
+      mkFun : (A → A) → Fun A
+
+    test : {A : Set} → Fun A
+    test = ?
+
+  ```
+  Splitting on the result here (`C-c C-c RET`) will append
+  `{A}` to the left hand side.
+  ```agda
+    test {A} = ?
+  ```
 
 Compiler backends
 -----------------

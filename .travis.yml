@@ -19,15 +19,6 @@ cache:
 # The LaTeX/HTML test-suite requires:
 # * `kpsewhich` (included in texlive-binaries)
 
-# The test of the documentation, i.e. `make-doc-html` and
-# `make-user-pdf`, requires:
-#  * ecrm1000 fonts (included in texlive-fonts-recommended)
-#  * latex (included in texlive-latex-base)
-#  * lm fonts (include in lmodern)
-#  * utf8x.def (included in texlive-latex-extra)
-#  * dvipng (included in dvipng)
-#  * xelatex (included in texlive-xetex)
-
 ##############################################################################
 # Tests
 
@@ -69,7 +60,15 @@ matrix:
           sources:
             - hvr-ghc
 
-    - env: TEST=STACKAGE GHC_VER=8.0.2 BUILD=STACK ARGS="--stack-yaml stack-8.0.2.yaml --system-ghc" MANUAL_INSTALL_BUILD_TOOLS=NO
+    - env: TEST=STACKAGE GHC_VER=8.2.2 BUILD=STACK ARGS="--stack-yaml stack-8.2.2.yaml --system-ghc"
+      addons:
+        apt:
+          packages:
+            - ghc-8.2.2
+          sources:
+            - hvr-ghc
+
+    - env: TEST=STACKAGE GHC_VER=8.0.2 BUILD=STACK ARGS="--stack-yaml stack-8.0.2.yaml --system-ghc"
       addons:
         apt:
           packages:
@@ -77,7 +76,7 @@ matrix:
           sources:
             - hvr-ghc
 
-    - env: TEST=STACKAGE GHC_VER=7.10.3 BUILD=STACK ARGS="--stack-yaml stack-7.10.3.yaml --system-ghc" MANUAL_INSTALL_BUILD_TOOLS=YES
+    - env: TEST=STACKAGE GHC_VER=7.10.3 BUILD=STACK ARGS="--stack-yaml stack-7.10.3.yaml --system-ghc"
       addons:
         apt:
           packages:
@@ -96,18 +95,9 @@ matrix:
           sources:
             - hvr-ghc
 
-    - env: TEST=DOC BUILD=NOTHING
+    - env: TEST=USER_MANUAL BUILD=NOTHING
       language: python
       python: "3.4"
-      addons:
-        apt:
-          packages:
-            - dvipng
-            - lmodern
-            - texlive-fonts-recommended
-            - texlive-latex-base
-            - texlive-latex-extra
-            - texlive-xetex
 
   # Builds are loooong, we want to send an email as fast as possible.
   fast_finish: true
@@ -138,6 +128,7 @@ install:
   - echo $SHELL
 
   # Node is pre-installed.
+  - echo "*** Node version ***"
   - node --version
 
   # The container environment reports a wrong number of cores. We use
@@ -148,9 +139,13 @@ install:
   # required in Agda.cabal [Issue #2315].
 
   - if [[ $BUILD = "CABAL" ]]; then
+       echo "*** Cabal version ***" &&
        cabal --version &&
+       echo "*** GHC version ***" &&
        ghc --version &&
+       echo "*** Haddock version ***" &&
        haddock --version &&
+       echo "*** Emacs version ***" &&
        emacs --version &&
        export PARALLEL_TESTS=2 &&
        travis_retry cabal update &&
@@ -159,17 +154,24 @@ install:
        export PATH=$HOME/.cabal/bin:$PATH &&
        travis_retry cabal update &&
        travis_retry cabal fetch alex happy cpphs-1.20.8 &&
-       cabal install alex happy cpphs-1.20.8 &&
+       cabal install -v0 alex happy cpphs-1.20.8 &&
+       echo "*** Alex version ***" &&
        alex --version &&
+       echo "*** Happy version ***" &&
        happy --version &&
-       cpphs --version;
+       echo "*** cpphs version ***" &&
+       cpphs --version ;
     fi
 
   - if [[ $BUILD = "STACK" ]]; then
+       echo "*** GHC version ***" &&
        ghc --version &&
+       echo "*** Haddock version ***" &&
        haddock --version &&
+       echo "*** Emacs version ***" &&
        emacs --version &&
-       stack --version;
+       echo "*** Stack version ***" &&
+       stack --version ;
     fi
 
 ##############################################################################
@@ -180,25 +182,15 @@ install:
 
 # TODO (2016-02-21): Split the long lines (`\` doesn't work).
 
-# We have to manually install `alex`, `cpphs` and possibly `happy`
-# for older snapshots because `stack` seems to have trouble installing
-# build tools for those snapshots.  Note that the version of `cpphs`
-# is currently specified in the yaml files.
-#
-# See https://github.com/commercialhaskell/stack/issues/595.
-
 # N.B. that we use the `--force-reinstalls` option [Issue 1520].
 
 # We are using `make CABAL_OPTS...` because we are including the
 # options to `cabal install` set up in the `Makefile`.
   - if [[ $TEST = "MAIN" || $TEST = "HADDOCK" ]]; then
        travis_retry cabal fetch `cabal install --dependencies-only --force-reinstalls --dry-run | sed 1,2d | sed "s|(latest[^)]*)||g"` &&
-       make CABAL_OPTS='--only-dependencies --force-reinstalls' install-bin;
+       make CABAL_OPTS='-v0 --only-dependencies --force-reinstalls' install-bin;
     elif [[ $TEST = "STACKAGE" ]]; then
-       if [[ $MANUAL_INSTALL_BUILD_TOOLS = "YES" ]]; then
-           stack install $ARGS --no-terminal alex cpphs happy;
-       fi;
-       stack build $ARGS --no-terminal --only-dependencies;
+         stack build $ARGS --no-terminal --only-dependencies;
     fi
 
 ##############################################################################
@@ -207,7 +199,7 @@ install:
   - export BUILD_DIR=$HOME/dist
 
   - if [[ $TEST = "MAIN" ]]; then
-       make BUILD_DIR=$BUILD_DIR CABAL_OPTS=-v2 install-bin;
+       make BUILD_DIR=$BUILD_DIR CABAL_OPTS=-v1 install-bin;
     fi
 
 ##############################################################################
@@ -220,14 +212,37 @@ install:
 ##############################################################################
 # Installing Sphinx
 
-# Required for testing the documentation.
+# Required for making the user manual.
 
 # Note that the `--user` option put the Sphinx binaries in
 # `$HOME/.local/bin`.
 
-  - if [[ $TEST = "DOC" ]]; then
+  - if [[ $TEST = "USER_MANUAL" ]]; then
        pip install -r doc/user-manual/requirements.txt &&
-       export PATH=$HOME/.local/bin:$PATH;
+       export PATH=$HOME/.local/bin:$PATH &&
+       echo "*** sphinx-build version ***" &&
+       sphinx-build --version ;
+    fi
+
+##############################################################################
+# Installing TeX Live and LaTeX packages (required by the user manual)
+
+# A *recent* version of TeX Live is required for making the user
+# manual. The installation of TeX Live was based on the instructions
+# used by Travis when the build environment is `language : r`.
+
+  - if [[ $TEST = "USER_MANUAL" ]]; then
+       travis_retry curl -Lo /tmp/texlive.tar.gz https://github.com/jimhester/ubuntu-bin/releases/download/latest/texlive.tar.gz &&
+       tar xzf /tmp/texlive.tar.gz -C ~ &&
+       export PATH=$HOME/texlive/bin/x86_64-linux:$PATH &&
+       tlmgr update --self &&
+       tlmgr install anyfontsize capt-of cmap dejavu dvipng fncychap latexmk needspace &&
+       echo "*** pdfLaTeX version ***" &&
+       pdflatex --version &&
+       echo "*** Latexmk version ***" &&
+       latexmk --version &&
+       echo "*** XeLaTeX version ***" &&
+       xelatex --version ;
     fi
 
 ##############################################################################
@@ -243,7 +258,8 @@ install:
        tar xJf ${NODE_TARBALL} &&
        export PATH=${HOME}/${NODE_DIR}/bin:$PATH &&
        cd $AGDA_HOME &&
-       node --version;
+       echo "*** Node version ***" &&
+       node --version ;
     fi
 
 ##############################################################################
@@ -260,9 +276,9 @@ install:
 # `enable-cluster-counting` off.
 
 # Issues related to the flags: `cpp` instead of `cpphs` [Issue #1647]
-# and the `debug` flag [Issue #2070]
+# and the `debug` flag [Issue #2070].
 
-# N.B. that this test is not include in the Makefile tests.
+# N.B. that these tests are not include in the Makefile tests.
 
   - if [[ $TEST = "STACKAGE" ]]; then
        stack build $ARGS --no-terminal &&
@@ -279,11 +295,11 @@ script:
     fi
 
   - if [[ $TEST = "MAIN" ]]; then
-       make AGDA_TESTS_OPTIONS="-j${PARALLEL_TESTS}" BUILD_DIR=$BUILD_DIR succeed;
+       make AGDA_TESTS_OPTIONS="-j${PARALLEL_TESTS} --hide-successes" BUILD_DIR=$BUILD_DIR succeed;
     fi
 
   - if [[ $TEST = "MAIN" ]]; then
-       make AGDA_TESTS_OPTIONS="-j${PARALLEL_TESTS}" BUILD_DIR=$BUILD_DIR fail;
+       make AGDA_TESTS_OPTIONS="-j${PARALLEL_TESTS} --hide-successes" BUILD_DIR=$BUILD_DIR fail;
     fi
 
   - if [[ $TEST = "MAIN" ]]; then
@@ -299,7 +315,7 @@ script:
 # golden files.
 
   - if [[ $TEST = "MAIN" ]]; then
-       make AGDA_TESTS_OPTIONS="-j${PARALLEL_TESTS}" BUILD_DIR=$BUILD_DIR DONT_RUN_LATEX="Y" latex-html-test;
+       make AGDA_TESTS_OPTIONS="-j${PARALLEL_TESTS} --hide-successes" BUILD_DIR=$BUILD_DIR DONT_RUN_LATEX="Y" latex-html-test;
     fi
 
   - if [[ $TEST = "MAIN" ]]; then
@@ -315,11 +331,11 @@ script:
     fi
 
   - if [[ $TEST = "MAIN" ]]; then
-       make AGDA_TESTS_OPTIONS="-j${PARALLEL_TESTS}" BUILD_DIR=$BUILD_DIR user-manual-test;
+       make AGDA_TESTS_OPTIONS="-j${PARALLEL_TESTS} --hide-successes" BUILD_DIR=$BUILD_DIR user-manual-test;
     fi
 
   - if [[ $TEST = "MAIN" ]]; then
-       make BUILD_DIR=$BUILD_DIR PARALLEL_TESTS=$PARALLEL_TESTS internal-tests;
+       make AGDA_TESTS_OPTIONS="-j${PARALLEL_TESTS} --hide-successes" BUILD_DIR=$BUILD_DIR internal-tests;
     fi
 
   - if [[ $TEST = "MAIN" ]]; then
@@ -330,11 +346,11 @@ script:
 # with the `compiler-test`.
 
   - if [[ $TEST = "MAIN" ]]; then
-       make AGDA_TESTS_OPTIONS="" BUILD_DIR=$BUILD_DIR compiler-test;
+       make AGDA_TESTS_OPTIONS="--hide-successes" BUILD_DIR=$BUILD_DIR compiler-test;
     fi
 
   - if [[ $TEST = "MAIN" ]]; then
-       make AGDA_TESTS_OPTIONS="-j${PARALLEL_TESTS}" BUILD_DIR=$BUILD_DIR lib-succeed;
+       make AGDA_TESTS_OPTIONS="-j${PARALLEL_TESTS} --hide-successes" BUILD_DIR=$BUILD_DIR lib-succeed;
     fi
 
   - if [[ $TEST = "MAIN" ]]; then
@@ -346,7 +362,7 @@ script:
     fi
 
   - if [[ $TEST = "MAIN" ]]; then
-       cabal install shelltestrunner &&
+       cabal install -v0 shelltestrunner &&
        make test-size-solver;
     fi
 
@@ -366,11 +382,11 @@ script:
     fi
 
 ##############################################################################
-# Testing the documentation
+# Making the user manual
 
-  - if [[ $TEST = "DOC" ]]; then
-       sphinx-build --version &&
-       make doc-html;
+  - if [[ $TEST = "USER_MANUAL" ]]; then
+       make user-manual-html &&
+       make user-manual-pdf ;
     fi
 
 ##############################################################################

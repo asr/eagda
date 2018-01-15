@@ -4,6 +4,71 @@
 Installation
 ************
 
+There are several ways to install Agda:
+
+* Using a :ref:`released source <installation-from-hackage>` package
+  from `Hackage <https://hackage.haskell.org/package/Agda>`_
+
+* Using a :ref:`binary package <prebuilt-packages>` prepared for your
+  platform
+
+* Using the :ref:`development version
+  <installation-development-version>` from the Git `repository
+  <https://github.com/agda/agda>`_
+
+.. _installation-from-hackage:
+
+Installation from Hackage
+=========================
+
+You can install the latest released version of Agda from `Hackage
+<https://hackage.haskell.org/package/Agda>`_. Install the
+:ref:`prerequisites <prerequisites>` and then run the following
+commands:
+
+.. code-block:: bash
+
+  cabal update
+  cabal install Agda
+  agda-mode setup
+
+The last command tries to set up Emacs for use with Agda via the
+:ref:`Emacs mode <emacs-mode>`. As an alternative you can copy the
+following text to your *.emacs* file:
+
+.. code-block:: emacs
+
+  (load-file (let ((coding-system-for-read 'utf-8))
+                  (shell-command-to-string "agda-mode locate")))
+
+It is also possible (but not necessary) to compile the Emacs mode's
+files:
+
+.. code-block:: bash
+
+  agda-mode compile
+
+This can, in some cases, give a noticeable speedup.
+
+**Warning**: If you reinstall the Agda mode without recompiling the
+Emacs Lisp files, then Emacs may continue using the old, compiled
+files.
+
+
+.. _prebuilt-packages:
+
+Prebuilt Packages and System-Specific Instructions
+==================================================
+
+Arch Linux
+----------
+
+The following prebuilt packages are available:
+
+* `Agda <https://www.archlinux.org/packages/community/x86_64/agda/>`_
+
+* `Agda standard library <https://www.archlinux.org/packages/community/x86_64/agda-stdlib/>`_
+
 Debian / Ubuntu
 ---------------
 
@@ -21,6 +86,25 @@ The standard library is available in Debian testing/unstable and Ubuntu from Luc
 
   apt-get install agda-stdlib
 
+More information:
+
+* `Agda (Debian) <https://tracker.debian.org/pkg/agda>`_
+
+* `Agda standard library (Debian) <https://tracker.debian.org/pkg/agda-stdlib>`_
+
+* `Agda (Ubuntu) <https://launchpad.net/ubuntu/+source/agda|Agda>`_
+
+* `Agda standard library (Ubuntu) <https://launchpad.net/ubuntu/+source/agda-stdlib>`_
+
+Reporting bugs:
+
+Please report any bugs to Debian, using:
+
+.. code-block:: bash
+
+  reportbug -B debian agda
+  reportbug -B debian agda-stdlib
+
 Fedora
 ------
 
@@ -32,16 +116,27 @@ Agda is packaged in Fedora (since before Fedora 18).
 
 will pull in emacs-agda-mode and ghc-Agda-devel.
 
+FreBSD
+------
+
+Packages are available from `FreshPorts
+<https://www.freebsd.org/cgi/ports.cgi?query=agda&stype=all>`_ for
+Agda and Agda standard library.
+
+
 NixOS
 -----
 
-Agda is part of the Nixpkgs collection that is used by http://nixos.org/nixos. To install Agda and agda-mode for Emacs, type:
+Agda is part of the Nixpkgs collection that is used by
+http://nixos.org/nixos. To install Agda and agda-mode for Emacs, type:
 
 .. code-block:: bash
 
   nix-env -f "<nixpkgs>" -iA haskellPackages.Agda
 
-If you’re just interested in the library, you can also install the library without the executable. The Agda standard library is currently not installed automatically.
+If you’re just interested in the library, you can also install the
+library without the executable. The Agda standard library is currently
+not installed automatically.
 
 OS X
 ----
@@ -52,10 +147,40 @@ OS X
 
   brew install agda
 
-This should take less than a minute, and install Agda together with the Emacs mode and the standard library.
+This should take less than a minute, and install Agda together with
+the Emacs mode and the standard library.
 
-By default, the standard library is installed in ``/usr/local/lib/agda/``.  To use the standard library, it is convenient to add ``/usr/local/lib/agda/standard-library.agda-lib`` to ``~/.agda/libraries``, and specify ``standard-library`` in ``~/.agda/defaults``.  Note this is not performed automatically.
+By default, the standard library is installed in
+``/usr/local/lib/agda/``.  To use the standard library, it is
+convenient to add ``/usr/local/lib/agda/standard-library.agda-lib`` to
+``~/.agda/libraries``, and specify ``standard-library`` in
+``~/.agda/defaults``.  Note this is not performed automatically.
 
-It is also possible to install ``--without-stdlib``, ``--without-ghc``, or from ``--HEAD``.  Note this will require building Agda from source.
+It is also possible to install ``--without-stdlib``,
+``--without-ghc``, or from ``--HEAD``.  Note this will require
+building Agda from source.
 
-For more information, refer to the `Homebrew documentation <http://git.io/brew-docs>`_.
+For more information, refer to the `Homebrew documentation
+<http://git.io/brew-docs>`_.
+
+.. _installation-development-version:
+
+Installation of the Development Version
+=======================================
+
+After getting the development version following the instructions in
+the `Agda wiki <http://wiki.portal.chalmers.se/agda/pmwiki.php>`_:
+
+* Install the :ref:`prerequisites <prerequisites>`
+
+* In the top-level directory of the Agda source tree
+
+  * Follow the :ref:`instructions <installation-from-hackage>` for
+    installing Agda from Hackage or
+
+  * You can try to install Agda (including a compiled Emacs mode) by
+    running the following command:
+
+    .. code-block:: bash
+
+      make install

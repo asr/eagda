@@ -63,6 +63,10 @@ be followed:
 * Remove the Cabal tests-suites `agda-tests` and `internal-tests` from
   Agda.cabal.
 
+* Update the user manual:
+
+    make user-manual-pdf
+
 * Build source distributions:
 
     cabal configure
@@ -86,10 +90,12 @@ be followed:
     cd $BASE
     git tag -a v$VERSION -m "Agda $VERSION stable release"
 
-* Upload the Cabal:
+* Upload the tarball and the documentation (tested with
+  cabal-install >= 2.0.0.0):
 
     cd $BASE
-    cabal upload dist/Agda-$VERSION.tar.gz
+    cabal upload --publish dist/Agda-$VERSION.tar.gz
+    cabal upload --publish -d dist/Agda-$VERSION.tar.gz
 
 * Is the documentation missing on Hackage (see #1940)? You can use the
   `neil` program for uploading the documentation:
@@ -164,6 +170,17 @@ be followed:
     git push
 
 * Close in the bug tracker the milestone VERSION.
+
+* Update Agda Manual on Readthedocs.org (see Issue #2844)
+
+  ** You need Admin permissions on the Agda readthedocs.org project
+     (current admins: asr, andreasabel, phile314)
+
+  ** Go to readthedocs.org -> Agda Project -> Admin -> Versions
+
+  ** Mark $VERSION as active
+
+  ** Set the default documentation version to $VERSION
 
 * Announce on the Agda developers mailing list the creation of the
   NEWVERSION branch in the standard library to be used with the stable

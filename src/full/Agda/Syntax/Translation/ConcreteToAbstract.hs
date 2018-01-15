@@ -20,7 +20,12 @@ module Agda.Syntax.Translation.ConcreteToAbstract
     , PatName, APatName, LetDef, LetDefs
     ) where
 
-import Prelude hiding (mapM, null)
+#if MIN_VERSION_base(4,11,0)
+import Prelude hiding ( (<>), mapM, null )
+#else
+import Prelude hiding ( mapM, null )
+#endif
+
 import Control.Applicative
 import Control.Monad.Reader hiding (mapM)
 
@@ -256,7 +261,8 @@ checkModuleApplication (C.SectionApp _ tel e) m0 x dir' = do
     -- Scope check the telescope (introduces bindings!).
     tel' <- toAbstract tel
     -- Scope check the old module name and the module args.
-    (m1, args') <- toAbstract (OldModuleName m, args)
+    m1    <- toAbstract $ OldModuleName m
+    args' <- toAbstractCtx (ArgumentCtx PreferParen) args
     -- Drop constructors (OnlyQualified) if there are arguments. The record constructor
     -- isn't properly in the record module, so copying it will lead to badness.
     let noRecConstr | null args = id
@@ -1448,6 +1454,9 @@ instance ToAbstract NiceDeclaration A.Declaration where
     C.FunDef r ds f a i tc x cs -> do
         printLocals 10 $ "checking def " ++ prettyShow x
         (x',cs) <- toAbstract (OldName x,cs)
+        -- Andreas, 2017-12-04 the name must reside in the current module
+        unlessM ((A.qnameModule x' ==) <$> getCurrentModule) $
+          __IMPOSSIBLE__
         let delayed = NotDelayed
         -- (delayed, cs) <- translateCopatternClauses cs -- TODO
         return [ A.FunDef (mkDefInfoInstance x f PublicAccess a i NotMacroDef r) x' delayed cs ]
@@ -1462,7 +1471,9 @@ instance ToAbstract NiceDeclaration A.Declaration where
     C.DataDef r f a _ x pars cons -> withLocalVars $ do
         printScope "scope.data.def" 20 ("checking DataDef for " ++ prettyShow x)
         (p, ax) <- resolveName (C.QName x) >>= \case
-          DefinedName p ax -> return (p, ax)
+          DefinedName p ax -> do
+            livesInCurrentModule ax  -- Andreas, 2017-12-04, issue #2862
+            return (p, ax)
           _ -> genericError $ "Missing type signature for data definition " ++ prettyShow x
         ensureNoLetStms pars
         -- Check for duplicate constructors
@@ -1493,7 +1504,9 @@ instance ToAbstract NiceDeclaration A.Declaration where
     C.RecDef r f a _ x ind eta cm pars fields -> do
       printScope "scope.rec.def" 20 ("checking RecDef for " ++ prettyShow x)
       (p, ax) <- resolveName (C.QName x) >>= \case
-        DefinedName p ax -> return (p, ax)
+        DefinedName p ax -> do
+          livesInCurrentModule ax  -- Andreas, 2017-12-04, issue #2862
+          return (p, ax)
         _ -> genericError $ "Missing type signature for record definition " ++ prettyShow x
       ensureNoLetStms pars
       withLocalVars $ do
@@ -1663,6 +1676,23 @@ instance ToAbstract NiceDeclaration A.Declaration where
         return [ A.Axiom funSig (mkDefInfoInstance x f p a i isMacro r) info mp y t' ]
       toAbstractNiceAxiom _ _ _ = __IMPOSSIBLE__
 
+
+-- | Make sure definition is in same module as signature.
+class LivesInCurrentModule a where
+  livesInCurrentModule :: a -> ScopeM ()
+
+instance LivesInCurrentModule AbstractName where
+  livesInCurrentModule = livesInCurrentModule . anameName
+
+instance LivesInCurrentModule A.QName where
+  livesInCurrentModule x = do
+    m <- getCurrentModule
+    reportSLn "scope.data.def" 30 $ unlines
+      [ "  A.QName of data type: " ++ show x
+      , "  current module: " ++ show m
+      ]
+    unless (A.qnameModule x == m) $
+      genericError $ "Definition in different module than its type signature"
 
 data IsRecordCon = YesRec | NoRec
 data ConstrDecl = ConstrDecl IsRecordCon A.ModuleName IsAbstract Access C.NiceDeclaration

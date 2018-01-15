@@ -107,26 +107,29 @@ setup-emacs-mode : install-bin
 	@echo
 	$(AGDA_MODE) setup
 
-## Making and testing the documentation ######################################
+## Making and testing the Haddock documentation ##############################
 
 .PHONY : haddock
 haddock :
 	$(CABAL_CMD) configure $(CABAL_CONFIGURE_OPTS)
 	$(CABAL_CMD) haddock --builddir=$(BUILD_DIR)
 
-.PHONY : doc-html
-doc-html :
+## Making the user manual ####################################################
+
+.PHONY : user-manual-html
+user-manual-html :
 	@echo "======================================================================"
 	@echo "===================== User Manual (html) ============================="
 	@echo "======================================================================"
 	$(MAKE) -C doc/user-manual html
 
-.PHONY : doc-pdf
-doc-pdf :
+.PHONY : user-manual-pdf
+user-manual-pdf :
 	@echo "======================================================================"
 	@echo "====================== User Manual (pdf) ============================="
 	@echo "======================================================================"
-	$(MAKE) -C doc/user-manual latexpdf
+	$(MAKE) -C doc/user-manual PDFLATEX='latexmk -xelatex -latexoption=-interaction=nonstopmode -latexoption=-halt-on-error' latexpdf
+	cp doc/user-manual/_build/latex/Agda.pdf doc/user-manual.pdf
 
 ## Making the full language ###############################################
 
@@ -165,9 +168,7 @@ internal-tests :
 	@echo "======================================================================"
 	@echo "======================== Internal test suite ========================="
 	@echo "======================================================================"
-#	$(AGDA_BIN) --test +RTS -M1g
-	$(CABAL_CMD) configure $(CABAL_CONFIGURE_OPTS)
-	$(CABAL_CMD) test internal-tests --builddir=$(BUILD_DIR) -j$(PARALLEL_TESTS)
+	@AGDA_BIN=$(AGDA_BIN) $(AGDA_TESTS_BIN) $(AGDA_TESTS_OPTIONS) --regex-include all/Internal
 
 .PHONY : succeed
 succeed :

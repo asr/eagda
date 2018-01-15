@@ -21,6 +21,7 @@ import Control.Monad.State
 
 import qualified Data.List as List
 import Data.Functor
+
 import Data.Map (Map)
 import qualified Data.Map as Map
 
