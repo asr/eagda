@@ -126,6 +126,7 @@ primInteger, primIntegerPos, primIntegerNegSuc,
     primId, primConId, primIdElim,
     primIsEquiv, primPathToEquiv, primGlue, prim_glue, prim_unglue,
     primCompGlue, primFaceForall,
+    primPushOut, primPOInl, primPOInr, primPOPush, primPOhcomp, primPOforward, primPOElim,
     primNatPlus, primNatMinus, primNatTimes, primNatDivSucAux, primNatModSucAux,
     primNatEquality, primNatLess,
     -- Machine words
@@ -209,6 +210,13 @@ primIsOneEmpty   = getBuiltin builtinIsOneEmpty
 primSub          = getBuiltin builtinSub
 primSubIn        = getBuiltin builtinSubIn
 primSubOut       = getPrimitiveTerm builtinSubOut
+primPushOut      = getBuiltin builtinPushOut
+primPOInl        = getBuiltin builtinPOInl
+primPOInr        = getBuiltin builtinPOInr
+primPOPush       = getBuiltin builtinPOPush
+primPOhcomp      = getPrimitiveTerm builtinPOhcomp
+primPOforward    = getPrimitiveTerm builtinPOforward
+primPOElim       = getPrimitiveTerm builtinPOElim
 primNat          = getBuiltin builtinNat
 primSuc          = getBuiltin builtinSuc
 primZero         = getBuiltin builtinZero
@@ -348,6 +356,7 @@ builtinNat, builtinSuc, builtinZero, builtinNatPlus, builtinNatMinus,
   builtinIsEquiv, builtinPathToEquiv, builtinGlue, builtin_glue, builtin_unglue,
   builtinCompGlue, builtinFaceForall,
   builtinId, builtinConId, builtinIdElim,
+  builtinPushOut, builtinPOInl, builtinPOInr, builtinPOPush, builtinPOhcomp, builtinPOforward, builtinPOElim,
   builtinSizeUniv, builtinSize, builtinSizeLt,
   builtinSizeSuc, builtinSizeInf, builtinSizeMax,
   builtinInf, builtinSharp, builtinFlat,
@@ -444,6 +453,13 @@ builtinIsOneEmpty                    = "ISONEEMPTY"
 builtinSub                           = "SUB"
 builtinSubIn                         = "SUBIN"
 builtinSubOut                        = "primSubOut"
+builtinPushOut                       = "PUSHOUT"
+builtinPOInl                         = "PUSHOUTINL"
+builtinPOInr                         = "PUSHOUTINR"
+builtinPOPush                        = "PUSHOUTPUSH"
+builtinPOhcomp                       = "primPushOutHComp"
+builtinPOforward                     = "primPushOutForward"
+builtinPOElim                        = "primPushOutElim"
 builtinSizeUniv                      = "SIZEUNIV"
 builtinSize                          = "SIZE"
 builtinSizeLt                        = "SIZELT"
@@ -755,11 +771,7 @@ primEqualityName = do
       lamV v          = ([], v)
   return $ case lamV eq of
     (_, Def equality _) -> equality
-  -- OLD:
-  --   ([Hidden, Hidden], Def equality _) -> equality
-  --   ([Hidden],         Def equality _) -> equality
-  --   ([],               Def equality _) -> equality
-    _                                  -> __IMPOSSIBLE__
+    _                   -> __IMPOSSIBLE__
 
 -- | Check whether the type is actually an equality (lhs ≡ rhs)
 --   and extract lhs, rhs, and their type.

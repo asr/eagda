@@ -255,7 +255,7 @@ checkRecDef i name ind eta con ps contel fields =
 -}
 
       let info = setRelevance recordRelevance defaultArgInfo
-          addRecordVar = addContext' ("", setArgInfo info $ defaultDom rect)
+          addRecordVar = addContext ("", setArgInfo info $ defaultDom rect)
           -- the record variable has the empty name by intention, see issue 208
 
       let m = qnameToMName name  -- Name of record module.
@@ -264,7 +264,7 @@ checkRecDef i name ind eta con ps contel fields =
       -- section telescope changes the semantics, see e.g.
       -- test/Succeed/RecordInParModule.
       -- Ulf, 2016-03-02 but it's the right thing to do (#1759)
-      modifyContext (modifyContextEntries hideOrKeepInstance) $ addRecordVar $ do
+      modifyContext (map hideOrKeepInstance) $ addRecordVar $ do
 
         -- Add the record section.
 
@@ -283,7 +283,7 @@ checkRecDef i name ind eta con ps contel fields =
       -- Andreas, 2016-02-09, Issue 1815 (see also issue 1759).
       -- For checking the record declarations, hide the record parameters
       -- and the parameters of the parent modules.
-      modifyContext (modifyContextEntries hideOrKeepInstance) $ addRecordVar $ do
+      modifyContext (map hideOrKeepInstance) $ addRecordVar $ do
 
         -- Check the types of the fields and the other record declarations.
         withCurrentModule m $ do
@@ -294,7 +294,7 @@ checkRecDef i name ind eta con ps contel fields =
           -- record type.
           -- See test/Succeed/ProjectionsTakeModuleTelAsParameters.agda.
           tel' <- getContextTelescope
-          setDefaultModuleParameters m
+          setModuleCheckpoint m
           checkRecordProjections m name hasNamedCon con tel' (raise 1 ftel) fields
 
 

@@ -57,6 +57,11 @@ Syntax and LaTeX backend
   generated for underscores). Note that it is possible to override
   this implementation.
 
+* OtherAspects (unsolved meta variables, catchall clauses, etc.) are
+  now correctly highlighted in the LaTeX backend (and the HTML one).
+  [Issue [#2474](https://github.com/agda/agda/issues/2474)]
+
+
 Language
 --------
 
@@ -336,6 +341,8 @@ Compiler backends
   GHC get rid of many of the `unsafeCoerce`s. This leads to performance
   improvements of up to 50% of compiled code.
 
+* `COMPILE GHC` pragmas have been included for the size primitives.
+  [Issue [#2879](https://github.com/agda/agda/issues/2879)]
 
 Release notes for Agda version 2.5.3
 ====================================

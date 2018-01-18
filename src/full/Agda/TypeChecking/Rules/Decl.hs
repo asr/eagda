@@ -796,7 +796,7 @@ checkPragma r p =
             Record{ recInduction = ind, recEtaEquality' = eta } -> do
               unless (ind == Just CoInductive) $ noRecord
               when (eta == Specified False) $ typeError $ GenericError $
-                "ETA pragram conflicts with no-eta-equality declaration"
+                "ETA pragma conflicts with no-eta-equality declaration"
             _ -> __IMPOSSIBLE__
           modifySignature $ updateDefinition r $ updateTheDef $ \case
             def@Record{} -> def { recEtaEquality' = Specified True }
@@ -968,7 +968,7 @@ checkSectionApplication' i m1 (A.SectionApp ptel m2 args) copyInfo = do
     args <- instantiateFull $ vs ++ ts
     let n = size aTel
     etaArgs <- inTopContext $ addContext aTel getContextArgs
-    addContext' (KeepNames aTel) $
+    addContext (KeepNames aTel) $
       applySection m1 (ptel `abstract` aTel) m2 (raise n args ++ etaArgs) copyInfo
 
 checkSectionApplication' i m1 (A.RecordModuleIFS x) copyInfo = do
@@ -1011,7 +1011,7 @@ checkSectionApplication' i m1 (A.RecordModuleIFS x) copyInfo = do
   when (tel == EmptyTel) $
     typeError $ GenericError $ prettyShow (qnameToConcrete name) ++ " is not a parameterised section"
 
-  addContext' telInst $ do
+  addContext telInst $ do
     vs <- moduleParamsToApply $ qnameModule name
     reportSDoc "tc.mod.apply" 20 $ vcat
       [ nest 2 $ text "vs      =" <+> sep (map prettyTCM vs)
