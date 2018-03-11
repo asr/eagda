@@ -290,7 +290,7 @@ reifyDisplayFormP f ps wps = do
 
     okTerm :: I.Term -> Bool
     okTerm (I.Var _ []) = True
-    okTerm (I.Con c ci vs) = all okArg vs
+    okTerm (I.Con c ci vs) = all okElim vs
     okTerm (I.Def x []) = isNoName $ qnameToConcrete x -- Handling wildcards in display forms
     okTerm _            = False
 
@@ -328,10 +328,10 @@ reifyDisplayFormP f ps wps = do
         termToPat (DTerm (I.Var n [])) = return $ unArg $ fromMaybe __IMPOSSIBLE__ $ ps !!! n
 
         termToPat (DCon c ci vs)          = fmap unnamed <$> tryRecPFromConP =<< do
-           A.ConP (ConPatInfo ci patNoRange) (unambiguous (conName c)) <$> mapM argToPat vs
+           A.ConP (ConPatInfo ci patNoRange False) (unambiguous (conName c)) <$> mapM argToPat vs
 
         termToPat (DTerm (I.Con c ci vs)) = fmap unnamed <$> tryRecPFromConP =<< do
-           A.ConP (ConPatInfo ci patNoRange) (unambiguous (conName c)) <$> mapM (argToPat . fmap DTerm) vs
+           A.ConP (ConPatInfo ci patNoRange False) (unambiguous (conName c)) <$> mapM (elimToPat . fmap DTerm) vs
 
         termToPat (DTerm (I.Def _ [])) = return $ unnamed $ A.WildP patNoRange
         termToPat (DDef _ [])          = return $ unnamed $ A.WildP patNoRange
@@ -350,7 +350,8 @@ reifyDisplayFormP f ps wps = do
           reportSLn "reify.display" 60 $ "termToExpr " ++ show v
           -- After unSpine, a Proj elimination is __IMPOSSIBLE__!
           case unSpine v of
-            I.Con c ci vs ->
+            I.Con c ci es -> do
+              let vs = fromMaybe __IMPOSSIBLE__ $ mapM isApplyElim es
               apps (A.Con (unambiguous (conName c))) =<< argsToExpr vs
             I.Def f es -> do
               let vs = fromMaybe __IMPOSSIBLE__ $ mapM isApplyElim es
@@ -402,9 +403,9 @@ reifyTerm expandAnonDefs0 v = do
           let keep (a, v) = showImp || visible a
           r  <- getConstructorData x
           xs <- getRecordFieldNames r
-          vs <- map unArg <$> reify vs
+          vs <- map unArg <$> reify (fromMaybe __IMPOSSIBLE__ $ allApplyElims vs)
           return $ A.Rec noExprInfo $ map (Left . uncurry FieldAssignment . mapFst unArg) $ filter keep $ zip xs vs
-        False -> reifyDisplayForm x (map I.Apply vs) $ do
+        False -> reifyDisplayForm x vs $ do
           def <- getConstInfo x
           let Constructor{conPars = np} = theDef def
           -- if we are the the module that defines constructor x
@@ -415,7 +416,7 @@ reifyTerm expandAnonDefs0 v = do
           when (n > np) __IMPOSSIBLE__
           let h = A.Con (unambiguous x)
           if null vs then return h else do
-            es <- reify vs
+            es <- reify (fromMaybe __IMPOSSIBLE__ $ allApplyElims vs)
             -- Andreas, 2012-04-20: do not reify parameter arguments of constructor
             -- if the first regular constructor argument is hidden
             -- we turn it into a named argument, in order to avoid confusion
@@ -737,6 +738,7 @@ stripImplicits ps = do
           stripName True  = fmap (unnamed . namedThing)
           stripName False = id
 
+          -- TODO: vars appearing in EqualPs shouldn't be stripped.
           canStrip a = and
             [ notVisible a
             , getOrigin a `notElem` [ UserWritten , CaseSplit ]
@@ -759,7 +761,7 @@ stripImplicits ps = do
             A.AsP i x p   -> A.AsP i x $ stripPat p
             A.PatternSynP _ _ _ -> __IMPOSSIBLE__ -- p
             A.RecP i fs   -> A.RecP i $ map (fmap stripPat) fs  -- TODO Andreas: is this right?
-            A.EqualP{}    -> p
+            A.EqualP{}    -> p -- EqualP cannot be blanked.
             A.WithP i p   -> A.WithP i $ stripPat p -- TODO #2822: right?
 
           varOrDot A.VarP{}      = True
@@ -825,7 +827,7 @@ instance BlankVars A.Pattern where
     A.AsP i n p   -> A.AsP i n $ blank bound p
     A.PatternSynP _ _ _ -> __IMPOSSIBLE__
     A.RecP i fs   -> A.RecP i $ blank bound fs
-    A.EqualP i es -> A.EqualP i (blank bound es)  -- Andrea TODO: is this correct?
+    A.EqualP{}    -> p
     A.WithP i p   -> A.WithP i (blank bound p)
 
 instance BlankVars A.Expr where
@@ -1010,7 +1012,7 @@ reifyPatterns = mapM $ stripNameFromExplicit <.> traverse (traverse reifyPat)
     reifyConP c cpi ps = do
       tryRecPFromConP =<< do A.ConP ci (unambiguous (conName c)) <$> reifyPatterns ps
       where
-        ci = ConPatInfo origin patNoRange
+        ci = ConPatInfo origin patNoRange False
         origin = fromConPatternInfo cpi
 
 
@@ -1074,14 +1076,9 @@ instance Reify (QNamed System) [A.Clause] where
             d True = unview IOne
             d False = unview IZero
         reify (phi, d b)
-      -- Since stripImplicits assumes all visible variables are bound
-      -- in the patterns, we create them for the full context and then
-      -- keep only the ones for "tel"
-      tel' <- getContextTelescope
-      ps <- reifyPatterns $ teleNamedArgs tel'
-      ps <- return $ ps ++ [defaultNamedArg ep]
-      ps <- stripImplicits ps
-      ps <- return $ drop (size tel' - size tel) ps
+
+      ps <- reifyPatterns $ teleNamedArgs tel
+      ps <- stripImplicits $ ps ++ [defaultNamedArg ep]
       let
         lhs = SpineLHS (LHSRange noRange) f ps
         result = A.Clause (spineToLhs lhs) [] rhs [] False

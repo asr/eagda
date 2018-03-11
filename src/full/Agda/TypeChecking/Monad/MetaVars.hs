@@ -123,7 +123,7 @@ instance IsInstantiatedMeta Term where
       DontCare v -> loop v
       Level l    -> isInstantiatedMeta l
       Lam _ b    -> isInstantiatedMeta b
-      Con _ _ vs -> isInstantiatedMeta vs
+      Con _ _ es | Just vs <- allApplyElims es -> isInstantiatedMeta vs
       _          -> __IMPOSSIBLE__
 
 instance IsInstantiatedMeta Level where
@@ -334,7 +334,13 @@ newMeta' :: MetaInstantiation -> MetaInfo -> MetaPriority -> Permutation ->
 newMeta' inst mi p perm j = do
   x <- fresh
   let j' = j { jMetaId = x }  -- fill the identifier part of the judgement
-      mv = MetaVar mi p perm j' inst Set.empty Instantiable
+      mv = MetaVar{ mvInfo             = mi
+                  , mvPriority         = p
+                  , mvPermutation      = perm
+                  , mvJudgement        = j'
+                  , mvInstantiation    = inst
+                  , mvListeners        = Set.empty
+                  , mvFrozen           = Instantiable }
   -- printing not available (import cycle)
   -- reportSDoc "tc.meta.new" 50 $ text "new meta" <+> prettyTCM j'
   stMetaStore %= Map.insert x mv

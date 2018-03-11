@@ -37,13 +37,15 @@ import Agda.Utils.Impossible
 
 -- | Rename the variables in a telescope using the names from a given pattern.
 --
---   Precondition: we have at least as many patterns as entries in the telescope.
+--   If there are not at least as many patterns as entries as in the telescope,
+--   the names of the remaining entries in the telescope are unchanged.
+--   If there are too many patterns, there should be a type error later.
 --
 useNamesFromPattern :: [NamedArg A.Pattern] -> Telescope -> Telescope
-useNamesFromPattern ps tel
-  | size tel > length ps = __IMPOSSIBLE__
-  | otherwise            = telFromList $ zipWith ren ps $ telToList tel
+useNamesFromPattern ps tel = telFromList (zipWith ren ps telList ++ telRemaining)
   where
+    telList = telToList tel
+    telRemaining = drop (length ps) telList -- telescope entries beyond patterns
     ren (Arg ai (Named nm p)) dom@(Dom info finite (y, a)) =
       case p of
         -- Andreas, 2017-10-12, issue #2803, also preserve user-written hidden names.
@@ -108,7 +110,7 @@ updateProblemRest st@(LHSState tel0 qs0 p@(Problem oldEqs ps ret) a psplit) = do
   reportSDoc "tc.lhs.imp" 20 $
     text "insertImplicitPatternsT returned" <+> fsep (map prettyA ps)
   -- (Issue 734: Do only the necessary telView to preserve clause types as much as possible.)
-  let m = length $ takeWhile (isNothing . isProjP) ps
+  let m = length $ takeWhile (isNothing . A.maybePostfixProjP) ps
   TelV gamma b <- telViewUpToPath m $ unArg a
   forM_ (zip ps (telToList gamma)) $ \(p, a) ->
     unless (sameHiding p a) $ typeError WrongHidingInLHS

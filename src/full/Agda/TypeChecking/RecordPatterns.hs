@@ -19,7 +19,7 @@ import Control.Monad.State
 import qualified Data.List as List
 import Data.Maybe
 import qualified Data.Map as Map
-import qualified Data.Traversable as Trav
+import qualified Data.Traversable
 
 import Agda.Syntax.Common
 import Agda.Syntax.Internal as I
@@ -34,6 +34,8 @@ import Agda.TypeChecking.Records
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
+
+import Agda.Interaction.Options
 
 import Agda.Utils.Either
 import Agda.Utils.Functor
@@ -67,8 +69,13 @@ recordPatternToProjections p =
     ConP c ci ps -> do
       whenNothing (conPRecord ci) $
         typeError $ ShouldBeRecordPattern p
-      t <- reduce $ fromMaybe __IMPOSSIBLE__ $ conPType ci
-      fields <- getRecordTypeFields (unArg t)
+      let t = unArg $ fromMaybe __IMPOSSIBLE__ $ conPType ci
+      reportSDoc "tc.rec" 45 $ vcat
+        [ text "recordPatternToProjections: "
+        , nest 2 $ text "constructor pattern " <+> prettyTCM p <+> text " has type " <+> prettyTCM t
+        ]
+      reportSLn "tc.rec" 70 $ "  type raw: " ++ show t
+      fields <- getRecordTypeFields t
       concat <$> zipWithM comb (map proj fields) (map namedArg ps)
     ProjP{}      -> __IMPOSSIBLE__ -- copattern cannot appear here
   where
@@ -124,94 +131,60 @@ translateCompiledClauses cc = do
     [ text "translate record patterns in compiled clauses"
     , nest 2 $ return $ pretty cc
     ]
-  cc <- snd <$> loop cc
+  cc <- loop cc
   reportSDoc "tc.cc.record" 20 $ vcat
     [ text "translated compiled clauses (no eta record patterns):"
+    , nest 2 $ return $ pretty cc
+    ]
+  cc <- recordExpressionsToCopatterns cc
+  reportSDoc "tc.cc.record" 20 $ vcat
+    [ text "translated compiled clauses (record expressions to copatterns):"
     , nest 2 $ return $ pretty cc
     ]
   return cc
   where
 
-    loop :: CompiledClauses -> TCM ([Bool], CompiledClauses)
+    loop :: CompiledClauses -> TCM (CompiledClauses)
     loop cc = case cc of
-      Fail      -> return (repeat True, cc)
-      Done xs t -> return (map (const True) xs, cc)
+      Fail      -> return cc
+      Done{}    -> return cc
       Case i cs -> loops i cs
 
     loops :: Arg Int              -- ^ split variable
           -> Case CompiledClauses -- ^ original split tree
-          -> TCM ([Bool], CompiledClauses)
-    loops i cs@Branches{ projPatterns   = cop
+          -> TCM CompiledClauses
+    loops i cs@Branches{ projPatterns   = comatch
                        , conBranches    = conMap
+                       , etaBranch      = eta
                        , litBranches    = litMap
                        , fallThrough    = fT
                        , catchAllBranch = catchAll
                        , lazyMatch      = lazy } = do
 
-      -- recurse on and compute variable status of catch-all clause
-      (xssa, catchAll) <- unzipMaybe <$> Trav.mapM loop catchAll
-      let xsa = fromMaybe (repeat True) xssa
-
-      -- recurse on compute variable status of literal clauses
-      (xssl, litMap)   <- Map.unzip <$> Trav.mapM loop litMap
-      let xsl = conjColumns (xsa : insertColumn (unArg i) False (Map.elems xssl))
-
-      -- recurse on constructor clauses
-      (ccs, xssc, conMap)    <- Map.unzip3 <$> do
-        Trav.forM (Map.mapWithKey (,) conMap) $ \ (c, WithArity ar cc) -> do
-          (xs, cc)     <- loop cc
-          dataOrRecCon <- do
-            isProj <- isProjection c
-            case isProj of
-              Nothing -> do
-                i <- getConstructorInfo c
-                case i of
-                  DataCon n           -> return $ Left n
-                  RecordCon NoEta fs  -> return $ Left (size fs)
-                  RecordCon YesEta fs -> return $ Right fs
-              Just{}  -> return $ Left 0
-          let (isRC, n)   = either (False,) ((True,) . size) dataOrRecCon
-              (xs0, rest) = splitAt (unArg i) xs
-              (xs1, xs2 ) = splitAt n rest
-              -- if all dropped variables (xs1) are virgins and we are record cons.
-              -- then new variable x is also virgin
-              -- and we can translate away the split
-              x           = isRC && and xs1
-              -- xs' = updated variables
-              xs'         = xs0 ++ x : xs2
-              -- get the record fields
-              fs          = either __IMPOSSIBLE__ id dataOrRecCon
-              -- if x we can translate
-          mcc <- if x then etaContract [replaceByProjections i (map unArg fs) cc]
-                      else return []
-
-          when (n /= ar) __IMPOSSIBLE__
-          return (mcc, xs', WithArity ar cc)
-
-      -- compute result
-      let xs = conjColumns (xsl : Map.elems xssc)
-      case concat $ Map.elems ccs of
-        -- case: no record pattern was translated
-        []   -> return (xs, Case i $ Branches
-                  { projPatterns = cop
-                  , conBranches = conMap
-                  , litBranches = litMap
-                  , fallThrough = fT
-                  , catchAllBranch = catchAll
-                  , lazyMatch = lazy })
-
-        -- case: translated away one record pattern
-        [cc] -> do
-                -- Andreas, 2013-03-22
-                -- Due to catch-all-expansion this is actually possible:
-                -- -- we cannot have a catch-all if we had a record pattern
-                -- whenJust catchAll __IMPOSSIBLE__
-                -- We just drop the catch-all clause.  This is safe because
-                -- for record patterns we have expanded all the catch-alls.
-                return (xs, cc) -- mergeCatchAll cc catchAll)
-
-        -- case: more than one record patterns (impossible)
-        _    -> __IMPOSSIBLE__
+      catchAll <- traverse loop catchAll
+      litMap   <- traverse loop litMap
+      (conMap, eta) <- do
+        let noEtaCase = (, Nothing) <$> (traverse . traverse) loop conMap
+            yesEtaCase ch b = (Map.empty,) . Just . (ch,) <$> traverse loop b
+        case Map.toList conMap of
+              -- This is already an eta match. Still need to recurse though.
+              -- This can happen (#2981) when we
+              -- 'revisitRecordPatternTranslation' in Rules.Decl, due to
+              -- inferred eta.
+          _ | Just (ch, b) <- eta -> yesEtaCase ch b
+          [(c, b)] | not comatch -> -- possible eta-match
+            getConstructorInfo c >>= \ case
+              RecordCon YesEta fs ->
+                let ch = ConHead c Inductive $ map unArg fs in
+                yesEtaCase ch b
+              _ -> noEtaCase
+          _ -> noEtaCase
+      return $ Case i cs{ conBranches    = conMap
+                        , etaBranch      = eta
+                        , litBranches    = litMap
+                        , fallThrough    = fT
+                        , catchAllBranch = catchAll
+                        }
 
 {- UNUSED
 instance Monoid CompiledClauses where
@@ -228,6 +201,31 @@ mergeCatchAll cc ca = maybe cc (mappend cc) ca
     _                   -> __IMPOSSIBLE__ -- this would mean non-determinism
 -}
 -}
+
+-- | Transform definitions returning record expressions to use copatterns
+--   instead. This prevents terms from blowing up when reduced.
+recordExpressionsToCopatterns :: CompiledClauses -> TCM CompiledClauses
+recordExpressionsToCopatterns cc =
+  case cc of
+    Case i bs -> Case i <$> traverse recordExpressionsToCopatterns bs
+    Fail      -> return cc
+    Done xs (Con c i es) | i == ConORec -> do  -- don't translate if using the record constructor
+      Constructor{conData = d, conArity = ar} <- theDef <$> getConstInfo (conName c)
+      ddef <- theDef <$> getConstInfo d
+      irrProj <- optIrrelevantProjections <$> pragmaOptions
+      getConstructorInfo (conName c) >>= \ case
+        RecordCon YesEta fs
+          | ar <- length fs, ar > 0,                   -- only for eta-records with at least one field
+            length es == ar,                           -- where the constructor application is saturated
+            irrProj || not (any isIrrelevant fs) -> do -- and irrelevant projections (if any) are allowed
+              let body (Apply v) = WithArity 0 $ Done xs (unArg v)
+                  body _ = __IMPOSSIBLE__
+                  bs     = Branches True (Map.fromList $ zip (map unArg fs) (map body es))
+                                    Nothing Map.empty Nothing Nothing False
+              -- translate new cases recursively (there might be nested record expressions)
+              Case (defaultArg $ length xs) <$> traverse recordExpressionsToCopatterns bs
+        _ -> return cc
+    Done{} -> return cc
 
 -- | @replaceByProjections i projs cc@ replaces variables @i..i+n-1@
 --   (counted from left) by projections @projs_1 i .. projs_n i@.
@@ -735,7 +733,7 @@ recordTree ::
   Pattern ->
   RecPatM (Either (RecPatM (Pattern, [Term], Changes)) RecordTree)
 -- Andreas, 2015-05-28 only translate implicit record patterns
-recordTree (ConP c ci ps) | Just PatOSystem <- conPRecord ci = do
+recordTree p@(ConP c ci ps) | Just PatOSystem <- conPRecord ci = do
   let t = fromMaybe __IMPOSSIBLE__ $ conPType ci
   rs <- mapM (recordTree . namedArg) ps
   case allRight rs of
@@ -746,7 +744,13 @@ recordTree (ConP c ci ps) | Just PatOSystem <- conPRecord ci = do
                 concat ss, concat cs)
     Just ts -> liftTCM $ do
       t <- reduce t
-      fields <- getRecordTypeFields (unArg t)
+      reportSDoc "tc.rec" 45 $ vcat
+        [ text "recordTree: "
+        , nest 2 $ text "constructor pattern " <+> prettyTCM p <+> text " has type " <+> prettyTCM t
+        ]
+      -- Andreas, 2018-03-03, see #2989:
+      -- The content of an @Arg@ might not be reduced (if @Arg@ is @Irrelevant@).
+      fields <- getRecordTypeFields =<< reduce (unArg t)
 --      let proj p = \x -> Def (unArg p) [defaultArg x]
       let proj p = (`applyE` [Proj ProjSystem $ unArg p])
       return $ Right $ RecCon t $ zip (map proj fields) ts

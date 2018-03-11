@@ -487,18 +487,8 @@ typeCheck x file isMain = do
   case isMain of
     MainInterface _ -> do
       r <- withMsgs $ createInterface file x isMain
-
-      -- Merge the signature with the signature for imported
-      -- things.
-      reportSLn "import.iface" 40 $ "Merging with state changes included."
-      sig     <- getSignature
-      patsyns <- getPatternSyns
-      display <- use stImportsDisplayForms
-      addImportedThings sig Map.empty patsyns display []
-      setSignature emptySignature
-      setPatternSyns Map.empty
-
       return (True, r)
+
     NotMainInterface -> do
       ms       <- getImportPath
       nesting  <- asks envModuleNestingLevel
@@ -884,7 +874,10 @@ getAllWarnings' ww ifs = do
   unsolved            <- getAllUnsolved
   collectedTCWarnings <- use stTCWarnings
 
-  fmap (filter ((<= ww) . classifyWarning . tcWarning))
+  let showWarn w = classifyWarning w <= ww &&
+                    not (null unsolved && onlyShowIfUnsolved w)
+
+  fmap (filter (showWarn . tcWarning))
     $ applyFlagsToTCWarnings ifs $ reverse
     $ unsolved ++ collectedTCWarnings
 

@@ -108,7 +108,17 @@ foldMatch match = loop where
       (p : ps, v : vs) -> do
         (r, v') <- match p v
         case r of
-          No         -> return (No        , v' : vs)
+          No         -> do
+            -- Issue 2964: Even when the first pattern doesn't match we should
+            -- continue to the next patterns (and potentially block on them)
+            -- because the splitting order in the case tree may not be
+            -- left-to-right.
+            (r', vs') <- loop ps vs
+            let vs1 = v' : vs'
+            case r' of
+              Yes s' us' -> return (No         , vs1)
+              No         -> return (No         , vs1)
+              DontKnow m -> return (DontKnow m , vs1)
           DontKnow m -> return (DontKnow m, v' : vs)
           Yes s us   -> do
             (r', vs') <- loop ps vs
@@ -154,8 +164,9 @@ matchCopattern pat@ProjP{} elim@(Proj _ q) = do
   q         <- getOriginalProjection q
   return $ if p == q then (Yes YesSimplification empty, elim)
                      else (No,                          elim)
-matchCopattern ProjP{} Apply{}   = __IMPOSSIBLE__
-matchCopattern _       Proj{}    = __IMPOSSIBLE__
+-- The following two cases are not impossible, see #2964
+matchCopattern ProjP{} elim@Apply{}   = return (No , elim)
+matchCopattern _       elim@Proj{}    = return (No , elim)
 matchCopattern p       (Apply v) = mapSnd Apply <$> matchPattern p v
 matchCopattern p       (IApply x y r) = mapSnd Apply <$> matchPattern p (defaultArg r)
 
@@ -204,7 +215,7 @@ matchPattern p u = case (p, u) of
         -- This case is necessary if we want to use the clauses before
         -- record pattern translation (e.g., in type-checking definitions by copatterns).
         unless (size fs == size ps) __IMPOSSIBLE__
-        mapSnd (Arg info . Con c (fromConPatternInfo cpi)) <$> do
+        mapSnd (Arg info . Con c (fromConPatternInfo cpi) . map Apply) <$> do
           matchPatterns ps $ for fs $ \ (Arg ai f) -> Arg ai $ v `applyE` [Proj ProjSystem f]
     where
     isEtaRecordCon :: QName -> ReduceM (Maybe [Arg QName])
@@ -244,8 +255,8 @@ matchPattern p u = case (p, u) of
         case ignoreSharing <$> w of
           NotBlocked _ (Con c' ci vs)
             | c == c'               -> do
-                (m, vs) <- yesSimplification <$> matchPatterns ps vs
-                return (m, Arg info $ Con c' ci vs)
+                (m, vs) <- yesSimplification <$> matchPatterns ps (fromMaybe __IMPOSSIBLE__ $ allApplyElims vs)
+                return (m, Arg info $ Con c' ci (map Apply vs))
             | otherwise             -> return (No                          , arg)
           NotBlocked _ (MetaV x vs) -> return (DontKnow $ Blocked x ()     , arg)
           Blocked x _               -> return (DontKnow $ Blocked x ()     , arg)

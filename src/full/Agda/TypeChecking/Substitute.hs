@@ -19,6 +19,7 @@ module Agda.TypeChecking.Substitute
   , Substitution'(..), Substitution
   ) where
 
+import Control.Arrow (first, second)
 import Data.Function
 import Data.Functor
 import qualified Data.List as List
@@ -82,21 +83,22 @@ canProject f v =
   case ignoreSharing v of
     (Con (ConHead _ _ fs) _ vs) -> do
       i <- List.elemIndex f fs
-      headMaybe (drop i vs)
+      isApplyElim =<< headMaybe (drop i vs)
     _ -> Nothing
 
 -- | Eliminate a constructed term.
-conApp :: ConHead -> ConInfo -> Args -> Elims -> Term
+conApp :: ConHead -> ConInfo -> Elims -> Elims -> Term
 conApp ch                  ci args []             = Con ch ci args
-conApp ch                  ci args (Apply a : es) = conApp ch ci (args ++ [a]) es
-conApp ch                  ci args (IApply{} : es) = __IMPOSSIBLE__
+conApp ch                  ci args (a@Apply{} : es) = conApp ch ci (args ++ [a]) es
+conApp ch                  ci args (a@IApply{} : es) = conApp ch ci (args ++ [a]) es
 conApp ch@(ConHead c _ fs) ci args (Proj o f : es) =
   let failure = flip trace __IMPOSSIBLE__ $
         "conApp: constructor " ++ show c ++
         " with fields " ++ show fs ++
         " projected by " ++ show f
+      isApply e = fromMaybe __IMPOSSIBLE__ $ isApplyElim e
       i = maybe failure id            $ List.elemIndex f fs
-      v = maybe failure argToDontCare $ headMaybe $ drop i args
+      v = maybe failure (argToDontCare . isApply)  $ headMaybe $ drop i args
   in  applyE v es
 
   -- -- Andreas, 2016-07-20 futile attempt to magically fix ProjOrigin
@@ -419,10 +421,10 @@ instance Apply a => Apply (WithArity a) where
   applyE (WithArity n a) es   = WithArity n $ applyE a es
 
 instance Apply a => Apply (Case a) where
-  apply (Branches cop cs ls m b lz) args =
-    Branches cop (apply cs args) (apply ls args) (apply m args) b lz
-  applyE (Branches cop cs ls m b lz) es =
-    Branches cop (applyE cs es) (applyE ls es) (applyE m es) b lz
+  apply (Branches cop cs eta ls m b lz) args =
+    Branches cop (apply cs args) (second (`apply` args) <$> eta) (apply ls args) (apply m args) b lz
+  applyE (Branches cop cs eta ls m b lz) es =
+    Branches cop (applyE cs es) (second (`applyE` es) <$> eta)(applyE ls es) (applyE m es) b lz
 
 instance Apply FunctionInverse where
   apply NotInjective  args = NotInjective
@@ -616,8 +618,9 @@ instance Abstract a => Abstract (WithArity a) where
   abstract tel (WithArity n a) = WithArity n $ abstract tel a
 
 instance Abstract a => Abstract (Case a) where
-  abstract tel (Branches cop cs ls m b lz) =
-    Branches cop (abstract tel cs) (abstract tel ls) (abstract tel m) b lz
+  abstract tel (Branches cop cs eta ls m b lz) =
+    Branches cop (abstract tel cs) (second (abstract tel) <$> eta)
+                 (abstract tel ls) (abstract tel m) b lz
 
 telVars :: Int -> Telescope -> [Arg DeBruijnPattern]
 telVars m = map (fmap namedThing) . (namedTelVars m)
@@ -830,6 +833,7 @@ instance Subst Term Constraint where
     CheckSizeLtSat t         -> CheckSizeLtSat (rf t)
     FindInScope m b cands    -> FindInScope m b (rf cands)
     UnBlock{}                -> c
+    CheckFunDef{}            -> c
     where
       rf x = applySubst rho x
 
@@ -1267,8 +1271,6 @@ dLub s1 b@(Abs _ s2) = case occurrence 0 s2 of
   --    That's clean and principled, even though DLubs make level solving harder.
   Irrelevantly  -> DLub s1 b
   NoOccurrence  -> sLub s1 (noabsApp __IMPOSSIBLE__ b)
---  Free.Unused   -> sLub s1 (absApp b __IMPOSSIBLE__) -- triggers Issue784
-  Free.Unused   -> DLub s1 b
   StronglyRigid -> Inf
   Unguarded     -> Inf
   WeaklyRigid   -> Inf

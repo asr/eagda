@@ -589,6 +589,10 @@ reference these are the bindings::
 Sized types
 -----------
 
+..
+  ::
+  module Size where
+
 .. code-block:: agda
 
   module Agda.Builtin.Size
@@ -597,15 +601,19 @@ The built-ins for :ref:`sized types <sized-types>` are different from other
 built-ins in that the names are defined by the ``BUILTIN`` pragma. Hence, to
 bind the size primitives it is enough to write::
 
-  {-# BUILTIN SIZEUNIV SizeUniv #-}  --  SizeUniv : SizeUniv
-  {-# BUILTIN SIZE     Size     #-}  --  Size     : SizeUniv
-  {-# BUILTIN SIZELT   Size<_   #-}  --  Size<_   : ..Size → SizeUniv
-  {-# BUILTIN SIZESUC  ↑_       #-}  --  ↑_       : Size → Size
-  {-# BUILTIN SIZEINF   ω       #-}  --  ω        : Size
-  {-# BUILTIN SIZEMAX  _⊔ˢ_     #-}  --  _⊔ˢ_     : Size → Size → Size
+    {-# BUILTIN SIZEUNIV SizeUniv #-}  --  SizeUniv : SizeUniv
+    {-# BUILTIN SIZE     Size     #-}  --  Size     : SizeUniv
+    {-# BUILTIN SIZELT   Size<_   #-}  --  Size<_   : ..Size → SizeUniv
+    {-# BUILTIN SIZESUC  ↑_       #-}  --  ↑_       : Size → Size
+    {-# BUILTIN SIZEINF  ∞        #-}  --  ∞        : Size
+    {-# BUILTIN SIZEMAX  _⊔ˢ_     #-}  --  _⊔ˢ_     : Size → Size → Size
 
 Coinduction
 -----------
+
+..
+  ::
+  module Coinduction where
 
 .. code-block:: agda
 
@@ -613,13 +621,13 @@ Coinduction
 
 The following built-ins are used for coinductive definitions::
 
-  postulate
-    ∞  : ∀ {a} (A : Set a) → Set a
-    ♯_ : ∀ {a} {A : Set a} → A → ∞ A
-    ♭  : ∀ {a} {A : Set a} → ∞ A → A
-  {-# BUILTIN INFINITY ∞  #-}
-  {-# BUILTIN SHARP    ♯_ #-}
-  {-# BUILTIN FLAT     ♭  #-}
+    postulate
+      ∞  : ∀ {a} (A : Set a) → Set a
+      ♯_ : ∀ {a} {A : Set a} → A → ∞ A
+      ♭  : ∀ {a} {A : Set a} → ∞ A → A
+    {-# BUILTIN INFINITY ∞  #-}
+    {-# BUILTIN SHARP    ♯_ #-}
+    {-# BUILTIN FLAT     ♭  #-}
 
 See :ref:`coinduction` for more information.
 
@@ -720,9 +728,9 @@ For example, consider the following function::
   pow’ zero    a = a
   pow’ (suc n) a = pow’ n (a + a)
 
-At compile-time this will be exponential, due to call-by-name evaluation, and
-at run-time there is a space leak caused by unevaluated ``a + a`` thunks. Both
-problems can be fixed with ``primForce``::
+There is a space leak here (both for compile-time and run-time evaluation),
+caused by unevaluated ``a + a`` thunks. This problem can be fixed with
+``primForce``::
 
   infixr 0 _$!_
   _$!_ : ∀ {a b} {A : Set a} {B : A → Set b} → (∀ x → B x) → ∀ x → B x

@@ -1,11 +1,14 @@
 {-# LANGUAGE CPP                  #-}
 {-# LANGUAGE UndecidableInstances #-}
 
--- To define <>, we will probably need to add:
---import Prelude hiding ((<>))
--- but using that now gives warnings and doesn't silence -Wsemigroup
-#if __GLASGOW_HASKELL__ >= 800
-{-# OPTIONS_GHC -Wno-semigroup    #-}
+-- To define <>, we need to add with GHC >= 8.4
+--
+--   import Prelude hiding ((<>))
+--
+-- but using that gives warnings and doesn't silence -Wsemigroup in
+-- some versions of GHC.
+#if __GLASGOW_HASKELL__ >= 800 && __GLASGOW_HASKELL__ < 804
+{-# OPTIONS_GHC -Wno-semigroup #-}
 #endif
 
 module Agda.TypeChecking.Pretty where
@@ -315,6 +318,9 @@ instance PrettyTCM Constraint where
             text "Is empty:" <?> prettyTCMCtx TopCtx t
         CheckSizeLtSat t ->
             text "Is not empty type of sizes:" <?> prettyTCMCtx TopCtx t
+        CheckFunDef d i q cs -> do
+            t <- defType <$> getConstInfo q
+            prettyTCM q <+> text ":" <+> prettyTCM t
       where
         prettyCmp :: (PrettyTCM a, PrettyTCM b) => TCM Doc -> a -> b -> TCM Doc
         prettyCmp cmp x y = prettyTCMCtx TopCtx x <?> (cmp <+> prettyTCMCtx TopCtx y)
@@ -453,7 +459,7 @@ data WithNode n a = WithNode n a
 instance PrettyTCM n => PrettyTCM (WithNode n Occurrence) where
   prettyTCM (WithNode n o) = prettyTCM o <+> prettyTCM n
 
-instance (PrettyTCM n, PrettyTCM (WithNode n e)) => PrettyTCM (Graph n n e) where
+instance (PrettyTCM n, PrettyTCM (WithNode n e)) => PrettyTCM (Graph n e) where
   prettyTCM g = vcat $ map pr $ Map.assocs $ Graph.graph g
     where
       pr (n, es) = sep

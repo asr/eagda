@@ -95,6 +95,21 @@ match' ((c, es, patch) : stack) = do
           (es0, es1)     = splitAt n $ map (fmap $ fmap shared) es
           lam x t        = Lam (argInfo x) (Abs (unArg x) t)
 
+      -- splitting on an eta-record constructor
+      Case (Arg _ n) Branches{etaBranch = Just (c, cc), catchAllBranch = ca} ->
+        case splitAt n es of
+          (_, []) -> no (NotBlocked Underapplied) es
+          (es0, MaybeRed _ e@(Apply (Arg _ v0)) : es1) ->
+              let projs = [ MaybeRed NotReduced $ Apply $ defaultArg $ v0 `applyE` [Proj ProjSystem f] | f <- fs ]
+                  catchAllFrame stack = maybe stack (\c -> (c, es, patch) : stack) ca in
+              match' $ (content cc, es0 ++ projs ++ es1, patchEta) : catchAllFrame stack
+            where
+              fs = conFields c
+              patchEta es = patch (es0 ++ [e] ++ es1)
+                where (es0, es') = splitAt n es
+                      (_, es1)   = splitAt (length fs) es'
+          _ -> __IMPOSSIBLE__
+
       -- splitting on the @n@th elimination
       Case (Arg _ n) bs -> do
         case splitAt n es of
@@ -123,7 +138,7 @@ match' ((c, es, patch) : stack) = do
                   case Map.lookup (conName c) (conBranches bs) of
                     Nothing -> stack
                     Just cc -> ( content cc
-                               , es0 ++ map (MaybeRed NotReduced . Apply) vs ++ es1
+                               , es0 ++ map (MaybeRed NotReduced) vs ++ es1
                                , patchCon c ci (length vs)
                                ) : stack
                 -- If our argument is @Proj p@, we push @projFrame p@ onto the stack.
@@ -140,7 +155,7 @@ match' ((c, es, patch) : stack) = do
                 patchCon c ci m es = patch (es0 ++ [Con c ci vs <$ e] ++ es2)
                   where (es0, rest) = splitAt n es
                         (es1, es2)  = splitAt m rest
-                        vs          = map argFromElim es1
+                        vs          = es1
             zo <- do
                mi <- getBuiltinName' builtinIZero
                mo <- getBuiltinName' builtinIOne

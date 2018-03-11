@@ -205,15 +205,15 @@ to this variable to take effect."
                     (standard-syntax-table))
     ;; Then override the remaining special cases.
     (dolist (cs '((?{ . "(}1n") (?} . "){4n") (?- . "w 123b") (?\n . "> b")
-                  (?. . ".") (?\; . ".") (?_ . ".") (?! . ".")))
+                  (?. . ".") (?\; . ".") (?! . ".")))
       (modify-syntax-entry (car cs) (cdr cs) tbl))
     tbl)
   "Syntax table used by the Agda mode:
 
-{}   | Comment characters, matching parentheses.
--    | Comment character, word constituent.
-\n   | Comment ender.
-.;_! | Punctuation.
+{}  | Comment characters, matching parentheses.
+-   | Comment character, word constituent.
+\n  | Comment ender.
+.;! | Punctuation.
 
 Remaining characters inherit their syntax classes from the
 standard syntax table if that table treats them as matching
@@ -1009,14 +1009,6 @@ The buffer is returned.")
 (agda2-warning-or-info-buffer
  agda2-info-buffer "info" "*Agda information*")
 
-(defun agda2-font-syntactic-face (state)
-  (cond ((nth 4 state)
-         ( save-excursion
-           (goto-char (nth 8 state))
-           (cond ((looking-at "--[[:space:]\n]") 'font-lock-comment-face)
-                 ((looking-at "{-[^#]") 'font-lock-comment-face)
-          )))))
-
 (defun agda2-info-action (name text &optional append)
   "Insert TEXT into the Agda info buffer and display it.
 NAME is displayed in the buffer's mode line.
@@ -1536,7 +1528,7 @@ Only if the buffer is unmodified, and only if there is anything to load."
 
 (defun agda2-literate-p ()
   "Is the current buffer a literate Agda buffer?"
-  (equal (file-name-extension (buffer-name)) "lagda"))
+  (not (equal (file-name-extension (buffer-file-name)) "agda")))
 
 (defmacro agda2--case (exp &rest branches) ;FIXME: Use `pcase' instead!
   (declare (debug t) (indent 1))
@@ -1829,18 +1821,7 @@ a file is loaded."
 ;; Comments and paragraphs
 
 (defun agda2-comments-and-paragraphs-setup nil
-  "Set up comment and paragraph handling for Agda mode."
-
-  ;; Syntax table setup for comments is done elsewhere.
-
-  ;; Enable highlighting of comments via Font Lock mode (which uses
-  ;; the syntax table).
-  (set (make-local-variable 'font-lock-defaults)
-       '(nil nil nil nil nil (font-lock-syntactic-face-function . agda2-font-syntactic-face)))
-  ;; If the following s-expression is removed, then highlighting of
-  ;; comments stops working.
-  (when font-lock-mode
-    (font-lock-mode t))
+  "Set up comment and paragraph handling for the Agda mode."
 
   ;; Empty lines (all white space according to Emacs) delimit
   ;; paragraphs.
@@ -1849,6 +1830,10 @@ a file is loaded."
 
   ;; Support for adding/removing comments.
   (set (make-local-variable 'comment-start) "-- ")
+
+  ;; Use the syntax table to locate comments (and possibly other
+  ;; things). Syntax table setup for comments is done elsewhere.
+  (set (make-local-variable 'comment-use-syntax) t)
 
   ;; Support for proper filling of text in comments (requires that
   ;; Filladapt is activated).
@@ -1925,9 +1910,9 @@ configuration and the selected window are not changed."
               (if windows
                   (dolist (window windows)
                     (with-selected-window window
-                      (annotation-goto-position (cdr filepos))))
+                      (goto-char (cdr filepos))))
                 (with-current-buffer buffer
-                  (annotation-goto-position (cdr filepos)))))))))))
+                  (goto-char (cdr filepos)))))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Implicit arguments

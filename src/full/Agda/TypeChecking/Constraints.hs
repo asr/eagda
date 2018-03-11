@@ -28,6 +28,7 @@ import Agda.TypeChecking.SizedTypes
 import Agda.TypeChecking.MetaVars.Mention
 import Agda.TypeChecking.Warnings
 
+import {-# SOURCE #-} Agda.TypeChecking.Rules.Def
 import {-# SOURCE #-} Agda.TypeChecking.Rules.Term
 import {-# SOURCE #-} Agda.TypeChecking.Conversion
 import {-# SOURCE #-} Agda.TypeChecking.MetaVars
@@ -109,8 +110,9 @@ noConstraints :: TCM a -> TCM a
 noConstraints problem = liftTCM $ do
   (pid, x) <- newProblem problem
   cs <- getConstraintsForProblem pid
-  w <- warning_ (UnsolvedConstraints cs)
-  unless (null cs) $ typeError $ NonFatalErrors [ w ]
+  unless (null cs) $ do
+    w <- warning_ (UnsolvedConstraints cs)
+    typeError $ NonFatalErrors [ w ]
   return x
 
 -- | Create a fresh problem for the given action.
@@ -234,6 +236,7 @@ solveConstraint_ (UnBlock m)                =
       Open -> __IMPOSSIBLE__
       OpenIFS -> __IMPOSSIBLE__
 solveConstraint_ (FindInScope m b cands)      = findInScope m cands
+solveConstraint_ (CheckFunDef d i q cs)       = checkFunDef d i q cs
 
 checkTypeCheckingProblem :: TypeCheckingProblem -> TCM Term
 checkTypeCheckingProblem p = case p of

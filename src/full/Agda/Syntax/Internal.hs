@@ -108,7 +108,8 @@ data Term = Var {-# UNPACK #-} !Int Elims -- ^ @x es@ neutral
           | Lam ArgInfo (Abs Term)        -- ^ Terms are beta normal. Relevance is ignored
           | Lit Literal
           | Def QName Elims               -- ^ @f es@, possibly a delta/iota-redex
-          | Con ConHead ConInfo Args      -- ^ @c vs@ or @record { fs = vs }@
+          | Con ConHead ConInfo Elims
+          -- ^ @c vs@ or @record { fs = vs }@
           | Pi (Dom Type) (Abs Type)      -- ^ dependent or non-dependent function space
           | Sort Sort
           | Level Level
@@ -1011,6 +1012,9 @@ isApplyElim (Apply u) = Just u
 isApplyElim Proj{}    = Nothing
 isApplyElim (IApply _ _ r)    = Just (defaultArg r)  -- losing information
 
+isApplyElim' :: Empty -> Elim' a -> Arg a
+isApplyElim' e = fromMaybe (absurd e) . isApplyElim
+
 -- | Drop 'Apply' constructors. (Safe)
 allApplyElims :: [Elim' a] -> Maybe [Arg a]
 allApplyElims = mapM isApplyElim
@@ -1272,7 +1276,7 @@ instance Pretty Term where
             , nest 2 $ pretty (unAbs b) ]
       Lit l                -> pretty l
       Def q els            -> pretty q `pApp` els
-      Con c ci vs          -> pretty (conName c) `pApp` map Apply vs
+      Con c ci vs          -> pretty (conName c) `pApp` vs
       Pi a (NoAbs _ b)     -> mparens (p > 0) $
         sep [ prettyPrec 1 (unDom a) <+> text "->"
             , nest 2 $ pretty b ]
@@ -1363,8 +1367,8 @@ instance Pretty DBPatVar where
 instance Pretty a => Pretty (Pattern' a) where
   prettyPrec n (VarP _o x)   = prettyPrec n x
   prettyPrec _ (DotP _o t)   = text "." P.<> prettyPrec 10 t
-  prettyPrec n (ConP c i nps)= mparens (n > 0) $
-    pretty (conName c) <+> fsep (map pretty ps)
+  prettyPrec n (ConP c i nps)= mparens (n > 0 && not (null nps)) $
+    pretty (conName c) <+> fsep (map (prettyPrec 10) ps)
     where ps = map (fmap namedThing) nps
   -- -- Version with printing record type:
   -- prettyPrec _ (ConP c i ps) = (if b then braces else parens) $ prTy $

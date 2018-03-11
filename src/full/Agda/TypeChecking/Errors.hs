@@ -164,7 +164,7 @@ prettyWarning wng = liftTCM $ case wng of
       ++ [prettyTCM ocs]
 
     OldBuiltin old new -> fwords $
-      "Builtin " ++ old ++ " does no longer exist. " ++
+      "Builtin " ++ old ++ " no longer exists. " ++
       "It is now bound by BUILTIN " ++ new
 
     EmptyRewritePragma -> fsep . pwords $ "Empty REWRITE pragma"
@@ -174,6 +174,14 @@ prettyWarning wng = liftTCM $ case wng of
     UselessInline q -> fsep $
       pwords "It is pointless for INLINE'd function" ++ [prettyTCM q] ++
       pwords "to have a separate Haskell definition"
+
+    InversionDepthReached f -> do
+      maxDepth <- maxInversionDepth
+      fsep $ pwords "Refusing to invert pattern matching of" ++ [prettyTCM f] ++
+             pwords ("because the maximum depth (" ++ show maxDepth ++ ") has been reached.") ++
+             pwords "Most likely this means you have an unsatisfiable constraint, but it could" ++
+             pwords "also mean that you need to increase the maximum depth using the flag" ++
+             pwords "--inversion-max-depth=N"
 
     GenericWarning d -> return d
 
@@ -185,7 +193,7 @@ prettyWarning wng = liftTCM $ case wng of
     SafeFlagPragma xs ->
       let plural | length xs == 1 = ""
                  | otherwise      = "s"
-      in fsep $ [fwords ("Cannot set OPTION pragma" ++ plural)]
+      in fsep $ [fwords ("Cannot set OPTIONS pragma" ++ plural)]
                 ++ map text xs ++ [fwords "with safe flag."]
 
     SafeFlagNonTerminating -> fsep $
@@ -194,13 +202,13 @@ prettyWarning wng = liftTCM $ case wng of
     SafeFlagTerminating -> fsep $
       pwords "Cannot use TERMINATING pragma with safe flag."
 
-    SafeFlagPrimTrustMe -> fsep (pwords "Cannot use primTrustMe with safe flag")
+    SafeFlagPrimTrustMe -> fsep (pwords "Cannot use primTrustMe with safe flag.")
 
     SafeFlagNoPositivityCheck -> fsep $
       pwords "Cannot use NO_POSITIVITY_CHECK pragma with safe flag."
 
     SafeFlagPolarity -> fsep $
-      pwords "The POLARITY pragma must not be used in safe mode."
+      pwords "Cannot use POLARITY pragma with safe flag."
 
     ParseWarning pw -> pretty pw
 
@@ -208,9 +216,7 @@ prettyWarning wng = liftTCM $ case wng of
       [text old] ++ pwords "has been deprecated. Use" ++ [text new] ++ pwords
       "instead. This will be an error in Agda" ++ [text version <> text "."]
 
-    NicifierIssue ws -> vcat $ do
-      for ws $ \ w -> do
-        sayWhere (getRange w) $ pretty w
+    NicifierIssue w -> sayWhere (getRange w) $ pretty w
 
 prettyTCWarnings :: [TCWarning] -> TCM String
 prettyTCWarnings = fmap (unlines . intersperse "") . prettyTCWarnings'
@@ -261,6 +267,7 @@ applyFlagsToTCWarnings ifs ws = do
           UselessPublic                -> True
           ParseWarning{}               -> True
           UnreachableClauses{}         -> True
+          InversionDepthReached{}      -> True
           CoverageNoExactSplit{}       -> catchallNotOK
           UselessInline{}              -> True
           GenericWarning{}             -> True
@@ -424,6 +431,7 @@ errorString err = case err of
   WithOnFreeVariable{}                     -> "WithOnFreeVariable"
   UnexpectedWithPatterns{}                 -> "UnexpectedWithPatterns"
   UninstantiatedDotPattern{}               -> "UninstantiatedDotPattern"
+  ForcedConstructorNotInstantiated{}       -> "ForcedConstructorNotInstantiated"
   UninstantiatedModule{}                   -> "UninstantiatedModule"
   SolvedButOpenHoles{}                     -> "SolvedButOpenHoles"
   UnusedVariableInPatternSynonym           -> "UnusedVariableInPatternSynonym"
@@ -568,6 +576,10 @@ instance PrettyTCM TypeError where
 
     UninstantiatedDotPattern e -> fsep $
       pwords "Failed to infer the value of dotted pattern"
+
+    ForcedConstructorNotInstantiated p -> fsep $
+      pwords "Failed to infer that constructor pattern "
+      ++ [prettyA p] ++ pwords " is forced"
 
     IlltypedPattern p a -> do
       let ho _ _ = fsep $ pwords "Cannot pattern match on functions"
@@ -1436,7 +1448,7 @@ instance PrettyTCM Call where
 
     CheckConstructor{} -> __IMPOSSIBLE__
 
-    CheckFunDef _ f _ ->
+    CheckFunDefCall _ f _ ->
       fsep $ pwords "when checking the definition of" ++ [prettyTCM f]
 
     CheckPragma _ p ->

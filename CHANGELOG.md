@@ -10,60 +10,17 @@ Installation and infrastructure
 
 * Included user manual in PDF format in `doc/user-manual.pdf`.
 
-Syntax and LaTeX backend
-------------------------
-
-* The `code` environment can now take arguments [Issues
-  [#2744](https://github.com/agda/agda/issues/2744) and
-  [#2453](https://github.com/agda/agda/issues/2453)].
-
-  Everything from \begin{code} to the end of the line is preserved in
-  the generated LaTeX code, and not treated as Agda code.
-
-  The default implementation of the `code` environment recognises one
-  optional argument, `hide`, which can be used for code that should be
-  type-checked, but not typeset:
-  ```latex
-  \begin{code}[hide]
-    open import Module
-  \end{code}
-  ```
-
-  The `AgdaHide` macro has not been removed, but has been deprecated
-  in favour of `[hide]`.
-
-* The `AgdaSuppressSpace` and `AgdaMultiCode` environments no longer
-  take an argument.
-
-  Instead some documents need to be compiled multiple times.
-
-* The `--count-clusters` flag can now be given in `OPTIONS` pragmas.
-
-* The `nofontsetup` option to the LaTeX package `agda` was broken, and
-  has (hopefully) been fixed
-  [Issue [#2773](https://github.com/agda/agda/issues/2773)].
-
-  Fewer packages than before are loaded when `nofontsetup` is used,
-  see `agda.sty` for details. Furthermore, if LuaLaTeX or XeLaTeX are
-  not used, then the font encoding is no longer changed.
-
-* The new option `noinputencodingsetup` instructs the LaTeX package
-  `agda` to not change the input encoding, and to not load the `ucs`
-  package.
-
-* Underscores are now typeset using `\AgdaUnderscore{}`.
-
-  The default implementation is `\_` (the command that was previously
-  generated for underscores). Note that it is possible to override
-  this implementation.
-
-* OtherAspects (unsolved meta variables, catchall clauses, etc.) are
-  now correctly highlighted in the LaTeX backend (and the HTML one).
-  [Issue [#2474](https://github.com/agda/agda/issues/2474)]
-
-
 Language
 --------
+
+* Call-by-need reduction.
+
+  Compile-time weak-head evaluation is now call-by-need, but each weak-head
+  reduction has a local heap, so sharing is not maintained between different
+  reductions.
+
+  The reduction machine has been rewritten from scratch and should be faster
+  than the old one in all cases, even those not exploiting laziness.
 
 ### Syntax
 
@@ -201,6 +158,83 @@ Language
     module File where -- inner module with the same name as the file, ok
   ```
 
+### Pattern matching
+
+* Forced constructor patterns.
+
+  Constructor patterns can now be dotted to indicate that Agda should not case
+  split on them but rather their value is forced by the type of the other
+  patterns. The difference between this and a regular dot pattern is that
+  forced constructor patterns can still bind variables in their arguments.
+  For example,
+
+  ```agda
+    open import Agda.Builtin.Nat
+
+    data Vec (A : Set) : Nat → Set where
+      nil  : Vec A zero
+      cons : (n : Nat) → A → Vec A n → Vec A (suc n)
+
+    append : {A : Set} (m n : Nat) → Vec A m → Vec A n → Vec A (m + n)
+    append .zero    n nil            ys = ys
+    append (.suc m) n (cons .m x xs) ys = cons (m + n) x (append m n xs ys)
+  ```
+
+* Inferring the type of a function based on its patterns
+
+  Agda no longer infers the type of a function based on the patterns used in
+  its definition. [Issue [#2834](https://github.com/agda/agda/issues/2834)]
+
+  This means that the following Agda program is no longer accepted:
+  ```agda
+    open import Agda.Builtin.Nat
+
+    f : _ → _
+    f zero    = zero
+    f (suc n) = n
+  ```
+  Agda now requires the type of the argument of `f` to be given explicitly.
+
+* Improved constraint solving for pattern matching functions
+
+  Constraint solving for functions where each right-hand side has a distinct
+  rigid head has been extended to also cover the case where some clauses return
+  an argument of the function. A typical example is append on lists:
+
+  ```agda
+    _++_ : {A : Set} → List A → List A → List A
+    []       ++ ys = ys
+    (x ∷ xs) ++ ys = x ∷ (xs ++ ys)
+  ```
+
+  Agda can now solve constraints like `?X ++ ys == 1 ∷ ys` when `ys` is a
+  neutral term.
+
+* Record expressions translated to copatterns
+
+  Definitions of the form
+
+  ```agda
+    f ps = record { f₁ = e₁; ..; fₙ = eₙ }
+  ```
+
+  are translated internally to use copatterns:
+
+  ```agda
+    f ps .f₁ = e₁
+    ...
+    f ps .fₙ = eₙ
+  ```
+
+  This means that `f ps` does not reduce, but thanks to η-equality the two
+  definitions are equivalent.
+
+  The change should lead to fewer big record expressions showing up in goal
+  types, and potentially significant performance improvement in some cases.
+
+  This may have a minor impact on with-abstraction and code using `--rewriting`
+  since η-equality is not used in these cases.
+
 ### Builtins
 
 * Added support for built-in 64-bit machine words.
@@ -242,6 +276,11 @@ Language
   On the other hand `primFloatLess` provides a total order on `Float`, with
   `-Inf < NaN < -1.0 < -0.0 < 0.0 < 1.0 < Inf`.
 
+* The `SIZEINF` builtin is now given the name `∞` in
+  `Agda.Builtin.Size` [Issue
+  [#2931](https://github.com/agda/agda/issues/2931)].
+
+  Previously it was given the name `ω`.
 
 Pragmas and options
 -------------------
@@ -263,15 +302,15 @@ Pragmas and options
     module TopLevel (A : Set) where
     {-# BUILTIN REWRITE _≡_ #-}  -- or here
   ```
-  Note that the following is still illegal:
+  Note that it is still the case that built-ins cannot be bound if
+  they depend on module parameters from an enclosing module. For
+  instance, the following is illegal:
   ```agda
     module _ {a} {A : Set a} where
       data _≡_ (x : A) : A → Set a where
         refl : x ≡ x
       {-# BUILTIN EQUALITY _≡_ #-}
   ```
-  We cannot bind a built-in which depends on module parameters whose
-  scope we are still in.
 
 * Builtin `NIL` and `CONS` have been merged with `LIST`.
 
@@ -299,14 +338,28 @@ Pragmas and options
   replaced by their ascii only version. Instead of resorting to subscript
   suffixes, Agda uses ascii digit characters.
 
+* New option `--inversion-max-depth=N`.
+
+  The depth is used to avoid looping due to inverting pattern matching for
+  unsatisfiable constraints [Issue [#431](https://github.com/agda/agda/issues/431)].
+  This option is only expected to be necessary in pathological cases.
+
+
+* New fine-grained control over the warning machinery: ability to (en/dis)able
+  warnings on a one-by-one basis.
+
+* The command line option `--help` now takes an optional argument which
+  allows the user to request more specific usage information about particular
+  topics. The only one added so far is `warning`.
 
 Emacs mode
 ----------
 
 * Banana brackets have been added to the Agda input method.
-
-   \((   #x2985  LEFT WHITE PARENTHESIS
-   \))   #x2986  RIGHT WHITE PARENTHESIS
+  ```
+    \((   #x2985  LEFT  WHITE PARENTHESIS
+    \))   #x2986  RIGHT WHITE PARENTHESIS
+  ```
 
 * Result splitting will introduce the trailing hidden arguments,
   if there is nothing else todo
@@ -326,6 +379,19 @@ Emacs mode
     test {A} = ?
   ```
 
+* Highlighting of comments is no longer handled by Font Lock mode
+  [Issue [#2794](https://github.com/agda/agda/issues/2794)].
+
+  This means that highlighting of comments is updated at the same time
+  as other highlighting.
+
+  The Emacs mode's syntax table has also been changed. Previously `_`
+  was treated as punctuation. Now it is treated in the same way as
+  most other characters: if the standard syntax table assigns it the
+  syntax class "whitespace", "open parenthesis" or "close
+  parenthesis", then it gets that syntax class, and otherwise it gets
+  the syntax class "word constituent".
+
 Compiler backends
 -----------------
 
@@ -341,8 +407,109 @@ Compiler backends
   GHC get rid of many of the `unsafeCoerce`s. This leads to performance
   improvements of up to 50% of compiled code.
 
-* `COMPILE GHC` pragmas have been included for the size primitives.
-  [Issue [#2879](https://github.com/agda/agda/issues/2879)]
+* The GHC backend now compiles the `INFINITY`, `SHARP` and `FLAT`
+  builtins in a different way [Issue
+  [#2909](https://github.com/agda/agda/issues/2909)].
+
+  Previously these were compiled to (basically) nothing. Now the
+  `INFINITY` builtin is compiled to `Infinity`, available from
+  `MAlonzo.RTE`:
+
+  ```haskell
+  data Inf a            = Sharp { flat :: a }
+  type Infinity level a = Inf a
+  ```
+
+  The `SHARP` builtin is compiled to `Sharp`, and the `FLAT` builtin
+  is (by default) compiled to a corresponding destructor.
+
+  Note that code that interacts with Haskell libraries may have to be
+  updated. As an example, here is one way to print colists of
+  characters using the Haskell function `putStr`:
+
+  ```agda
+  open import Agda.Builtin.Char
+  open import Agda.Builtin.Coinduction
+  open import Agda.Builtin.IO
+  open import Agda.Builtin.Unit
+
+  data Colist {a} (A : Set a) : Set a where
+    []  : Colist A
+    _∷_ : A → ∞ (Colist A) → Colist A
+
+  {-# FOREIGN GHC
+    data Colist a    = Nil | Cons a (MAlonzo.RTE.Inf (Colist a))
+    type Colist' l a = Colist a
+
+    fromColist :: Colist a -> [a]
+    fromColist Nil         = []
+    fromColist (Cons x xs) = x : fromColist (MAlonzo.RTE.flat xs)
+    #-}
+
+  {-# COMPILE GHC Colist = data Colist' (Nil | Cons) #-}
+
+  postulate
+    putStr : Colist Char → IO ⊤
+
+  {-# COMPILE GHC putStr = putStr . fromColist #-}
+  ```
+
+* `COMPILE GHC` pragmas have been included for the size primitives
+  [Issue [#2879](https://github.com/agda/agda/issues/2879)].
+
+LaTeX backend
+-------------
+
+* The `code` environment can now take arguments [Issues
+  [#2744](https://github.com/agda/agda/issues/2744) and
+  [#2453](https://github.com/agda/agda/issues/2453)].
+
+  Everything from \begin{code} to the end of the line is preserved in
+  the generated LaTeX code, and not treated as Agda code.
+
+  The default implementation of the `code` environment recognises one
+  optional argument, `hide`, which can be used for code that should be
+  type-checked, but not typeset:
+  ```latex
+  \begin{code}[hide]
+    open import Module
+  \end{code}
+  ```
+
+  The `AgdaHide` macro has not been removed, but has been deprecated
+  in favour of `[hide]`.
+
+* The `AgdaSuppressSpace` and `AgdaMultiCode` environments no longer
+  take an argument.
+
+  Instead some documents need to be compiled multiple times.
+
+* The `--count-clusters` flag can now be given in `OPTIONS` pragmas.
+
+* The `nofontsetup` option to the LaTeX package `agda` was broken, and
+  has (hopefully) been fixed
+  [Issue [#2773](https://github.com/agda/agda/issues/2773)].
+
+  Fewer packages than before are loaded when `nofontsetup` is used,
+  see `agda.sty` for details. Furthermore, if LuaLaTeX or XeLaTeX are
+  not used, then the font encoding is no longer changed.
+
+* The new option `noinputencodingsetup` instructs the LaTeX package
+  `agda` to not change the input encoding, and to not load the `ucs`
+  package.
+
+* Underscores are now typeset using `\AgdaUnderscore{}`.
+
+  The default implementation is `\_` (the command that was previously
+  generated for underscores). Note that it is possible to override
+  this implementation.
+
+* OtherAspects (unsolved meta variables, catchall clauses, etc.) are
+  now correctly highlighted in the LaTeX backend (and the HTML one).
+  [Issue [#2474](https://github.com/agda/agda/issues/2474)]
+
+* `postprocess-latex.pl` does not add extra spaces around tagged `\Agda*{}`
+  commands anymore.
 
 Release notes for Agda version 2.5.3
 ====================================

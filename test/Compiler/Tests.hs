@@ -15,6 +15,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding
 import Data.Monoid
 import Data.List
+import System.Directory
 import System.IO.Temp
 import System.FilePath
 import System.Environment
@@ -67,17 +68,13 @@ disabledTests =
     RFInclude "Compiler/.*/simple/Sharing"
   , RFInclude "Compiler/JS/simple/VecReverseIrr"
   , RFInclude "Compiler/JS/simple/Issue2821"    -- GHC backend specific
+  , RFInclude "Compiler/JS/simple/Issue2914"    -- GHC backend specific
     -- Fix to 2524 is too unsafe
   , RFInclude "Compiler/.*/simple/Issue2524"
-    -- The following test cases are GHC backend specific (and
-    -- currently some are disabled for the GHC backend as well,
-    -- because the corresponding bugs have not been fixed yet).
-  , RFInclude "Compiler/JS/simple/Issue2879-1"
-  , RFInclude "Compiler/JS/simple/Issue2879-2"
-  , RFInclude "Compiler/.*/simple/Issue2909-1"
-  , RFInclude "Compiler/.*/simple/Issue2909-2"
-  , RFInclude "Compiler/.*/simple/Issue2909-3"
-  , RFInclude "Compiler/JS/simple/Issue2909-4"
+    -- The following test cases are GHC backend specific.
+  , RFInclude "Compiler/JS/simple/Issue2879-.*"
+  , RFInclude "Compiler/JS/simple/Issue2909-.*"
+  , RFInclude "Compiler/JS/simple/Issue2918"
   ]
 
 tests :: IO TestTree
@@ -212,7 +209,8 @@ agdaRunProgGoldenTest1 dir comp extraArgs inp opts cont
           args <- (++ defArgs) <$> argsForComp comp
           res@(ret, out, err) <- readAgdaProcessWithExitCode args T.empty
 
-          case ret of
+          absDir <- canonicalizePath dir
+          removePaths [absDir, compDir] <$> case ret of
             ExitSuccess -> cont compDir out err
             ExitFailure _ -> return $ CompileFailed res
           )
@@ -220,6 +218,16 @@ agdaRunProgGoldenTest1 dir comp extraArgs inp opts cont
         argsForComp :: Compiler -> IO [String]
         argsForComp MAlonzo = return ["--compile"]
         argsForComp JS = return ["--js"]
+
+        removePaths ps r = case r of
+          CompileFailed    r -> CompileFailed    (removePaths' r)
+          CompileSucceeded r -> CompileSucceeded (removePaths' r)
+          ExecutedProg     r -> ExecutedProg     (removePaths' r)
+          where
+          removePaths' (c, out, err) = (c, rm out, rm err)
+
+          rm = foldr (.) id $
+               map (\p -> T.concat . T.splitOn (T.pack p)) ps
 
 readOptions :: FilePath -- file name of the agda file
     -> IO TestOptions

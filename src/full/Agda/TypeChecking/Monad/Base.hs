@@ -39,7 +39,8 @@ import Agda.Benchmarking (Benchmark, Phase)
 import Agda.Syntax.Concrete (TopLevelModuleName)
 import Agda.Syntax.Common
 import qualified Agda.Syntax.Concrete as C
-import Agda.Syntax.Concrete.Definitions (NiceDeclaration, DeclarationWarning)
+import Agda.Syntax.Concrete.Definitions
+  (NiceDeclaration, DeclarationWarning, declarationWarningName)
 import qualified Agda.Syntax.Abstract as A
 import Agda.Syntax.Abstract (AllNames)
 import Agda.Syntax.Internal as I
@@ -47,6 +48,7 @@ import Agda.Syntax.Internal.Pattern ()
 import Agda.Syntax.Internal.Generic (TermLike(..))
 import Agda.Syntax.Literal
 import Agda.Syntax.Parser (PM(..), ParseWarning, runPMIO)
+import Agda.Syntax.Parser.Monad (parseWarningName)
 import Agda.Syntax.Treeless (Compiled)
 import Agda.Syntax.Fixity
 import Agda.Syntax.Position
@@ -61,6 +63,7 @@ import {-# SOURCE #-} Agda.Compiler.Backend
 
 -- import {-# SOURCE #-} Agda.Interaction.FindFile
 import Agda.Interaction.Options
+import Agda.Interaction.Options.Warnings
 import Agda.Interaction.Response
   (InteractionOutputCallback, defaultInteractionOutputCallback, Response(..))
 import Agda.Interaction.Highlighting.Precise
@@ -787,6 +790,7 @@ data Constraint
     --   on which the constraint may be blocked on and the third one is the list
     --   of candidates (or Nothing if we haven’t determined the list of
     --   candidates yet)
+  | CheckFunDef Delayed Info.DefInfo QName [A.Clause]
   deriving (Data, Show)
 
 instance HasRange Constraint where
@@ -819,6 +823,7 @@ instance Free Constraint where
       IsEmpty _ t           -> freeVars' t
       CheckSizeLtSat u      -> freeVars' u
       FindInScope _ _ cs    -> freeVars' cs
+      CheckFunDef _ _ _ _   -> mempty
 
 instance TermLike Constraint where
   foldTerm f = \case
@@ -834,6 +839,7 @@ instance TermLike Constraint where
       UnBlock _              -> __IMPOSSIBLE__  -- mempty     -- Not yet implemented
       Guarded c _            -> __IMPOSSIBLE__  -- foldTerm c -- Not yet implemented
       FindInScope _ _ cs     -> __IMPOSSIBLE__  -- Not yet implemented
+      CheckFunDef _ _ _ _    -> __IMPOSSIBLE__  -- Not yet implemented
   traverseTermM f c = __IMPOSSIBLE__ -- Not yet implemented
 
 
@@ -1585,6 +1591,8 @@ data Defn = Axiom
             , primName  :: String
             , primClauses :: [Clause]
               -- ^ 'null' for primitive functions, @not null@ for builtin functions.
+            , primInv      :: FunctionInverse
+              -- ^ Builtin functions can have inverses. For instance, natural number addition.
             , primCompiled :: Maybe CompiledClauses
               -- ^ 'Nothing' for primitive functions,
               --   @'Just' something@ for builtin functions.
@@ -1839,6 +1847,11 @@ defParameters Defn{theDef = Datatype{dataPars = n}} = Just n
 defParameters Defn{theDef = Record  {recPars  = n}} = Just n
 defParameters _                                     = Nothing
 
+defInverse :: Definition -> FunctionInverse
+defInverse Defn{theDef = Function { funInv  = inv }} = inv
+defInverse Defn{theDef = Primitive{ primInv = inv }} = inv
+defInverse _                                         = NotInjective
+
 defCompilerPragmas :: BackendName -> Definition -> [CompilerPragma]
 defCompilerPragmas b = reverse . fromMaybe [] . Map.lookup b . defCompiledRep
   -- reversed because we add new pragmas to the front of the list
@@ -1884,22 +1897,27 @@ defForced d = case theDef d of
 ---------------------------------------------------------------------------
 
 type FunctionInverse = FunctionInverse' Clause
+type InversionMap c = Map TermHead [c]
 
 data FunctionInverse' c
   = NotInjective
-  | Inverse (Map TermHead c)
+  | Inverse (InversionMap c)
   deriving (Data, Show, Functor)
 
 data TermHead = SortHead
               | PiHead
               | ConsHead QName
+              | VarHead Nat
+              | UnknownHead
   deriving (Data, Eq, Ord, Show)
 
 instance Pretty TermHead where
-  pretty = \case
-    SortHead  -> text "SortHead"
-    PiHead    -> text "PiHead"
-    ConsHead q-> text "ConsHead" <+> pretty q
+  pretty = \ case
+    SortHead    -> text "SortHead"
+    PiHead      -> text "PiHead"
+    ConsHead q  -> text "ConsHead" <+> pretty q
+    VarHead i   -> text ("VarHead " ++ show i)
+    UnknownHead -> text "UnknownHead"
 
 ---------------------------------------------------------------------------
 -- ** Mutual blocks
@@ -1934,7 +1952,7 @@ data Call = CheckClause Type A.SpineClause
           | CheckDataDef Range Name [A.LamBinding] [A.Constructor]
           | CheckRecDef Range Name [A.LamBinding] [A.Constructor]
           | CheckConstructor QName Telescope Sort A.Constructor
-          | CheckFunDef Range Name [A.Clause]
+          | CheckFunDefCall Range Name [A.Clause]
           | CheckPragma Range A.Pragma
           | CheckPrimitive Range Name A.Expr
           | CheckIsEmpty Range Type
@@ -1963,7 +1981,7 @@ instance Pretty Call where
     pretty CheckDataDef{}            = text "CheckDataDef"
     pretty CheckRecDef{}             = text "CheckRecDef"
     pretty CheckConstructor{}        = text "CheckConstructor"
-    pretty CheckFunDef{}             = text "CheckFunDef"
+    pretty CheckFunDefCall{}         = text "CheckFunDefCall"
     pretty CheckPragma{}             = text "CheckPragma"
     pretty CheckPrimitive{}          = text "CheckPrimitive"
     pretty CheckWithFunctionType{}   = text "CheckWithFunctionType"
@@ -1993,7 +2011,7 @@ instance HasRange Call where
     getRange (CheckDataDef i _ _ _)          = getRange i
     getRange (CheckRecDef i _ _ _)           = getRange i
     getRange (CheckConstructor _ _ _ c)      = getRange c
-    getRange (CheckFunDef i _ _)             = getRange i
+    getRange (CheckFunDefCall i _ _)         = getRange i
     getRange (CheckPragma r _)               = r
     getRange (CheckPrimitive i _ _)          = getRange i
     getRange CheckWithFunctionType{}         = noRange
@@ -2189,6 +2207,8 @@ data TCEnv =
                 -- ^ Until we get a termination checker for instance search (#1743) we
                 --   limit the search depth to ensure termination.
           , envIsDebugPrinting :: Bool
+          , envCallByNeed :: Bool
+                -- ^ Use call-by-need evaluation for reductions.
           , envCurrentCheckpoint :: CheckpointId
                 -- ^ Checkpoints track the evolution of the context as we go
                 -- under binders or refine it by pattern matching.
@@ -2241,6 +2261,7 @@ initEnv = TCEnv { envContext             = []
                 , envUnquoteFlags           = defaultUnquoteFlags
                 , envInstanceDepth          = 0
                 , envIsDebugPrinting        = False
+                , envCallByNeed             = True
                 , envCurrentCheckpoint      = 0
                 , envCheckpoints            = Map.singleton 0 IdS
                 }
@@ -2361,6 +2382,9 @@ eInstanceDepth f e = f (envInstanceDepth e) <&> \ x -> e { envInstanceDepth = x 
 eIsDebugPrinting :: Lens' Bool TCEnv
 eIsDebugPrinting f e = f (envIsDebugPrinting e) <&> \ x -> e { envIsDebugPrinting = x }
 
+eCallByNeed :: Lens' Bool TCEnv
+eCallByNeed f e = f (envCallByNeed e) <&> \ x -> e { envCallByNeed = x }
+
 eCurrentCheckpoint :: Lens' CheckpointId TCEnv
 eCurrentCheckpoint f e = f (envCurrentCheckpoint e) <&> \ x -> e { envCurrentCheckpoint = x }
 
@@ -2435,7 +2459,7 @@ instance Free Candidate where
 -- checking the document further and interacting with the user.
 
 data Warning
-  = NicifierIssue            [DeclarationWarning]
+  = NicifierIssue            DeclarationWarning
   | TerminationIssue         [TerminationError]
   | UnreachableClauses       QName [[NamedArg DeBruijnPattern]]
   | CoverageIssue            QName [(Telescope, [NamedArg DeBruijnPattern])]
@@ -2455,6 +2479,8 @@ data Warning
     --   (See issue #2377.)
   | UselessInline            QName
   -- Generic warnings for one-off things
+  | InversionDepthReached    QName
+  -- ^ The --inversion-max-depth was reached.
   | GenericWarning           Doc
     -- ^ Harmless generic warning (not an error)
   | GenericNonFatalError     Doc
@@ -2472,6 +2498,35 @@ data Warning
     -- ^ `DeprecationWarning old new version`:
     --   `old` is deprecated, use `new` instead. This will be an error in Agda `version`.
   deriving (Show , Data)
+
+
+warningName :: Warning -> WarningName
+warningName w = case w of
+  NicifierIssue dw           -> declarationWarningName dw
+  ParseWarning pw            -> parseWarningName pw
+  OldBuiltin{}               -> OldBuiltin_
+  EmptyRewritePragma         -> EmptyRewritePragma_
+  UselessPublic              -> UselessPublic_
+  UnreachableClauses{}       -> UnreachableClauses_
+  UselessInline{}            -> UselessInline_
+  GenericWarning{}           -> GenericWarning_
+  DeprecationWarning{}       -> DeprecationWarning_
+  InversionDepthReached{}    -> InversionDepthReached_
+  TerminationIssue{}         -> TerminationIssue_
+  CoverageIssue{}            -> CoverageIssue_
+  CoverageNoExactSplit{}     -> CoverageNoExactSplit_
+  NotStrictlyPositive{}      -> NotStrictlyPositive_
+  UnsolvedMetaVariables{}    -> UnsolvedMetaVariables_
+  UnsolvedInteractionMetas{} -> UnsolvedInteractionMetas_
+  UnsolvedConstraints{}      -> UnsolvedConstraints_
+  GenericNonFatalError{}     -> GenericNonFatalError_
+  SafeFlagPostulate{}        -> SafeFlagPostulate_
+  SafeFlagPragma{}           -> SafeFlagPragma_
+  SafeFlagNonTerminating     -> SafeFlagNonTerminating_
+  SafeFlagTerminating        -> SafeFlagTerminating_
+  SafeFlagPrimTrustMe        -> SafeFlagPrimTrustMe_
+  SafeFlagNoPositivityCheck  -> SafeFlagNoPositivityCheck_
+  SafeFlagPolarity           -> SafeFlagPolarity_
 
 data TCWarning
   = TCWarning
@@ -2640,6 +2695,7 @@ data TypeError
         | RelevanceMismatch Relevance Relevance
             -- ^ The given relevance does not correspond to the expected relevane.
         | UninstantiatedDotPattern A.Expr
+        | ForcedConstructorNotInstantiated A.Pattern
         | IlltypedPattern A.Pattern Type
         | IllformedProjectionPattern A.Pattern
         | CannotEliminateWithPattern (NamedArg A.Pattern) Type
@@ -3262,7 +3318,7 @@ instance KillRange Defn where
       Datatype a b c d e f g h i      -> killRange9 Datatype a b c d e f g h i
       Record a b c d e f g h i j k    -> killRange11 Record a b c d e f g h i j k
       Constructor a b c d e f g h i j -> killRange10 Constructor a b c d e f g h i j
-      Primitive a b c d               -> killRange4 Primitive a b c d
+      Primitive a b c d e             -> killRange4 Primitive a b c d e
 
 instance KillRange MutualId where
   killRange = id
@@ -3275,6 +3331,8 @@ instance KillRange TermHead where
   killRange SortHead     = SortHead
   killRange PiHead       = PiHead
   killRange (ConsHead q) = ConsHead $ killRange q
+  killRange h@VarHead{}  = h
+  killRange UnknownHead  = UnknownHead
 
 instance KillRange Projection where
   killRange (Projection a b c d e) = killRange5 Projection a b c d e

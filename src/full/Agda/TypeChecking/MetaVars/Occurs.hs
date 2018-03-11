@@ -551,12 +551,13 @@ hasBadRigid xs t = do
     -- offending variables under a constructor could be removed by
     -- the right instantiation of the meta variable.
     -- Thus, they are not rigid.
-    Con c _ args -> do
+    Con c _ es | Just args <- allApplyElims es -> do
       ifM (liftTCM $ isEtaCon (conName c))
         -- in case of a record con, we can in principle prune
         -- (but not this argument; the meta could become a projection!)
         (and <$> mapM (hasBadRigid xs . unArg) args)  -- not andM, we need to force the exceptions!
         failure
+    Con c _ es | otherwise -> failure
     Lit{}        -> failure -- matchable
     MetaV{}      -> failure -- potentially matchable
     Shared p     -> __IMPOSSIBLE__
@@ -614,12 +615,20 @@ instance FoldRigid Term where
   foldRigid f t = do
     b <- liftTCM $ reduceB t
     case ignoreSharing $ ignoreBlocking b of
+      -- Upon entry, we are in rigid position, thus,
+      -- bound variables are rigid ones.
       Var i es   -> f i `mappend` fold es
       Lam _ t    -> fold t
       Lit{}      -> mempty
       Def _ es   -> case b of
+        -- If the definition is blocked by a meta, its arguments
+        -- may be in flexible positions.
         Blocked{}                   -> mempty
+        -- If the definition is incomplete, arguments might disappear
+        -- by reductions that come with more clauses, thus, these
+        -- arguments are not rigid.
         NotBlocked MissingClauses _ -> mempty
+        -- _        -> mempty -- breaks: ImproveInertRHS, Issue442, PruneRecord, PruningNonMillerPattern
         _        -> fold es
       Con _ _ ts -> fold ts
       Pi a b     -> fold (a,b)
@@ -666,6 +675,9 @@ instance (Subst t a, FoldRigid a) => FoldRigid (Abs a) where
 instance FoldRigid a => FoldRigid (Arg a) where
   foldRigid f a =
     case getRelevance a of
+      -- Irrelevant arguments are definitionally equal to
+      -- values, so the variables there are not considered
+      -- "definitely rigid".
       Irrelevant -> mempty
       _          -> foldRigid f $ unArg a
 

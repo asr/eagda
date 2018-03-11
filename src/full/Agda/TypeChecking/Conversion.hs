@@ -500,27 +500,30 @@ compareAtom cmp t m n =
                                 -- (same as for blocked terms)
             | otherwise -> do
                 [p1, p2] <- mapM getMetaPriority [x,y]
-                -- instantiate later meta variables first
+                -- First try the one with the highest priority. If that doesn't
+                -- work, try the low priority one.
                 let (solve1, solve2)
-                      | (p1,x) > (p2,y) = (l,r)
-                      | otherwise       = (r,l)
-                      where l = assign dir x xArgs n
-                            r = assign rid y yArgs m
+                      | (p1, x) > (p2, y) = (l1, r2)
+                      | otherwise         = (r1, l2)
+                      where l1 = assign dir x xArgs n
+                            r1 = assign rid y yArgs m
+                            -- Careful: the first attempt might prune the low
+                            -- priority meta! (Issue #2978)
+                            l2 = ifM (isInstantiatedMeta x) (compareTermDir dir t m n) l1
+                            r2 = ifM (isInstantiatedMeta y) (compareTermDir rid t n m) r1
 
                     try m h = m `catchError_` \err -> case err of
                       PatternErr{} -> h
                       _            -> throwError err
 
-                -- First try the one with the highest priority. If that doesn't
-                -- work, try the low priority one.
                 try solve1 solve2
 
         -- one side a meta, the other an unblocked term
         (NotBlocked _ (MetaV x es), _) -> assign dir x es n
         (_, NotBlocked _ (MetaV x es)) -> assign rid x es m
         (Blocked{}, Blocked{})  -> checkSyntacticEquality
-        (Blocked{}, _)    -> useInjectivity cmp t m n
-        (_,Blocked{})     -> useInjectivity cmp t m n
+        (Blocked{}, _)  -> useInjectivity (fromCmp cmp) t m n   -- The blocked term goes first
+        (_, Blocked{})  -> useInjectivity (flipCmp $ fromCmp cmp) t n m
         _ -> do
           -- -- Andreas, 2013-10-20 put projection-like function
           -- -- into the spine, to make compareElims work.
@@ -560,7 +563,7 @@ compareAtom cmp t m n =
                     forcedArgs <- getForcedArgs $ conName x
                     -- Constructors are covariant in their arguments
                     -- (see test/succeed/CovariantConstructors).
-                    compareArgs (repeat $ polFromCmp cmp) forcedArgs a' (Con x ci []) xArgs yArgs
+                    compareElims (repeat $ polFromCmp cmp) forcedArgs a' (Con x ci []) xArgs yArgs
             _ -> etaInequal cmp t m n -- fixes issue 856 (unsound conversion error)
     where
         -- returns True in case we handled the comparison already.
@@ -712,7 +715,7 @@ antiUnify pid a u v = do
     -- thus, we would not see clearly if we used @getFullyAppliedConType@ instead.)
     (Con x ci us, Con y _ vs) | x == y -> maybeGiveUp $ do
       a <- maybe patternViolation (return . snd) =<< getConType x a
-      antiUnifyElims pid a (Con x ci []) (map Apply us) (map Apply vs)
+      antiUnifyElims pid a (Con x ci []) us vs
     (Def f us, Def g vs) | f == g, length us == length vs -> maybeGiveUp $ do
       a <- computeElimHeadType f us vs
       antiUnifyElims pid a (Def f []) us vs
@@ -1313,7 +1316,7 @@ equalLevel' a b = do
         _ | as == bs -> ok
           | any isBlocked (as ++ bs) -> do
               lvl <- levelType
-              liftTCM $ useInjectivity CmpEq lvl (Level a) (Level b)
+              liftTCM $ addConstraint $ ValueCmp CmpEq lvl (Level a) (Level b)
 
         -- closed == closed
         ([ClosedLevel n], [ClosedLevel m])

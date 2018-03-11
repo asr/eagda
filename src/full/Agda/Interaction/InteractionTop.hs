@@ -286,8 +286,7 @@ handleCommand wrap onFail cmd = handleNastyErrors $ wrap $ do
             Right <$>
               (toIO $ handleErr $ Exception noRange $ text $ show e)
 
-          asyncHandler e@E.ThreadKilled = return (Left e)
-          asyncHandler e                = handle e
+          asyncHandler e@AsyncCancelled = return (Left e)
 
           generalHandler (e :: E.SomeException) = handle e
 
@@ -462,9 +461,6 @@ data Interaction' range
     -- | Show unsolved metas. If there are no unsolved metas but unsolved constraints
     -- show those instead.
   | Cmd_metas
-
-    -- | Display all warnings.
-  | Cmd_warnings
 
     -- | Shows all the top-level names in the given module, along with
     -- their types. Uses the top-level scope.
@@ -721,13 +717,6 @@ interpret Cmd_metas = do -- CL.showMetas []
   ms <- lift showOpenMetas
   (pwe, pwa) <- interpretWarnings
   display_info $ Info_AllGoalsWarnings (unlines ms) pwa pwe
-
-interpret Cmd_warnings = do
-  -- Ulf, 2016-08-09: Warnings are now printed in the info buffer by Cmd_metas.
-  -- pws <- interpretWarnings
-  -- unless (null pwd) $ display_info $ Info_Warning pws
-  return ()
-
 
 interpret (Cmd_show_module_contents_toplevel norm s) =
   liftCommandMT B.atTopLevel $ showModuleContents norm noRange s

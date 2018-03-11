@@ -164,12 +164,13 @@ coreBuiltins =
                                                    (const $ const $ return ()))
   , (builtinPathToEquiv        |-> BuiltinUnknown
                                                 (Just $ runNamesT [] (
-                                                   hPi' "l" (el $ cl primLevel) $ \ a ->
-                                                   nPi' "E" (cl tinterval --> (sort . tmSort <$> a)) $ \bE ->
+                                                   hPi' "l" (cl tinterval --> (el $ cl primLevel)) $ \ a ->
+                                                   nPi' "E" (nPi' "i" (cl tinterval) $ \ i -> (sort . tmSort <$> (a <@> i))) $ \bE ->
                                                    let comp = getPrimitiveTerm "primComp" in
-                                                   el' a (cl primIsEquiv <#> a <#> a <@> (bE <@> cl primIZero) <@> (bE <@> cl primIOne)
-                                                          <@> (cl comp <#> (lam "i" $ \ _ -> a) <@> bE <@> cl primIZero
-                                                                <@> (lam "i" $ \ i -> cl primIsOneEmpty <#> a <#> (lam "o" $ \ _ -> bE <@> i))
+                                                   el' (cl primLevelMax <@> (a <@> cl primIZero) <@> (a <@> cl primIOne))
+                                                    (cl primIsEquiv <#> (a <@> cl primIZero) <#> (a <@> cl primIOne) <@> (bE <@> cl primIZero) <@> (bE <@> cl primIOne)
+                                                          <@> (cl comp <#> a <@> bE <@> cl primIZero
+                                                                <@> (lam "i" $ \ i -> cl primIsOneEmpty <#> (a <@> i) <#> (lam "o" $ \ _ -> bE <@> i))
                                                               )
                                                          )))
                                          (const $ const $ return ()))
@@ -754,8 +755,13 @@ bindBuiltinInfo (BuiltinInfo s d) e = do
             let cls = defClauses info
                 a   = defAbstract info
                 mcc = defCompiled info
+                inv = defInverse info
             bindPrimitive pfname $ pf { primFunName = qx }
-            addConstant qx $ info { theDef = Primitive a pfname cls mcc }
+            addConstant qx $ info { theDef = Primitive { primAbstr    = a
+                                                       , primName     = pfname
+                                                       , primClauses  = cls
+                                                       , primInv      = inv
+                                                       , primCompiled = mcc } }
 
             -- needed? yes, for checking equations for mul
             bindBuiltinName s v
@@ -860,9 +866,11 @@ bindBuiltinNoDef b q = inTopContext $ do
       bindPrimitive s (pf {primFunName = q})
       addConstant q $
         defaultDefn defaultArgInfo q t $
-          Primitive ConcreteDef -- TODO fix (Info.defAbstract i)
-              s []
-              (Just (CC.Done [] $ Def q []))
+          Primitive { primAbstr    = ConcreteDef -- TODO fix (Info.defAbstract i)
+                    , primName     = s
+                    , primClauses  = []
+                    , primInv      = NotInjective
+                    , primCompiled = Just (CC.Done [] $ Def q []) }
     Just (BuiltinDataCons mt) -> do
       t <- mt
       d <- return $! getPrimName $ unEl t

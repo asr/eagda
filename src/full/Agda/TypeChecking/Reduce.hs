@@ -197,6 +197,7 @@ instance Instantiate Constraint where
   instantiate' (FindInScope m b args) = FindInScope m b <$> mapM instantiate' args
   instantiate' (IsEmpty r t)        = IsEmpty r <$> instantiate' t
   instantiate' (CheckSizeLtSat t)   = CheckSizeLtSat <$> instantiate' t
+  instantiate' c@CheckFunDef{}      = return c
 
 instance Instantiate e => Instantiate (Map k e) where
     instantiate' = traverse instantiate'
@@ -229,10 +230,16 @@ ifBlocked t blocked unblocked = do
     NotBlocked _ (MetaV m _) -> blocked m (ignoreBlocking t)
     NotBlocked nb _          -> unblocked nb (ignoreBlocking t)
 
+isBlocked :: MonadTCM tcm => Term -> tcm (Maybe MetaId)
+isBlocked t = ifBlocked t (\m _ -> return $ Just m) (\_ _ -> return Nothing)
+
 -- | Case on whether a type is blocked on a meta (or is a meta).
 ifBlockedType :: MonadTCM tcm => Type -> (MetaId -> Type -> tcm a) -> (NotBlocked -> Type -> tcm a) -> tcm a
 ifBlockedType (El s t) blocked unblocked =
   ifBlocked t (\ m v -> blocked m $ El s v) (\ nb v -> unblocked nb $ El s v)
+
+isBlockedType :: MonadTCM tcm => Type -> tcm (Maybe MetaId)
+isBlockedType t = ifBlockedType t (\m _ -> return $ Just m) (\_ _ -> return Nothing)
 
 class Reduce t where
     reduce'  :: t -> ReduceM t
@@ -302,8 +309,9 @@ instance Reduce t => Reduce [t] where
 
 instance Reduce t => Reduce (Arg t) where
     reduce' a = case getRelevance a of
-                 Irrelevant -> return a             -- Don't reduce' irr. args!?
-                 _          -> traverse reduce' a
+      Irrelevant -> return a             -- Don't reduce' irr. args!?
+                                         -- Andreas, 2018-03-03, caused #2989.
+      _          -> traverse reduce' a
 
     reduceB' t = traverse id <$> traverse reduceB' t
 
@@ -365,7 +373,8 @@ slowReduceTerm v = do
 --      MetaV x args -> notBlocked . MetaV x <$> reduce' args
       MetaV x es -> iapp es
       Def f es   -> flip reduceIApply es $ unfoldDefinitionE False reduceB' (Def f []) f es
-      Con c ci args -> do
+      Con c ci es -> do
+          let args = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
           -- Constructors can reduce' when they come from an
           -- instantiated module.
           v <- unfoldDefinition False reduceB' (Con c ci []) (conName c) args
@@ -388,7 +397,7 @@ slowReduceTerm v = do
         case v of
           _ | Just v == mz  -> return $ Lit $ LitNat (getRange c) 0
           _                 -> return v
-      reduceNat v@(Con c ci [a]) | visible a && isRelevant a = do
+      reduceNat v@(Con c ci [Apply a]) | visible a && isRelevant a = do
         ms  <- fmap ignoreSharing <$> getBuiltin' builtinSuc
         case v of
           _ | Just (Con c ci []) == ms -> inc <$> reduce' (unArg a)
@@ -396,7 +405,7 @@ slowReduceTerm v = do
           where
             inc w = case ignoreSharing w of
               Lit (LitNat r n) -> Lit (LitNat (fuseRange c r) $ n + 1)
-              _                -> Con c ci [defaultArg w]
+              _                -> Con c ci [Apply $ defaultArg w]
       reduceNat v = return v
 
 -- Andreas, 2013-03-20 recursive invokations of unfoldCorecursion
@@ -686,6 +695,7 @@ instance Reduce Constraint where
   reduce' (FindInScope m b cands) = FindInScope m b <$> mapM reduce' cands
   reduce' (IsEmpty r t)         = IsEmpty r <$> reduce' t
   reduce' (CheckSizeLtSat t)    = CheckSizeLtSat <$> reduce' t
+  reduce' c@CheckFunDef{}       = return c
 
 instance Reduce e => Reduce (Map k e) where
     reduce' = traverse reduce'
@@ -834,6 +844,7 @@ instance Simplify Constraint where
   simplify' (FindInScope m b cands) = FindInScope m b <$> mapM simplify' cands
   simplify' (IsEmpty r t)         = IsEmpty r <$> simplify' t
   simplify' (CheckSizeLtSat t)    = CheckSizeLtSat <$> simplify' t
+  simplify' c@CheckFunDef{}       = return c
 
 instance Simplify Bool where
   simplify' = return
@@ -981,6 +992,7 @@ instance Normalise Constraint where
   normalise' (FindInScope m b cands) = FindInScope m b <$> mapM normalise' cands
   normalise' (IsEmpty r t)         = IsEmpty r <$> normalise' t
   normalise' (CheckSizeLtSat t)    = CheckSizeLtSat <$> normalise' t
+  normalise' c@CheckFunDef{}       = return c
 
 instance Normalise Bool where
   normalise' = return
@@ -1173,6 +1185,7 @@ instance InstantiateFull Constraint where
     FindInScope m b cands -> FindInScope m b <$> mapM instantiateFull' cands
     IsEmpty r t         -> IsEmpty r <$> instantiateFull' t
     CheckSizeLtSat t    -> CheckSizeLtSat <$> instantiateFull' t
+    c@CheckFunDef{}     -> return c
 
 instance (InstantiateFull a) => InstantiateFull (Elim' a) where
   instantiateFull' (Apply v) = Apply <$> instantiateFull' v
@@ -1282,9 +1295,10 @@ instance InstantiateFull a => InstantiateFull (WithArity a) where
   instantiateFull' (WithArity n a) = WithArity n <$> instantiateFull' a
 
 instance InstantiateFull a => InstantiateFull (Case a) where
-  instantiateFull' (Branches cop cs ls m b lz) =
+  instantiateFull' (Branches cop cs eta ls m b lz) =
     Branches cop
       <$> instantiateFull' cs
+      <*> instantiateFull' eta
       <*> instantiateFull' ls
       <*> instantiateFull' m
       <*> pure b
@@ -1323,6 +1337,9 @@ instance InstantiateFull a => InstantiateFull (Builtin a) where
     instantiateFull' (Prim x)   = Prim <$> instantiateFull' x
 
 instance InstantiateFull QName where
+  instantiateFull' = return
+
+instance InstantiateFull ConHead where
   instantiateFull' = return
 
 instance InstantiateFull a => InstantiateFull (Maybe a) where

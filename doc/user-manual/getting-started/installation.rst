@@ -16,6 +16,8 @@ There are several ways to install Agda:
   <installation-development-version>` from the Git `repository
   <https://github.com/agda/agda>`_
 
+Agda can be installed using different flags (see :ref:`installation-flags`).
+
 .. _installation-from-hackage:
 
 Installation from Hackage
@@ -92,7 +94,7 @@ More information:
 
 * `Agda standard library (Debian) <https://tracker.debian.org/pkg/agda-stdlib>`_
 
-* `Agda (Ubuntu) <https://launchpad.net/ubuntu/+source/agda|Agda>`_
+* `Agda (Ubuntu) <https://launchpad.net/ubuntu/+source/agda>`_
 
 * `Agda standard library (Ubuntu) <https://launchpad.net/ubuntu/+source/agda-stdlib>`_
 
@@ -128,7 +130,8 @@ NixOS
 -----
 
 Agda is part of the Nixpkgs collection that is used by
-http://nixos.org/nixos. To install Agda and agda-mode for Emacs, type:
+https://nixos.org/nixos. To install Agda and agda-mode for Emacs,
+type:
 
 .. code-block:: bash
 
@@ -141,7 +144,7 @@ not installed automatically.
 OS X
 ----
 
-`Homebrew <http://brew.sh>`_ provides prebuilt packages for OS X.  To install:
+`Homebrew <https://brew.sh>`_ provides prebuilt packages for OS X.  To install:
 
 .. code-block:: bash
 
@@ -161,7 +164,7 @@ It is also possible to install ``--without-stdlib``,
 building Agda from source.
 
 For more information, refer to the `Homebrew documentation
-<http://git.io/brew-docs>`_.
+<https://docs.brew.sh/>`_.
 
 .. _installation-development-version:
 
@@ -184,3 +187,23 @@ the `Agda wiki <http://wiki.portal.chalmers.se/agda/pmwiki.php>`_:
     .. code-block:: bash
 
       make install
+
+.. _installation-flags:
+
+Installation Flags
+==================
+
+When installing Agda the following flags can be used:
+
+:samp:`cpphs`
+   Use `cpphs <https://hackage.haskell.org/package/cpphs>`_ instead of
+   cpp. Default: on.
+
+:samp:`debug`
+   Enable debugging features that may slow Agda down. Default: off.
+
+:samp:`flag enable-cluster-counting`
+   Enable the ``--count-clusters`` flag (see
+   :ref:`grapheme-clusters`). Note that if ``enable-cluster-counting``
+   is ``False``, then the ``--count-clusters`` flag triggers an error
+   message. Default: off.
