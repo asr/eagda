@@ -5,29 +5,24 @@ module Agda.TypeChecking.Constraints where
 
 import Prelude hiding (null)
 
-import Control.Applicative hiding (empty)
-
 import Control.Monad
 import Control.Monad.Reader
-import Control.Monad.State
-import Control.Monad.Trans.Maybe
 
 import qualified Data.List as List
 import qualified Data.Set as Set
 
 import Agda.Syntax.Internal
 
-import Agda.TypeChecking.Free
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.InstanceArguments
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Reduce
-import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.LevelConstraints
 import Agda.TypeChecking.SizedTypes
 import Agda.TypeChecking.MetaVars.Mention
 import Agda.TypeChecking.Warnings
 
+import {-# SOURCE #-} Agda.TypeChecking.Rules.Application
 import {-# SOURCE #-} Agda.TypeChecking.Rules.Def
 import {-# SOURCE #-} Agda.TypeChecking.Rules.Term
 import {-# SOURCE #-} Agda.TypeChecking.Conversion
@@ -35,14 +30,11 @@ import {-# SOURCE #-} Agda.TypeChecking.MetaVars
 import {-# SOURCE #-} Agda.TypeChecking.Empty
 
 import Agda.Utils.Except ( MonadError(throwError) )
-import Agda.Utils.Functor
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.Null
 import Agda.Utils.Pretty (prettyShow)
 import Agda.Utils.Lens
-import Agda.Utils.Size
-import qualified Agda.Utils.VarSet as VarSet
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -69,12 +61,12 @@ addConstraint c = do
       , prettyTCM c ]
     -- Need to reduce to reveal possibly blocking metas
     c <- reduce =<< instantiateFull c
-    c' <- simpl c
-    if (c /= c')
+    cs <- simpl c
+    if ([c] /= cs)
       then do
-        reportSDoc "tc.constr.add" 20 $ text "  simplified:" <+> prettyTCM c'
-        solveConstraint_ c'
-      else addConstraint' c'
+        reportSDoc "tc.constr.add" 20 $ text "  simplified:" <+> prettyList (map prettyTCM cs)
+        mapM_ solveConstraint_ cs
+      else mapM_ addConstraint' cs
     -- the added constraint can cause IFS constraints to be solved (but only
     -- the constraints which aren’t blocked on an uninstantiated meta)
     unless (isIFSConstraint c) $
@@ -92,18 +84,14 @@ addConstraint c = do
     isLvl _          = False
 
     -- Try to simplify a level constraint
-    simpl :: Constraint -> TCM Constraint
-    simpl c = if not $ isLvl c then return c else do
+    simpl :: Constraint -> TCM [Constraint]
+    simpl c = if not $ isLvl c then return [c] else do
       cs <- map theConstraint <$> getAllConstraints
       lvls <- instantiateFull $ List.filter (isLvl . clValue) cs
       when (not $ null lvls) $ do
         reportSDoc "tc.constr.lvl" 40 $ text "simplifying level constraint" <+> prettyTCM c
                                         $$ nest 2 (hang (text "using") 2 (prettyTCM lvls))
-      let c' = simplifyLevelConstraint c $ map clValue lvls
-      reportSDoc "tc.constr.lvl" 40 $
-        if c' /= c then text "simplified to" <+> prettyTCM c'
-                   else text "no simplification"
-      return c'
+      return $ simplifyLevelConstraint c $ map clValue lvls
 
 -- | Don't allow the argument to produce any constraints.
 noConstraints :: TCM a -> TCM a
@@ -241,7 +229,7 @@ solveConstraint_ (CheckFunDef d i q cs)       = checkFunDef d i q cs
 checkTypeCheckingProblem :: TypeCheckingProblem -> TCM Term
 checkTypeCheckingProblem p = case p of
   CheckExpr e t                  -> checkExpr e t
-  CheckArgs eh r args t0 t1 k    -> checkArguments' eh r args t0 t1 k
+  CheckArgs eh r args t0 t1 k    -> checkArguments eh r args t0 t1 k
   CheckLambda args body target   -> checkPostponedLambda args body target
   UnquoteTactic tac hole t       -> unquoteTactic tac hole t $ return hole
 

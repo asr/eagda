@@ -17,16 +17,13 @@ import Prelude hiding ( mapM, null, sequence )
 
 import Data.Maybe
 
-import Control.Applicative hiding (empty)
-import Control.Arrow (first, second, (***), left, right)
+import Control.Arrow (left)
 import Control.Monad
 import Control.Monad.State
-import Control.Monad.Reader
 import Control.Monad.Writer hiding ((<>))
 import Control.Monad.Trans.Maybe
 
 import Data.Either (partitionEithers)
-import Data.Function (on)
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IntMap
 import Data.List (delete, sortBy, stripPrefix, (\\), findIndex)
@@ -34,8 +31,6 @@ import qualified Data.List as List
 import Data.Monoid ( Monoid, mempty, mappend )
 import Data.Semigroup ( Semigroup )
 import qualified Data.Semigroup as Semigroup
-import Data.Traversable
-import Data.Map (Map)
 import qualified Data.Map as Map
 
 import Agda.Interaction.Highlighting.Generate (storeDisambiguatedName)
@@ -46,14 +41,11 @@ import Agda.Syntax.Internal as I
 import Agda.Syntax.Internal.Pattern
 import Agda.Syntax.Abstract (IsProjP(..))
 import qualified Agda.Syntax.Abstract as A
-import qualified Agda.Syntax.Abstract.Pattern as A
 import Agda.Syntax.Abstract.Views (asView, deepUnscope)
 import Agda.Syntax.Common as Common
 import Agda.Syntax.Info as A
 import Agda.Syntax.Literal
 import Agda.Syntax.Position
-import Agda.Syntax.Scope.Base (ScopeInfo, emptyScopeInfo)
-
 
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Monad.Builtin (litType, constructorForm)
@@ -70,7 +62,6 @@ import Agda.TypeChecking.Patterns.Abstract
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Records hiding (getRecordConstructor)
 import Agda.TypeChecking.Reduce
-import Agda.TypeChecking.Rewriting
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.Primitive hiding (Nat)
@@ -83,18 +74,15 @@ import Agda.TypeChecking.Rules.LHS.Unify
 import Agda.TypeChecking.Rules.LHS.Implicit
 import Agda.TypeChecking.Rules.Data
 
-import Agda.Utils.Either
 import Agda.Utils.Except (MonadError(..), ExceptT, runExceptT)
 import Agda.Utils.Function
 import Agda.Utils.Functor
 import Agda.Utils.Lens
 import Agda.Utils.List
-import Agda.Utils.ListT
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
 import Agda.Utils.NonemptyList
 import Agda.Utils.Null
-import Agda.Utils.Permutation
 import Agda.Utils.Pretty (prettyShow)
 import Agda.Utils.Singleton
 import Agda.Utils.Size
@@ -202,7 +190,10 @@ updateProblemEqs eqs = do
           A.ConP cpi ambC ps -> do
             (c',_) <- disambiguateConstructor ambC d pars
 
-            unless (conName c == conName c') {-'-} __IMPOSSIBLE__
+            -- Issue #3014: If the constructor is forced but the user wrote a
+            -- different constructor,that's an error. We simply keep the
+            -- problem equation, this will result in a proper error message later.
+            if conName c /= conName c' then return [eq] else do
 
             -- Insert implicit patterns
             ps <- insertImplicitPatterns ExpandLast ps ctel
@@ -313,7 +304,7 @@ noShadowingOfConstructors mkCall eqs =
       ]
     reportSDoc "tc.lhs.shadow" 70 $ nest 2 $ text "a =" <+> pretty a
     a <- reduce a
-    case ignoreSharing a of
+    case a of
       Def t _ -> do
         d <- theDef <$> getConstInfo t
         case d of
@@ -347,7 +338,6 @@ noShadowingOfConstructors mkCall eqs =
       Lit   {} -> __IMPOSSIBLE__
       Level {} -> __IMPOSSIBLE__
       Con   {} -> __IMPOSSIBLE__
-      Shared{} -> __IMPOSSIBLE__
       DontCare{} -> __IMPOSSIBLE__
 
 -- | Check that a dot pattern matches it's instantiation.
@@ -916,7 +906,7 @@ checkLHS mf st@(LHSState tel ip problem target psplit) = do
                    _     -> typeError $ GenericError $ "Only 0 or 1 allowed on the rhs of face"
          phi <- case ts of
                    [] -> do
-                     a <- ignoreSharing <$> reduce (unEl $ unDom dom)
+                     a <- reduce (unEl $ unDom dom)
                      misone <- getBuiltinName' builtinIsOne
                      case a of
                        Def q [Apply phi] | Just q == misone -> return (unArg phi)
@@ -1035,7 +1025,7 @@ checkLHS mf st@(LHSState tel ip problem target psplit) = do
 
       -- The type of the constructor will end in an application of the datatype
       TelV gamma (El _ ctarget) <- liftTCM $ telView b
-      let Def d' es' = ignoreSharing ctarget
+      let Def d' es' = ctarget
           cixs = drop (size pars) $ fromMaybe __IMPOSSIBLE__ $ allApplyElims es'
 
       unless (d == d') {-'-} __IMPOSSIBLE__
@@ -1239,7 +1229,7 @@ hardTypeError = liftTCM . typeError
 isDataOrRecordType :: (MonadTCM m, MonadDebug m)
                    => Dom Type -> ExceptT TCErr m (QName, Args, Args)
 isDataOrRecordType dom@Dom{domInfo = info, unDom = a} = liftTCM (reduceB a) >>= \case
-  NotBlocked ReallyNotBlocked a -> case ignoreSharing $ unEl a of
+  NotBlocked ReallyNotBlocked a -> case unEl a of
 
     -- Subcase: split type is a Def.
     Def d es -> (liftTCM $ theDef <$> getConstInfo d) >>= \case
@@ -1266,7 +1256,10 @@ isDataOrRecordType dom@Dom{domInfo = info, unDom = a} = liftTCM (reduceB a) >>= 
       -- the type could be an axiom
       Axiom{} -> hardTypeError =<< notData
 
-      Function{}    -> __IMPOSSIBLE__
+      -- Issue #2997: the type could be a Def that does not reduce for some reason
+      -- (abstract, failed termination checking, NON_TERMINATING, ...)
+      Function{}    -> hardTypeError =<< notData
+
       Constructor{} -> __IMPOSSIBLE__
       Primitive{}   -> __IMPOSSIBLE__
 
@@ -1283,7 +1276,6 @@ isDataOrRecordType dom@Dom{domInfo = info, unDom = a} = liftTCM (reduceB a) >>= 
     Con{}      -> __IMPOSSIBLE__
     Level{}    -> __IMPOSSIBLE__
     DontCare{} -> __IMPOSSIBLE__
-    Shared{}   -> __IMPOSSIBLE__
 
   -- Type is blocked on a meta or something else: fail softly
   _ -> softTypeError =<< notData
@@ -1533,7 +1525,7 @@ checkParameters
   -> tcm ()
 checkParameters dc d pars = liftTCM $ do
   a  <- reduce (Def dc [])
-  case ignoreSharing a of
+  case a of
     Def d0 es -> do -- compare parameters
       let vs = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
       reportSDoc "tc.lhs.split" 40 $

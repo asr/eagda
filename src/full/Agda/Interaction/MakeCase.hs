@@ -128,7 +128,7 @@ parseVariables f tel ii rng ss = do
         -- via the type checker.
         VarName x _ -> do
           (v, _) <- getVarInfo x
-          case ignoreSharing v of
+          case v of
             Var i [] -> done $ i - nlocals
             _        -> typeError . GenericDocError =<< sep
               [ text $ "Cannot split on variable " ++ s ++ ", because it is bound to"
@@ -228,7 +228,7 @@ makeCase hole rng s = withInteractionId hole $ do
       res <- splitResult f sc
       case res of
 
-        Nothing  -> do
+        Left err  -> do
           -- Andreas, 2017-12-16, issue #2871
           -- If there is nothing to split, introduce trailing hidden arguments.
 
@@ -239,12 +239,13 @@ makeCase hole rng s = withInteractionId hole $ do
               isVarP _ = Nothing
           -- If all are already coming from the user, there is really nothing todo!
           when (all ((UserWritten ==) . getOrigin) trailingPatVars) $ do
-            typeError $ GenericError $ "Cannot split on result here"
+            typeError . GenericDocError =<< do
+              text "Cannot split on result here, because" <+> prettyTCM err
           -- Otherwise, we make these user-written
           let xs = map (dbPatVarIndex . namedArg) trailingPatVars
           return [makePatternVarsVisible xs sc]
 
-        Just cov -> ifNotM (optCopatterns <$> pragmaOptions) failNoCop $ {-else-} do
+        Right cov -> ifNotM (optCopatterns <$> pragmaOptions) failNoCop $ {-else-} do
           -- Andreas, 2016-05-03: do not introduce function arguments after projection.
           -- This is sometimes annoying and can anyway be done by another C-c C-c.
           -- mapM (snd <.> fixTarget) $ splitClauses cov
@@ -290,7 +291,7 @@ makeCase hole rng s = withInteractionId hole $ do
 
   -- Finds the new variable corresponding to an old one, if any.
   newVar :: SplitClause -> Nat -> Maybe Nat
-  newVar c x = case ignoreSharing $ applyPatSubst (scSubst c) (var x) of
+  newVar c x = case applyPatSubst (scSubst c) (var x) of
     Var y [] -> Just y
     _        -> Nothing
 

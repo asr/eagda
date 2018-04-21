@@ -41,6 +41,7 @@ import {-# SOURCE #-} Agda.TypeChecking.Reduce.Fast
 
 import Agda.Utils.Function
 import Agda.Utils.Functor
+import Agda.Utils.Lens
 import Agda.Utils.Monad
 import Agda.Utils.HashMap (HashMap)
 import Agda.Utils.Size
@@ -105,8 +106,6 @@ instance Instantiate Term where
       PostponedTypeCheckingProblem _ _ -> return t
   instantiate' (Level l) = levelTm <$> instantiate' l
   instantiate' (Sort s) = sortTm <$> instantiate' s
-  instantiate' v@Shared{} =
-    updateSharedTerm instantiate' v
   instantiate' t = return t
 
 instance Instantiate Level where
@@ -120,7 +119,7 @@ instance Instantiate LevelAtom where
   instantiate' l = case l of
     MetaLevel m vs -> do
       v <- instantiate' (MetaV m vs)
-      case ignoreSharing v of
+      case v of
         MetaV m vs -> return $ MetaLevel m vs
         _          -> return $ UnreducedLevel v
     UnreducedLevel l -> UnreducedLevel <$> instantiate' l
@@ -225,7 +224,7 @@ instance Instantiate EqualityView where
 ifBlocked :: MonadTCM tcm =>  Term -> (MetaId -> Term -> tcm a) -> (NotBlocked -> Term -> tcm a) -> tcm a
 ifBlocked t blocked unblocked = do
   t <- liftTCM $ reduceB t
-  case ignoreSharing <$> t of
+  case t of
     Blocked m _              -> blocked m (ignoreBlocking t)
     NotBlocked _ (MetaV m _) -> blocked m (ignoreBlocking t)
     NotBlocked nb _          -> unblocked nb (ignoreBlocking t)
@@ -293,7 +292,7 @@ instance Reduce LevelAtom where
       fromTm v = do
         bv <- reduceB' v
         let v = ignoreBlocking bv
-        case ignoreSharing <$> bv of
+        case bv of
           NotBlocked r (MetaV m vs) -> return $ NotBlocked r $ MetaLevel m vs
           Blocked m _               -> return $ Blocked m    $ BlockedLevel m v
           NotBlocked r _            -> return $ NotBlocked r $ NeutralLevel r v
@@ -335,7 +334,7 @@ reduceIApply' reduceB' d (IApply x y r : es) = do
   r <- reduceB' r
   -- We need to propagate the blocking information so that e.g.
   -- we postpone "someNeutralPath ?0 = a" rather than fail.
-  let blockedInfo = case ignoreSharing <$> r of
+  let blockedInfo = case r of
         Blocked m _              -> Blocked m ()
         NotBlocked _ (MetaV m _) -> Blocked m ()
         NotBlocked i _           -> NotBlocked i ()
@@ -349,18 +348,31 @@ reduceIApply' reduceB' d [] = d
 instance Reduce Term where
   reduceB' = {-# SCC "reduce'<Term>" #-} maybeFastReduceTerm
 
+-- | @Just nt@ means run fast reduce with @allowNonterminatingReductions = nt@.
+shouldTryFastReduce :: ReduceM (Maybe Bool)
+shouldTryFastReduce = do
+  allowed <- asks envAllowedReductions
+  let notAll = List.delete NonTerminatingReductions allowed /= allReductions
+  return $ if notAll then Nothing
+                     else Just (elem NonTerminatingReductions allowed)
+
 maybeFastReduceTerm :: Term -> ReduceM (Blocked Term)
 maybeFastReduceTerm v = do
   let tryFast = case v of
-                  Def{} -> True
-                  Con{} -> True
-                  _     -> False
+                  Def{}   -> True
+                  Con{}   -> True
+                  MetaV{} -> True
+                  _       -> False
   if not tryFast then slowReduceTerm v
-                 else do
-    s <- optSharing   <$> commandLineOptions
-    allowed <- asks envAllowedReductions
-    let notAll = List.delete NonTerminatingReductions allowed /= allReductions
-    if s || notAll then slowReduceTerm v else fastReduce (elem NonTerminatingReductions allowed) v
+                 else
+    case v of
+      MetaV x _ -> ifM (isOpen x) (return $ notBlocked v) (maybeFast v)
+      _         -> maybeFast v
+  where
+    isOpen x = isOpenMeta . mvInstantiation <$> lookupMeta x
+    maybeFast v = shouldTryFastReduce >>= \ case
+      Nothing -> slowReduceTerm v
+      Just nt -> fastReduce nt v
 
 slowReduceTerm :: Term -> ReduceM (Blocked Term)
 slowReduceTerm v = do
@@ -388,22 +400,20 @@ slowReduceTerm v = do
       Var _ es  -> iapp es
       Lam _ _  -> done
       DontCare _ -> done
-      Shared{}   -> updateSharedTermF reduceB' v
     where
       -- NOTE: reduceNat can traverse the entire term.
-      reduceNat v@Shared{} = updateSharedTerm reduceNat v
       reduceNat v@(Con c ci []) = do
         mz  <- getBuiltin' builtinZero
         case v of
           _ | Just v == mz  -> return $ Lit $ LitNat (getRange c) 0
           _                 -> return v
       reduceNat v@(Con c ci [Apply a]) | visible a && isRelevant a = do
-        ms  <- fmap ignoreSharing <$> getBuiltin' builtinSuc
+        ms  <- getBuiltin' builtinSuc
         case v of
           _ | Just (Con c ci []) == ms -> inc <$> reduce' (unArg a)
           _                         -> return v
           where
-            inc w = case ignoreSharing w of
+            inc w = case w of
               Lit (LitNat r n) -> Lit (LitNat (fuseRange c r) $ n + 1)
               _                -> Con c ci [Apply $ defaultArg w]
       reduceNat v = return v
@@ -421,12 +431,8 @@ unfoldCorecursionE (IApply x y r) = do -- TODO check if this makes sense
 unfoldCorecursion :: Term -> ReduceM (Blocked Term)
 unfoldCorecursion v = do
   v <- instantiate' v
-  case compressPointerChain v of
+  case v of
     Def f es -> unfoldDefinitionE True unfoldCorecursion (Def f []) f es
-    v@(Shared p) ->
-      case derefPtr p of
-        Def{} -> updateSharedFM unfoldCorecursion v
-        _     -> slowReduceTerm v
     _ -> slowReduceTerm v
 
 -- | If the first argument is 'True', then a single delayed clause may
@@ -579,7 +585,7 @@ reduceHead' v = do -- ignoreAbstractMode $ do
   -- first, possibly rewrite literal v to constructor form
   v <- constructorForm v
   traceSDoc "tc.inj.reduce" 30 (text "reduceHead" <+> prettyTCM v) $ do
-  case ignoreSharing v of
+  case v of
     Def f es -> do
 
       abstractMode <- envAbstractMode <$> ask
@@ -604,6 +610,24 @@ reduceHead' v = do -- ignoreAbstractMode $ do
         Record{ recClause = Just _ }    -> red
         _                               -> return $ notBlocked v
     _ -> return $ notBlocked v
+
+-- | Unfold a single inlined function.
+unfoldInlined :: Term -> TCM Term
+unfoldInlined = runReduceM . unfoldInlined'
+
+unfoldInlined' :: Term -> ReduceM Term
+unfoldInlined' v = do
+  inTypes <- view eWorkingOnTypes
+  case v of
+    _ | inTypes -> return v -- Don't inline in types (to avoid unfolding of goals)
+    Def f es -> do
+      def <- theDef <$> getConstInfo f
+      case def of   -- Only for simple definitions with no pattern matching (TODO: maybe copatterns?)
+        Function{ funCompiled = Just Done{}, funDelayed = NotDelayed }
+          | def ^. funInline ->
+          ignoreBlocking <$> unfoldDefinitionE False (return . notBlocked) (Def f []) f es
+        _ -> return v
+    _ -> return v
 
 -- | Apply a definition using the compiled clauses, or fall back to
 --   ordinary clauses if no compiled clauses exist.
@@ -745,7 +769,6 @@ instance Simplify Term where
       Var i vs   -> Var i    <$> simplify' vs
       Lam h v    -> Lam h    <$> simplify' v
       DontCare v -> dontCare <$> simplify' v
-      Shared{}   -> updateSharedTerm simplify' v
 
 simplifyBlocked' :: Simplify t => Blocked t -> ReduceM t
 simplifyBlocked' (Blocked _ t) = return t
@@ -900,21 +923,22 @@ instance Normalise Type where
     normalise' (El s t) = El <$> normalise' s <*> normalise' t
 
 instance Normalise Term where
-    normalise' = ignoreBlocking <.> (reduceB' >=> traverse normaliseArgs)
-      where
-        normaliseArgs :: Term -> ReduceM Term
-        normaliseArgs v = case v of
-                Var n vs    -> Var n <$> normalise' vs
-                Con c ci vs -> Con c ci <$> normalise' vs
-                Def f vs    -> Def f <$> normalise' vs
-                MetaV x vs  -> MetaV x <$> normalise' vs
-                Lit _       -> return v
-                Level l     -> levelTm <$> normalise' l
-                Lam h b     -> Lam h <$> normalise' b
-                Sort s      -> sortTm <$> normalise' s
-                Pi a b      -> uncurry Pi <$> normalise' (a,b)
-                Shared{}    -> updateSharedTerm normalise' v
-                DontCare _  -> return v
+    normalise' v = shouldTryFastReduce >>= \ case
+      Nothing -> slowNormaliseArgs =<< reduce' v
+      Just nt -> fastNormalise nt v
+
+slowNormaliseArgs :: Term -> ReduceM Term
+slowNormaliseArgs v = case v of
+  Var n vs    -> Var n      <$> normalise' vs
+  Con c ci vs -> Con c ci   <$> normalise' vs
+  Def f vs    -> Def f      <$> normalise' vs
+  MetaV x vs  -> MetaV x    <$> normalise' vs
+  Lit _       -> return v
+  Level l     -> levelTm    <$> normalise' l
+  Lam h b     -> Lam h      <$> normalise' b
+  Sort s      -> sortTm     <$> normalise' s
+  Pi a b      -> uncurry Pi <$> normalise' (a, b)
+  DontCare _  -> return v
 
 instance Normalise Elim where
   normalise' (Apply v) = Apply <$> normalise' v
@@ -1080,7 +1104,6 @@ instance InstantiateFull Term where
           Lam h b     -> Lam h <$> instantiateFull' b
           Sort s      -> sortTm <$> instantiateFull' s
           Pi a b      -> uncurry Pi <$> instantiateFull' (a,b)
-          Shared{}    -> updateSharedTerm instantiateFull' v
           DontCare v  -> dontCare <$> instantiateFull' v
 
 instance InstantiateFull Level where
@@ -1094,7 +1117,7 @@ instance InstantiateFull LevelAtom where
   instantiateFull' l = case l of
     MetaLevel m vs -> do
       v <- instantiateFull' (MetaV m vs)
-      case ignoreSharing v of
+      case v of
         MetaV m vs -> return $ MetaLevel m vs
         _          -> return $ UnreducedLevel v
     NeutralLevel r v -> NeutralLevel r <$> instantiateFull' v
@@ -1320,11 +1343,12 @@ instance InstantiateFull Clause where
 
 instance InstantiateFull Interface where
     instantiateFull' (Interface h ms mod scope inside
-                               sig display b foreignCode
+                               sig display userwarn b foreignCode
                                highlighting pragmas patsyns warnings) =
         Interface h ms mod scope inside
             <$> instantiateFull' sig
             <*> instantiateFull' display
+            <*> return userwarn
             <*> instantiateFull' b
             <*> return foreignCode
             <*> return highlighting

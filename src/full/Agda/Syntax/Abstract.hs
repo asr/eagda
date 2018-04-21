@@ -173,7 +173,7 @@ data Declaration
   | DataDef    DefInfo QName [LamBinding] [Constructor]
       -- ^ the 'LamBinding's are 'DomainFree' and bind the parameters of the datatype.
   | RecSig     DefInfo QName Telescope Expr -- ^ lone record signature
-  | RecDef     DefInfo QName (Maybe (Ranged Induction)) (Maybe Bool) (Maybe QName) [LamBinding] Expr [Declaration]
+  | RecDef     DefInfo QName (Maybe (Ranged Induction)) (Maybe HasEta) (Maybe QName) [LamBinding] Expr [Declaration]
       -- ^ The 'LamBinding's are 'DomainFree' and bind the parameters of the datatype.
       --   The 'Expr' gives the constructor type telescope, @(x1 : A1)..(xn : An) -> Prop@,
       --   and the optional name is the constructor's name.
@@ -235,7 +235,7 @@ data Pragma
     -- ^ For coinductive records, use pragma instead of regular
     --   @eta-equality@ definition (as it is might make Agda loop).
   | InjectivePragma QName
-  | InlinePragma QName
+  | InlinePragma Bool QName -- INLINE or NOINLINE
   | DisplayPragma QName [NamedArg Pattern] Expr
   deriving (Data, Show, Eq)
 

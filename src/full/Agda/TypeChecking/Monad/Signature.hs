@@ -236,8 +236,8 @@ setFunctionFlag flag val q = modifyGlobalDefinition q $ set (theDefLens . funFla
 markStatic :: QName -> TCM ()
 markStatic = setFunctionFlag FunStatic True
 
-markInline :: QName -> TCM ()
-markInline = setFunctionFlag FunInline True
+markInline :: Bool -> QName -> TCM ()
+markInline b = setFunctionFlag FunInline b
 
 markInjective :: QName -> TCM ()
 markInjective q = modifyGlobalDefinition q $ \def -> def { defInjective = True }
@@ -495,7 +495,7 @@ applySection' new ptel old ts ScopeCopyInfo{ renNames = rd, renModules = rm } = 
             -- Even if we apply the record argument (must be @var 0@), we stay a projection.
             -- This is because we may abstract the record argument later again.
             -- See succeed/ProjectionNotNormalized.agda
-            isVar0 t = case ignoreSharing $ unArg t of Var 0 [] -> True; _ -> False
+            isVar0 t = case unArg t of Var 0 [] -> True; _ -> False
             proj   = case oldDef of
               Function{funProjection = Just p@Projection{projIndex = n}}
                 | size ts' < n || (size ts' == n && maybe True isVar0 (lastMaybe ts'))
@@ -646,7 +646,6 @@ canonicalName x = do
   where
     can body = canonicalName $ extract $ fromMaybe __IMPOSSIBLE__ body
     extract (Def x _)  = x
-    extract (Shared p) = extract $ derefPtr p
     extract _          = __IMPOSSIBLE__
 
 sameDef :: QName -> QName -> TCM (Maybe QName)

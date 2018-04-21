@@ -5,6 +5,7 @@ module Agda.TypeChecking.Monad.Statistics
     ) where
 
 import qualified Data.Map as Map
+import Control.DeepSeq
 
 import qualified Text.PrettyPrint.Boxes as Boxes
 
@@ -51,19 +52,23 @@ modifyCounter x f = modifyStatistics $ force . update
     -- Or use insertLookupWithKey?
     -- update m = old `seq` m' where
     --   (old, m') = Map.insertLookupWithKey (\ _ new old -> f old) x dummy m
-    force m = sum (Map.elems m) `seq` m
+    -- Ulf, 2018-04-10: Neither of these approaches are strict enough in the
+    -- map (nor are they less hacky). It's not enough to be strict in the
+    -- values stored in the map, we also need to be strict in the *structure*
+    -- of the map. A less hacky solution is to deepseq the map.
+    force m = rnf m `seq` m
     update  = Map.insertWith (\ new old -> f old) x dummy
     dummy   = f 0
 
--- | Print the given statistics if verbosity "profile" is given.
+-- | Print the given statistics if verbosity "profile.ticks" is given.
 printStatistics :: Int -> Maybe C.TopLevelModuleName -> Statistics -> TCM ()
-printStatistics vl mmname stats = verboseS "profile" vl $ do
+printStatistics vl mmname stats = verboseS "profile.ticks" vl $ do
   unlessNull (Map.toList stats) $ \ stats -> do
     let -- First column (left aligned) is accounts.
         col1 = Boxes.vcat Boxes.left  $ map (Boxes.text . fst) stats
         -- Second column (right aligned) is numbers.
         col2 = Boxes.vcat Boxes.right $ map (Boxes.text . showThousandSep . snd) stats
         table = Boxes.hsep 1 Boxes.left [col1, col2]
-    reportSLn "profile" 1 $ caseMaybe mmname "Accumlated statistics" $ \ mname ->
+    reportSLn "profile" 1 $ caseMaybe mmname "Accumulated statistics" $ \ mname ->
       "Statistics for " ++ prettyShow mname
     reportSLn "profile" 1 $ Boxes.render table

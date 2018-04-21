@@ -446,7 +446,9 @@ instance Pretty Declaration where
                     pType Nothing  =
                               text "where"
                     pInd = maybeToList $ text . show . rangedThing <$> ind
-                    pEta = maybeToList $ (\x -> if x then text "eta-equality" else text "no-eta-equality") <$> eta
+                    pEta = maybeToList $ eta <&> \case
+                      YesEta -> text "eta-equality"
+                      NoEta  -> text "no-eta-equality"
                     pCon = maybeToList $ (text "constructor" <+>) . pretty <$> fst <$> con
             Infix f xs  ->
                 pretty f <+> (fsep $ punctuate comma $ map pretty xs)
@@ -533,8 +535,10 @@ instance Pretty Pragma where
       hsep $ [text "STATIC", pretty i]
     pretty (InjectivePragma _ i) =
       hsep $ [text "INJECTIVE", pretty i]
-    pretty (InlinePragma _ i) =
+    pretty (InlinePragma _ True i) =
       hsep $ [text "INLINE", pretty i]
+    pretty (InlinePragma _ False i) =
+      hsep $ [text "NOINLINE", pretty i]
     pretty (ImportPragma _ i) =
       hsep $ [text "IMPORT", text i]
     pretty (ImportUHCPragma _ i) =
@@ -550,6 +554,7 @@ instance Pretty Pragma where
         NonTerminating         -> text "NON_TERMINATING"
         Terminating            -> text "TERMINATING"
         TerminationMeasure _ x -> hsep $ [text "MEASURE", pretty x]
+    pretty (WarningOnUsage _ nm str) = hsep [ text "WARNING_ON_USAGE", pretty nm, text str ]
     pretty (CatchallPragma _) = text "CATCHALL"
     pretty (DisplayPragma _ lhs rhs) = text "DISPLAY" <+> sep [ pretty lhs <+> text "=", nest 2 $ pretty rhs ]
     pretty (NoPositivityCheckPragma _) = text "NO_POSITIVITY_CHECK"

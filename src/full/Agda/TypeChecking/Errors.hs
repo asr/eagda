@@ -218,6 +218,8 @@ prettyWarning wng = liftTCM $ case wng of
 
     NicifierIssue w -> sayWhere (getRange w) $ pretty w
 
+    UserWarning str -> text str
+
 prettyTCWarnings :: [TCWarning] -> TCM String
 prettyTCWarnings = fmap (unlines . intersperse "") . prettyTCWarnings'
 
@@ -281,6 +283,7 @@ applyFlagsToTCWarnings ifs ws = do
           SafeFlagPolarity             -> True
           DeprecationWarning{}         -> True
           NicifierIssue{}              -> True
+          UserWarning{}                -> True
 
   return $ sfp ++ filter (cleanUp . tcWarning) ws
 
@@ -1294,7 +1297,7 @@ prettyInEqual t1 t2 = do
      -- if printed differently, no extra explanation needed
     if P.render d1 /= P.render d2 then empty else do
       (v1, v2) <- instantiate (t1, t2)
-      case (ignoreSharing v1, ignoreSharing v2) of
+      case (v1, v2) of
         (I.Var i1 _, I.Var i2 _)
           | i1 == i2  -> generic -- possible, see issue 1826
           | otherwise -> varVar i1 i2
@@ -1435,6 +1438,12 @@ instance PrettyTCM Call where
       pwords (singPlural es "is a valid argument" "are valid arguments") ++
       pwords "to a function of type" ++
       [prettyTCM t0]
+
+    CheckTargetType r infTy expTy -> sep
+      [ text "when checking that the inferred type of an application"
+      , nest 2 $ prettyTCM infTy
+      , text "matches the expected type"
+      , nest 2 $ prettyTCM expTy ]
 
     CheckRecDef _ x ps cs ->
       fsep $ pwords "when checking the definition of" ++ [prettyTCM x]

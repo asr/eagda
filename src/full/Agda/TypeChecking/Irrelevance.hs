@@ -56,7 +56,9 @@ workOnTypes cont = do
 -- | Internal workhorse, expects value of --experimental-irrelevance flag
 --   as argument.
 workOnTypes' :: Bool -> TCM a -> TCM a
-workOnTypes' experimental cont = modifyContext (map $ mapRelevance f) cont
+workOnTypes' experimental =
+  modifyContext (map $ mapRelevance f) .
+  local (\ e -> e { envWorkingOnTypes = True })
   where
     f | experimental = irrToNonStrict . nonStrictToRel
       | otherwise    = nonStrictToRel
@@ -96,7 +98,7 @@ class UsableRelevance a where
   usableRel :: Relevance -> a -> TCM Bool
 
 instance UsableRelevance Term where
-  usableRel rel u = case ignoreSharing u of
+  usableRel rel u = case u of
     Var i vs -> do
       irel <- getRelevance <$> typeOfBV' i
       let ok = irel `moreRelevant` rel
@@ -118,7 +120,6 @@ instance UsableRelevance Term where
       mrel <- getMetaRelevance <$> lookupMeta m
       return (mrel `moreRelevant` rel) `and2M` usableRel rel vs
     DontCare _ -> return $ isIrrelevant rel
-    Shared _ -> __IMPOSSIBLE__
 
 instance UsableRelevance a => UsableRelevance (Type' a) where
   usableRel rel (El _ t) = usableRel rel t

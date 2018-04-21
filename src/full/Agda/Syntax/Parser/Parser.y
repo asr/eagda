@@ -163,12 +163,14 @@ import Agda.Utils.Impossible
     'IMPOSSIBLE'              { TokKeyword KwIMPOSSIBLE $$ }
     'INJECTIVE'               { TokKeyword KwINJECTIVE $$ }
     'INLINE'                  { TokKeyword KwINLINE $$ }
+    'NOINLINE'                { TokKeyword KwNOINLINE $$ }
     'MEASURE'                 { TokKeyword KwMEASURE $$ }
     'NO_TERMINATION_CHECK'    { TokKeyword KwNO_TERMINATION_CHECK $$ }
     'NO_POSITIVITY_CHECK'     { TokKeyword KwNO_POSITIVITY_CHECK $$ }
     'NON_TERMINATING'         { TokKeyword KwNON_TERMINATING $$ }
     'OPTIONS'                 { TokKeyword KwOPTIONS $$ }
     'POLARITY'                { TokKeyword KwPOLARITY $$ }
+    'WARNING_ON_USAGE'        { TokKeyword KwWARNING_ON_USAGE $$ }
     'REWRITE'                 { TokKeyword KwREWRITE $$ }
     'STATIC'                  { TokKeyword KwSTATIC $$ }
     'TERMINATING'             { TokKeyword KwTERMINATING $$ }
@@ -297,6 +299,7 @@ Token
     | 'IMPOSSIBLE'              { TokKeyword KwIMPOSSIBLE $1 }
     | 'INJECTIVE'               { TokKeyword KwINJECTIVE $1 }
     | 'INLINE'                  { TokKeyword KwINLINE $1 }
+    | 'NOINLINE'                { TokKeyword KwNOINLINE $1 }
     | 'MEASURE'                 { TokKeyword KwMEASURE $1 }
     | 'NO_TERMINATION_CHECK'    { TokKeyword KwNO_TERMINATION_CHECK $1 }
     | 'NO_POSITIVITY_CHECK'     { TokKeyword KwNO_POSITIVITY_CHECK $1 }
@@ -306,6 +309,7 @@ Token
     | 'REWRITE'                 { TokKeyword KwREWRITE $1 }
     | 'STATIC'                  { TokKeyword KwSTATIC $1 }
     | 'TERMINATING'             { TokKeyword KwTERMINATING $1 }
+    | 'WARNING_ON_USAGE'        { TokKeyword KwWARNING_ON_USAGE $1 }
 
     | setN                      { TokSetN $1 }
     | tex                       { TokTeX $1 }
@@ -1468,12 +1472,14 @@ DeclarationPragma
   | StaticPragma             { $1 }
   | InjectivePragma          { $1 }
   | InlinePragma             { $1 }
+  | NoInlinePragma           { $1 }
   | ImportPragma             { $1 }
   | ImportUHCPragma          { $1 }
   | ImpossiblePragma         { $1 }
   | TerminatingPragma        { $1 }
   | NonTerminatingPragma     { $1 }
   | NoTerminationCheckPragma { $1 }
+  | WarningOnUsagePragma     { $1 }
   | MeasurePragma            { $1 }
   | CatchallPragma           { $1 }
   | DisplayPragma            { $1 }
@@ -1588,7 +1594,12 @@ StaticPragma
 InlinePragma :: { Pragma }
 InlinePragma
   : '{-#' 'INLINE' PragmaQName '#-}'
-    { InlinePragma (getRange ($1,$2,$3,$4)) $3 }
+    { InlinePragma (getRange ($1,$2,$3,$4)) True $3 }
+
+NoInlinePragma :: { Pragma }
+NoInlinePragma
+  : '{-#' 'NOINLINE' PragmaQName '#-}'
+    { InlinePragma (getRange ($1,$2,$3,$4)) False $3 }
 
 InjectivePragma :: { Pragma }
 InjectivePragma
@@ -1666,6 +1677,15 @@ PolarityPragma
     { let (rs, occs) = unzip (reverse $4) in
       PolarityPragma (getRange ($1,$2,$3,rs,$5)) $3 occs }
 
+WarningOnUsagePragma :: { Pragma }
+WarningOnUsagePragma
+  : '{-#' 'WARNING_ON_USAGE' PragmaQName literal '#-}'
+  {%  case $4 of
+        { LitString r str -> return $ WarningOnUsage (getRange ($1,$2,$3,r,$5)) $3 str
+        ; _ -> parseError "Expected string literal"
+        }
+  }
+
 -- Possibly empty list of polarities. Reversed.
 Polarities :: { [(Range, Occurrence)] }
 Polarities : {- empty -}          { [] }
@@ -1703,7 +1723,7 @@ ArgTypeSignatures1
     | ArgTypeSigs                         { reverse $1 }
 
 -- Record declarations, including an optional record constructor name.
-RecordDeclarations :: { ((Maybe (Ranged Induction), Maybe Bool, Maybe (Name, IsInstance)), [Declaration]) }
+RecordDeclarations :: { ((Maybe (Ranged Induction), Maybe HasEta, Maybe (Name, IsInstance)), [Declaration]) }
 RecordDeclarations
                                   : vopen RecordDirectives close {% ((,) `fmap` verifyRecordDirectives $2 <*> pure []) }
                                   | vopen RecordDirectives semi Declarations1 close {% ((,) `fmap` verifyRecordDirectives $2 <*> pure $4) }
@@ -1722,10 +1742,10 @@ RecordDirective
                                   | RecordInduction       { Induction $1 }
                                   | RecordEta             { Eta $1 }
 
-RecordEta :: { Ranged Bool }
+RecordEta :: { Ranged HasEta }
 RecordEta
-                                  : 'eta-equality' { Ranged (getRange $1) True }
-                                  | 'no-eta-equality' { Ranged (getRange $1) False }
+                                  : 'eta-equality' { Ranged (getRange $1) YesEta }
+                                  | 'no-eta-equality' { Ranged (getRange $1) NoEta }
 
 -- Declaration of record as 'inductive' or 'coinductive'.
 RecordInduction :: { Ranged Induction }
@@ -1843,8 +1863,9 @@ mkName (i, s) = do
           let x = rawNameToString y
               err = "in the name " ++ s ++ ", the part " ++ x ++ " is not valid"
           case parse defaultParseFlags [0] (lexer return) x of
-            ParseOk _ (TokId _) -> return ()
-            ParseFailed{} -> fail err
+            ParseOk _ TokId{}  -> return ()
+            ParseFailed{}      -> fail err
+            ParseOk _ TokEOF{} -> fail err
             ParseOk _ t   -> fail . ((err ++ " because it is ") ++) $ case t of
               TokId{}       -> __IMPOSSIBLE__
               TokQId{}      -> __IMPOSSIBLE__ -- "qualified"
@@ -2012,10 +2033,10 @@ verifyImportDirective i =
 data RecordDirective
    = Induction (Ranged Induction)
    | Constructor (Name, IsInstance)
-   | Eta         (Ranged Bool)
+   | Eta         (Ranged HasEta)
    deriving (Eq,Show)
 
-verifyRecordDirectives :: [RecordDirective] -> Parser (Maybe (Ranged Induction), Maybe Bool, Maybe (Name, IsInstance))
+verifyRecordDirectives :: [RecordDirective] -> Parser (Maybe (Ranged Induction), Maybe HasEta, Maybe (Name, IsInstance))
 verifyRecordDirectives xs | null rs = return (ltm is, ltm es, ltm cs)
                           | otherwise = let Just pos = rStart' $ (head rs) in
                                           parseErrorAt pos $ "Repeated record directives at: \n" ++ intercalate "\n" (map show rs)

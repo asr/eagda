@@ -143,6 +143,7 @@ data PreScopeState = PreScopeState
     -- ^ @{-# FOREIGN #-}@ code that should be included in the compiled output.
     -- Does not include code for imported modules.
   , stPreFreshInteractionId :: !InteractionId
+  , stPreUserWarnings       :: !(Map A.QName String)
   }
 
 type DisambiguatedNames = IntMap A.QName
@@ -285,6 +286,7 @@ initPreScopeState = PreScopeState
   , stPreImportedInstanceDefs = Map.empty
   , stPreForeignCode          = Map.empty
   , stPreFreshInteractionId   = 0
+  , stPreUserWarnings         = Map.empty
   }
 
 initPostScopeState :: PostScopeState
@@ -383,6 +385,11 @@ stFreshInteractionId :: Lens' InteractionId TCState
 stFreshInteractionId f s =
   f (stPreFreshInteractionId (stPreScopeState s)) <&>
   \x -> s {stPreScopeState = (stPreScopeState s) {stPreFreshInteractionId = x}}
+
+stUserWarnings :: Lens' (Map A.QName String) TCState
+stUserWarnings f s =
+  f (stPreUserWarnings (stPreScopeState s)) <&>
+  \ x -> s {stPreScopeState = (stPreScopeState s) {stPreUserWarnings = x}}
 
 stBackends :: Lens' [Backend] TCState
 stBackends f s =
@@ -694,6 +701,8 @@ data Interface = Interface
   , iSignature       :: Signature
   , iDisplayForms    :: DisplayForms
     -- ^ Display forms added for imported identifiers.
+  , iUserWarnings    :: Map A.QName String
+    -- ^ User warnings for imported identifiers
   , iBuiltin         :: BuiltinThings (String, QName)
   , iForeignCode     :: Map BackendName [ForeignCode]
   , iHighlighting    :: HighlightingInfo
@@ -705,8 +714,9 @@ data Interface = Interface
   deriving Show
 
 instance Pretty Interface where
-  pretty (Interface sourceH importedM moduleN scope insideS signature display builtin
-                    foreignCode highlighting pragmaO patternS warnings) =
+  pretty (Interface sourceH importedM moduleN scope insideS signature display
+                    userwarn builtin foreignCode highlighting pragmaO patternS
+                    warnings) =
     hang (text "Interface") 2 $ vcat
       [ text "source hash:"         <+> (pretty . show) sourceH
       , text "imported modules:"    <+> (pretty . show) importedM
@@ -715,6 +725,7 @@ instance Pretty Interface where
       , text "inside scope:"        <+> (pretty . show) insideS
       , text "signature:"           <+> (pretty . show) signature
       , text "display:"             <+> (pretty . show) display
+      , text "user warnings:"       <+> (pretty . show) userwarn
       , text "builtin:"             <+> (pretty . show) builtin
       , text "Foreign code:"        <+> (pretty . show) foreignCode
       , text "highlighting:"        <+> (pretty . show) highlighting
@@ -952,9 +963,14 @@ data MetaInstantiation
         | BlockedConst Term  -- ^ solution blocked by unsolved constraints
         | PostponedTypeCheckingProblem (Closure TypeCheckingProblem) (TCM Bool)
 
+-- | Solving a 'CheckArgs' constraint may or may not check the target type. If
+--   it did, it returns a handle to any unsolved constraints.
+data CheckedTarget = CheckedTarget (Maybe ProblemId)
+                   | NotCheckedTarget
+
 data TypeCheckingProblem
   = CheckExpr A.Expr Type
-  | CheckArgs ExpandHidden Range [NamedArg A.Expr] Type Type (Elims -> Type -> TCM Term)
+  | CheckArgs ExpandHidden Range [NamedArg A.Expr] Type Type (Elims -> Type -> CheckedTarget -> TCM Term)
   | CheckLambda (Arg ([WithHiding Name], Maybe Type)) A.Expr Type
     -- ^ @(λ (xs : t₀) → e) : t@
     --   This is not an instance of 'CheckExpr' as the domain type
@@ -1461,16 +1477,12 @@ projArgInfo (Projection _ _ _ _ lams) =
 
 -- | Should a record type admit eta-equality?
 data EtaEquality
-  = Specified !Bool  -- ^ User specifed 'eta-equality' or 'no-eta-equality'.
-  | Inferred !Bool   -- ^ Positivity checker inferred whether eta is safe.
+  = Specified { theEtaEquality :: !HasEta }  -- ^ User specifed 'eta-equality' or 'no-eta-equality'.
+  | Inferred  { theEtaEquality :: !HasEta }  -- ^ Positivity checker inferred whether eta is safe.
   deriving (Data, Show, Eq)
 
-etaEqualityToBool :: EtaEquality -> Bool
-etaEqualityToBool (Specified b) = b
-etaEqualityToBool (Inferred b) = b
-
 -- | Make sure we do not overwrite a user specification.
-setEtaEquality :: EtaEquality -> Bool -> EtaEquality
+setEtaEquality :: EtaEquality -> HasEta -> EtaEquality
 setEtaEquality e@Specified{} _ = e
 setEtaEquality _ b = Inferred b
 
@@ -1684,8 +1696,8 @@ recRecursive :: Defn -> Bool
 recRecursive (Record { recMutual = Just qs }) = not $ null qs
 recRecursive _ = __IMPOSSIBLE__
 
-recEtaEquality :: Defn -> Bool
-recEtaEquality = etaEqualityToBool . recEtaEquality'
+recEtaEquality :: Defn -> HasEta
+recEtaEquality = theEtaEquality . recEtaEquality'
 
 -- | A template for creating 'Function' definitions, with sensible defaults.
 emptyFunction :: Defn
@@ -1797,7 +1809,7 @@ notReduced :: a -> MaybeReduced a
 notReduced x = MaybeRed NotReduced x
 
 reduced :: Blocked (Arg Term) -> MaybeReduced (Arg Term)
-reduced b = case fmap ignoreSharing <$> b of
+reduced b = case b of
   NotBlocked _ (Arg _ (MetaV x _)) -> MaybeRed (Reduced $ Blocked x ()) v
   _                                -> MaybeRed (Reduced $ () <$ b)      v
   where
@@ -1948,7 +1960,8 @@ data Call = CheckClause Type A.SpineClause
           | IsType_ A.Expr
           | InferVar Name
           | InferDef QName
-          | CheckArguments Range [NamedArg A.Expr] Type Type
+          | CheckArguments Range [NamedArg A.Expr] Type (Maybe Type)
+          | CheckTargetType Range Type Type
           | CheckDataDef Range Name [A.LamBinding] [A.Constructor]
           | CheckRecDef Range Name [A.LamBinding] [A.Constructor]
           | CheckConstructor QName Telescope Sort A.Constructor
@@ -1978,6 +1991,7 @@ instance Pretty Call where
     pretty InferVar{}                = text "InferVar"
     pretty InferDef{}                = text "InferDef"
     pretty CheckArguments{}          = text "CheckArguments"
+    pretty CheckTargetType{}         = text "CheckTargetType"
     pretty CheckDataDef{}            = text "CheckDataDef"
     pretty CheckRecDef{}             = text "CheckRecDef"
     pretty CheckConstructor{}        = text "CheckConstructor"
@@ -2008,6 +2022,7 @@ instance HasRange Call where
     getRange (InferVar x)                    = getRange x
     getRange (InferDef f)                    = getRange f
     getRange (CheckArguments r _ _ _)        = r
+    getRange (CheckTargetType r _ _)         = r
     getRange (CheckDataDef i _ _ _)          = getRange i
     getRange (CheckRecDef i _ _ _)           = getRange i
     getRange (CheckConstructor _ _ _ c)      = getRange c
@@ -2135,6 +2150,8 @@ data TCEnv =
           , envCheckingWhere       :: Bool
                 -- ^ Have we stepped into the where-declarations of a clause?
                 --   Everything under a @where@ will be checked with this flag on.
+          , envWorkingOnTypes      :: Bool
+                -- ^ Are we working on types? Turned on by 'workOnTypes'.
           , envAssignMetas         :: Bool
             -- ^ Are we allowed to assign metas?
           , envActiveProblems      :: Set ProblemId
@@ -2230,6 +2247,7 @@ initEnv = TCEnv { envContext             = []
                 , envSolvingConstraints  = False
                 , envCheckingWhere       = False
                 , envActiveProblems      = Set.empty
+                , envWorkingOnTypes      = False
                 , envAssignMetas         = True
                 , envAbstractMode        = ConcreteMode
   -- Andreas, 2013-02-21:  This was 'AbstractMode' until now.
@@ -2315,6 +2333,9 @@ eSolvingConstraints f e = f (envSolvingConstraints e) <&> \ x -> e { envSolvingC
 
 eCheckingWhere :: Lens' Bool TCEnv
 eCheckingWhere f e = f (envCheckingWhere e) <&> \ x -> e { envCheckingWhere = x }
+
+eWorkingOnTypes :: Lens' Bool TCEnv
+eWorkingOnTypes f e = f (envWorkingOnTypes e) <&> \ x -> e { envWorkingOnTypes = x }
 
 eAssignMetas :: Lens' Bool TCEnv
 eAssignMetas f e = f (envAssignMetas e) <&> \ x -> e { envAssignMetas = x }
@@ -2497,6 +2518,8 @@ data Warning
   | DeprecationWarning String String String
     -- ^ `DeprecationWarning old new version`:
     --   `old` is deprecated, use `new` instead. This will be an error in Agda `version`.
+  | UserWarning String
+    -- ^ User-defined warning (e.g. to mention that a name is deprecated)
   deriving (Show , Data)
 
 
@@ -2527,6 +2550,7 @@ warningName w = case w of
   SafeFlagPrimTrustMe        -> SafeFlagPrimTrustMe_
   SafeFlagNoPositivityCheck  -> SafeFlagNoPositivityCheck_
   SafeFlagPolarity           -> SafeFlagPolarity_
+  UserWarning{}              -> UserWarning_
 
 data TCWarning
   = TCWarning

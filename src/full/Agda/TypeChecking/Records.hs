@@ -159,7 +159,7 @@ getRecordTypeFields
   -> TCM [Arg QName]
 getRecordTypeFields t = do
   t <- reduce t  -- Andreas, 2018-03-03, fix for #2989.
-  case ignoreSharing $ unEl t of
+  case unEl t of
     Def r _ -> do
       rDef <- theDef <$> getConstInfo r
       case rDef of
@@ -196,7 +196,7 @@ isRecordType t = either (const Nothing) Just <$> tryRecordType t
 tryRecordType :: Type -> TCM (Either (Blocked Type) (QName, Args, Defn))
 tryRecordType t = ifBlockedType t (\ m a -> return $ Left $ Blocked m a) $ \ nb t -> do
   let no = return $ Left $ NotBlocked nb t
-  case ignoreSharing $ unEl t of
+  case unEl t of
     Def r es -> do
       let vs = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
       caseMaybeM (isRecord r) no $ \ def -> return $ Right (r,vs,def)
@@ -248,7 +248,7 @@ getDefType f t = do
                 | otherwise = n - 1
       reportSLn "tc.deftype" 20 $ "projIndex    = " ++ show n
       -- we get the parameters from type @t@
-      case ignoreSharing $ unEl t of
+      case unEl t of
         Def d es -> do
           -- Andreas, 2013-10-22
           -- we need to check this @Def@ is fully reduced.
@@ -333,7 +333,7 @@ typeElims a self (e : es) = do
 {-# SPECIALIZE isEtaRecord :: QName -> TCM Bool #-}
 {-# SPECIALIZE isEtaRecord :: QName -> ReduceM Bool #-}
 isEtaRecord :: HasConstInfo m => QName -> m Bool
-isEtaRecord r = maybe False recEtaEquality <$> isRecord r
+isEtaRecord r = maybe False ((YesEta ==) . recEtaEquality) <$> isRecord r
 
 isEtaCon :: HasConstInfo m => QName -> m Bool
 isEtaCon c = getConstInfo' c >>= \case
@@ -349,7 +349,7 @@ isInductiveRecord r = maybe False (\ d -> recInduction d /= Just CoInductive) <$
 
 -- | Check if a type is an eta expandable record and return the record identifier and the parameters.
 isEtaRecordType :: Type -> TCM (Maybe (QName, Args))
-isEtaRecordType a = case ignoreSharing $ unEl a of
+isEtaRecordType a = case unEl a of
   Def d es -> do
     let vs = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
     ifM (isEtaRecord d) (return $ Just (d, vs)) (return Nothing)
@@ -380,7 +380,7 @@ isGeneratedRecordConstructor c = ignoreAbstractMode $ do
 --   Projections do not preserve guardedness.
 unguardedRecord :: QName -> TCM ()
 unguardedRecord q = modifySignature $ updateDefinition q $ updateTheDef $ \case
-  r@Record{} -> r { recEtaEquality' = setEtaEquality (recEtaEquality' r) False }
+  r@Record{} -> r { recEtaEquality' = setEtaEquality (recEtaEquality' r) NoEta }
   _ -> __IMPOSSIBLE__
 
 -- | Turn on eta for inductive guarded recursive records.
@@ -392,7 +392,7 @@ recursiveRecord q = do
     r@Record{ recInduction = ind, recEtaEquality' = eta } ->
       r { recEtaEquality' = eta' }
       where
-      eta' | ok, eta == Inferred False, ind /= Just CoInductive = Inferred True
+      eta' | ok, eta == Inferred NoEta, ind /= Just CoInductive = Inferred YesEta
            | otherwise = eta
     _ -> __IMPOSSIBLE__
 
@@ -401,9 +401,9 @@ nonRecursiveRecord :: QName -> TCM ()
 nonRecursiveRecord q = whenM etaEnabled $ do
   -- Do nothing if eta is disabled by option.
   modifySignature $ updateDefinition q $ updateTheDef $ \case
-    r@Record{ recInduction = ind, recEtaEquality' = Inferred False }
+    r@Record{ recInduction = ind, recEtaEquality' = Inferred NoEta }
       | ind /= Just CoInductive ->
-      r { recEtaEquality' = Inferred True }
+      r { recEtaEquality' = Inferred YesEta }
     r@Record{} -> r
     _          -> __IMPOSSIBLE__
 
@@ -451,7 +451,7 @@ expandRecordVar i gamma0 = do
           text " is not a record type"
         return Nothing
   caseMaybeM (isRecordType a) failure $ \ (r, pars, def) -> do
-    if not (recEtaEquality def) then return Nothing else Just <$> do
+    if recEtaEquality def == NoEta then return Nothing else Just <$> do
       -- Get the record fields @Γ₁ ⊢ tel@ (@tel = Γ'@).
       -- TODO: compose argInfo ai with tel.
       let tel = recTel def `apply` pars
@@ -511,7 +511,7 @@ curryAt :: Type -> Int -> TCM (Term -> Term, Term -> Term, Type)
 curryAt t n = do
   -- first, strip the leading n domains (which remain unchanged)
   TelV gamma core <- telViewUpTo n t
-  case ignoreSharing $ unEl core of
+  case unEl core of
     -- There should be at least one domain left
     Pi (dom@Dom{domInfo = ai, unDom = a}) b -> do
       -- Eta-expand @dom@ along @qs@ into a telescope @tel@, computing a substitution.
@@ -519,7 +519,7 @@ curryAt t n = do
       -- This might trigger another call to @etaExpandProjectedVar@ later.
       -- A more efficient version does all the eta-expansions at once here.
       (r, pars, def) <- fromMaybe __IMPOSSIBLE__ <$> isRecordType a
-      unless (recEtaEquality def) __IMPOSSIBLE__
+      when (recEtaEquality def == NoEta) __IMPOSSIBLE__
       -- TODO: compose argInfo ai with tel.
       let tel = recTel def `apply` pars
           m   = size tel
@@ -575,10 +575,10 @@ etaExpandRecord'_ forceEta r pars def u = do
             , recFields      = xs
             , recTel         = tel
             } = def
-      eta = recEtaEquality def
       tel' = apply tel pars
-  unless (eta || forceEta) __IMPOSSIBLE__ -- make sure we do not expand non-eta records (unless forced to)
-  case ignoreSharing u of
+  -- Make sure we do not expand non-eta records (unless forced to):
+  unless (recEtaEquality def == YesEta || forceEta) __IMPOSSIBLE__
+  case u of
 
     -- Already expanded.
     Con con_ ci es -> do
@@ -711,7 +711,7 @@ isSingletonType' regardIrrelevance t = do
     ifBlockedType t (\ m _ -> return $ Left m) $ \ _ t -> do
       res <- isRecordType t
       case res of
-        Just (r, ps, def) | recEtaEquality def -> do
+        Just (r, ps, def) | YesEta <- recEtaEquality def -> do
           emap (abstract tel) <$> isSingletonRecord' regardIrrelevance r ps
         _ -> return $ Right Nothing
 
@@ -733,7 +733,7 @@ isEtaVar u a = runMaybeT $ isEtaVarG u a Nothing []
         , text "mi = " <+> text (show mi)
         , text "es = " <+> prettyList (map (text . show) es)
         ])
-      case (ignoreSharing u, ignoreSharing $ unEl a) of
+      case (u, unEl a) of
         (Var i' es', _) -> do
           guard $ mi == (i' <$ mi)
           b <- liftTCM $ typeOfBV i'

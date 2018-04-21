@@ -46,6 +46,7 @@ import Agda.TypeChecking.Coverage.Match
 import Agda.TypeChecking.Coverage.SplitTree
 
 import Agda.TypeChecking.Datatypes (getConForm)
+import Agda.TypeChecking.Patterns.Internal (dotPatternsToPatterns)
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Reduce
@@ -241,6 +242,7 @@ cover f cs sc@(SClause tel ps _ _ target) = do
     , nest 2 $ text "ps   =" <+> do addContext tel $ prettyTCMPatternList ps
     ]
   cs' <- normaliseProjP cs
+  ps <- (traverse . traverse . traverse) dotPatternsToPatterns ps
   case match cs' ps of
     Yes (i,(mps,ls0)) -> do
       exact <- allM mps isTrivialPattern
@@ -322,12 +324,12 @@ cover f cs sc@(SClause tel ps _ _ target) = do
               tree   = SplitAt n trees'
           return $ CoverResult tree (Set.unions useds) (concat psss) (Set.unions noex)
 
-    tryIf :: Monad m => Bool -> m (Maybe a) -> m a -> m a
-    tryIf True  me m = fromMaybeM m me
+    tryIf :: Monad m => Bool -> m (Either err a) -> m a -> m a
+    tryIf True  me m = fromRightM (const m) me
     tryIf False me m = m
 
     -- Try to split result
-    splitRes :: TCM (Maybe CoverResult)
+    splitRes :: TCM (Either CosplitError CoverResult)
     splitRes = do
       reportSLn "tc.cover" 20 $ "blocked by projection pattern"
       -- forM is a monadic map over a Maybe here
@@ -439,7 +441,7 @@ isDatatype ind at = do
       throw f = throwError . f =<< do liftTCM $ buildClosure t
   t' <- liftTCM $ reduce t
   mInterval <- liftTCM $ getBuiltinName' builtinInterval
-  case ignoreSharing $ unEl t' of
+  case unEl t' of
     Def d [] | Just d == mInterval -> throw NotADatatype
     Def d es -> do
       let ~(Just args) = allApplyElims es
@@ -578,7 +580,7 @@ computeNeighbourhood delta1 n delta2 d pars ixs hix tel ps cps c = do
   -- Lookup the type of the constructor at the given parameters
   (gamma0, cixs) <- do
     TelV gamma0 (El _ d) <- liftTCM $ telView (ctype `piApply` pars)
-    let Def _ es = ignoreSharing d
+    let Def _ es = d
         Just cixs = allApplyElims es
     return (gamma0, cixs)
 
@@ -586,7 +588,6 @@ computeNeighbourhood delta1 n delta2 d pars ixs hix tel ps cps c = do
   -- of constructor
 
   let preserve (x, t@(El _ (Def d' _))) | d == d' = (n, t)
-      preserve (x, (El s (Shared p))) = preserve (x, El s $ derefPtr p)
       preserve (x, t) = (x, t)
       gammal = map (fmap preserve) . telToList $ gamma0
       gamma  = telFromList gammal
@@ -873,13 +874,31 @@ split' ind allowPartialCover fixtarget sc@(SClause tel ps _ cps target) (Blockin
         , text "t      =" <+> inContextOfT (prettyTCM t)
         ]
 
+-- | What could go wrong if we try to split on the result?
+data CosplitError
+  = CosplitNoTarget
+      -- ^ We do not know the target type of the clause.
+  | CosplitNoRecordType Telescope Type
+      -- ^ Type living in the given telescope is not a record type.
+  | CosplitIrrelevantProjections
+      -- ^ Record has irrelevant fields, but we do not have irrelevant projections.
+
+instance PrettyTCM CosplitError where
+  prettyTCM = \case
+    CosplitNoTarget ->
+      text "target type is unknown"
+    CosplitIrrelevantProjections ->
+      text "record has irrelevant fields, but no corresponding projections"
+    CosplitNoRecordType tel t -> addContext tel $ do
+      text "target type " <+> prettyTCM t <+> text " is not a record type"
+
 -- | @splitResult f sc = return res@
 --
 --   If the target type of @sc@ is a record type, a covering set of
 --   split clauses is returned (@sc@ extended by all valid projection patterns),
 --   otherwise @res == Nothing@.
 --   Note that the empty set of split clauses is returned if the record has no fields.
-splitResult :: QName -> SplitClause -> TCM (Maybe Covering)
+splitResult :: QName -> SplitClause -> TCM (Either CosplitError Covering)
 splitResult f sc@(SClause tel ps _ _ target) = do
   reportSDoc "tc.cover.split" 10 $ vcat
     [ text "splitting result:"
@@ -887,8 +906,8 @@ splitResult f sc@(SClause tel ps _ _ target) = do
     , nest 2 $ text "target =" <+> (addContext tel $ maybe empty prettyTCM target)
     ]
   -- if we want to split projections, but have no target type, we give up
-  let done = return Nothing
-  caseMaybe target done $ \ t -> do
+  let failure = return . Left
+  caseMaybe target (failure CosplitNoTarget) $ \ t -> do
     isR <- addContext tel $ isRecordType $ unArg t
     case isR of
       Just (_r, vs, Record{ recFields = fs }) -> do
@@ -897,6 +916,9 @@ splitResult f sc@(SClause tel ps _ _ target) = do
           , text   "applied to parameters vs = " <+> (addContext tel $ prettyTCM vs)
           , text $ "and have fields       fs = " ++ prettyShow fs
           ]
+        -- Andreas, 2018-03-19, issue #2971, check that we have a "strong" record type,
+        -- i.e., with all the projections.  Otherwise, we may not split.
+        ifNotM (strongRecord fs) (failure CosplitIrrelevantProjections) $ {-else-} do
         let es = patternsToElims ps
         -- Note: module parameters are part of ps
         let self  = defaultArg $ Def f [] `applyE` es
@@ -911,7 +933,7 @@ splitResult f sc@(SClause tel ps _ _ target) = do
 
         -- Andreas, 2016-07-22 read the style of projections from the user's lips
         projOrigin <- ifM (optPostfixProjections <$> pragmaOptions) (return ProjPostfix) (return ProjPrefix)
-        Just . Covering n <$> do
+        Right . Covering n <$> do
           forM fs $ \ proj -> do
             -- compute the new target
             dType <- defType <$> do getConstInfo $ unArg proj -- WRONG: typeOfConst $ unArg proj
@@ -923,7 +945,15 @@ splitResult f sc@(SClause tel ps _ _ target) = do
                          , scTarget = target'
                          }
             return (unArg proj, sc')
-      _ -> done
+      _ -> failure $ CosplitNoRecordType tel $ unArg t
+  where
+  -- A record type is strong if it has all the projections.
+  -- This is the case if --irrelevant-projections or no field is irrelevant.
+  -- TODO: what about shape irrelevance?
+  strongRecord :: [Arg QName] -> TCM Bool
+  strongRecord fs = (optIrrelevantProjections <$> pragmaOptions) `or2M`
+    (return $ not $ any isIrrelevant fs)
+
 
 -- * Boring instances
 

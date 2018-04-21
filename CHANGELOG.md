@@ -4,7 +4,9 @@ Release notes for Agda version 2.5.4
 Installation and infrastructure
 -------------------------------
 
-* Added support for GHC 8.2.2.
+* Added support for GHC 8.2.2 and GHC 8.4.2.
+
+  Note that GHC 8.4.2 requires `cabal-install` ≥ 2.2.0.0.
 
 * Removed support for GHC 7.8.4.
 
@@ -21,6 +23,22 @@ Language
 
   The reduction machine has been rewritten from scratch and should be faster
   than the old one in all cases, even those not exploiting laziness.
+
+* Compile-time inlining.
+
+  Simple definitions (that don't do any pattern matching) marked as INLINE are
+  now also inlined at compile time, whereas before they were only inlined by
+  the compiler backends. Inlining only triggers in function bodies and not in
+  type signatures, to preserve goal types as far as possible.
+
+* Automatic inlining.
+
+  Definitions satisfying the following criteria are now automatically inlined
+  (can be disabled using the new NOINLINE pragma):
+
+    - No pattern matching.
+    - Uses each argument at most once.
+    - Does not use all its arguments.
 
 ### Syntax
 
@@ -292,6 +310,11 @@ Pragmas and options
     {-# OPTIONS --caching #-}
   ```
 
+* The `--sharing` and `--no-sharing` options have been deprecated and do
+  nothing.
+
+  Compile-time evaluation is now always call-by-need.
+
 * BUILTIN pragmas can now appear before the top-level module header
   and in parametrized modules.
   [Issue [#2824](https://github.com/agda/agda/issues/2824)]
@@ -351,6 +374,22 @@ Pragmas and options
 * The command line option `--help` now takes an optional argument which
   allows the user to request more specific usage information about particular
   topics. The only one added so far is `warning`.
+
+* New pragma NOINLINE.
+
+  ```agda
+  {-# NOINLINE f #-}
+  ```
+
+  Disables automatic inlining of `f`.
+
+* New pragma WARNING_ON_USAGE
+
+  ```
+  {-# WARNING_ON_USAGE QName Message #}
+  ```
+
+  Prints Message whenever QName is used.
 
 Emacs mode
 ----------

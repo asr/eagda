@@ -72,8 +72,8 @@ getBuiltin x =
 getBuiltin' :: HasBuiltins m => String -> m (Maybe Term)
 getBuiltin' x = do
     builtin <- getBuiltinThing x
-    case builtin of         -- ignore sharing to make sure zero isn't reduced to Lit 0
-        Just (Builtin t) -> return $ Just $ ignoreSharing $ killRange t
+    case builtin of
+        Just (Builtin t) -> return $ Just $ killRange t
         _                -> return Nothing
 
 getPrimitive' :: HasBuiltins m => String -> m (Maybe PrimFun)
@@ -105,7 +105,7 @@ constructorForm v = constructorForm' primZero primSuc v
 
 constructorForm' :: Applicative m => m Term -> m Term -> Term -> m Term
 constructorForm' pZero pSuc v =
-  case ignoreSharing v of
+  case v of
     Lit (LitNat r n)
       | n == 0    -> pZero
       | n > 0     -> (`apply1` Lit (LitNat r $ n - 1)) <$> pSuc
@@ -615,9 +615,9 @@ data CoinductionKit = CoinductionKit
 
 coinductionKit' :: TCM CoinductionKit
 coinductionKit' = do
-  Def inf   _ <- ignoreSharing <$> primInf
-  Def sharp _ <- ignoreSharing <$> primSharp
-  Def flat  _ <- ignoreSharing <$> primFlat
+  Def inf   _ <- primInf
+  Def sharp _ <- primSharp
+  Def flat  _ <- primFlat
   return $ CoinductionKit
     { nameOfInf   = inf
     , nameOfSharp = sharp
@@ -636,7 +636,6 @@ getPrimName :: Term -> QName
 getPrimName ty = do
   let lamV (Lam i b)  = mapFst (getHiding i :) $ lamV (unAbs b)
       lamV (Pi _ b)   = lamV (unEl $ unAbs b)
-      lamV (Shared p) = lamV (derefPtr p)
       lamV v          = ([], v)
   case lamV ty of
             (_, Def path _) -> path
@@ -658,7 +657,7 @@ intervalView' = do
   imin <- getPrimitiveName' "primIMin"
   ineg <- getPrimitiveName' "primINeg"
   return $ \ t ->
-    case ignoreSharing t of
+    case t of
       Def q es ->
         case es of
           [Apply x,Apply y] | Just q == imin -> IMin x y
@@ -713,7 +712,7 @@ pathView' = do
  mpath  <- getBuiltinName' builtinPath
  mpathp <- getBuiltinName' builtinPathP
  return $ \ t0@(El s t) ->
-  case ignoreSharing t of
+  case t of
     Def path' [ Apply level , Apply typ , Apply lhs , Apply rhs ]
       | Just path' == mpath, Just path <- mpathp -> PathType s path level (lam_i <$> typ) lhs rhs
       where lam_i = Lam defaultArgInfo . NoAbs "_"
@@ -727,7 +726,7 @@ idViewAsPath t0@(El s t) = do
   mid <- fmap getPrimName <$> getBuiltin' builtinId
   mpath <- fmap getPrimName <$> getBuiltin' builtinPath
   case mid of
-   Just path | isJust mpath -> case ignoreSharing t of
+   Just path | isJust mpath -> case t of
     Def path' [ Apply level , Apply typ , Apply lhs , Apply rhs ]
       | path' == path -> return $ PathType s (fromJust mpath) level typ lhs rhs
     _ -> return $ OType t0
@@ -735,7 +734,7 @@ idViewAsPath t0@(El s t) = do
 
 boldPathView :: Type -> PathView
 boldPathView t0@(El s t) = do
-  case ignoreSharing t of
+  case t of
     Def path' [ Apply level , Apply typ , Apply lhs , Apply rhs ]
       -> PathType s path' level typ lhs rhs
     _ -> OType t0
@@ -767,7 +766,6 @@ primEqualityName = do
   -- 2. type polymorphic only
   -- 3. monomorphic.
   let lamV (Lam i b)  = mapFst (getHiding i :) $ lamV (unAbs b)
-      lamV (Shared p) = lamV (derefPtr p)
       lamV v          = ([], v)
   return $ case lamV eq of
     (_, Def equality _) -> equality
@@ -781,7 +779,7 @@ primEqualityName = do
 equalityView :: Type -> TCM EqualityView
 equalityView t0@(El s t) = do
   equality <- primEqualityName
-  case ignoreSharing t of
+  case t of
     Def equality' es | equality' == equality -> do
       let vs = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
       let n = length vs

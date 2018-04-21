@@ -530,7 +530,14 @@ instance ToAbstract OldQName A.Expr where
     reportSLn "scope.name" 10 $ "resolved " ++ prettyShow x ++ ": " ++ prettyShow qx
     case qx of
       VarName x' _         -> return $ A.Var x'
-      DefinedName _ d      -> return $ nameExpr d
+      DefinedName _ d      -> do
+        -- In case we find a defined name, we start by checking whether there's
+        -- a warning attached to it
+        reportSDoc "scope.warning" 50 $ text $ "Checking usage of " ++ prettyShow d
+        mstr <- Map.lookup (anameName d) <$> use stUserWarnings
+        forM_ mstr (warning . UserWarning)
+        -- and then we return the name
+        return $ nameExpr d
       FieldName     ds     -> return $ A.Proj ProjPrefix $ AmbQ (fmap anameName ds)
       ConstructorName ds   -> return $ A.Con $ AmbQ (fmap anameName ds)
       UnknownName          -> notInScope x
@@ -1833,15 +1840,16 @@ instance ToAbstract C.Pragma [A.Pragma] where
             "INJECTIVE used on ambiguous name " ++ prettyShow x
           _        -> genericError "Target of INJECTIVE pragma should be a defined symbol"
       return [ A.InjectivePragma y ]
-  toAbstract (C.InlinePragma _ x) = do
+  toAbstract (C.InlinePragma _ b x) = do
       e <- toAbstract $ OldQName x Nothing
+      let sINLINE = if b then "INLINE" else "NOINLINE"
       y <- case e of
           A.Def  x -> return x
           A.Proj _ p | Just x <- getUnambiguous p -> return x
           A.Proj _ x -> genericError $
-            "INLINE used on ambiguous name " ++ prettyShow x
-          _        -> genericError "Target of INLINE pragma should be a function"
-      return [ A.InlinePragma y ]
+            sINLINE ++ " used on ambiguous name " ++ prettyShow x
+          _        -> genericError $ "Target of " ++ sINLINE ++ " pragma should be a function"
+      return [ A.InlinePragma b y ]
   toAbstract (C.BuiltinPragma _ b q) | isUntypedBuiltin b = do
     bindUntypedBuiltin b =<< toAbstract (ResolveQName q)
     return []
@@ -1922,6 +1930,11 @@ instance ToAbstract C.Pragma [A.Pragma] where
 
     rhs <- toAbstract rhs
     return [A.DisplayPragma hd ps rhs]
+
+  toAbstract (C.WarningOnUsage _ oqn str) = do
+    qn <- toAbstract $ OldName oqn
+    stUserWarnings %= Map.insert qn str
+    pure []
 
   -- Termination checking pragmes are handled by the nicifier
   toAbstract C.TerminationCheckPragma{} = __IMPOSSIBLE__
@@ -2233,7 +2246,7 @@ instance ToAbstract (A.LHSCore' C.Expr) (A.LHSCore' A.Expr) where
 -- bound anywhere in the pattern.
 
 instance ToAbstract (A.Pattern' C.Expr) (A.Pattern' A.Expr) where
-  toAbstract = traverse $ insideDotPattern . toAbstract
+  toAbstract = traverse $ insideDotPattern . toAbstractCtx DotPatternCtx  -- Issue #3033
 
 resolvePatternIdentifier ::
   Range -> C.QName -> Maybe (Set A.Name) -> ScopeM (A.Pattern' C.Expr)

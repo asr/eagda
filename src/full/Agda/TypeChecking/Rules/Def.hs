@@ -40,6 +40,7 @@ import qualified Agda.TypeChecking.Monad.Benchmark as Bench
 
 import Agda.TypeChecking.Constraints
 import Agda.TypeChecking.Conversion
+import Agda.TypeChecking.Inlining
 import Agda.TypeChecking.MetaVars
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Patterns.Abstract (expandPatternSynonyms)
@@ -124,7 +125,7 @@ isAlias cs t =
           -- if we have just one clause without pattern matching and
           -- without a type signature, then infer, to allow
           -- "aliases" for things starting with hidden abstractions
-          Just (e, mc) | Just x <- isMeta (ignoreSharing $ unEl t) -> Just (e, mc, x)
+          Just (e, mc) | Just x <- isMeta (unEl t) -> Just (e, mc, x)
           _ -> Nothing
   where
     isMeta (MetaV x _) = Just x
@@ -358,6 +359,7 @@ checkFunDefS t ai delayed extlam with i name withSub cs = do
           -- If there was a pragma for this definition, we can set the
           -- funTerminates field directly.
           useTerPragma $ defaultDefn ai name fullType $
+             autoInline $
              set funMacro (ismacro || Info.defMacro i == MacroDef) $
              emptyFunction
              { funClauses        = cs
@@ -763,7 +765,7 @@ checkRHS i x aps t lhsResult@(LHSResult _ delta ps absurdPat trhs _ _asb _) rhs0
 
         -- Get the name of builtin REFL.
 
-        Con reflCon _ [] <- ignoreSharing <$> primRefl
+        Con reflCon _ [] <- primRefl
         reflInfo <- fmap (setOrigin Inserted) <$> getReflArgInfo reflCon
 
         -- Andreas, 2017-01-11:
@@ -775,7 +777,7 @@ checkRHS i x aps t lhsResult@(LHSResult _ delta ps absurdPat trhs _ _asb _) rhs0
         -- -- rewriting with @refl@ is attempted.
         -- let isReflProof = do
         --      v <- reduce proof
-        --      case ignoreSharing v of
+        --      case v of
         --        Con c _ [] | c == reflCon -> return True
         --        _ -> return False
         -- ifM isReflProof recurse $ {- else -} do

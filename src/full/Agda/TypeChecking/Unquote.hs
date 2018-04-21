@@ -6,18 +6,15 @@ module Agda.TypeChecking.Unquote where
 import Prelude hiding ((<>))
 #endif
 
-import Control.Arrow ((&&&), (***), first, second)
-import Control.Monad.State (StateT(..), evalStateT, get, gets, put, modify)
-import Control.Monad.Reader (ReaderT(..), ask, asks)
-import Control.Monad.Writer (WriterT(..), execWriterT, runWriterT, tell)
+import Control.Arrow (first, second)
+import Control.Monad.State
+import Control.Monad.Reader
+import Control.Monad.Writer hiding ((<>))
 import Control.Monad.Trans (lift)
-import Control.Monad
 
 import Data.Char
 import Data.Maybe (fromMaybe)
 import Data.Traversable (traverse)
-import Data.Map (Map)
-import qualified Data.Map as Map
 import Data.Word
 
 import Agda.Syntax.Common
@@ -27,23 +24,16 @@ import Agda.Syntax.Literal
 import Agda.Syntax.Position
 import Agda.Syntax.Fixity
 import Agda.Syntax.Info
-import Agda.Syntax.Translation.InternalToAbstract
 import Agda.Syntax.Translation.ReflectedToAbstract
 
-import Agda.TypeChecking.CompiledClause
-import Agda.TypeChecking.DropArgs
-import Agda.TypeChecking.Free
-import Agda.TypeChecking.Level
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Monad.Builtin
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Reduce
-import Agda.TypeChecking.Reduce.Monad
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.Quote
 import Agda.TypeChecking.Conversion
-import Agda.TypeChecking.MetaVars
 import Agda.TypeChecking.EtaContract
 import Agda.TypeChecking.Primitive
 
@@ -59,14 +49,9 @@ import Agda.Utils.Except
 import Agda.Utils.Either
 import Agda.Utils.FileName
 import Agda.Utils.Lens
-import Agda.Utils.Maybe
-import Agda.Utils.Maybe.Strict (toLazy)
 import Agda.Utils.Monad
-import Agda.Utils.Permutation ( Permutation(Perm), compactP )
 import Agda.Utils.Pretty (prettyShow)
 import Agda.Utils.String ( Str(Str), unStr )
-import Agda.Utils.VarSet (VarSet)
-import qualified Agda.Utils.VarSet as Set
 import qualified Agda.Interaction.Options.Lenses as Lens
 
 #include "undefined.h"
@@ -129,14 +114,14 @@ inOriginalContext m =
 
 isCon :: ConHead -> TCM Term -> UnquoteM Bool
 isCon con tm = do t <- liftU tm
-                  case ignoreSharing t of
+                  case t of
                     Con con' _ _ -> return (con == con')
                     _ -> return False
 
 isDef :: QName -> TCM Term -> UnquoteM Bool
 isDef f tm = do
   t <- liftU (etaContract =<< normalise =<< tm)
-  case ignoreSharing t of
+  case t of
     Def g _ -> return (f == g)
     _       -> return False
 
@@ -196,11 +181,11 @@ instance Unquote Modality where
 instance Unquote ArgInfo where
   unquote t = do
     t <- reduceQuotedTerm t
-    case ignoreSharing t of
+    case t of
       Con c _ es | Just [h,r] <- allApplyElims es -> do
         choice
           [(c `isCon` primArgArgInfo,
-              ArgInfo <$> unquoteN h <*> unquoteN r <*> pure Reflected)]
+              ArgInfo <$> unquoteN h <*> unquoteN r <*> pure Reflected <*> pure unknownFreeVariables)]
           __IMPOSSIBLE__
       Con c _ _ -> __IMPOSSIBLE__
       _ -> throwError $ NonCanonical "arg info" t
@@ -208,7 +193,7 @@ instance Unquote ArgInfo where
 instance Unquote a => Unquote (Arg a) where
   unquote t = do
     t <- reduceQuotedTerm t
-    case ignoreSharing t of
+    case t of
       Con c _ es | Just [info,x] <- allApplyElims es -> do
         choice
           [(c `isCon` primArgArg, Arg <$> unquoteN info <*> unquoteN x)]
@@ -224,7 +209,7 @@ instance Unquote R.Elim where
 instance Unquote Bool where
   unquote t = do
     t <- reduceQuotedTerm t
-    case ignoreSharing t of
+    case t of
       Con c _ [] ->
         choice [ (c `isCon` primTrue,  pure True)
                , (c `isCon` primFalse, pure False) ]
@@ -234,35 +219,35 @@ instance Unquote Bool where
 instance Unquote Integer where
   unquote t = do
     t <- reduceQuotedTerm t
-    case ignoreSharing t of
+    case t of
       Lit (LitNat _ n) -> return n
       _ -> throwError $ NonCanonical "integer" t
 
 instance Unquote Word64 where
   unquote t = do
     t <- reduceQuotedTerm t
-    case ignoreSharing t of
+    case t of
       Lit (LitWord64 _ n) -> return n
       _ -> throwError $ NonCanonical "word64" t
 
 instance Unquote Double where
   unquote t = do
     t <- reduceQuotedTerm t
-    case ignoreSharing t of
+    case t of
       Lit (LitFloat _ x) -> return x
       _ -> throwError $ NonCanonical "float" t
 
 instance Unquote Char where
   unquote t = do
     t <- reduceQuotedTerm t
-    case ignoreSharing t of
+    case t of
       Lit (LitChar _ x) -> return x
       _ -> throwError $ NonCanonical "char" t
 
 instance Unquote Str where
   unquote t = do
     t <- reduceQuotedTerm t
-    case ignoreSharing t of
+    case t of
       Lit (LitString _ x) -> return (Str x)
       _ -> throwError $ NonCanonical "string" t
 
@@ -282,7 +267,7 @@ instance PrettyTCM ErrorPart where
 instance Unquote ErrorPart where
   unquote t = do
     t <- reduceQuotedTerm t
-    case ignoreSharing t of
+    case t of
       Con c _ es | Just [x] <- allApplyElims es ->
         choice [ (c `isCon` primAgdaErrorPartString, StrPart  <$> unquoteNString x)
                , (c `isCon` primAgdaErrorPartTerm,   TermPart <$> unquoteN x)
@@ -293,7 +278,7 @@ instance Unquote ErrorPart where
 instance Unquote a => Unquote [a] where
   unquote t = do
     t <- reduceQuotedTerm t
-    case ignoreSharing t of
+    case t of
       Con c _ es | Just [x,xs] <- allApplyElims es -> do
         choice
           [(c `isCon` primCons, (:) <$> unquoteN x <*> unquoteN xs)]
@@ -308,7 +293,7 @@ instance Unquote a => Unquote [a] where
 instance Unquote Hiding where
   unquote t = do
     t <- reduceQuotedTerm t
-    case ignoreSharing t of
+    case t of
       Con c _ [] -> do
         choice
           [(c `isCon` primHidden,  return Hidden)
@@ -321,7 +306,7 @@ instance Unquote Hiding where
 instance Unquote Relevance where
   unquote t = do
     t <- reduceQuotedTerm t
-    case ignoreSharing t of
+    case t of
       Con c _ [] -> do
         choice
           [(c `isCon` primRelevant,   return Relevant)
@@ -333,14 +318,14 @@ instance Unquote Relevance where
 instance Unquote QName where
   unquote t = do
     t <- reduceQuotedTerm t
-    case ignoreSharing t of
+    case t of
       Lit (LitQName _ x) -> return x
       _                  -> throwError $ NonCanonical "name" t
 
 instance Unquote a => Unquote (R.Abs a) where
   unquote t = do
     t <- reduceQuotedTerm t
-    case ignoreSharing t of
+    case t of
       Con c _ es | Just [x,y] <- allApplyElims es -> do
         choice
           [(c `isCon` primAbsAbs, R.Abs <$> (hint <$> unquoteNString x) <*> unquoteN y)]
@@ -357,7 +342,7 @@ getCurrentPath = fromMaybe __IMPOSSIBLE__ <$> asks envCurrentPath
 instance Unquote MetaId where
   unquote t = do
     t <- reduceQuotedTerm t
-    case ignoreSharing t of
+    case t of
       Lit (LitMeta r f x) -> liftU $ do
         live <- (f ==) <$> getCurrentPath
         unless live $ do
@@ -374,7 +359,7 @@ instance Unquote a => Unquote (Dom a) where
 instance Unquote R.Sort where
   unquote t = do
     t <- reduceQuotedTerm t
-    case ignoreSharing t of
+    case t of
       Con c _ [] -> do
         choice
           [(c `isCon` primAgdaSortUnsupported, return R.UnknownS)]
@@ -393,7 +378,7 @@ instance Unquote Literal where
     let litMeta r x = do
           file <- liftU getCurrentPath
           return $ LitMeta r file x
-    case ignoreSharing t of
+    case t of
       Con c _ es | Just [x] <- allApplyElims es ->
         choice
           [ (c `isCon` primAgdaLitNat,    LitNat    noRange <$> unquoteN x)
@@ -409,7 +394,7 @@ instance Unquote Literal where
 instance Unquote R.Term where
   unquote t = do
     t <- reduceQuotedTerm t
-    case ignoreSharing t of
+    case t of
       Con c _ [] ->
         choice
           [ (c `isCon` primAgdaTermUnsupported, return R.Unknown) ]
@@ -447,7 +432,7 @@ instance Unquote R.Term where
 instance Unquote R.Pattern where
   unquote t = do
     t <- reduceQuotedTerm t
-    case ignoreSharing t of
+    case t of
       Con c _ [] -> do
         choice
           [ (c `isCon` primAgdaPatAbsurd, return R.AbsurdP)
@@ -469,7 +454,7 @@ instance Unquote R.Pattern where
 instance Unquote R.Clause where
   unquote t = do
     t <- reduceQuotedTerm t
-    case ignoreSharing t of
+    case t of
       Con c _ es | Just [x] <- allApplyElims es -> do
         choice
           [ (c `isCon` primAgdaClauseAbsurd, R.AbsurdClause <$> unquoteN x) ]
@@ -498,7 +483,7 @@ evalTCM v = do
   liftU $ reportSDoc "tc.unquote.eval" 90 $ text "evalTCM" <+> prettyTCM v
   let failEval = throwError $ NonCanonical "type checking computation" v
 
-  case ignoreSharing v of
+  case v of
     I.Def f [] ->
       choice [ (f `isDef` primAgdaTCMGetContext, tcGetContext)
              , (f `isDef` primAgdaTCMCommit,     tcCommit) ]

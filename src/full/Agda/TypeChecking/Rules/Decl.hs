@@ -64,6 +64,7 @@ import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.Unquote
 import Agda.TypeChecking.Warnings
 
+import Agda.TypeChecking.Rules.Application
 import Agda.TypeChecking.Rules.Term
 import Agda.TypeChecking.Rules.Data    ( checkDataDef )
 import Agda.TypeChecking.Rules.Record  ( checkRecDef )
@@ -301,7 +302,7 @@ revisitRecordPatternTranslation qs = do
   -- and the set of function definitions in the mutual block
   classify q = inConcreteOrAbstractMode q $ \ def -> do
     case theDef def of
-      Record{ recEtaEquality' = Inferred True } -> return $ Just $ Left q
+      Record{ recEtaEquality' = Inferred YesEta } -> return $ Just $ Left q
       Function
         { funProjection = Nothing
             -- Andreas, 2017-08-10, issue #2664:
@@ -786,11 +787,12 @@ checkPragma r p =
             Function{} -> markStatic x
             _          -> typeError $ GenericError "STATIC directive only works on functions"
         A.InjectivePragma x -> markInjective x
-        A.InlinePragma x -> do
+        A.InlinePragma b x -> do
           def <- getConstInfo x
           case theDef def of
-            Function{} -> markInline x
-            _          -> typeError $ GenericError "INLINE directive only works on functions"
+            Function{} -> markInline b x
+            _          -> typeError $ GenericError $ sINLINE ++ " directive only works on functions"
+              where sINLINE = if b then "INLINE" else "NOINLINE"
         A.OptionsPragma{} -> typeError $ GenericError $ "OPTIONS pragma only allowed at beginning of file, before top module declaration"
         A.DisplayPragma f ps e -> checkDisplayPragma f ps e
         A.EtaPragma r -> do
@@ -799,11 +801,11 @@ checkPragma r p =
           caseMaybeM (isRecord r) noRecord $ \case
             Record{ recInduction = ind, recEtaEquality' = eta } -> do
               unless (ind == Just CoInductive) $ noRecord
-              when (eta == Specified False) $ typeError $ GenericError $
+              when (eta == Specified NoEta) $ typeError $ GenericError $
                 "ETA pragma conflicts with no-eta-equality declaration"
             _ -> __IMPOSSIBLE__
           modifySignature $ updateDefinition r $ updateTheDef $ \case
-            def@Record{} -> def { recEtaEquality' = Specified True }
+            def@Record{} -> def { recEtaEquality' = Specified YesEta }
             _ -> __IMPOSSIBLE__
 
 -- | Type check a bunch of mutual inductive recursive definitions.

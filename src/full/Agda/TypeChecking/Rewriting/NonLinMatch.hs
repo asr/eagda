@@ -120,7 +120,7 @@ instance PatternFrom Term NLPat where
                  return PWild
                else
                  return $ PTerm v
-    case ignoreSharing v of
+    case v of
       Var i es
        | i < k     -> PBoundVar i <$> patternFrom r k es
        | otherwise -> do
@@ -128,7 +128,7 @@ instance PatternFrom Term NLPat where
          -- in order to build a Miller pattern
          let mbvs = mfilter fastDistinct $ forM es $ \e -> do
                       e <- isApplyElim e
-                      case ignoreSharing $ unArg e of
+                      case unArg e of
                         Var j [] | j < k -> Just $ e $> j
                         _                -> Nothing
          case mbvs of
@@ -143,8 +143,8 @@ instance PatternFrom Term NLPat where
       Lit{}    -> done
       Def f es | isIrrelevant r -> done
       Def f es -> do
-        Def lsuc [] <- ignoreSharing <$> primLevelSuc
-        Def lmax [] <- ignoreSharing <$> primLevelMax
+        Def lsuc [] <- primLevelSuc
+        Def lmax [] <- primLevelMax
         case es of
           [x]     | f == lsuc -> done
           [x , y] | f == lmax -> done
@@ -152,7 +152,7 @@ instance PatternFrom Term NLPat where
       Con c ci vs | isIrrelevant r -> do
         mr <- isRecordConstructor (conName c)
         case mr of
-          Just (_, def) | recEtaEquality def ->
+          Just (_, def) | YesEta <- recEtaEquality def ->
             PDef (conName c) <$> patternFrom r k vs
           _ -> done
       Con c ci vs -> PDef (conName c) <$> patternFrom r k vs
@@ -162,7 +162,6 @@ instance PatternFrom Term NLPat where
       Level l  -> __IMPOSSIBLE__
       DontCare{} -> return PWild
       MetaV{}    -> __IMPOSSIBLE__
-      Shared{}   -> __IMPOSSIBLE__
 
 instance (PatternFrom a b) => PatternFrom (Abs a) (Abs b) where
   patternFrom r k (Abs name x)   = Abs name   <$> patternFrom r (k+1) x
@@ -331,7 +330,7 @@ instance Match NLPat Term where
           Right (Just v) -> tellSub r (i-n) $ teleLam tel $ renameP __IMPOSSIBLE__ perm v
       PDef f ps -> do
         v <- liftRed $ constructorForm =<< unLevel v
-        case ignoreSharing v of
+        case v of
           Def f' es
             | f == f'   -> match r gamma k ps es
           Con c _ vs
@@ -339,7 +338,7 @@ instance Match NLPat Term where
             | otherwise -> do -- @c@ may be a record constructor
                 mr <- liftRed $ isRecordConstructor (conName c)
                 case mr of
-                  Just (_, def) | recEtaEquality def -> do
+                  Just (_, def) | YesEta <- recEtaEquality def -> do
                     let fs = recFields def
                         qs = map (fmap $ \f -> PDef f (ps ++ [Proj ProjSystem f])) fs
                     match r gamma k (map Apply qs) vs
@@ -353,7 +352,7 @@ instance Match NLPat Term where
           v' -> do -- @f@ may be a record constructor as well
             mr <- liftRed $ isRecordConstructor f
             case mr of
-              Just (_, def) | recEtaEquality def -> do
+              Just (_, def) | YesEta <- recEtaEquality def -> do
                 let fs  = recFields def
                     ws  = map (fmap $ \f -> v `applyE` [Proj ProjSystem f]) fs
                     qs = fromMaybe __IMPOSSIBLE__ $ allApplyElims ps
@@ -362,16 +361,16 @@ instance Match NLPat Term where
       PLam i p' -> do
         let body = Abs (absName p') $ raise 1 v `apply` [Arg i (var 0)]
         match r gamma k p' body
-      PPi pa pb  -> case ignoreSharing v of
+      PPi pa pb  -> case v of
         Pi a b -> match r gamma k pa a >> match r gamma k pb b
         MetaV m es -> matchingBlocked $ Blocked m ()
         _ -> no (text "")
-      PBoundVar i ps -> case ignoreSharing v of
+      PBoundVar i ps -> case v of
         Var i' es | i == i' -> match r gamma k ps es
         Con c _ vs -> do -- @c@ may be a record constructor
           mr <- liftRed $ isRecordConstructor (conName c)
           case mr of
-            Just (_, def) | recEtaEquality def -> do
+            Just (_, def) | YesEta <- recEtaEquality def -> do
               let fs = recFields def
                   qs = map (fmap $ \f -> PBoundVar i (ps ++ [Proj ProjSystem f])) fs
               match r gamma k (map Apply qs) vs

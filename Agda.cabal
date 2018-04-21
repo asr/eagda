@@ -2,7 +2,7 @@ name:            Agda
 version:         2.6.0.1
 cabal-version:   >= 1.10
 build-type:      Custom
--- license:         OtherLicense
+license:         OtherLicense
 license-file:    LICENSE
 author:          Agda 2 was originally written by Ulf Norell, partially based on code from Agda 1 by Catarina Coquand and Makoto Takeyama, and from Agdalight by Ulf Norell and Andreas Abel. Agda 2 is currently actively developed mainly by Andreas Abel, Guillaume Allais, Jesper Cockx, Nils Anders Danielsson, Philipp Hausmann, Fredrik Nordvall Forsberg, Ulf Norell, Víctor López Juan, Andrés Sicard-Ramírez, and Andrea Vezzosi. Further, Agda 2 has received contributions by, amongst others, Stevan Andjelkovic, Marcin Benke, Jean-Philippe Bernardy, Guillaume Brunerie, James Chapman, Dominique Devriese, Péter Diviánszki, Olle Fredriksson, Adam Gundry, Daniel Gustafsson, Kuen-Bang Hou (favonia), Patrik Jansson, Alan Jeffrey, Wolfram Kahl, Wen Kokke, Fredrik Lindblad, Francesco Mazzoli, Stefan Monnier, Darin Morrison, Guilhem Moulin, Nicolas Pouillard, Nobuo Yamashita, Christian Sattler, and Makoto Takeyama and many more.
 maintainer:      Ulf Norell <ulfn@chalmers.se>
@@ -36,6 +36,7 @@ description:
 tested-with:        GHC == 7.10.3
                     GHC == 8.0.2
                     GHC == 8.2.2
+                    GHC == 8.4.2
 extra-source-files: CHANGELOG.md
                     README.md
                     doc/user-manual.pdf
@@ -43,6 +44,7 @@ extra-source-files: CHANGELOG.md
                     stack-7.10.3.yaml
                     stack-8.0.2.yaml
                     stack-8.2.2.yaml
+                    stack-8.4.2.yaml
 
 data-dir:           src/data
 data-files:         Agda.css
@@ -123,7 +125,7 @@ library
     build-depends:  text-icu == 0.7.*
 
   if os(windows)
-    build-depends:  Win32 >= 2.3.1.0 && < 2.6
+    build-depends:  Win32 >= 2.3.1.0 && < 2.7
 
   build-depends:  array >= 0.5.1.0 && < 0.6
                 , async >= 2.2 && < 2.3
@@ -351,10 +353,12 @@ library
                     Agda.TypeChecking.Free
                     Agda.TypeChecking.Free.Lazy
                     Agda.TypeChecking.Free.Old
+                    Agda.TypeChecking.Free.Precompute
                     Agda.TypeChecking.Forcing
                     Agda.TypeChecking.Functions
                     Agda.TypeChecking.Implicit
                     Agda.TypeChecking.Injectivity
+                    Agda.TypeChecking.Inlining
                     Agda.TypeChecking.InstanceArguments
                     Agda.TypeChecking.Irrelevance
                     Agda.TypeChecking.Level
@@ -376,7 +380,6 @@ library
                     Agda.TypeChecking.Monad.Mutual
                     Agda.TypeChecking.Monad.Open
                     Agda.TypeChecking.Monad.Options
-                    Agda.TypeChecking.Monad.Sharing
                     Agda.TypeChecking.Monad.Signature
                     Agda.TypeChecking.Monad.SizedTypes
                     Agda.TypeChecking.Monad.State
@@ -385,6 +388,7 @@ library
                     Agda.TypeChecking.Monad
                     Agda.TypeChecking.Names
                     Agda.TypeChecking.Patterns.Abstract
+                    Agda.TypeChecking.Patterns.Internal
                     Agda.TypeChecking.Patterns.Match
                     Agda.TypeChecking.Polarity
                     Agda.TypeChecking.Positivity
@@ -401,6 +405,7 @@ library
                     Agda.TypeChecking.Reduce.Monad
                     Agda.TypeChecking.Rewriting
                     Agda.TypeChecking.Rewriting.NonLinMatch
+                    Agda.TypeChecking.Rules.Application
                     Agda.TypeChecking.Rules.Builtin
                     Agda.TypeChecking.Rules.Builtin.Coinduction
                     Agda.TypeChecking.Rules.Data
@@ -497,6 +502,7 @@ library
                     Agda.Utils.Update
                     Agda.Utils.VarSet
                     Agda.Utils.Warshall
+                    Agda.Utils.Zipper
                     Agda.Version
                     Agda.VersionCommit
 
