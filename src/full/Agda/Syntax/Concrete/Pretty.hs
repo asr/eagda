@@ -196,13 +196,12 @@ instance Pretty Expr where
 
             HiddenArg _ e -> braces' $ pretty e
             InstanceArg _ e -> dbraces $ pretty e
+            Lam _ bs (AbsurdLam _ h) -> lambda <+> fsep (map pretty bs) <+> absurd h
             Lam _ bs e ->
                 sep [ lambda <+> fsep (map pretty bs) <+> arrow
                     , nest 2 $ pretty e
                     ]
-            AbsurdLam _ NotHidden  -> lambda <+> text "()"
-            AbsurdLam _ Instance{} -> lambda <+> text "{{}}"
-            AbsurdLam _ Hidden     -> lambda <+> text "{}"
+            AbsurdLam _ h -> lambda <+> absurd h
             ExtendedLam _ pes -> lambda <+> bracesAndSemicolons (map pretty pes)
             Fun _ e1 e2 ->
                 sep [ pretty e1 <+> arrow
@@ -215,6 +214,7 @@ instance Pretty Expr where
             Set _   -> text "Set"
             Prop _  -> text "Prop"
             SetN _ n    -> text "Set" <> text (showIndex n)
+            PropN _ n   -> text "Prop" <> text (showIndex n)
             Let _ ds me  ->
                 sep [ text "let" <+> vcat (map pretty ds)
                     , maybe empty (\ e -> text "in" <+> pretty e) me
@@ -244,6 +244,10 @@ instance Pretty Expr where
             DontCare e -> text "." <> parens (pretty e)
             Equal _ a b -> pretty a <+> text "=" <+> pretty b
             Ellipsis _  -> text "..."
+        where
+          absurd NotHidden  = text "()"
+          absurd Instance{} = text "{{}}"
+          absurd Hidden     = text "{}"
 
 instance (Pretty a, Pretty b) => Pretty (Either a b) where
   pretty = either pretty pretty
@@ -627,18 +631,21 @@ prettyOpApp q es = merge [] $ prOp ms xs es
            NoName{}  -> __IMPOSSIBLE__
 
     prOp :: [Name] -> [NamePart] -> [NamedArg (MaybePlaceholder a)] -> [(Doc, Maybe PositionInName)]
-    prOp ms (Hole : xs) (e : es) = (pretty e, case namedArg e of
-                                                Placeholder p -> Just p
-                                                _             -> Nothing) :
-                                   prOp ms xs es
+    prOp ms (Hole : xs) (e : es) =
+      case namedArg e of
+        Placeholder p   -> (qual ms $ pretty e, Just p) : prOp [] xs es
+        NoPlaceholder{} -> (pretty e, Nothing) : prOp ms xs es
+          -- Module qualifier needs to go on section holes (#3072)
     prOp _  (Hole : _)  []       = __IMPOSSIBLE__
-    prOp ms (Id x : xs) es       = ( pretty (foldr Qual (QName (Name noRange $ [Id x])) ms)
+    prOp ms (Id x : xs) es       = ( qual ms $ pretty $ Name noRange $ [Id x]
                                    , Nothing
                                    ) : prOp [] xs es
       -- Qualify the name part with the module.
       -- We then clear @ms@ such that the following name parts will not be qualified.
 
     prOp _  []       es          = map (\e -> (pretty e, Nothing)) es
+
+    qual ms doc = hcat $ punctuate (text ".") $ map pretty ms ++ [doc]
 
     -- Section underscores should be printed without surrounding
     -- whitespace. This function takes care of that.

@@ -56,10 +56,11 @@ import Agda.Syntax.Abstract.PatternSynonyms
 import Agda.Syntax.Scope.Base
 
 import Agda.TypeChecking.Monad.State (getScope, getAllPatternSyns)
-import Agda.TypeChecking.Monad.Base  (TCM, NamedMeta(..), stBuiltinThings, BuiltinThings, Builtin(..))
+import Agda.TypeChecking.Monad.Base  (TCM, NamedMeta(..), stBuiltinThings, BuiltinThings, Builtin(..), pragmaOptions)
 import Agda.TypeChecking.Monad.Debug
 import Agda.TypeChecking.Monad.Options
 import Agda.TypeChecking.Monad.Builtin
+import Agda.Interaction.Options
 
 import qualified Agda.Utils.AssocList as AssocList
 import Agda.Utils.Either
@@ -100,12 +101,13 @@ makeEnv scope = do
                  noScopeCheck b || isNameInScope q scope -> return [(b, q)]
         _                                                -> return []
   builtinList <- concat <$> mapM builtin [ builtinFromNat, builtinFromString, builtinFromNeg, builtinZero, builtinSuc ]
+  foldPatSyns <- optPrintPatternSynonyms <$> pragmaOptions
   return $
     Env { takenNames   = Set.union vars defs
         , currentScope = scope
         , builtins     = Map.fromList builtinList
         , preserveIIds = False
-        , foldPatternSynonyms = True
+        , foldPatternSynonyms = foldPatSyns
         }
   where
     vars  = Set.fromList $ map fst $ scopeLocals scope
@@ -593,7 +595,8 @@ instance ToConcrete A.Expr C.Expr where
 
     toConcrete (A.Set i 0)  = return $ C.Set (getRange i)
     toConcrete (A.Set i n)  = return $ C.SetN (getRange i) n
-    toConcrete (A.Prop i)   = return $ C.Prop (getRange i)
+    toConcrete (A.Prop i 0) = return $ C.Prop (getRange i)
+    toConcrete (A.Prop i n) = return $ C.PropN (getRange i) n
 
     toConcrete (A.Let i ds e) =
         bracket lamBrackets
@@ -728,18 +731,16 @@ instance ToConcrete LetBinding [C.Declaration] where
       -- Note that the range of the declaration site is dropped.
       ret []
 
-data AsWhereDecls = AsWhereDecls [A.Declaration]
-
-instance ToConcrete AsWhereDecls WhereClause where
-  bindToConcrete (AsWhereDecls []) ret = ret C.NoWhere
-  bindToConcrete (AsWhereDecls ds@[Section _ am _ _]) ret = do
+instance ToConcrete A.WhereDeclarations WhereClause where
+  bindToConcrete (A.WhereDecls _ []) ret = ret C.NoWhere
+  bindToConcrete (A.WhereDecls (Just am) [A.Section _ _ _ ds]) ret = do
     ds' <- declsToConcrete ds
     cm  <- unqualify <$> lookupModule am
     -- Andreas, 2016-07-08 I put PublicAccess in the following SomeWhere
     -- Should not really matter for printing...
     let wh' = (if isNoName cm then AnyWhere else SomeWhere cm PublicAccess) $ ds'
     local (openModule' am defaultImportDir id) $ ret wh'
-  bindToConcrete (AsWhereDecls ds) ret =
+  bindToConcrete (A.WhereDecls _ ds) ret =
     ret . AnyWhere =<< declsToConcrete ds
 
 mergeSigAndDef :: [C.Declaration] -> [C.Declaration]
@@ -778,7 +779,7 @@ instance ToConcrete A.RHS (C.RHS, [C.Expr], [C.Expr], [C.Declaration]) where
       cs <- noTakenNames $ concat <$> toConcrete cs
       return (C.AbsurdRHS, [], es, cs)
     toConcrete (A.RewriteRHS xeqs _spats rhs wh) = do
-      wh <- declsToConcrete wh
+      wh <- declsToConcrete (A.whereDecls wh)
       (rhs, eqs', es, whs) <- toConcrete rhs
       unless (null eqs')
         __IMPOSSIBLE__
@@ -805,7 +806,7 @@ instance ToConcrete a C.LHS => ToConcrete (A.Clause' a) [C.Declaration] where
   toConcrete (A.Clause lhs _ rhs wh catchall) =
       bindToConcrete lhs $ \case
           C.LHS p _ _ -> do
-            bindToConcrete (AsWhereDecls wh) $ \ wh' -> do
+            bindToConcrete wh $ \ wh' -> do
                 (rhs', eqs, with, wcs) <- toConcreteTop rhs
                 return $ FunClause (C.LHS p eqs with) rhs' wh' catchall : wcs
 
@@ -1360,10 +1361,12 @@ recoverPatternSyn applySyn match e fallback = do
   doFold <- asks foldPatternSynonyms
   if not doFold then fallback else do
     psyns  <- lift getAllPatternSyns
+    scope  <- lift getScope
     let isConP ConP{} = True    -- #2828: only fold pattern synonyms with
         isConP _      = False   --        constructor rhs
         cands = [ (q, args, score rhs) | (q, psyndef@(_, rhs)) <- reverse $ Map.toList psyns,
-                                         isConP rhs, Just args <- [match psyndef e] ]
+                                         isConP rhs, Just args <- [match psyndef e],
+                                         isNameInScope q scope ]
         cmp (_, _, x) (_, _, y) = flip compare x y
     case sortBy cmp cands of
       (q, args, _) : _ -> toConcrete $ applySyn q $ (map . fmap) unnamed args

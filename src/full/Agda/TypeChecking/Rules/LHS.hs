@@ -7,6 +7,7 @@ module Agda.TypeChecking.Rules.LHS
   , LHSResult(..)
   , bindAsPatterns
   , IsFlexiblePattern(..)
+  , checkSortOfSplitVar
   ) where
 
 #if MIN_VERSION_base(4,11,0)
@@ -19,6 +20,7 @@ import Data.Maybe
 
 import Control.Arrow (left)
 import Control.Monad
+import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Writer hiding ((<>))
 import Control.Monad.Trans.Maybe
@@ -53,6 +55,7 @@ import Agda.TypeChecking.Monad.Builtin (litType, constructorForm)
 import qualified Agda.TypeChecking.Monad.Benchmark as Bench
 import Agda.TypeChecking.Conversion
 import Agda.TypeChecking.Constraints
+import Agda.TypeChecking.CheckInternal (checkInternal)
 import Agda.TypeChecking.Datatypes hiding (isDataOrRecordType)
 import Agda.TypeChecking.Errors (dropTopLevelModule)
 import Agda.TypeChecking.Irrelevance
@@ -174,6 +177,7 @@ updateProblemEqs eqs = do
     updates = concat <.> traverse update
 
     update :: ProblemEq -> TCM [ProblemEq]
+    update eq@(ProblemEq A.WildP{} _ _) = return []
     update eq@(ProblemEq p v a) = reduce v >>= constructorForm >>= \case
       Con c ci es -> do
         let vs = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
@@ -200,8 +204,26 @@ updateProblemEqs eqs = do
             reportSDoc "tc.lhs.imp" 20 $
               text "insertImplicitPatternsT returned" <+> fsep (map prettyA ps)
 
-            unless (length ps == length vs) $
-              typeError $ WrongNumberOfConstructorArguments (conName c) (length vs) (length ps)
+            -- Check argument count and hiding (not just count: #3074)
+            let checkArgs [] [] = return ()
+                checkArgs (p : ps) (v : vs)
+                  | getHiding p == getHiding v = checkArgs ps vs
+                  | otherwise                  = setCurrentRange p $ genericDocError =<< do
+                      fsep $ pwords ("Expected an " ++ which (getHiding v) ++ " argument " ++
+                                     "instead of "  ++ which (getHiding p) ++ " argument") ++
+                             [ prettyA p ]
+                  where which NotHidden  = "explicit"
+                        which Hidden     = "implicit"
+                        which Instance{} = "instance"
+                checkArgs [] vs = genericDocError =<< do
+                    fsep $ pwords "Too few arguments to constructor" ++ [prettyTCM c <> text ","] ++
+                           pwords ("expected " ++ show n ++ " more explicit "  ++ arguments)
+                  where n = length (filter visible vs)
+                        arguments | n == 1    = "argument"
+                                  | otherwise = "arguments"
+                checkArgs (p : _) [] = setCurrentRange p $ genericDocError =<< do
+                  fsep $ pwords "Too many arguments to constructor" ++ [prettyTCM c]
+            checkArgs ps vs
 
             updates $ zipWith3 ProblemEq (map namedArg ps) (map unArg vs) bs
 
@@ -224,8 +246,6 @@ updateProblemEqs eqs = do
       _ | A.EqualP{} <- p -> do
         itisone <- liftTCM primItIsOne
         ifM (tryConversion $ equalTerm (unDom a) v itisone) (return []) (return [eq])
-
-      _ | A.WildP{} <- p -> return []
 
       _ -> return [eq]
 
@@ -572,6 +592,15 @@ bindAsPatterns (AsB x v a : asb) ret = do
         ]
   addLetBinding defaultArgInfo x v a $ bindAsPatterns asb ret
 
+-- | Since with-abstraction can change the type of a variable, we have to
+--   recheck the stripped with patterns when checking a with function.
+recheckStrippedWithPattern :: ProblemEq -> TCM ()
+recheckStrippedWithPattern (ProblemEq p v a) = checkInternal v (unDom a)
+  `catchError` \_ -> typeError . GenericDocError =<< vcat
+    [ text "Ill-typed pattern after with abstraction: " <+> prettyA p
+    , text "(perhaps you can replace it by `_`?)"
+    ]
+
 -- | Result of checking the LHS of a clause.
 data LHSResult = LHSResult
   { lhsParameters   :: Nat
@@ -661,16 +690,46 @@ checkLeftHandSide c f ps a withSub' strippedPats = Bench.billToCPS [Bench.Typing
         -- Compute substitution from the out patterns @qs0@
         let notProj ProjP{} = False
             notProj _       = True
-                        -- Note: This works because we can't change the number of
-                        --       arguments in the lhs of a with-function relative to
-                        --       the parent function.
-            numPats   = length $ takeWhile (notProj . namedArg) qs0
-            -- In the case of a non-with function the pattern substitution
-            -- should be weakened by the number of non-parameter patterns to
-            -- get the paramSub.
-            withSub = fromMaybe (wkS (numPats - length cxt) idS) withSub'
+            numPats  = length $ takeWhile (notProj . namedArg) qs0
+
+            -- We have two slightly different cases here: normal function and
+            -- with-function. In both cases the goal is to build a substitution
+            -- from the context Γ of the previous checkpoint to the current lhs
+            -- context Δ:
+            --
+            --    Δ ⊢ paramSub : Γ
+            --
+            --  * Normal function, f
+            --
+            --    Γ = cxt = module parameter telescope of f
+            --    Ψ = non-parameter arguments of f (we have f : Γ Ψ → A)
+            --    Δ   ⊢ patSub  : Γ Ψ
+            --    Γ Ψ ⊢ weakSub : Γ
+            --    paramSub = patSub ∘ weakSub
+            --
+            --  * With-function
+            --
+            --    Γ = lhs context of the parent clause (cxt = [])
+            --    Ψ = argument telescope of with-function
+            --    Θ = inserted implicit patterns not in Ψ (#2827)
+            --        (this happens if the goal computes to an implicit
+            --         function type after some matching in the with-clause)
+            --
+            --    Ψ   ⊢ withSub : Γ
+            --    Δ   ⊢ patSub  : Ψ Θ
+            --    Ψ Θ ⊢ weakSub : Ψ
+            --    paramSub = patSub ∘ weakSub ∘ withSub
+            --
+            --    To compute Θ we can look at the arity of the with-function
+            --    and compare it to numPats. This works since the with-function
+            --    type is fully reduced.
+
+            weakSub :: Substitution
+            weakSub | isJust withSub' = wkS (max 0 $ numPats - arity a) idS -- if numPats < arity, Θ is empty
+                    | otherwise       = wkS (numPats - length cxt) idS
+            withSub  = fromMaybe idS withSub'
             patSub   = (map (patternToTerm . namedArg) $ reverse $ take numPats qs0) ++# (EmptyS __IMPOSSIBLE__)
-            paramSub = composeS patSub withSub
+            paramSub = patSub `composeS` weakSub `composeS` withSub
 
         eqs <- addContext delta $ checkPatternLinearity eqs
 
@@ -708,14 +767,14 @@ checkLeftHandSide c f ps a withSub' strippedPats = Bench.billToCPS [Bench.Typing
           nest 2 $ vcat
                  [ text "vars   = " <+> text (show vars)
                  ]
-        reportSDoc "tc.lhs.top" 20 $ nest 2 $ text "patSub   = " <+> pretty patSub
         reportSDoc "tc.lhs.top" 20 $ nest 2 $ text "withSub  = " <+> pretty withSub
+        reportSDoc "tc.lhs.top" 20 $ nest 2 $ text "weakSub  = " <+> pretty weakSub
+        reportSDoc "tc.lhs.top" 20 $ nest 2 $ text "patSub   = " <+> pretty patSub
         reportSDoc "tc.lhs.top" 20 $ nest 2 $ text "paramSub = " <+> pretty paramSub
 
         newCxt <- computeLHSContext vars delta
 
-        updateContext paramSub (const newCxt)
-          $ applyRelevanceToContext (getRelevance b) $ do
+        updateContext paramSub (const newCxt) $ do
 
           reportSDoc "tc.lhs.top" 10 $ text "bound pattern variables"
           reportSDoc "tc.lhs.top" 60 $ nest 2 $ text "context = " <+> (pretty =<< getContextTelescope)
@@ -737,6 +796,10 @@ checkLeftHandSide c f ps a withSub' strippedPats = Bench.billToCPS [Bench.Typing
   -- with-desugaring to the state.
   let withSub = fromMaybe __IMPOSSIBLE__ withSub'
   withEqs <- updateProblemEqs $ applySubst withSub strippedPats
+  -- Jesper, 2017-05-13: re-check the stripped patterns here!
+  inTopContext $ addContext (st0 ^. lhsTel) $
+    forM_ withEqs recheckStrippedWithPattern
+
   let st = over (lhsProblem . problemEqs) (++ withEqs) st0
 
   -- doing the splits:
@@ -769,11 +832,11 @@ splitStrategy = filter shouldSplit
 
 -- | The loop (tail-recursive): split at a variable in the problem until problem is solved
 checkLHS
-  :: forall tcm a. (MonadTCM tcm, MonadWriter Blocked_ tcm, HasConstInfo tcm, MonadError TCErr tcm, MonadDebug tcm)
+  :: forall tcm a. (MonadTCM tcm, MonadReduce tcm, MonadWriter Blocked_ tcm, HasConstInfo tcm, MonadError TCErr tcm, MonadDebug tcm)
   => Maybe QName      -- ^ The name of the definition we are checking.
   -> LHSState a       -- ^ The current state.
   -> tcm a
-checkLHS mf st@(LHSState tel ip problem target psplit) = do
+checkLHS mf st@(LHSState tel ip problem target psplit) = updateRelevance $ do
   if isSolvedProblem problem then
     liftTCM $ (problem ^. problemCont) st
   else do
@@ -784,12 +847,7 @@ checkLHS mf st@(LHSState tel ip problem target psplit) = do
     let splitsToTry = splitStrategy $ problem ^. problemEqs
 
     foldr trySplit trySplitRest splitsToTry >>= \case
-      Right st' -> do
-        -- If the new target type is irrelevant, we need to continue in irr. cxt.
-        -- (see Issue 939).
-        let rel = getRelevance $ st' ^. lhsTarget
-        applyRelevanceToContext rel $ checkLHS mf st'
-
+      Right st' -> checkLHS mf st'
       -- If no split works, give error from first split.
       -- This is conservative, but might not be the best behavior.
       -- It might be better to print all the errors instead.
@@ -797,6 +855,14 @@ checkLHS mf st@(LHSState tel ip problem target psplit) = do
       Left []      -> __IMPOSSIBLE__
 
   where
+
+    -- If the target type is irrelevant or in Prop,
+    -- we need to check the lhs in irr. cxt. (see Issue 939).
+    updateRelevance cont = do
+      rel <- liftTCM (reduce $ getSort $ unArg target) >>= \case
+        Prop{} -> return Irrelevant
+        _      -> return $ getRelevance target
+      applyRelevanceToContext rel cont
 
     trySplit :: ProblemEq
              -> tcm (Either [TCErr] (LHSState a))
@@ -1011,6 +1077,8 @@ checkLHS mf st@(LHSState tel ip problem target psplit) = do
 
       -- We should be at a data/record type
       (d, pars, ixs) <- addContext delta1 $ isDataOrRecordType dom
+
+      checkSortOfSplitVar a
 
       -- The constructor should construct an element of this datatype
       (c, b) <- liftTCM $ addContext delta1 $ case ambC of
@@ -1538,3 +1606,14 @@ checkParameters dc d pars = liftTCM $ do
       t <- typeOfConst d
       compareArgs [] [] t (Def d []) vs (take (length vs) pars)
     _ -> __IMPOSSIBLE__
+
+checkSortOfSplitVar :: (MonadTCM tcm, MonadError TCErr tcm, LensSort a) => a -> tcm ()
+checkSortOfSplitVar a = liftTCM (reduce $ getSort a) >>= \case
+  Type{} -> return ()
+  Prop{} -> asks envRelevance >>= \case
+    Irrelevant -> return ()
+    _          -> softTypeError $ GenericError
+      "Cannot split on datatype in Prop unless target is irrelevant"
+  _      -> softTypeError =<< do
+    liftTCM $ GenericDocError <$> sep
+      [ text "Cannot split on datatype in sort" , prettyTCM (getSort a) ]

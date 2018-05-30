@@ -496,7 +496,7 @@ instance ToAbstract c a => ToAbstract (Maybe c) (Maybe a) where
 -- Names ------------------------------------------------------------------
 
 data NewName a = NewName
-  { newLetBound :: Bool -- bound by a @let@?
+  { newBinder   :: Binder -- what kind of binder?
   , newName     :: a
   }
 
@@ -572,7 +572,7 @@ instance ToAbstract PatName APatName where
         y <- (AssocList.lookup x <$> getVarsToBind) >>= \case
           Just (LocalVar y _ _) -> return $ setRange (getRange x) y
           Nothing -> freshAbstractName_ x
-        addVarToBind x $ LocalVar y False []
+        addVarToBind x $ LocalVar y PatternBound []
         return $ VarPatName y
       patCon ds = do
         reportSLn "scope.pat" 10 $ "it was a con: " ++ prettyShow (fmap anameName ds)
@@ -870,7 +870,8 @@ instance ToAbstract C.Expr A.Expr where
   -- Sorts
       C.Set _    -> return $ A.Set (ExprRange $ getRange e) 0
       C.SetN _ n -> return $ A.Set (ExprRange $ getRange e) n
-      C.Prop _   -> return $ A.Prop $ ExprRange $ getRange e
+      C.Prop _   -> return $ A.Prop (ExprRange $ getRange e) 0
+      C.PropN _ n -> return $ A.Prop (ExprRange $ getRange e) n
 
   -- Let
       e0@(C.Let _ ds (Just e)) ->
@@ -918,7 +919,7 @@ instance ToAbstract C.Expr A.Expr where
 
   -- Quoting
       C.QuoteGoal _ x e -> do
-        x' <- toAbstract (NewName False x)
+        x' <- toAbstract (NewName LetBound x)
         e' <- toAbstract e
         return $ A.QuoteGoal (ExprRange $ getRange e) x' e'
       C.QuoteContext r -> return $ A.QuoteContext (ExprRange r)
@@ -952,7 +953,7 @@ instance ToAbstract c a => ToAbstract (FieldAssignment' c) (FieldAssignment' a) 
   toAbstract = traverse toAbstract
 
 instance ToAbstract C.LamBinding A.LamBinding where
-  toAbstract (C.DomainFree info x) = A.DomainFree info . A.BindName <$> toAbstract (NewName False x)
+  toAbstract (C.DomainFree info x) = A.DomainFree info . A.BindName <$> toAbstract (NewName LambdaBound x)
   toAbstract (C.DomainFull tb)     = A.DomainFull <$> toAbstract tb
 
 makeDomainFull :: C.LamBinding -> C.TypedBindings
@@ -967,7 +968,7 @@ instance ToAbstract C.TypedBindings A.TypedBindings where
 instance ToAbstract C.TypedBinding A.TypedBinding where
   toAbstract (C.TBind r xs t) = do
     t' <- toAbstractCtx TopCtx t
-    xs' <- toAbstract $ map (fmap (NewName False)) xs
+    xs' <- toAbstract $ map (fmap (NewName LambdaBound)) xs
     return $ A.TBind r (map (fmap A.BindName) xs') t'
   toAbstract (C.TLet r ds) = A.TLet r <$> toAbstract (LetDefs ds)
 
@@ -1262,7 +1263,7 @@ instance ToAbstract LetDef [A.LetBinding] where
               t <- toAbstract t
               -- We bind the name here to make sure it's in scope for the LHS (#917).
               -- It's unbound for the RHS in letToAbstract.
-              x <- toAbstract (NewName True $ mkBoundName x fx)
+              x <- toAbstract (NewName LetBound $ mkBoundName x fx)
               (x', e) <- letToAbstract cl
               -- If InstanceDef set info to Instance
               let info' | instanc == InstanceDef = makeInstance info
@@ -2067,7 +2068,7 @@ instance ToAbstract C.Clause A.Clause where
     if not (null eqs)
       then do
         rhs <- toAbstract =<< toAbstractCtx TopCtx (RightHandSide eqs with wcs' rhs whds)
-        return $ A.Clause lhs' [] rhs [] catchall
+        return $ A.Clause lhs' [] rhs A.noWhereDecls catchall
       else do
         -- ASR (16 November 2015) Issue 1137: We ban termination
         -- pragmas inside `where` clause.
@@ -2078,10 +2079,12 @@ instance ToAbstract C.Clause A.Clause where
         (rhs, ds) <- whereToAbstract (getRange wh) whname whds $
                       toAbstractCtx TopCtx (RightHandSide eqs with wcs' rhs [])
         rhs <- toAbstract rhs
+                 -- #2897: we need to restrict named where modules in refined contexts,
+                 --        so remember whether it was named here
         return $ A.Clause lhs' [] rhs ds catchall
 
-whereToAbstract :: Range -> Maybe (C.Name, Access) -> [C.Declaration] -> ScopeM a -> ScopeM (a, [A.Declaration])
-whereToAbstract _ _      []   inner = (,[]) <$> inner
+whereToAbstract :: Range -> Maybe (C.Name, Access) -> [C.Declaration] -> ScopeM a -> ScopeM (a, A.WhereDeclarations)
+whereToAbstract _ whname []   inner = (, A.noWhereDecls) <$> inner
 whereToAbstract r whname whds inner = do
   -- Create a fresh concrete name if there isn't (a proper) one.
   (m, acc) <- do
@@ -2103,7 +2106,7 @@ whereToAbstract r whname whds inner = do
    void $ -- We can ignore the returned default A.ImportDirective.
     openModule_ (C.QName m) $
       defaultImportDir { publicOpen = True }
-  return (x, ds)
+  return (x, A.WhereDecls (am <$ whname) ds)
 
 data RightHandSide = RightHandSide
   { rhsRewriteEqn :: [C.RewriteEqn]    -- ^ @rewrite e@ (many)
@@ -2117,7 +2120,7 @@ data AbstractRHS
   = AbsurdRHS'
   | WithRHS' [A.Expr] [ScopeM C.Clause]  -- ^ The with clauses haven't been translated yet
   | RHS' A.Expr C.Expr
-  | RewriteRHS' [A.Expr] AbstractRHS [A.Declaration]
+  | RewriteRHS' [A.Expr] AbstractRHS A.WhereDeclarations
 
 qualifyName_ :: A.Name -> ScopeM A.QName
 qualifyName_ x = do
@@ -2358,7 +2361,7 @@ instance ToAbstract C.Pattern (A.Pattern' C.Expr) where
     toAbstract (C.ParenP _ p)   = toAbstract p
     toAbstract (C.LitP l)       = return $ A.LitP l
     toAbstract p0@(C.AsP r x p) = do
-        x <- toAbstract (NewName False x)
+        x <- toAbstract (NewName PatternBound x)
         p <- toAbstract p
         return $ A.AsP (PatRange r) (A.BindName x) p
     -- we have to do dot patterns at the end

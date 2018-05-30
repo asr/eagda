@@ -657,11 +657,13 @@ instance ExtractCalls Sort where
       reportSDoc "term.sort" 50 $
         text ("s = " ++ show s)
     case s of
-      Prop       -> return empty
       Inf        -> return empty
       SizeUniv   -> return empty
       Type t     -> terUnguarded $ extract t  -- no guarded levels
-      DLub s1 s2 -> extract (s1, s2)
+      Prop t     -> terUnguarded $ extract t
+      PiSort s1 s2 -> extract (s1, s2)
+      UnivSort s -> extract s
+      MetaS x es -> return empty
 
 -- | Extract recursive calls from a type.
 

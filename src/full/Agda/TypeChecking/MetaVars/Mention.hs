@@ -43,10 +43,12 @@ instance MentionsMeta Type where
 instance MentionsMeta Sort where
   mentionsMeta x s = case s of
     Type l     -> mentionsMeta x l
-    Prop       -> False
+    Prop l     -> mentionsMeta x l
     Inf        -> False
     SizeUniv   -> False
-    DLub s1 s2 -> mentionsMeta x (s1, s2)
+    PiSort s1 s2 -> mentionsMeta x (s1, s2)
+    UnivSort s -> mentionsMeta x s
+    MetaS m es -> x == m || mentionsMeta x es
 
 instance MentionsMeta t => MentionsMeta (Abs t) where
   mentionsMeta x = mentionsMeta x . unAbs
@@ -103,6 +105,8 @@ instance MentionsMeta Constraint where
     IsEmpty r t         -> mm t
     CheckSizeLtSat t    -> mm t
     CheckFunDef{}       -> True   -- not sure what metas this depends on
+    HasBiggerSort a     -> mm a
+    HasPTSRule a b      -> mm (a, b)
     where
       mm v = mentionsMeta x v
 

@@ -113,6 +113,18 @@ data TCState = TCSt
 class Monad m => ReadTCState m where
   getTCState :: m TCState
 
+instance ReadTCState m => ReadTCState (MaybeT m) where
+  getTCState = lift getTCState
+
+instance ReadTCState m => ReadTCState (ListT m) where
+  getTCState = lift getTCState
+
+instance ReadTCState m => ReadTCState (ExceptT err m) where
+  getTCState = lift getTCState
+
+instance (Monoid w, ReadTCState m) => ReadTCState (WriterT w m) where
+  getTCState = lift getTCState
+
 instance Show TCState where
   show _ = "TCSt{}"
 
@@ -191,6 +203,7 @@ data PostScopeState = PostScopeState
   , stPostFreshCheckpointId   :: !CheckpointId
   , stPostFreshInt            :: !Int
   , stPostFreshNameId         :: !NameId
+  , stPostAreWeCaching        :: !Bool
   }
 
 -- | A mutual block of names in the signature.
@@ -314,6 +327,7 @@ initPostScopeState = PostScopeState
   , stPostFreshCheckpointId    = 1
   , stPostFreshInt             = 0
   , stPostFreshNameId           = NameId 0 0
+  , stPostAreWeCaching         = False
   }
 
 initState :: TCState
@@ -520,6 +534,12 @@ stFreshInt :: Lens' Int TCState
 stFreshInt f s =
   f (stPostFreshInt (stPostScopeState s)) <&>
   \x -> s {stPostScopeState = (stPostScopeState s) {stPostFreshInt = x}}
+
+-- use @areWeCaching@ from the Caching module instead.
+stAreWeCaching :: Lens' Bool TCState
+stAreWeCaching f s =
+  f (stPostAreWeCaching (stPostScopeState s)) <&>
+  \x -> s {stPostScopeState = (stPostScopeState s) {stPostAreWeCaching = x}}
 
 stBuiltinThings :: TCState -> BuiltinThings PrimFun
 stBuiltinThings s = (s^.stLocalBuiltins) `Map.union` (s^.stImportedBuiltins)
@@ -790,6 +810,8 @@ data Constraint
   | LevelCmp Comparison Level Level
 --  | ShortCut MetaId Term Type
 --    -- ^ A delayed instantiation.  Replaces @ValueCmp@ in 'postponeTypeCheckingProblem'.
+  | HasBiggerSort Sort
+  | HasPTSRule Sort (Abs Sort)
   | UnBlock MetaId
   | Guarded Constraint ProblemId
   | IsEmpty Range Type
@@ -835,6 +857,8 @@ instance Free Constraint where
       CheckSizeLtSat u      -> freeVars' u
       FindInScope _ _ cs    -> freeVars' cs
       CheckFunDef _ _ _ _   -> mempty
+      HasBiggerSort s       -> freeVars' s
+      HasPTSRule s1 s2      -> freeVars' (s1 , s2)
 
 instance TermLike Constraint where
   foldTerm f = \case
@@ -851,6 +875,8 @@ instance TermLike Constraint where
       Guarded c _            -> __IMPOSSIBLE__  -- foldTerm c -- Not yet implemented
       FindInScope _ _ cs     -> __IMPOSSIBLE__  -- Not yet implemented
       CheckFunDef _ _ _ _    -> __IMPOSSIBLE__  -- Not yet implemented
+      HasBiggerSort _        -> __IMPOSSIBLE__  -- Not yet implemented
+      HasPTSRule _ _         -> __IMPOSSIBLE__  -- Not yet implemented
   traverseTermM f c = __IMPOSSIBLE__ -- Not yet implemented
 
 
@@ -1415,8 +1441,12 @@ data System = System
 
 -- | Additional information for extended lambdas.
 data ExtLamInfo = ExtLamInfo
-  { extLamNumHidden :: Int  -- Number of hidden args to be dropped when printing.
-  , extLamNumNonHid :: Int  -- Number of visible args to be dropped when printing.
+  { extLamModule    :: ModuleName
+    -- ^ For complicated reasons the scope checker decides the QName of a
+    --   pattern lambda, and thus its module. We really need to decide the
+    --   module during type checking though, since if the lambda appears in a
+    --   refined context the module picked by the scope checker has very much
+    --   the wrong parameters.
   , extLamSys :: !(Maybe System)
   } deriving (Data, Show)
 
@@ -1971,6 +2001,7 @@ data Call = CheckClause Type A.SpineClause
           | CheckIsEmpty Range Type
           | CheckWithFunctionType A.Expr
           | CheckSectionApplication Range ModuleName A.ModuleApplication
+          | CheckNamedWhere ModuleName
           | ScopeCheckExpr C.Expr
           | ScopeCheckDeclaration NiceDeclaration
           | ScopeCheckLHS C.QName C.Pattern
@@ -1999,6 +2030,7 @@ instance Pretty Call where
     pretty CheckPragma{}             = text "CheckPragma"
     pretty CheckPrimitive{}          = text "CheckPrimitive"
     pretty CheckWithFunctionType{}   = text "CheckWithFunctionType"
+    pretty CheckNamedWhere{}         = text "CheckNamedWhere"
     pretty ScopeCheckExpr{}          = text "ScopeCheckExpr"
     pretty ScopeCheckDeclaration{}   = text "ScopeCheckDeclaration"
     pretty ScopeCheckLHS{}           = text "ScopeCheckLHS"
@@ -2030,6 +2062,7 @@ instance HasRange Call where
     getRange (CheckPragma r _)               = r
     getRange (CheckPrimitive i _ _)          = getRange i
     getRange CheckWithFunctionType{}         = noRange
+    getRange (CheckNamedWhere m)             = getRange m
     getRange (ScopeCheckExpr e)              = getRange e
     getRange (ScopeCheckDeclaration d)       = getRange d
     getRange (ScopeCheckLHS _ p)             = getRange p
@@ -2204,6 +2237,10 @@ data TCEnv =
                 -- ^ Did we encounter a simplification (proper match)
                 --   during the current reduction process?
           , envAllowedReductions :: AllowedReductions
+          , envInjectivityDepth :: Int
+                -- ^ Injectivity can cause non-termination for unsolvable contraints
+                --   (#431, #3067). Keep a limit on the nesting depth of injectivity
+                --   uses.
           , envCompareBlocked :: Bool
                 -- ^ Can we compare blocked things during conversion?
                 --   No by default.
@@ -2224,6 +2261,11 @@ data TCEnv =
                 -- ^ Until we get a termination checker for instance search (#1743) we
                 --   limit the search depth to ensure termination.
           , envIsDebugPrinting :: Bool
+          , envPrintingPatternLambdas :: [QName]
+                -- ^ #3004: pattern lambdas with copatterns may refer to themselves. We
+                --   don't have a good story for what to do in this case, but at least
+                --   printing shouldn't loop. Here we keep track of which pattern lambdas
+                --   we are currently in the process of printing.
           , envCallByNeed :: Bool
                 -- ^ Use call-by-need evaluation for reductions.
           , envCurrentCheckpoint :: CheckpointId
@@ -2272,6 +2314,7 @@ initEnv = TCEnv { envContext             = []
                 , envAppDef                 = Nothing
                 , envSimplification         = NoSimplification
                 , envAllowedReductions      = allReductions
+                , envInjectivityDepth       = 0
                 , envCompareBlocked         = False
                 , envPrintDomainFreePi      = False
                 , envPrintMetasBare         = False
@@ -2279,6 +2322,7 @@ initEnv = TCEnv { envContext             = []
                 , envUnquoteFlags           = defaultUnquoteFlags
                 , envInstanceDepth          = 0
                 , envIsDebugPrinting        = False
+                , envPrintingPatternLambdas = []
                 , envCallByNeed             = True
                 , envCurrentCheckpoint      = 0
                 , envCheckpoints            = Map.singleton 0 IdS
@@ -2385,6 +2429,9 @@ eSimplification f e = f (envSimplification e) <&> \ x -> e { envSimplification =
 eAllowedReductions :: Lens' AllowedReductions TCEnv
 eAllowedReductions f e = f (envAllowedReductions e) <&> \ x -> e { envAllowedReductions = x }
 
+eInjectivityDepth :: Lens' Int TCEnv
+eInjectivityDepth f e = f (envInjectivityDepth e) <&> \ x -> e { envInjectivityDepth = x }
+
 eCompareBlocked :: Lens' Bool TCEnv
 eCompareBlocked f e = f (envCompareBlocked e) <&> \ x -> e { envCompareBlocked = x }
 
@@ -2402,6 +2449,9 @@ eInstanceDepth f e = f (envInstanceDepth e) <&> \ x -> e { envInstanceDepth = x 
 
 eIsDebugPrinting :: Lens' Bool TCEnv
 eIsDebugPrinting f e = f (envIsDebugPrinting e) <&> \ x -> e { envIsDebugPrinting = x }
+
+ePrintingPatternLambdas :: Lens' [QName] TCEnv
+ePrintingPatternLambdas f e = f (envPrintingPatternLambdas e) <&> \ x -> e { envPrintingPatternLambdas = x }
 
 eCallByNeed :: Lens' Bool TCEnv
 eCallByNeed f e = f (envCallByNeed e) <&> \ x -> e { envCallByNeed = x }
@@ -2560,6 +2610,8 @@ data TCWarning
         -- ^ The warning itself
     , tcWarningPrintedWarning :: Doc
         -- ^ The warning printed in the state and environment where it was raised
+    , tcWarningCached :: Bool
+        -- ^ Should the warning be affected by caching.
     }
   deriving Show
 
@@ -2963,8 +3015,18 @@ mapRedEnvSt :: (TCEnv -> TCEnv) -> (TCState -> TCState) -> ReduceEnv
             -> ReduceEnv
 mapRedEnvSt f g (ReduceEnv e s) = ReduceEnv (f e) (g s)
 
+-- Lenses
+reduceEnv :: Lens' TCEnv ReduceEnv
+reduceEnv f s = f (redEnv s) <&> \ e -> s { redEnv = e }
+
+reduceSt :: Lens' TCState ReduceEnv
+reduceSt f s = f (redSt s) <&> \ e -> s { redSt = e }
+
 newtype ReduceM a = ReduceM { unReduceM :: ReduceEnv -> a }
 --  deriving (Functor, Applicative, Monad)
+
+onReduceEnv :: (ReduceEnv -> ReduceEnv) -> ReduceM a -> ReduceM a
+onReduceEnv f (ReduceM m) = ReduceM (m . f)
 
 fmapReduce :: (a -> b) -> ReduceM a -> ReduceM b
 fmapReduce f (ReduceM m) = ReduceM $ \ e -> f $! m e
@@ -3006,8 +3068,46 @@ runReduceF f = do
   return $ \x -> unReduceM (f x) (ReduceEnv e s)
 
 instance MonadReader TCEnv ReduceM where
-  ask = ReduceM redEnv
-  local f (ReduceM m) = ReduceM (m . mapRedEnv f)
+  ask   = ReduceM redEnv
+  local = onReduceEnv . mapRedEnv
+
+useR :: (ReadTCState m) => Lens' a TCState -> m a
+useR l = (^.l) <$> getTCState
+
+askR :: ReduceM ReduceEnv
+askR = ReduceM ask
+
+localR :: (ReduceEnv -> ReduceEnv) -> ReduceM a -> ReduceM a
+localR f = ReduceM . local f . unReduceM
+
+instance HasOptions ReduceM where
+  pragmaOptions      = useR stPragmaOptions
+  commandLineOptions = do
+    p  <- useR stPragmaOptions
+    cl <- stPersistentOptions . stPersistentState <$> getTCState
+    return $ cl{ optPragmaOptions = p }
+
+class ( Applicative m
+      , MonadReader TCEnv m
+      , ReadTCState m
+      , HasOptions m
+      ) => MonadReduce m where
+  liftReduce :: ReduceM a -> m a
+
+instance MonadReduce m => MonadReduce (MaybeT m) where
+  liftReduce = lift . liftReduce
+
+instance MonadReduce m => MonadReduce (ListT m) where
+  liftReduce = lift . liftReduce
+
+instance MonadReduce m => MonadReduce (ExceptT err m) where
+  liftReduce = lift . liftReduce
+
+instance (Monoid w, MonadReduce m) => MonadReduce (WriterT w m) where
+  liftReduce = lift . liftReduce
+
+instance MonadReduce ReduceM where
+  liftReduce = id
 
 ---------------------------------------------------------------------------
 -- * Type checking monad transformer
@@ -3051,6 +3151,9 @@ instance MonadError TCErr (TCMT IO) where
             newState <- readIORef r
             writeIORef r $ oldState { stPersistentState = stPersistentState newState }
       unTCM (h err) r e
+
+instance MonadIO m => MonadReduce (TCMT m) where
+  liftReduce = liftTCM . runReduceM
 
 -- | Interaction monad.
 
@@ -3327,7 +3430,7 @@ instance KillRange System where
   killRange (System tel sys) = System (killRange tel) (killRange sys)
 
 instance KillRange ExtLamInfo where
-  killRange (ExtLamInfo x y r) = ExtLamInfo x y (killRange r)
+  killRange (ExtLamInfo m sys) = killRange2 ExtLamInfo m sys
 
 instance KillRange FunctionFlag where
   killRange = id

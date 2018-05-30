@@ -127,10 +127,12 @@ instance UsableRelevance a => UsableRelevance (Type' a) where
 instance UsableRelevance Sort where
   usableRel rel s = case s of
     Type l -> usableRel rel l
-    Prop   -> return True
+    Prop l -> usableRel rel l
     Inf    -> return True
     SizeUniv -> return True
-    DLub s1 s2 -> usableRel rel (s1,s2)
+    PiSort s1 s2 -> usableRel rel (s1,s2)
+    UnivSort s -> usableRel rel s
+    MetaS x es -> usableRel rel es
 
 instance UsableRelevance Level where
   usableRel rel (Max ls) = usableRel rel ls

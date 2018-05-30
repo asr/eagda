@@ -34,7 +34,9 @@ main = runAgda [] $ \(AgdaCommands { .. }) -> do
   -- Load the highlighting info for bad. This looks in the
   -- moduleToSource map for lib, and this should not cause an internal
   -- error.
-  send $ command "load_highlighting_info" badFile Nothing Nothing
+  send $ command "load_highlighting_info" badFile
+           (Just "NonInteractive Indirect")
+           (Just $ show badFile)
   echoUntilPrompt
 
   -- Clean up.

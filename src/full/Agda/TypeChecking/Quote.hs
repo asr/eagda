@@ -40,6 +40,7 @@ import Agda.Utils.String ( Str(Str), unStr )
 import Agda.Utils.VarSet (VarSet)
 import qualified Agda.Utils.VarSet as Set
 import Agda.Utils.FileName
+import Agda.Utils.Size
 
 #include "undefined.h"
 
@@ -148,10 +149,12 @@ quotingKit = do
 
       quoteSort :: Sort -> ReduceM Term
       quoteSort (Type t) = quoteSortLevelTerm t
-      quoteSort Prop     = pure unsupportedSort
+      quoteSort Prop{}   = pure unsupportedSort
       quoteSort Inf      = pure unsupportedSort
       quoteSort SizeUniv = pure unsupportedSort
-      quoteSort DLub{}   = pure unsupportedSort
+      quoteSort PiSort{} = pure unsupportedSort
+      quoteSort UnivSort{} = pure unsupportedSort
+      quoteSort (MetaS x es) = quoteTerm $ MetaV x es
 
       quoteType :: Type -> ReduceM Term
       quoteType (El _ t) = quoteTerm t
@@ -214,16 +217,11 @@ quotingKit = do
             let
               conOrProjPars = defParameters defn
               ts = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
-              qx Function{ funExtLam = Just (ExtLamInfo h nh _), funClauses = cs } = do
+              qx Function{ funExtLam = Just (ExtLamInfo m _), funClauses = cs } = do
                     -- An extended lambda should not have any extra parameters!
                     unless (null conOrProjPars) __IMPOSSIBLE__
-                    -- Andreas, 2017-01-23 quoting Ulf
-                    -- "One would hope that @n@ includes the @h + nh@ parameters of the ext.lam."
-                    -- Let's see!
-                    -- unless (n >= h + nh) __IMPOSSIBLE__
-                    -- Actually, no, it does not!  ExtLam is not touched by module application.
-                    -- TODO: fixe me!  See #2404.
-                    extlam !@ list (map (quoteClause . (`apply` (take (h + nh) ts))) cs)
+                    n <- size <$> lookupSection m
+                    extlam !@ list (map (quoteClause . (`apply` (take n ts))) cs)
               qx Function{ funCompiled = Just Fail, funClauses = [cl] } =
                     extlam !@ list [quoteClause $ dropArgs (length (namedClausePats cl) - 1) cl]
               qx _ = def !@! quoteName x

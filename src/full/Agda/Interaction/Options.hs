@@ -132,7 +132,7 @@ data PragmaOptions = PragmaOptions
   , optShowIrrelevant            :: Bool
   , optUseUnicode                :: Bool
   , optVerbose                   :: Verbosity
-  , optProofIrrelevance          :: Bool
+  , optProp                      :: Bool
   , optAllowUnsolved             :: Bool
   , optDisablePositivity         :: Bool
   , optTerminationCheck          :: Bool
@@ -165,6 +165,10 @@ data PragmaOptions = PragmaOptions
   , optCountClusters             :: Bool
     -- ^ Count extended grapheme clusters rather than code points when
     -- generating LaTeX.
+  , optAutoInline                :: Bool
+    -- ^ Automatic compile-time inlining for simple definitions (unless marked
+    --   NOINLINE).
+  , optPrintPatternSynonyms      :: Bool
   }
   deriving (Show, Eq)
 
@@ -221,7 +225,7 @@ defaultPragmaOptions = PragmaOptions
   , optShowIrrelevant            = False
   , optUseUnicode                = True
   , optVerbose                   = defaultVerbosity
-  , optProofIrrelevance          = False
+  , optProp                      = False
   , optExperimentalIrrelevance   = False
   , optIrrelevantProjections     = True
   , optAllowUnsolved             = False
@@ -247,8 +251,10 @@ defaultPragmaOptions = PragmaOptions
   , optSafe                      = False
   , optWarningMode               = defaultWarningMode
   , optCompileNoMain             = False
-  , optCaching                   = False
+  , optCaching                   = True
   , optCountClusters             = False
+  , optAutoInline                = True
+  , optPrintPatternSynonyms      = True
   }
 
 -- | The default termination depth.
@@ -359,8 +365,8 @@ sharingFlag _ o = return o
 cachingFlag :: Bool -> Flag PragmaOptions
 cachingFlag b o = return $ o { optCaching = b }
 
-proofIrrelevanceFlag :: Flag PragmaOptions
-proofIrrelevanceFlag o = return $ o { optProofIrrelevance = True }
+enablePropFlag :: Flag PragmaOptions
+enablePropFlag o = return $ o { optProp = True }
 
 experimentalIrrelevanceFlag :: Flag PragmaOptions
 experimentalIrrelevanceFlag o = return $ o { optExperimentalIrrelevance = True }
@@ -405,6 +411,12 @@ countClustersFlag o =
   throwError
     "Cluster counting has not been enabled in this build of Agda."
 #endif
+
+noAutoInlineFlag :: Flag PragmaOptions
+noAutoInlineFlag o = return $ o { optAutoInline = False }
+
+noPrintPatSynFlag :: Flag PragmaOptions
+noPrintPatSynFlag o = return $ o { optPrintPatternSynonyms = False }
 
 latexDirFlag :: FilePath -> Flag CommandLineOptions
 latexDirFlag d o = return $ o { optLaTeXDir = d }
@@ -629,8 +641,8 @@ pragmaOptions =
                     "don't use unicode characters when printing terms"
     , Option ['v']  ["verbose"] (ReqArg verboseFlag "N")
                     "set verbosity level to N"
-    -- , Option []          ["proof-irrelevance"] (NoArg proofIrrelevanceFlag)
-    --              "enable proof irrelevance (experimental feature)"
+    , Option []     ["enable-prop"] (NoArg enablePropFlag)
+                    "enable use of the Prop universe"
     , Option []     ["allow-unsolved-metas"] (NoArg allowUnsolvedFlag)
                     "succeed and create interface file regardless of unsolved meta variables"
     , Option []     ["no-positivity-check"] (NoArg noPositivityFlag)
@@ -692,7 +704,7 @@ pragmaOptions =
     , Option []     ["no-main"] (NoArg compileFlagNoMain)
                     "do not treat the requested module as the main module of a program when compiling"
     , Option []     ["caching"] (NoArg $ cachingFlag True)
-                    "enable caching of typechecking (experimental) (default: OFF)"
+                    "enable caching of typechecking (default)"
     , Option []     ["no-caching"] (NoArg $ cachingFlag False)
                     "disable caching of typechecking"
     , Option []     ["count-clusters"] (NoArg countClustersFlag)
@@ -704,6 +716,11 @@ pragmaOptions =
                      "has not been enabled in this build of Agda)"
 #endif
                     )
+    , Option []     ["no-auto-inline"] (NoArg noAutoInlineFlag)
+                    ("disable automatic compile-time inlining " ++
+                     "(only definitions marked INLINE will be inlined)")
+    , Option []     ["no-print-pattern-synonyms"] (NoArg noPrintPatSynFlag)
+                    "expand pattern synonyms when printing terms"
     ]
 
 -- | Used for printing usage info.

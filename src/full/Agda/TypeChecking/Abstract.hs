@@ -176,10 +176,12 @@ instance AbsTerm Type where
 instance AbsTerm Sort where
   absTerm u s = case s of
     Type n     -> Type $ absS n
-    Prop       -> Prop
+    Prop n     -> Prop $ absS n
     Inf        -> Inf
     SizeUniv   -> SizeUniv
-    DLub s1 s2 -> DLub (absS s1) (absS s2)
+    PiSort s1 s2 -> PiSort (absS s1) (absS s2)
+    UnivSort s -> UnivSort $ absS s
+    MetaS x es -> MetaS x $ absS es
     where absS x = absTerm u x
 
 instance AbsTerm Level where

@@ -123,7 +123,7 @@ compareTerm cmp a u v = do
     , nest 2 $ text ":" <+> prettyTCM a
     ]
   -- Check syntactic equality. This actually saves us quite a bit of work.
-  ((u, v), equal) <- runReduceM $ SynEq.checkSyntacticEquality u v
+  ((u, v), equal) <- SynEq.checkSyntacticEquality u v
   -- OLD CODE, traverses the *full* terms u v at each step, even if they
   -- are different somewhere.  Leads to infeasibility in issue 854.
   -- (u, v) <- instantiateFull (u, v)
@@ -230,7 +230,7 @@ compareTerm' cmp a m n =
   catchConstraint (ValueCmp cmp a' m n) $ do
     reportSDoc "tc.conv.term" 30 $ fsep
       [ text "compareTerm", prettyTCM m, prettyTCM cmp, prettyTCM n, text ":", prettyTCM a' ]
-    proofIrr <- proofIrrelevance
+    propIrr  <- isPropEnabled
     isSize   <- isJust <$> isSizeType a'
     s        <- reduce $ getSort a'
     mlvl     <- tryMaybe primLevel
@@ -240,7 +240,7 @@ compareTerm' cmp a m n =
       , text $ "(Just (unEl a') == mlvl) = " ++ show (Just (unEl a') == mlvl)
       ]
     case s of
-      Prop | proofIrr -> return ()
+      Prop{} | propIrr -> compareIrrelevant a' m n
       _    | isSize   -> compareSizes cmp m n
       _               -> case unEl a' of
         a | Just a == mlvl -> do
@@ -292,7 +292,7 @@ compareTerm' cmp a m n =
                   -- No subtyping on record terms
                   c <- getRecordConstructor r
                   -- Record constructors are covariant (see test/succeed/CovariantConstructors).
-                  compareArgs (repeat $ polFromCmp cmp) [] (telePi_ tel $ sort Prop) (Con c ConOSystem []) m' n'
+                  compareArgs (repeat $ polFromCmp cmp) [] (telePi_ tel dummyType) (Con c ConOSystem []) m' n'
 
             else (do pathview <- pathView a'
                      equalPath pathview a' m n)
@@ -528,7 +528,6 @@ compareAtom cmp t m n =
           case (m, n) of
             (Pi{}, Pi{}) -> equalFun m n
 
-            (Sort s1, Sort Inf) -> return ()
             (Sort s1, Sort s2) -> compareSort CmpEq s1 s2
 
             (Lit l1, Lit l2) | l1 == l2 -> return ()
@@ -682,7 +681,7 @@ compareRelevance CmpLeq = (<=)
 --   #2384.
 antiUnify :: ProblemId -> Type -> Term -> Term -> TCM Term
 antiUnify pid a u v = do
-  ((u, v), eq) <- runReduceM (SynEq.checkSyntacticEquality u v)
+  ((u, v), eq) <- SynEq.checkSyntacticEquality u v
   if eq then return u else do
   (u, v) <- reduce (u, v)
   case (u, v) of
@@ -1112,26 +1111,48 @@ leqSort s1 s2 = catchConstraint (SortCmp CmpLeq s1 s2) $ do
         , nest 2 $ fsep [ prettyTCM s1 <+> text "=<"
                         , prettyTCM s2 ]
         ]
+  propEnabled <- isPropEnabled
   case (s1, s2) of
-
-      (_       , Inf     ) -> yes
-
-      (SizeUniv, _       ) -> equalSort s1 s2
-      (_       , SizeUniv) -> equalSort s1 s2
-
+      -- The most basic rule: @Set l =< Set l'@ iff @l =< l'@
       (Type a  , Type b  ) -> leqLevel a b
 
-      (Prop    , Prop    ) -> yes
-      (Prop    , Type _  ) -> yes
-      (Type _  , Prop    ) -> no
+      -- Likewise for @Prop@
+      (Prop a  , Prop b  ) -> leqLevel a b
 
-      -- (SizeUniv, SizeUniv) -> yes
-      -- (SizeUniv, _       ) -> no
-      -- (_       , SizeUniv) -> no
+      -- @Prop l@ is below @Set l@
+      (Prop a  , Type b  ) -> leqLevel a b
+      (Type a  , Prop b  ) -> no
 
+      -- Setω is the top sort
+      (_       , Inf     ) -> yes
       (Inf     , _       ) -> equalSort s1 s2
-      (DLub{}  , _       ) -> postpone
-      (_       , DLub{}  ) -> postpone
+
+      -- @SizeUniv@ and @Prop0@ are bottom sorts.
+      -- So is @Set0@ if @Prop@ is not enabled.
+      (_       , SizeUniv) -> equalSort s1 s2
+      (_       , Prop (Max [])) -> equalSort s1 s2
+      (_       , Type (Max []))
+        | not propEnabled  -> equalSort s1 s2
+
+      -- If we compare @univSort s@ against @Set (lsuc l)@,
+      -- we can simplify the comparison.
+      (UnivSort s, Type b    )
+        | Just b' <- levelSucView b -> leqSort s (Type b')
+      (Type a    , UnivSort s)
+        | Just a' <- levelSucView a -> leqSort (Type a') s
+
+      -- SizeUniv is unrelated to any @Set l@ or @Prop l@
+      (SizeUniv, Type{}  ) -> no
+      (SizeUniv, Prop{}  ) -> no
+
+      -- PiSort, UnivSort and MetaS might reduce once we instantiate
+      -- more metas, so we postpone.
+      (PiSort{}, _       ) -> postpone
+      (_       , PiSort{}) -> postpone
+      (UnivSort{}, _     ) -> postpone
+      (_     , UnivSort{}) -> postpone
+      (MetaS{} , _       ) -> postpone
+      (_       , MetaS{} ) -> postpone
 
 leqLevel :: Level -> Level -> TCM ()
 leqLevel a b = liftTCM $ do
@@ -1431,28 +1452,6 @@ equalSort s1 s2 = do
             yes      = return ()
             no       = unlessM typeInType $ typeError $ UnequalSorts s1 s2
 
-            -- Test whether a level is infinity.
-            isInf ClosedLevel{}   = no
-            isInf (Plus _ l) = case l of
-              MetaLevel x es -> assignE DirEq x es (Sort Inf) $ equalAtom topSort
-                -- Andreas, 2015-02-14
-                -- This seems to be a hack, as a level meta is instantiated
-                -- by a sort.
-              NeutralLevel _ v -> case v of
-                Sort Inf -> yes
-                _        -> no
-              _ -> no
-
-            -- Equate a level with SizeUniv.
-            eqSizeUniv l0 = case l0 of
-              Plus 0 l -> case l of
-                MetaLevel x es -> assignE DirEq x es (Sort SizeUniv) $ equalAtom topSort
-                NeutralLevel _ v -> case v of
-                  Sort SizeUniv -> yes
-                  _ -> no
-                _ -> no
-              _ -> no
-
         reportSDoc "tc.conv.sort" 30 $ sep
           [ text "equalSort"
           , vcat [ nest 2 $ fsep [ prettyTCM s1 <+> text "=="
@@ -1462,42 +1461,80 @@ equalSort s1 s2 = do
                  ]
           ]
 
+        propEnabled <- isPropEnabled
+
         case (s1, s2) of
 
-            (Type a  , Type b  ) -> equalLevel a b
+            -- before anything else, try syntactic equality
+            _ | s1 == s2              -> return ()
 
-            (SizeUniv, SizeUniv) -> yes
-            (SizeUniv, Type (Max as@(_:_))) -> mapM_ eqSizeUniv as
-            (Type (Max as@(_:_)), SizeUniv) -> mapM_ eqSizeUniv as
-            (SizeUniv, _       ) -> no
-            (_       , SizeUniv) -> no
+            -- one side is a meta sort: try to instantiate
+            -- In case both sides are meta sorts, instantiate the
+            -- bigger (i.e. more recent) one.
+            (MetaS x es , MetaS y es')
+              | x < y                  -> meta y es' s1
+              | otherwise              -> meta x es s2
+            (MetaS x es , _          ) -> meta x es s2
+            (_          , MetaS x es ) -> meta x es s1
 
-            (Prop    , Prop    ) -> yes
-            (Type _  , Prop    ) -> no
-            (Prop    , Type _  ) -> no
+            -- diagonal cases for rigid sorts
+            (Type a     , Type b     ) -> equalLevel a b
+            (SizeUniv   , SizeUniv   ) -> yes
+            (Prop a     , Prop b     ) -> equalLevel a b
+            (Inf        , Inf        ) -> yes
 
-            (Inf     , Inf     )             -> yes
-            (Inf     , Type (Max as@(_:_)))  -> mapM_ isInf as
-            (Type (Max as@(_:_)), Inf)       -> mapM_ isInf as
-            -- Andreas, 2014-06-27:
-            -- @Type (Max [])@ (which is Set0) falls through to error.
-            (Inf     , _       )             -> no
-            (_       , Inf     )             -> no
+            -- if @PiSort a b == Set0@, then @b == Set0@
+            -- we use this fact to solve metas in @b@,
+            -- hopefully allowing the @PiSort@ to reduce.
+            (Type (Max []) , PiSort a b   )
+              | not propEnabled             -> piSortEqualsBottom set0 a b
+            (PiSort a b    , Type (Max []))
+              | not propEnabled             -> piSortEqualsBottom set0 a b
 
-            -- Andreas, 2014-06-27:  Why are there special cases for Set0?
-            -- Andreas, 2015-02-14:  Probably because s ⊔ s' = Set0
-            -- entailed that both s and s' are Set0.
-            -- This is no longer true if  SizeUniv ⊔ s = s
+            (Prop (Max []) , PiSort a b   ) -> piSortEqualsBottom prop0 a b
+            (PiSort a b    , Prop (Max [])) -> piSortEqualsBottom prop0 a b
 
-            -- (DLub s1 s2, s0@(Type (Max []))) -> do
-            --   equalSort s1 s0
-            --   underAbstraction_ s2 $ \s2 -> equalSort s2 s0
-            -- (s0@(Type (Max [])), DLub s1 s2) -> do
-            --   equalSort s0 s1
-            --   underAbstraction_ s2 $ \s2 -> equalSort s0 s2
+            -- @PiSort a b == SizeUniv@ iff @b == SizeUniv@
+            (SizeUniv   , PiSort a b ) ->
+              underAbstraction_ b $ equalSort SizeUniv
+            (PiSort a b , SizeUniv   ) ->
+              underAbstraction_ b $ equalSort SizeUniv
 
-            (DLub{}  , _       )             -> postpone
-            (_       , DLub{}  )             -> postpone
+            -- @Prop0@ and @SizeUniv@ don't contain any universes,
+            -- so they cannot be a UnivSort
+            (Prop (Max []) , UnivSort s )   -> no
+            (UnivSort s    , Prop (Max [])) -> no
+            (SizeUniv      , UnivSort s )   -> no
+            (UnivSort s    , SizeUniv   )   -> no
+
+            -- PiSort and UnivSort could compute later, so we postpone
+            (PiSort{}   , _          ) -> postpone
+            (_          , PiSort{}   ) -> postpone
+            (UnivSort{} , _          ) -> postpone
+            (_          , UnivSort{} ) -> postpone
+
+            -- any other combinations of sorts are not equal
+            (_          , _          ) -> no
+
+    where
+      -- perform assignment (MetaS x es) := s
+      meta x es s = do
+        reportSLn "tc.meta.sort" 30 $ "Assigning meta sort"
+        reportSDoc "tc.meta.sort" 50 $ text "meta" <+> sep [pretty x, prettyList $ map pretty es, pretty s]
+        assignE DirEq x es (Sort s) __IMPOSSIBLE__
+
+      set0 = Type $ Max []
+      prop0 = Prop $ Max []
+
+      -- equate @piSort a b@ to @s0@, which is assumed to be a (closed) bottom sort
+      -- i.e. @piSort a b == s0@ implies @b == s0@.
+      piSortEqualsBottom s0 a b = do
+        underAbstraction_ b $ equalSort s0
+        -- we may have instantiated some metas, so @a@ could reduce
+        a <- reduce a
+        case funSort' a s0 of
+          Just s  -> equalSort s s0
+          Nothing -> addConstraint $ SortCmp CmpEq (funSort a s0) s0
 
 
 -- -- This should probably represent face maps with a more precise type
@@ -1579,14 +1616,36 @@ forallFaceMaps t kb k = do
 
 compareInterval :: Comparison -> Type -> Term -> Term -> TCM ()
 compareInterval cmp i t u = do
-  it <- decomposeInterval' =<< reduce t
-  iu <- decomposeInterval' =<< reduce u
-  x <- leqInterval it iu
-  y <- leqInterval iu it
-  let final = isCanonical it && isCanonical iu
-  if x && y then return () else
-     if final then typeError $ UnequalTerms cmp t u i
-              else patternViolation
+  reportSDoc "tc.conv.interval" 15 $
+    sep [ text "{ compareInterval" <+> prettyTCM t <+> text "=" <+> prettyTCM u ]
+  tb <- reduceB t
+  ub <- reduceB u
+  let t = ignoreBlocking tb
+      u = ignoreBlocking ub
+  it <- decomposeInterval' t
+  iu <- decomposeInterval' u
+  case () of
+    _ | blockedOrMeta tb || blockedOrMeta ub -> do
+      -- in case of metas we wouldn't be able to make progress by how we deal with de morgan laws.
+      -- (because the constraints generated by decomposition are sufficient but not necessary).
+      -- but we could still prune/solve some metas by comparing the terms as atoms.
+      -- also if blocked we won't find the terms conclusively unequal(?) so compareAtom
+      -- won't report type errors when we should accept.
+      interval <- elInf $ primInterval
+      compareAtom CmpEq interval t u
+    _ | otherwise -> do
+      x <- leqInterval it iu
+      y <- leqInterval iu it
+      let final = isCanonical it && isCanonical iu
+      if x && y then reportSDoc "tc.conv.interval" 15 $ text "Ok! }" else
+        if final then typeError $ UnequalTerms cmp t u i
+                 else do
+                   reportSDoc "tc.conv.interval" 15 $ text "Giving up! }"
+                   patternViolation
+ where
+   blockedOrMeta Blocked{} = True
+   blockedOrMeta (NotBlocked _ (MetaV{})) = True
+   blockedOrMeta _ = False
 
 
 type Conj = (Map.Map Int (Set.Set Bool),[Term])
@@ -1612,9 +1671,13 @@ leqConj (rs,rst) (qs,qst) = do
     False -> return False
     True  -> do
       interval <- elInf $ primInterval
-      let eqT t u = withFreezeMetas $ ifNoConstraints (compareAtom CmpEq interval t u)
-                                                      (\ _ -> return True)
-                                                      (\ _ _ -> return False)
+
+      -- we don't want to generate new constraints here because
+      -- 1) in some situations the same constraint would get generated twice.
+      -- 2) unless things are completely accepted we are going to
+      --    throw patternViolation in compareInterval.
+      let eqT t u = tryConversion (compareAtom CmpEq interval t u)
+
       let listSubset ts us = and <$> forM ts (\ t ->
                               or <$> forM us (\ u -> eqT t u)) -- TODO shortcut
       listSubset qst rst

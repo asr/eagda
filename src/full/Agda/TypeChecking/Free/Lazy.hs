@@ -1,3 +1,4 @@
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 -- | Computing the free variables of a term lazily.
@@ -33,6 +34,7 @@ import Control.Monad.Reader
 
 import Data.Foldable (foldMap)
 import Data.IntMap (IntMap)
+import qualified Data.IntMap as IntMap
 import Data.Monoid ( Monoid, mempty, mappend, mconcat )
 import Data.Semigroup ( Semigroup, (<>) )
 import Data.Set (Set)
@@ -136,10 +138,27 @@ class (Semigroup a, Monoid a) => IsVarSet a where
   --      ```
   withVarOcc :: VarOcc -> a -> a
 
-type VarMap = IntMap VarOcc
+type TheVarMap = IntMap VarOcc
+newtype VarMap = VarMap { theVarMap :: TheVarMap }
+  deriving (Show, Singleton (Variable, VarOcc))
+
+mapVarMap :: (TheVarMap -> TheVarMap) -> VarMap -> VarMap
+mapVarMap f = VarMap . f . theVarMap
+
+instance Semigroup VarMap where
+  VarMap m <> VarMap m' = VarMap $ IntMap.unionWith maxVarOcc m m'
+
+-- Andreas & Jesper, 2018-05-11, issue #3052:
+
+-- | Proper monoid instance for @VarMap@ rather than inheriting the broken one from IntMap.
+--   We combine two occurrences of a variable using 'maxVarOcc'.
+instance Monoid VarMap where
+  mempty  = VarMap IntMap.empty
+  mappend = (<>)
+  mconcat = VarMap . IntMap.unionsWith maxVarOcc . map theVarMap
 
 instance IsVarSet VarMap where
-  withVarOcc o = fmap (composeVarOcc o)
+  withVarOcc o = mapVarMap $ fmap $ composeVarOcc o
 
 -- * Collecting free variables.
 
@@ -280,10 +299,12 @@ instance Free Sort where
     ifM ((IgnoreAll ==) <$> asks feIgnoreSorts) mempty $ {- else -}
     case s of
       Type a     -> freeVars' a
-      Prop       -> mempty
+      Prop a     -> freeVars' a
       Inf        -> mempty
       SizeUniv   -> mempty
-      DLub s1 s2 -> go WeaklyRigid $ freeVars' (s1, s2)
+      PiSort s1 s2 -> go WeaklyRigid $ freeVars' (s1, s2)
+      UnivSort s -> go WeaklyRigid $ freeVars' s
+      MetaS x es -> go (Flexible $ singleton x) $ freeVars' es
 
 instance Free Level where
   freeVars' (Max as) = freeVars' as

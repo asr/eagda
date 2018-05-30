@@ -211,14 +211,12 @@ type Telescope = Tele (Dom Type)
 --
 data Sort
   = Type Level  -- ^ @Set ℓ@.
-  | Prop        -- ^ Dummy sort.
+  | Prop Level  -- ^ @Prop ℓ@.
   | Inf         -- ^ @Setω@.
   | SizeUniv    -- ^ @SizeUniv@, a sort inhabited by type @Size@.
-  | DLub Sort (Abs Sort)
-    -- ^ Dependent least upper bound.
-    --   If the free variable occurs in the second sort,
-    --   the whole thing should reduce to Inf,
-    --   otherwise it's the normal lub.
+  | PiSort Sort (Abs Sort) -- ^ Sort of the pi type.
+  | UnivSort Sort -- ^ Sort of another sort.
+  | MetaS {-# UNPACK #-} !MetaId Elims
   deriving (Data, Show)
 
 -- | A level is a maximum expression of 0..n 'PlusLevel' expressions
@@ -718,30 +716,30 @@ dontCare v =
     DontCare{} -> v
     _          -> DontCare v
 
+-- | A dummy sort.
+dummySort :: Sort
+dummySort = Prop (Max [])
+
+-- | A dummy term.
+dummyTerm :: Term
+dummyTerm = Sort dummySort
+
 -- | A dummy type.
-typeDontCare :: Type
-typeDontCare = El Prop (Sort Prop)
+dummyType :: Type
+dummyType = sort dummySort
 
 -- | Top sort (Set\omega).
 topSort :: Type
-topSort = El Inf (Sort Inf)
+topSort = sort Inf
 
 sort :: Sort -> Type
-sort s = El (sSuc s) $ Sort s
+sort s = El (UnivSort s) $ Sort s
 
 varSort :: Int -> Sort
 varSort n = Type $ Max [Plus 0 $ NeutralLevel mempty $ var n]
 
 tmSort :: Term -> Sort
 tmSort t = Type $ Max [Plus 0 $ UnreducedLevel t]
-
--- | Get the next higher sort.
-sSuc :: Sort -> Sort
-sSuc Prop            = mkType 1
-sSuc Inf             = Inf
-sSuc SizeUniv        = SizeUniv
-sSuc (DLub a b)      = DLub (sSuc a) (fmap sSuc b)
-sSuc (Type l)        = Type $ levelSuc l
 
 levelSuc :: Level -> Level
 levelSuc (Max []) = Max [ClosedLevel 1]
@@ -752,10 +750,21 @@ levelSuc (Max as) = Max $ map inc as
 mkType :: Integer -> Sort
 mkType n = Type $ Max [ClosedLevel n | n > 0]
 
+mkProp :: Integer -> Sort
+mkProp n = Prop $ Max [ClosedLevel n | n > 0]
+
 isSort :: Term -> Maybe Sort
 isSort v = case v of
   Sort s -> Just s
   _      -> Nothing
+
+isProp :: LensSort a => a -> Bool
+isProp x = case getSort x of
+             Prop{} -> True
+             _      -> False
+
+isIrrelevantOrProp :: (LensRelevance a, LensSort a) => a -> Bool
+isIrrelevantOrProp x = isIrrelevant x || isProp x
 
 impossibleTerm :: String -> Int -> Term
 impossibleTerm file line = Lit $ LitString noRange $ unlines
@@ -871,6 +880,13 @@ arity t = case unEl t of
 -- | Make a name that is not in scope.
 notInScopeName :: ArgName -> ArgName
 notInScopeName = stringToArgName . ("." ++) . argNameToString
+
+-- | Remove the dot from a notInScopeName. This is used when printing function
+--   types that have abstracted over not-in-scope names.
+unNotInScopeName :: ArgName -> ArgName
+unNotInScopeName = stringToArgName . undot . argNameToString
+  where undot ('.':s) = s
+        undot s       = s
 
 -- | Pick the better name suggestion, i.e., the one that is not just underscore.
 class Suggest a b where
@@ -1059,10 +1075,12 @@ instance TermSize Term where
 instance TermSize Sort where
   tsize s = case s of
     Type l    -> 1 + tsize l
-    Prop      -> 1
+    Prop l    -> 1 + tsize l
     Inf       -> 1
     SizeUniv  -> 1
-    DLub s s' -> 1 + tsize s + tsize s'
+    PiSort s s' -> 1 + tsize s + tsize s'
+    UnivSort s -> 1 + tsize s
+    MetaS _ es -> 1 + tsize es
 
 instance TermSize Level where
   tsize (Max as) = 1 + tsize as
@@ -1123,11 +1141,13 @@ instance (KillRange a) => KillRange (Type' a) where
 
 instance KillRange Sort where
   killRange s = case s of
-    Prop       -> Prop
     Inf        -> Inf
     SizeUniv   -> SizeUniv
     Type a     -> killRange1 Type a
-    DLub s1 s2 -> killRange2 DLub s1 s2
+    Prop a     -> killRange1 Prop a
+    PiSort s1 s2 -> killRange2 PiSort s1 s2
+    UnivSort s -> killRange1 UnivSort s
+    MetaS x es -> killRange1 (MetaS x) es
 
 instance KillRange Substitution where
   killRange IdS                  = IdS
@@ -1276,13 +1296,17 @@ instance Pretty Sort where
       Type (Max []) -> text "Set"
       Type (Max [ClosedLevel n]) -> text $ "Set" ++ show n
       Type l -> mparens (p > 9) $ text "Set" <+> prettyPrec 10 l
-      Prop -> text "Prop"
+      Prop (Max []) -> text "Prop"
+      Prop (Max [ClosedLevel n]) -> text $ "Prop" ++ show n
+      Prop l -> mparens (p > 9) $ text "Prop" <+> prettyPrec 10 l
       Inf -> text "Setω"
       SizeUniv -> text "SizeUniv"
-      DLub s b -> mparens (p > 9) $
-        text "dlub" <+> prettyPrec 10 s
-                    <+> parens (sep [ text ("λ " ++ absName b ++ " ->")
-                                    , nest 2 $ pretty (unAbs b) ])
+      PiSort s b -> mparens (p > 9) $
+        text "piSort" <+> prettyPrec 10 s
+                      <+> parens (sep [ text ("λ " ++ absName b ++ " ->")
+                                      , nest 2 $ pretty (unAbs b) ])
+      UnivSort s -> mparens (p > 9) $ text "univSort" <+> prettyPrec 10 s
+      MetaS x es -> prettyPrec p $ MetaV x es
 
 instance Pretty Type where
   prettyPrec p (El _ a) = prettyPrec p a
@@ -1335,10 +1359,12 @@ instance NFData Type where
 instance NFData Sort where
   rnf s = case s of
     Type l   -> rnf l
-    Prop     -> ()
+    Prop l   -> rnf l
     Inf      -> ()
     SizeUniv -> ()
-    DLub a b -> rnf (a, unAbs b)
+    PiSort a b -> rnf (a, unAbs b)
+    UnivSort a -> rnf a
+    MetaS _ es -> rnf es
 
 instance NFData Level where
   rnf (Max as) = rnf as

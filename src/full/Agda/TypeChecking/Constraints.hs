@@ -19,6 +19,7 @@ import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.LevelConstraints
 import Agda.TypeChecking.SizedTypes
+import Agda.TypeChecking.Sort
 import Agda.TypeChecking.MetaVars.Mention
 import Agda.TypeChecking.Warnings
 
@@ -219,12 +220,16 @@ solveConstraint_ (UnBlock m)                =
       -- I think this is because the size solver instantiates
       -- some metas with infinity but does not clean up the UnBlock constraints.
       -- See also issue #2637.
-      InstV{} -> return ()
+      -- Ulf, 2018-04-30: The size solver shouldn't touch blocked terms! They have
+      -- a twin meta that it's safe to solve.
+      InstV{} -> __IMPOSSIBLE__
       -- Open (whatever that means)
       Open -> __IMPOSSIBLE__
       OpenIFS -> __IMPOSSIBLE__
 solveConstraint_ (FindInScope m b cands)      = findInScope m cands
 solveConstraint_ (CheckFunDef d i q cs)       = checkFunDef d i q cs
+solveConstraint_ (HasBiggerSort a)            = hasBiggerSort a
+solveConstraint_ (HasPTSRule a b)             = hasPTSRule a b
 
 checkTypeCheckingProblem :: TypeCheckingProblem -> TCM Term
 checkTypeCheckingProblem p = case p of

@@ -24,6 +24,7 @@ import Agda.Syntax.Position (killRange)
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Monad.Builtin
 import Agda.TypeChecking.Reduce
+import Agda.TypeChecking.Sort
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.Constraints
@@ -141,7 +142,10 @@ assignTerm' x tel v = do
 
 -- | Create a sort meta that cannot be instantiated with 'Inf' (Setω).
 newSortMetaBelowInf :: TCM Sort
-newSortMetaBelowInf = newSortMeta' $ HasType ()
+newSortMetaBelowInf = do
+  x <- newSortMeta
+  hasBiggerSort x
+  return x
 
 -- | Create a sort meta that may be instantiated with 'Inf' (Setω).
 newSortMeta :: TCM Sort
@@ -153,9 +157,8 @@ newSortMeta' judge =
   ifM hasUniversePolymorphism (newSortMetaCtx' judge =<< getContextArgs)
   -- else (no universe polymorphism)
   $ do i   <- createMetaInfo
-       lvl <- levelType
-       x   <- newMeta i normalMetaPriority (idP 0) $ judge lvl
-       return $ Type $ Max [Plus 0 $ MetaLevel x []]
+       x   <- newMeta i normalMetaPriority (idP 0) $ judge dummyType
+       return $ MetaS x []
 
 -- | Create a sort meta that may be instantiated with 'Inf' (Setω).
 newSortMetaCtx :: Args -> TCM Sort
@@ -166,12 +169,11 @@ newSortMetaCtx' judge vs = do
   ifM typeInType (return $ mkType 0) $ {- else -} do
     i   <- createMetaInfo
     tel <- getContextTelescope
-    lvl <- levelType
-    let t = telePi_ tel lvl
+    let t = telePi_ tel dummyType
     x   <- newMeta i normalMetaPriority (idP 0) $ judge t
     reportSDoc "tc.meta.new" 50 $
       text "new sort meta" <+> prettyTCM x <+> text ":" <+> prettyTCM t
-    return $ Type $ Max [Plus 0 $ MetaLevel x $ map Apply vs]
+    return $ MetaS x $ map Apply vs
 
 newTypeMeta :: Sort -> TCM Type
 newTypeMeta s = El s . snd <$> newValueMeta RunMetaOccursCheck (sort s)
@@ -264,7 +266,7 @@ newValueMetaCtx' b a tel perm vs = do
   return (x, u)
 
 newTelMeta :: Telescope -> TCM Args
-newTelMeta tel = newArgsMeta (abstract tel $ typeDontCare)
+newTelMeta tel = newArgsMeta (abstract tel $ dummyType)
 
 type Condition = Dom Type -> Abs Type -> Bool
 
@@ -288,13 +290,18 @@ newArgsMetaCtx' condition (El s tm) tel perm ctx = do
   tm <- reduce tm
   case tm of
     Pi dom@(Dom{domInfo = info, unDom = a}) codom | condition dom codom -> do
+      let r    = getRelevance info
+          -- Issue #3031: It's not enough to applyRelevanceToContext, since most (all?)
+          -- of the context lives in tel. Don't forget the arguments in ctx.
+          tel' = telFromList . map (inverseApplyRelevance r) . telToList $ tel
+          ctx' = (map . mapRelevance) (r `inverseComposeRelevance`) ctx
       (_, u) <- applyRelevanceToContext (getRelevance info) $
                {-
                  -- Andreas, 2010-09-24 skip irrelevant record fields when eta-expanding a meta var
                  -- Andreas, 2010-10-11 this is WRONG, see Issue 347
                 if r == Irrelevant then return DontCare else
                 -}
-                 newValueMetaCtx RunMetaOccursCheck a tel perm ctx
+                 newValueMetaCtx RunMetaOccursCheck a tel' perm ctx'
       args <- newArgsMetaCtx' condition (codom `absApp` u) tel perm ctx
       return $ Arg info u : args
     _  -> return []
@@ -310,7 +317,7 @@ newRecordMeta r pars = do
 newRecordMetaCtx :: QName -> Args -> Telescope -> Permutation -> Args -> TCM Term
 newRecordMetaCtx r pars tel perm ctx = do
   ftel   <- flip apply pars <$> getRecordFieldTypes r
-  fields <- newArgsMetaCtx (telePi_ ftel $ sort Prop) tel perm ctx
+  fields <- newArgsMetaCtx (telePi_ ftel dummyType) tel perm ctx
   con    <- getRecordConstructor r
   return $ Con con ConOSystem (map Apply fields)
 
@@ -477,51 +484,53 @@ etaExpandMeta kinds m = whenM (asks envAssignMetas `and2M` isEtaExpandable kinds
           reportSDoc "tc.meta.eta" 20 $ do
             text "we do not expand meta variable" <+> prettyTCM m <+>
               text ("(requested was expansion of " ++ show kinds ++ ")")
-    meta           <- lookupMeta m
-    let HasType _ a = mvJudgement meta
-    TelV tel b     <- telView a
-    -- if the target type @b@ of @m@ is a meta variable @x@ itself
-    -- (@NonBlocked (MetaV{})@),
-    -- or it is blocked by a meta-variable @x@ (@Blocked@), we cannot
-    -- eta expand now, we have to postpone this.  Once @x@ is
-    -- instantiated, we can continue eta-expanding m.  This is realized
-    -- by adding @m@ to the listeners of @x@.
-    ifBlocked (unEl b) (\ x _ -> waitFor x) $ \ _ t -> case t of
-      lvl@(Def r es) ->
-        ifM (isEtaRecord r) {- then -} (do
-          let ps = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
-          let expand = do
-                u <- withMetaInfo' meta $ newRecordMetaCtx r ps tel (idP $ size tel) $ teleArgs tel
-                inTopContext $ do
-                  verboseS "tc.meta.eta" 15 $ do
-                    du <- prettyTCM u
-                    reportSDoc "tc.meta.eta" 15 $ sep
-                      [ text "eta expanding: " <+> pretty m <+> text " --> "
-                      , nest 2 $ prettyTCM u
-                      ]
-                  -- Andreas, 2012-03-29: No need for occurrence check etc.
-                  -- we directly assign the solution for the meta
-                  -- 2012-05-23: We also bypass the check for frozen.
-                  noConstraints $ assignTerm' m (telToArgs tel) u  -- should never produce any constraints
-          if Records `elem` kinds then
-            expand
-           else if (SingletonRecords `elem` kinds) then do
-             singleton <- isSingletonRecord r ps
-             case singleton of
-               Left x      -> waitFor x
-               Right False -> dontExpand
-               Right True  -> expand
-            else dontExpand
-        ) $ {- else -} ifM (andM [ return $ Levels `elem` kinds
-                        , typeInType
-                        , (Just lvl ==) <$> getBuiltin' builtinLevel
-                        ]) (do
-          reportSLn "tc.meta.eta" 20 $ "Expanding level meta to 0 (type-in-type)"
-          -- Andreas, 2012-03-30: No need for occurrence check etc.
-          -- we directly assign the solution for the meta
-          noConstraints $ assignTerm m (telToArgs tel) (Level $ Max [])
-       ) $ {- else -} dontExpand
-      _ -> dontExpand
+    meta <- lookupMeta m
+    case mvJudgement meta of
+      IsSort{} -> dontExpand
+      HasType _ a -> do
+        TelV tel b <- telView a
+        -- if the target type @b@ of @m@ is a meta variable @x@ itself
+        -- (@NonBlocked (MetaV{})@),
+        -- or it is blocked by a meta-variable @x@ (@Blocked@), we cannot
+        -- eta expand now, we have to postpone this.  Once @x@ is
+        -- instantiated, we can continue eta-expanding m.  This is realized
+        -- by adding @m@ to the listeners of @x@.
+        ifBlocked (unEl b) (\ x _ -> waitFor x) $ \ _ t -> case t of
+          lvl@(Def r es) ->
+            ifM (isEtaRecord r) {- then -} (do
+              let ps = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
+              let expand = do
+                    u <- withMetaInfo' meta $ newRecordMetaCtx r ps tel (idP $ size tel) $ teleArgs tel
+                    inTopContext $ do
+                      verboseS "tc.meta.eta" 15 $ do
+                        du <- prettyTCM u
+                        reportSDoc "tc.meta.eta" 15 $ sep
+                          [ text "eta expanding: " <+> pretty m <+> text " --> "
+                          , nest 2 $ prettyTCM u
+                          ]
+                      -- Andreas, 2012-03-29: No need for occurrence check etc.
+                      -- we directly assign the solution for the meta
+                      -- 2012-05-23: We also bypass the check for frozen.
+                      noConstraints $ assignTerm' m (telToArgs tel) u  -- should never produce any constraints
+              if Records `elem` kinds then
+                expand
+               else if (SingletonRecords `elem` kinds) then do
+                 singleton <- isSingletonRecord r ps
+                 case singleton of
+                   Left x      -> waitFor x
+                   Right False -> dontExpand
+                   Right True  -> expand
+                else dontExpand
+            ) $ {- else -} ifM (andM [ return $ Levels `elem` kinds
+                            , typeInType
+                            , (Just lvl ==) <$> getBuiltin' builtinLevel
+                            ]) (do
+              reportSLn "tc.meta.eta" 20 $ "Expanding level meta to 0 (type-in-type)"
+              -- Andreas, 2012-03-30: No need for occurrence check etc.
+              -- we directly assign the solution for the meta
+              noConstraints $ assignTerm m (telToArgs tel) (Level $ Max [])
+           ) $ {- else -} dontExpand
+          _ -> dontExpand
 
 -- | Eta expand blocking metavariables of record type, and reduce the
 -- blocked thing.
@@ -595,7 +604,7 @@ assign dir x args v = do
     text "MetaVars.assign: assigning to " <+> prettyTCM v
 
   reportSLn "tc.meta.assign" 75 $
-    "MetaVars.assign: assigning to " ++ show v
+    "MetaVars.assign: assigning meta  " ++ show x ++ "  with args  " ++ show args ++ "  to  " ++ show v
 
   case (v, mvJudgement mvar) of
       (Sort Inf, HasType{}) -> typeError SetOmegaNotValidType

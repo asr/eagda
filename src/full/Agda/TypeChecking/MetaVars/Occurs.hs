@@ -184,6 +184,9 @@ allowedVar i (relVs, nonstrictVs, irrVs) = i `elem` relVs
 takeRelevant :: Vars -> [Nat]
 takeRelevant (relVs, nonstrictVs, irrVs) = relVs
 
+takeAll :: Vars -> [Nat]
+takeAll (rel, nst, irr) = rel ++ nst ++ irr
+
 liftUnderAbs :: Vars -> Vars
 liftUnderAbs (relVs, nonstrictVs, irrVs) = (0 : map (1+) relVs, map (+1) nonstrictVs, map (1+) irrVs)
 
@@ -320,7 +323,7 @@ instance Occurs Term where
                     -- Andreas, 2014-03-02, see issue 1070:
                     -- Do not prune when meta is projected!
                     caseMaybe (allApplyElims es) (throwError err) $ \ vs -> do
-                      killResult <- prune m' vs (takeRelevant xs)
+                      killResult <- prune m' vs (takeAll xs)
                       if (killResult == PrunedEverything)
                         -- after successful pruning, restart occurs check
                         then occurs red ctx m xs =<< instantiate (MetaV m' es)
@@ -422,20 +425,26 @@ instance Occurs Sort where
             YesUnfold -> reduce s
             NoUnfold  -> instantiate s
     case s' of
-      DLub s1 s2 -> uncurry DLub <$> occurs red (weakly ctx) m xs (s1,s2)
+      PiSort s1 s2 -> uncurry PiSort <$> occurs red (weakly ctx) m xs (s1,s2)
       Type a     -> Type <$> occurs red ctx m xs a
-      Prop       -> return s'
+      Prop a     -> Prop <$> occurs red ctx m xs a
       Inf        -> return s'
       SizeUniv   -> return s'
+      UnivSort s -> UnivSort <$> occurs red (weakly ctx) m xs s
+      MetaS x es -> do
+        MetaV x es <- occurs red ctx m xs (MetaV x es)
+        return $ MetaS x es
 
   metaOccurs m s = do
     s <- instantiate s
     case s of
-      DLub s1 s2 -> metaOccurs m (s1,s2)
+      PiSort s1 s2 -> metaOccurs m (s1,s2)
       Type a     -> metaOccurs m a
-      Prop       -> return ()
+      Prop a     -> metaOccurs m a
       Inf        -> return ()
       SizeUniv   -> return ()
+      UnivSort s -> metaOccurs m s
+      MetaS x es -> metaOccurs m $ MetaV x es
 
 instance Occurs a => Occurs (Elim' a) where
   occurs red ctx m xs e@(Proj _ f) = do
@@ -642,10 +651,12 @@ instance FoldRigid Sort where
   foldRigid f s =
     case s of
       Type l     -> fold l
-      Prop       -> mempty
+      Prop l     -> fold l
       Inf        -> mempty
       SizeUniv   -> mempty
-      DLub s1 s2 -> fold (s1, s2)
+      PiSort s1 s2 -> fold (s1, s2)
+      UnivSort s -> fold s
+      MetaS{}    -> mempty
     where fold = foldRigid f
 
 instance FoldRigid Level where
@@ -771,8 +782,10 @@ performKill kills m a = do
   -- (de Bruijn level order).
   let perm = Perm n
              [ i | (i, Arg _ False) <- zip [0..] kills ]
-  m' <- newMeta (mvInfo mv) (mvPriority mv) perm
-                (HasType __IMPOSSIBLE__ a)
+      judg = case mvJudgement mv of
+        HasType{} -> HasType __IMPOSSIBLE__ a
+        IsSort{}  -> IsSort  __IMPOSSIBLE__ a
+  m' <- newMeta (mvInfo mv) (mvPriority mv) perm judg
   -- Andreas, 2010-10-15 eta expand new meta variable if necessary
   etaExpandMetaSafe m'
   let -- Arguments to new meta (de Bruijn indices)

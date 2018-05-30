@@ -226,17 +226,20 @@ checkStrictlyPositive mi qset = disableDestructiveUpdate $ do
     -- Set the polarity of the arguments to a couple of definitions
     setArgOccs :: Set QName -> [QName] -> Graph Node Occurrence -> TCM ()
     setArgOccs qset qs g = do
-      -- Compute a map from each name in q to the maximal argument index
-      let maxs = Map.fromListWith max
-           [ (q, i) | ArgNode q i <- Set.toList $ Graph.nodes g, q `Set.member` qset ]
+      -- Andreas, 2018-05-11, issue #3049: we need to be pessimistic about
+      -- argument polarity beyond the formal arity of the function.
+      --
+      -- -- Compute a map from each name in q to the maximal argument index
+      -- let maxs = Map.fromListWith max
+      --      [ (q, i) | ArgNode q i <- Set.toList $ Graph.nodes g, q `Set.member` qset ]
       forM_ qs $ \ q -> inConcreteOrAbstractMode q $ \ def -> do
         reportSDoc "tc.pos.args" 10 $ text "checking args of" <+> prettyTCM q
         n <- getDefArity def
         -- If there is no outgoing edge @ArgNode q i@, all @n@ arguments are @Unused@.
         -- Otherwise, we obtain the occurrences from the Graph.
         let findOcc i = fromMaybe Unused $ Graph.lookup (ArgNode q i) (DefNode q) g
-            args = caseMaybe (Map.lookup q maxs) (replicate n Unused) $ \ m ->
-              map findOcc [0 .. max m (n - 1)]
+            args = -- caseMaybe (Map.lookup q maxs) (replicate n Unused) $ \ m ->
+              map findOcc [0 .. n-1]  -- [0 .. max m (n - 1)] -- triggers issue #3049
         reportSDoc "tc.pos.args" 10 $ sep
           [ text "args of" <+> prettyTCM q <+> text "="
           , nest 2 $ prettyList $ map prettyTCM args
@@ -247,16 +250,14 @@ checkStrictlyPositive mi qset = disableDestructiveUpdate $ do
         setArgOccurrences q $!! args
 
 getDefArity :: Definition -> TCM Int
-getDefArity def = case theDef def of
-  defn@Function{} -> do
-    let dropped = projectionArgs defn
-    -- TODO: instantiateFull followed by arity could perhaps be
-    -- optimised, presumably the instantiation can be performed
-    -- lazily.
-    subtract dropped . arity <$> instantiateFull (defType def)
-  Datatype{ dataPars = n } -> return n
-  Record{ recPars = n }    -> return n
-  _                        -> return 0
+getDefArity def = do
+  let dropped = case theDef def of
+        defn@Function{} -> projectionArgs defn
+        _ -> 0
+  -- TODO: instantiateFull followed by arity could perhaps be
+  -- optimised, presumably the instantiation can be performed
+  -- lazily.
+  subtract dropped . arity <$> instantiateFull (defType def)
 
 -- Operations on occurrences -------------------------------------------
 

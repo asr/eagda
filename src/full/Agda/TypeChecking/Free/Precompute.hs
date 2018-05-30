@@ -79,10 +79,12 @@ instance PrecomputeFreeVars Sort where
   precomputeFreeVars s =
     case s of
       Type a     -> Type <$> precomputeFreeVars a
-      Prop       -> pure s
+      Prop a     -> Prop <$> precomputeFreeVars a
       Inf        -> pure s
       SizeUniv   -> pure s
-      DLub s1 s2 -> uncurry DLub <$> precomputeFreeVars (s1, s2)
+      PiSort s1 s2 -> uncurry PiSort <$> precomputeFreeVars (s1, s2)
+      UnivSort s -> UnivSort <$> precomputeFreeVars s
+      MetaS x es -> MetaS x <$> precomputeFreeVars es
 
 instance PrecomputeFreeVars Level where
   precomputeFreeVars (Max ls) = Max <$> precomputeFreeVars ls

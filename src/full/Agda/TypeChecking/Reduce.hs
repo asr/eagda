@@ -8,6 +8,7 @@ import Prelude hiding (mapM)
 import Control.Monad.Reader hiding (mapM)
 
 import qualified Data.List as List
+import Data.List ((\\))
 import Data.Maybe
 import Data.Map (Map)
 import Data.Traversable
@@ -50,23 +51,23 @@ import Agda.Utils.Tuple
 #include "undefined.h"
 import Agda.Utils.Impossible
 
-instantiate :: Instantiate a => a -> TCM a
-instantiate = runReduceM . instantiate'
+instantiate :: (Instantiate a, MonadReduce m) => a -> m a
+instantiate = liftReduce . instantiate'
 
-instantiateFull :: InstantiateFull a => a -> TCM a
-instantiateFull = runReduceM . instantiateFull'
+instantiateFull :: (InstantiateFull a, MonadReduce m) => a -> m a
+instantiateFull = liftReduce . instantiateFull'
 
-reduce :: Reduce a => a -> TCM a
-reduce = runReduceM . reduce'
+reduce :: (Reduce a, MonadReduce m) => a -> m a
+reduce = liftReduce . reduce'
 
-reduceB :: Reduce a => a -> TCM (Blocked a)
-reduceB = runReduceM . reduceB'
+reduceB :: (Reduce a, MonadReduce m) => a -> m (Blocked a)
+reduceB = liftReduce . reduceB'
 
-normalise :: Normalise a => a -> TCM a
-normalise = runReduceM . normalise'
+normalise :: (Normalise a, MonadReduce m) => a -> m a
+normalise = liftReduce . normalise'
 
-simplify :: Simplify a => a -> TCM a
-simplify = runReduceM . simplify'
+simplify :: (Simplify a, MonadReduce m) => a -> m a
+simplify = liftReduce . simplify'
 
 -- | Meaning no metas left in the instantiation.
 isFullyInstantiatedMeta :: MetaId -> TCM Bool
@@ -105,7 +106,7 @@ instance Instantiate Term where
       BlockedConst _                   -> return t
       PostponedTypeCheckingProblem _ _ -> return t
   instantiate' (Level l) = levelTm <$> instantiate' l
-  instantiate' (Sort s) = sortTm <$> instantiate' s
+  instantiate' (Sort s) = Sort <$> instantiate' s
   instantiate' t = return t
 
 instance Instantiate Level where
@@ -141,8 +142,11 @@ instance Instantiate Type where
 
 instance Instantiate Sort where
   instantiate' s = case s of
-    Type l -> levelSort <$> instantiate' l
-    _      -> return s
+    MetaS x es -> instantiate' (MetaV x es) >>= \case
+      Sort s'      -> return s'
+      MetaV x' es' -> return $ MetaS x' es'
+      _            -> __IMPOSSIBLE__
+    _ -> return s
 
 instance Instantiate Elim where
   instantiate' (Apply v) = Apply <$> instantiate' v
@@ -197,6 +201,8 @@ instance Instantiate Constraint where
   instantiate' (IsEmpty r t)        = IsEmpty r <$> instantiate' t
   instantiate' (CheckSizeLtSat t)   = CheckSizeLtSat <$> instantiate' t
   instantiate' c@CheckFunDef{}      = return c
+  instantiate' (HasBiggerSort a)    = HasBiggerSort <$> instantiate' a
+  instantiate' (HasPTSRule a b)     = uncurry HasPTSRule <$> instantiate' (a,b)
 
 instance Instantiate e => Instantiate (Map k e) where
     instantiate' = traverse instantiate'
@@ -258,15 +264,17 @@ instance Reduce Sort where
         red s = do
           s <- instantiate' s
           case s of
-            DLub s1 s2 -> do
-              s <- dLub <$> reduce' s1 <*> reduce' s2
-              case s of
-                DLub{}  -> return s
-                _       -> reduce' s   -- TODO: not so nice
-            Prop       -> return s
-            Type s'    -> levelSort <$> reduce' s'
+            PiSort s1 s2 -> do
+              (s1,s2) <- reduce' (s1,s2)
+              maybe (return $ PiSort s1 s2) reduce' $ piSort' s1 s2
+            UnivSort s' -> do
+              s' <- reduce' s'
+              maybe (return $ UnivSort s') reduce' $ univSort' s'
+            Prop s'    -> Prop <$> reduce' s'
+            Type s'    -> Type <$> reduce' s'
             Inf        -> return Inf
             SizeUniv   -> return SizeUniv
+            MetaS x es -> return s
 
 instance Reduce Elim where
   reduce' (Apply v) = Apply <$> reduce' v
@@ -348,13 +356,12 @@ reduceIApply' reduceB' d [] = d
 instance Reduce Term where
   reduceB' = {-# SCC "reduce'<Term>" #-} maybeFastReduceTerm
 
--- | @Just nt@ means run fast reduce with @allowNonterminatingReductions = nt@.
-shouldTryFastReduce :: ReduceM (Maybe Bool)
+shouldTryFastReduce :: ReduceM Bool
 shouldTryFastReduce = do
   allowed <- asks envAllowedReductions
-  let notAll = List.delete NonTerminatingReductions allowed /= allReductions
-  return $ if notAll then Nothing
-                     else Just (elem NonTerminatingReductions allowed)
+  let optionalReductions = [NonTerminatingReductions, UnconfirmedReductions]
+      requiredReductions = allReductions \\ optionalReductions
+  return $ (allowed \\ optionalReductions) == requiredReductions
 
 maybeFastReduceTerm :: Term -> ReduceM (Blocked Term)
 maybeFastReduceTerm v = do
@@ -370,9 +377,7 @@ maybeFastReduceTerm v = do
       _         -> maybeFast v
   where
     isOpen x = isOpenMeta . mvInstantiation <$> lookupMeta x
-    maybeFast v = shouldTryFastReduce >>= \ case
-      Nothing -> slowReduceTerm v
-      Just nt -> fastReduce nt v
+    maybeFast v = ifM shouldTryFastReduce (fastReduce v) (slowReduceTerm v)
 
 slowReduceTerm :: Term -> ReduceM (Blocked Term)
 slowReduceTerm v = do
@@ -391,7 +396,7 @@ slowReduceTerm v = do
           -- instantiated module.
           v <- unfoldDefinition False reduceB' (Con c ci []) (conName c) args
           traverse reduceNat v
-      Sort s   -> fmap sortTm <$> reduceB' s
+      Sort s   -> fmap Sort <$> reduceB' s
       Level l  -> ifM (elem LevelReductions <$> asks envAllowedReductions)
                     {- then -} (fmap levelTm <$> reduceB' l)
                     {- else -} done
@@ -574,11 +579,9 @@ reduceDefCopy f es = do
             NoReduction{}        -> return $ NoReduction ()
 
 -- | Reduce simple (single clause) definitions.
-reduceHead :: Term -> TCM (Blocked Term)
-reduceHead = runReduceM . reduceHead'
-
-reduceHead' :: Term -> ReduceM (Blocked Term)
-reduceHead' v = do -- ignoreAbstractMode $ do
+reduceHead :: (HasBuiltins m, HasConstInfo m, MonadReduce m, MonadDebug m)
+           => Term -> m (Blocked Term)
+reduceHead v = do -- ignoreAbstractMode $ do
   -- Andreas, 2013-02-18 ignoreAbstractMode leads to information leakage
   -- see Issue 796
 
@@ -595,7 +598,7 @@ reduceHead' v = do -- ignoreAbstractMode $ do
         " is treated " ++ if isAbstract then "abstractly" else "concretely"
         ) $ do
       let v0  = Def f []
-          red = unfoldDefinitionE False reduceHead' v0 f es
+          red = liftReduce $ unfoldDefinitionE False reduceHead v0 f es
       def <- theDef <$> getConstInfo f
       case def of
         -- Andreas, 2012-11-06 unfold aliases (single clause terminating functions)
@@ -612,11 +615,8 @@ reduceHead' v = do -- ignoreAbstractMode $ do
     _ -> return $ notBlocked v
 
 -- | Unfold a single inlined function.
-unfoldInlined :: Term -> TCM Term
-unfoldInlined = runReduceM . unfoldInlined'
-
-unfoldInlined' :: Term -> ReduceM Term
-unfoldInlined' v = do
+unfoldInlined :: (HasConstInfo m, MonadReduce m) => Term -> m Term
+unfoldInlined v = do
   inTypes <- view eWorkingOnTypes
   case v of
     _ | inTypes -> return v -- Don't inline in types (to avoid unfolding of goals)
@@ -624,7 +624,7 @@ unfoldInlined' v = do
       def <- theDef <$> getConstInfo f
       case def of   -- Only for simple definitions with no pattern matching (TODO: maybe copatterns?)
         Function{ funCompiled = Just Done{}, funDelayed = NotDelayed }
-          | def ^. funInline ->
+          | def ^. funInline -> liftReduce $
           ignoreBlocking <$> unfoldDefinitionE False (return . notBlocked) (Def f []) f es
         _ -> return v
     _ -> return v
@@ -720,6 +720,8 @@ instance Reduce Constraint where
   reduce' (IsEmpty r t)         = IsEmpty r <$> reduce' t
   reduce' (CheckSizeLtSat t)    = CheckSizeLtSat <$> reduce' t
   reduce' c@CheckFunDef{}       = return c
+  reduce' (HasBiggerSort a)     = HasBiggerSort <$> reduce' a
+  reduce' (HasPTSRule a b)      = uncurry HasPTSRule <$> reduce' (a,b)
 
 instance Reduce e => Reduce (Map k e) where
     reduce' = traverse reduce'
@@ -754,7 +756,7 @@ instance Simplify Term where
       Def f vs   -> do
         let keepGoing simp v = return (simp, notBlocked v)
         (simpl, v) <- unfoldDefinition' False keepGoing (Def f []) f vs
-        traceSDoc "tc.simplify'" 20 (
+        traceSDoc "tc.simplify'" 90 (
           text ("simplify': unfolding definition returns " ++ show simpl)
             <+> prettyTCM (ignoreBlocking v)) $ do
         case simpl of
@@ -762,7 +764,7 @@ instance Simplify Term where
           NoSimplification  -> Def f <$> simplify' vs
       MetaV x vs -> MetaV x  <$> simplify' vs
       Con c ci vs-> Con c ci <$> simplify' vs
-      Sort s     -> sortTm   <$> simplify' s
+      Sort s     -> Sort     <$> simplify' s
       Level l    -> levelTm  <$> simplify' l
       Pi a b     -> Pi       <$> simplify' a <*> simplify' b
       Lit l      -> return v
@@ -785,11 +787,13 @@ instance Simplify Elim where
 instance Simplify Sort where
     simplify' s = do
       case s of
-        DLub s1 s2 -> dLub <$> simplify' s1 <*> simplify' s2
-        Type s     -> levelSort <$> simplify' s
-        Prop       -> return s
+        PiSort s1 s2 -> piSort <$> simplify' s1 <*> simplify' s2
+        UnivSort s -> univSort <$> simplify' s
+        Type s     -> Type <$> simplify' s
+        Prop s     -> Prop <$> simplify' s
         Inf        -> return s
         SizeUniv   -> return s
+        MetaS x es -> MetaS x <$> simplify' es
 
 instance Simplify Level where
   simplify' (Max as) = levelMax <$> simplify' as
@@ -868,6 +872,8 @@ instance Simplify Constraint where
   simplify' (IsEmpty r t)         = IsEmpty r <$> simplify' t
   simplify' (CheckSizeLtSat t)    = CheckSizeLtSat <$> simplify' t
   simplify' c@CheckFunDef{}       = return c
+  simplify' (HasBiggerSort a)     = HasBiggerSort <$> simplify' a
+  simplify' (HasPTSRule a b)      = uncurry HasPTSRule <$> simplify' (a,b)
 
 instance Simplify Bool where
   simplify' = return
@@ -913,19 +919,19 @@ instance Normalise Sort where
     normalise' s = do
       s <- reduce' s
       case s of
-        DLub s1 s2 -> dLub <$> normalise' s1 <*> normalise' s2
-        Prop       -> return s
-        Type s     -> levelSort <$> normalise' s
+        PiSort s1 s2 -> piSort <$> normalise' s1 <*> normalise' s2
+        UnivSort s -> univSort <$> normalise' s
+        Prop s     -> Prop <$> normalise' s
+        Type s     -> Type <$> normalise' s
         Inf        -> return Inf
         SizeUniv   -> return SizeUniv
+        MetaS x es -> return s
 
 instance Normalise Type where
     normalise' (El s t) = El <$> normalise' s <*> normalise' t
 
 instance Normalise Term where
-    normalise' v = shouldTryFastReduce >>= \ case
-      Nothing -> slowNormaliseArgs =<< reduce' v
-      Just nt -> fastNormalise nt v
+    normalise' v = ifM shouldTryFastReduce (fastNormalise v) (slowNormaliseArgs =<< reduce' v)
 
 slowNormaliseArgs :: Term -> ReduceM Term
 slowNormaliseArgs v = case v of
@@ -936,7 +942,7 @@ slowNormaliseArgs v = case v of
   Lit _       -> return v
   Level l     -> levelTm    <$> normalise' l
   Lam h b     -> Lam h      <$> normalise' b
-  Sort s      -> sortTm     <$> normalise' s
+  Sort s      -> Sort       <$> normalise' s
   Pi a b      -> uncurry Pi <$> normalise' (a, b)
   DontCare _  -> return v
 
@@ -1017,6 +1023,8 @@ instance Normalise Constraint where
   normalise' (IsEmpty r t)         = IsEmpty r <$> normalise' t
   normalise' (CheckSizeLtSat t)    = CheckSizeLtSat <$> normalise' t
   normalise' c@CheckFunDef{}       = return c
+  normalise' (HasBiggerSort a)     = HasBiggerSort <$> normalise' a
+  normalise' (HasPTSRule a b)      = uncurry HasPTSRule <$> normalise' (a,b)
 
 instance Normalise Bool where
   normalise' = return
@@ -1080,11 +1088,13 @@ instance InstantiateFull Sort where
     instantiateFull' s = do
         s <- instantiate' s
         case s of
-            Type n     -> levelSort <$> instantiateFull' n
-            Prop       -> return s
-            DLub s1 s2 -> dLub <$> instantiateFull' s1 <*> instantiateFull' s2
+            Type n     -> Type <$> instantiateFull' n
+            Prop n     -> Prop <$> instantiateFull' n
+            PiSort s1 s2 -> piSort <$> instantiateFull' s1 <*> instantiateFull' s2
+            UnivSort s -> univSort <$> instantiateFull' s
             Inf        -> return s
             SizeUniv   -> return s
+            MetaS x es -> MetaS x <$> instantiateFull' es
 
 instance (InstantiateFull a) => InstantiateFull (Type' a) where
     instantiateFull' (El s t) =
@@ -1102,7 +1112,7 @@ instance InstantiateFull Term where
           Lit _       -> return v
           Level l     -> levelTm <$> instantiateFull' l
           Lam h b     -> Lam h <$> instantiateFull' b
-          Sort s      -> sortTm <$> instantiateFull' s
+          Sort s      -> Sort <$> instantiateFull' s
           Pi a b      -> uncurry Pi <$> instantiateFull' (a,b)
           DontCare v  -> dontCare <$> instantiateFull' v
 
@@ -1209,6 +1219,8 @@ instance InstantiateFull Constraint where
     IsEmpty r t         -> IsEmpty r <$> instantiateFull' t
     CheckSizeLtSat t    -> CheckSizeLtSat <$> instantiateFull' t
     c@CheckFunDef{}     -> return c
+    HasBiggerSort a     -> HasBiggerSort <$> instantiateFull' a
+    HasPTSRule a b      -> uncurry HasPTSRule <$> instantiateFull' (a,b)
 
 instance (InstantiateFull a) => InstantiateFull (Elim' a) where
   instantiateFull' (Apply v) = Apply <$> instantiateFull' v

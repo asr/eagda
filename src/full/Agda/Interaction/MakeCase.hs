@@ -16,16 +16,18 @@ import Agda.Syntax.Common
 import Agda.Syntax.Position
 import qualified Agda.Syntax.Concrete as C
 import qualified Agda.Syntax.Abstract as A
+import qualified Agda.Syntax.Abstract.Views as A
 import qualified Agda.Syntax.Info as A
 import Agda.Syntax.Internal
 import Agda.Syntax.Internal.Pattern
-import Agda.Syntax.Scope.Base  ( ResolvedName(..) )
+import Agda.Syntax.Scope.Base  ( ResolvedName(..), Binder(..) )
 import Agda.Syntax.Scope.Monad ( resolveName )
 import Agda.Syntax.Translation.ConcreteToAbstract
 import Agda.Syntax.Translation.InternalToAbstract
 
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Coverage
+import Agda.TypeChecking.Coverage.Match ( SplitPatVar(..) , SplitPattern , applySplitPSubst , fromSplitPatterns )
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.RecordPatterns
 import Agda.TypeChecking.Reduce
@@ -81,10 +83,10 @@ parseVariables f tel ii rng ss = do
     let nlocals = n - size tel
     unless (nlocals >= 0) __IMPOSSIBLE__
 
+    fv <- getDefFreeVars f
     reportSDoc "interaction.case" 20 $ do
       m   <- currentModule
       tel <- lookupSection m
-      fv  <- getDefFreeVars f
       vcat
        [ text "parseVariables:"
        , text "current module  =" <+> prettyTCM m
@@ -93,26 +95,21 @@ parseVariables f tel ii rng ss = do
        , text $ "number of locals= " ++ show nlocals
        ]
 
-    -- Compute which variables correspond to module parameters. These cannot be split on.
-    -- Note: these are not necessarily the outer-most bound variables, since
-    -- module parameter refinement may have instantiated them, or
-    -- with-abstraction might have reshuffled the variables (#2181).
-    pars <- freeVarsToApply f
-    let nonSplittableVars = [ i | Var i [] <- map unArg pars ]
-
     -- Resolve each string to a variable.
     forM ss $ \ s -> do
-      let failNotVar = typeError $ GenericError $ "Not a variable: " ++ s
-          done i
-            | i < 0                    = typeError $ GenericError $
-               "Cannot split on local variable " ++ s
-               -- See issue #2239
-
-            | elem i nonSplittableVars = typeError $ GenericError $
-               "Cannot split on variable " ++ s ++ ". It is either a module parameter " ++
-               "or already instantiated by a dot pattern"
-
-            | otherwise                = return i
+      let failNotVar      = typeError $ GenericError $ "Not a variable: " ++ s
+          failUnbound     = typeError $ GenericError $ "Unbound variable " ++ s
+          failAmbiguous   = typeError $ GenericError $ "Ambiguous variable " ++ s
+          failLocal       = typeError $ GenericError $
+            "Cannot split on local variable " ++ s
+          failModuleBound = typeError $ GenericError $
+            "Cannot split on module parameter " ++ s
+          failLetBound v  = typeError . GenericError $
+            "cannot split on let-bound variable " ++ s
+          failInstantiatedVar v = typeError . GenericDocError =<< sep
+              [ text $ "Cannot split on variable " ++ s ++ ", because it is bound to"
+              , prettyTCM v
+              ]
 
       -- Note: the range in the concrete name is only approximate.
       resName <- resolveName $ C.QName $ C.Name r $ C.stringNameParts s
@@ -126,23 +123,38 @@ parseVariables f tel ii rng ss = do
 
         -- If s is a variable name in scope, get its de Bruijn index
         -- via the type checker.
-        VarName x _ -> do
+        VarName x b -> do
           (v, _) <- getVarInfo x
-          case v of
-            Var i [] -> done $ i - nlocals
-            _        -> typeError . GenericDocError =<< sep
-              [ text $ "Cannot split on variable " ++ s ++ ", because it is bound to"
-              , prettyTCM v
-              ]
+          case (v , b) of
+            -- Slightly dangerous: the pattern variable `x` may be
+            -- refined to the module parameter `var i`. But in this
+            -- case the instantiation could as well be the other way
+            -- around, so the new clauses will still make sense.
+            (Var i [] , PatternBound) -> do
+              when (i < nlocals) __IMPOSSIBLE__
+              return $ i - nlocals
+            (Var i [] , LambdaBound)
+              | i < nlocals -> failLocal
+              | otherwise   -> failModuleBound
+            (Var i [] , LetBound) -> failLetBound v
+            (_        , _       ) -> failInstantiatedVar v
 
         -- If s is not a name, compare it to the printed variable representation.
         -- This fallback is to enable splitting on hidden variables.
         UnknownName -> do
-          case filter ((s ==) . fst) xs of
-            []      -> typeError $ GenericError $ "Unbound variable " ++ s
-            [(_,i)] -> done $ i - nlocals
+          let xs' = filter ((s ==) . fst) xs
+          when (null xs') $ failUnbound
+          -- Andreas, 2018-05-28, issue #3095
+          -- We want to act on an ambiguous name if it corresponds to only one local index.
+          let xs'' = mapMaybe (\ (_,i) -> if i < nlocals then Nothing else Just $ i - nlocals) xs'
+          when (null xs'') $ failLocal
+          -- Filter out variable bound by parent function or module.
+          let xs''' = mapMaybe (\ i -> if i < fv then Nothing else Just i) xs''
+          case xs''' of
+            []  -> failModuleBound
+            [i] -> return i
             -- Issue 1325: Variable names in context can be ambiguous.
-            _       -> typeError $ GenericError $ "Ambiguous variable " ++ s
+            _   -> failAmbiguous
 
 -- | Lookup the clause for an interaction point in the signature.
 --   Returns the CaseContext, the clause itself, and a list of previous clauses
@@ -267,7 +279,7 @@ makeCase hole rng s = withInteractionId hole $ do
             if isAbsurd then makeAbsurdClause f sc else makeAbstractClause f rhs sc
     reportSDoc "interaction.case" 65 $ vcat
       [ text "split result:"
-      , nest 2 $ vcat $ map (text . show) cs
+      , nest 2 $ vcat $ map (text . show . A.deepUnscope) cs
       ]
     checkClauseIsClean ipCl
     return (f, casectxt, cs)
@@ -291,7 +303,7 @@ makeCase hole rng s = withInteractionId hole $ do
 
   -- Finds the new variable corresponding to an old one, if any.
   newVar :: SplitClause -> Nat -> Maybe Nat
-  newVar c x = case applyPatSubst (scSubst c) (var x) of
+  newVar c x = case applySplitPSubst (scSubst c) (var x) of
     Var y [] -> Just y
     _        -> Nothing
 
@@ -310,19 +322,20 @@ makePatternVarsVisible [] sc = sc
 makePatternVarsVisible is sc@SClause{ scPats = ps } =
   sc{ scPats = mapNamedArgPattern mkVis ps }
   where
-  mkVis :: NamedArg DeBruijnPattern -> NamedArg DeBruijnPattern
-  mkVis (Arg ai (Named n (VarP o (DBPatVar x i))))
+  mkVis :: NamedArg SplitPattern -> NamedArg SplitPattern
+  mkVis (Arg ai (Named n (VarP o (SplitPatVar x i ls))))
     | i `elem` is =
       -- We could introduce extra consistency checks, like
       -- if visible ai then __IMPOSSIBLE__ else
       -- or passing the parsed name along and comparing it with @x@
-      Arg (setOrigin CaseSplit ai) $ Named n $ VarP PatOSplit $ DBPatVar x i
+      Arg (setOrigin CaseSplit ai) $ Named n $ VarP PatOSplit $ SplitPatVar x i ls
   mkVis np = np
 
 -- | Make clause with no rhs (because of absurd match).
 
 makeAbsurdClause :: QName -> SplitClause -> TCM A.Clause
-makeAbsurdClause f (SClause tel ps _ _ t) = do
+makeAbsurdClause f (SClause tel sps _ _ t) = do
+  let ps = fromSplitPatterns sps
   reportSDoc "interaction.case" 10 $ vcat
     [ text "Interaction.MakeCase.makeAbsurdClause: split clause:"
     , nest 2 $ vcat
@@ -350,7 +363,7 @@ makeAbstractClause f rhs cl = do
 
   lhs <- A.clauseLHS <$> makeAbsurdClause f cl
   reportSDoc "interaction.case" 60 $ text "reified lhs: " <+> text (show lhs)
-  return $ A.Clause lhs [] rhs [] False
+  return $ A.Clause lhs [] rhs A.noWhereDecls False
   -- let ii = InteractionId (-1)  -- Dummy interaction point since we never type check this.
   --                              -- Can end up in verbose output though (#1842), hence not __IMPOSSIBLE__.
   -- let info = A.emptyMetaInfo   -- metaNumber = Nothing in order to print as ?, not ?n

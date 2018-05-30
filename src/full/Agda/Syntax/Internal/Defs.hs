@@ -77,10 +77,12 @@ instance GetDefs Type where
 instance GetDefs Sort where
   getDefs s = case s of
     Type l    -> getDefs l
-    Prop      -> return ()
+    Prop l    -> getDefs l
     Inf       -> return ()
     SizeUniv  -> return ()
-    DLub s s' -> getDefs s >> getDefs s'
+    PiSort s s' -> getDefs s >> getDefs s'
+    UnivSort s  -> getDefs s
+    MetaS x es  -> getDefs x >> getDefs es
 
 instance GetDefs Level where
   getDefs (Max ls) = getDefs ls

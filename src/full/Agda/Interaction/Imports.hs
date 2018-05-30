@@ -59,9 +59,12 @@ import Agda.Interaction.FindFile
 import {-# SOURCE #-} Agda.Interaction.InteractionTop (showOpenMetas)
 import Agda.Interaction.Options
 import qualified Agda.Interaction.Options.Lenses as Lens
-import Agda.Interaction.Highlighting.Precise (HighlightingInfo, mergeC, compress)
+import Agda.Interaction.Highlighting.Precise
+  (HighlightingInfo, compress)
 import Agda.Interaction.Highlighting.Generate
 import Agda.Interaction.Highlighting.Vim
+import Agda.Interaction.Response
+  (RemoveTokenBasedHighlighting(KeepHighlighting))
 
 import Agda.Utils.Except ( MonadError(catchError, throwError) )
 import Agda.Utils.FileName
@@ -581,8 +584,7 @@ highlightFromInterface i file = do
   reportSLn "import.iface" 5 $
     "Generating syntax info for " ++ filePath file ++
     " (read from interface)."
-  printHighlightingInfo (iHighlighting i)
-
+  printHighlightingInfo KeepHighlighting (iHighlighting i)
 
 readInterface :: FilePath -> TCM (Maybe Interface)
 readInterface file = do
@@ -692,7 +694,7 @@ createInterface file mname isMain = Bench.billTo [Bench.TopModule mname] $
     Bench.billTo [Bench.Highlighting] $ do
       -- Generate and print approximate syntax highlighting info.
       ifTopLevelAndHighlightingLevelIs NonInteractive $
-        printHighlightingInfo fileTokenInfo
+        printHighlightingInfo KeepHighlighting fileTokenInfo
       let onlyScope = isMain == MainInterface ScopeCheck
       ifTopLevelAndHighlightingLevelIsOr NonInteractive onlyScope $
         mapM_ (\ d -> generateAndPrintSyntaxInfo d Partial onlyScope) ds
@@ -747,7 +749,8 @@ createInterface file mname isMain = Bench.billTo [Bench.TopModule mname] $
 
       -- Move any remaining token highlighting to stSyntaxInfo.
       toks <- use stTokens
-      ifTopLevelAndHighlightingLevelIs NonInteractive $ printHighlightingInfo toks
+      ifTopLevelAndHighlightingLevelIs NonInteractive $
+        printHighlightingInfo KeepHighlighting toks
       stTokens .= mempty
 
       -- Grabbing warnings and unsolved metas to highlight them
@@ -759,7 +762,7 @@ createInterface file mname isMain = Bench.billTo [Bench.TopModule mname] $
         P.text "collected unsolved: " P.<> prettyTCM unsolved
       let warningInfo = compress $ foldMap warningHighlighting $ unsolved ++ warnings
 
-      stSyntaxInfo %= \inf -> mergeC (inf `mappend` toks) warningInfo
+      stSyntaxInfo %= \inf -> (inf `mappend` toks) `mappend` warningInfo
 
       whenM (optGenerateVimFile <$> commandLineOptions) $
         -- Generate Vim file.
@@ -796,9 +799,8 @@ createInterface file mname isMain = Bench.billTo [Bench.TopModule mname] $
 
     -- Serialization.
     reportSLn "import.iface.create" 7 $ "Starting serialization."
-    syntaxInfo <- use stSyntaxInfo
     i <- Bench.billTo [Bench.Serialization, Bench.BuildInterface] $ do
-      buildInterface file topLevel syntaxInfo options
+      buildInterface file topLevel options
 
     reportSLn "tc.top" 101 $ unlines $
       "Signature:" :
@@ -918,12 +920,10 @@ buildInterface
   :: AbsolutePath
   -> TopLevelInfo
      -- ^ 'TopLevelInfo' for the current module.
-  -> HighlightingInfo
-     -- ^ Syntax highlighting info for the module.
   -> [OptionsPragma]
      -- ^ Options set in @OPTIONS@ pragmas.
   -> TCM Interface
-buildInterface file topLevel syntaxInfo pragmas = do
+buildInterface file topLevel pragmas = do
     reportSLn "import.iface" 5 "Building interface..."
     let m = topLevelModuleName topLevel
     scope'  <- getScope
@@ -949,6 +949,7 @@ buildInterface file topLevel syntaxInfo pragmas = do
     -- TODO: Kill some ranges?
     (display, sig) <- eliminateDeadCode display =<< getSignature
     userwarns <- use stUserWarnings
+    syntaxInfo <- use stSyntaxInfo
     -- Andreas, 2015-02-09 kill ranges in pattern synonyms before
     -- serialization to avoid error locations pointing to external files
     -- when expanding a pattern synoym.

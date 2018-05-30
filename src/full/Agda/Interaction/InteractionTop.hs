@@ -52,6 +52,7 @@ import Agda.Syntax.Concrete.Generic as C
 import Agda.Syntax.Concrete.Pretty ()
 import Agda.Syntax.Abstract as A
 import Agda.Syntax.Abstract.Pretty
+import qualified Agda.Syntax.Internal as I
 import Agda.Syntax.Info (mkDefInfo)
 import Agda.Syntax.Translation.ConcreteToAbstract
 import Agda.Syntax.Translation.AbstractToConcrete hiding (withScope)
@@ -316,7 +317,8 @@ handleCommand wrap onFail cmd = handleNastyErrors $ wrap $ do
         unless (null s1) $ mapM_ putResponse $
             [ Resp_DisplayInfo $ Info_Error s ] ++
             tellEmacsToJumpToError (getRange e) ++
-            [ Resp_HighlightingInfo info method modFile ] ++
+            [ Resp_HighlightingInfo info KeepHighlighting
+                                    method modFile ] ++
             [ Resp_Status $ Status { sChecked = False
                                    , sShowImplicitArguments = x
                                    } ]
@@ -340,7 +342,9 @@ runInteraction (IOTCM current highlighting highlightingMethod cmd) =
     withCurrentFile $ interpret cmd
 
     cf <- gets theCurrentFile
-    when (Just current == (fst <$> cf)) $
+    when (updateInteractionPointsAfter cmd
+            &&
+          Just current == (fst <$> cf)) $
         putResponse . Resp_InteractionPoints =<< gets theInteractionPoints
 
   where
@@ -509,6 +513,20 @@ data Interaction' range
   | Cmd_load_highlighting_info
                         FilePath
 
+    -- | Tells Agda to compute token-based highlighting information
+    -- for the file.
+    --
+    -- This command works even if the file's module name does not
+    -- match its location in the file system, or if the file is not
+    -- scope-correct. Furthermore no file names are put in the
+    -- generated output. Thus it is fine to put source code into a
+    -- temporary file before calling this command. However, the file
+    -- extension should be correct.
+    --
+    -- If the second argument is 'Remove', then the (presumably
+    -- temporary) file is removed after it has been read.
+  | Cmd_tokenHighlighting FilePath Remove
+
     -- | Tells Agda to compute highlighting information for the expression just
     --   spliced into an interaction point.
   | Cmd_highlight InteractionId range String
@@ -593,6 +611,13 @@ data IOTCM' range
          -- -^ What to do
             deriving (Show, Read, Functor, Foldable, Traversable)
 
+-- | Used to indicate whether something should be removed or not.
+
+data Remove
+  = Remove
+  | Keep
+  deriving (Show, Read)
+
 ---------------------------------------------------------
 -- Read instances
 
@@ -675,8 +700,48 @@ independent :: Interaction -> Bool
 independent (Cmd_load {})                   = True
 independent (Cmd_compile {})                = True
 independent (Cmd_load_highlighting_info {}) = True
+independent Cmd_tokenHighlighting {}        = True
 independent Cmd_show_version                = True
 independent _                               = False
+
+-- | Should 'Resp_InteractionPoints' be issued after the command has
+-- run?
+
+updateInteractionPointsAfter :: Interaction -> Bool
+updateInteractionPointsAfter Cmd_load{}                          = True
+updateInteractionPointsAfter Cmd_compile{}                       = True
+updateInteractionPointsAfter Cmd_constraints{}                   = False
+updateInteractionPointsAfter Cmd_metas{}                         = False
+updateInteractionPointsAfter Cmd_show_module_contents_toplevel{} = False
+updateInteractionPointsAfter Cmd_search_about_toplevel{}         = False
+updateInteractionPointsAfter Cmd_solveAll{}                      = True
+updateInteractionPointsAfter Cmd_solveOne{}                      = True
+updateInteractionPointsAfter Cmd_infer_toplevel{}                = False
+updateInteractionPointsAfter Cmd_compute_toplevel{}              = False
+updateInteractionPointsAfter Cmd_load_highlighting_info{}        = False
+updateInteractionPointsAfter Cmd_tokenHighlighting{}             = False
+updateInteractionPointsAfter Cmd_highlight{}                     = True
+updateInteractionPointsAfter ShowImplicitArgs{}                  = False
+updateInteractionPointsAfter ToggleImplicitArgs{}                = False
+updateInteractionPointsAfter Cmd_give{}                          = True
+updateInteractionPointsAfter Cmd_refine{}                        = True
+updateInteractionPointsAfter Cmd_intro{}                         = True
+updateInteractionPointsAfter Cmd_refine_or_intro{}               = True
+updateInteractionPointsAfter Cmd_auto{}                          = True
+updateInteractionPointsAfter Cmd_context{}                       = False
+updateInteractionPointsAfter Cmd_helper_function{}               = False
+updateInteractionPointsAfter Cmd_infer{}                         = False
+updateInteractionPointsAfter Cmd_goal_type{}                     = False
+updateInteractionPointsAfter Cmd_goal_type_context{}             = False
+updateInteractionPointsAfter Cmd_goal_type_context_infer{}       = False
+updateInteractionPointsAfter Cmd_goal_type_context_check{}       = False
+updateInteractionPointsAfter Cmd_show_module_contents{}          = False
+updateInteractionPointsAfter Cmd_make_case{}                     = True
+updateInteractionPointsAfter Cmd_compute{}                       = False
+updateInteractionPointsAfter Cmd_why_in_scope{}                  = False
+updateInteractionPointsAfter Cmd_why_in_scope_toplevel{}         = False
+updateInteractionPointsAfter Cmd_show_version{}                  = False
+updateInteractionPointsAfter Cmd_abort{}                         = False
 
 -- | Interpret an interaction
 
@@ -760,6 +825,8 @@ interpret ToggleImplicitArgs = do
              ps { optShowImplicit = not $ optShowImplicit ps } }
 
 interpret (Cmd_load_highlighting_info source) = do
+  l <- envHighlightingLevel <$> ask
+  when (l /= None) $ do
     -- Make sure that the include directories have
     -- been set.
     setCommandLineOpts =<< lift commandLineOptions
@@ -787,16 +854,36 @@ interpret (Cmd_load_highlighting_info source) = do
                 return Nothing
     mapM_ putResponse resp
 
+interpret (Cmd_tokenHighlighting source remove) = do
+  info <- do l <- envHighlightingLevel <$> ask
+             if l == None
+               then return Nothing
+               else do
+                 source <- liftIO (absolute source)
+                 lift $ (Just <$> generateTokenInfo source)
+                           `catchError` \_ ->
+                        return Nothing
+      `finally`
+    case remove of
+      Remove -> liftIO $ removeFile source
+      Keep   -> return ()
+  case info of
+    Just info -> lift $ printHighlightingInfo RemoveHighlighting info
+    Nothing   -> return ()
+
 interpret (Cmd_highlight ii rng s) = do
-  scope <- getOldInteractionScope ii
-  removeOldInteractionScope ii
-  handle $ do
-    e <- try ("Highlighting failed to parse expression in " ++ show ii) $
-           B.parseExpr rng s
-    e <- try ("Highlighting failed to scope check expression in " ++ show ii) $
-           concreteToAbstract scope e
-    lift $ printHighlightingInfo =<< generateTokenInfoFromString rng s
-    lift $ highlightExpr e
+  l <- envHighlightingLevel <$> ask
+  when (l /= None) $ do
+    scope <- getOldInteractionScope ii
+    removeOldInteractionScope ii
+    handle $ do
+      e <- try ("Highlighting failed to parse expression in " ++ show ii) $
+             B.parseExpr rng s
+      e <- try ("Highlighting failed to scope check expression in " ++ show ii) $
+             concreteToAbstract scope e
+      lift $ printHighlightingInfo KeepHighlighting =<<
+               generateTokenInfoFromString rng s
+      lift $ highlightExpr e
   where
     handle :: ExceptT String TCM () -> CommandM ()
     handle m = do
@@ -917,14 +1004,12 @@ interpret (Cmd_make_case ii rng s) = do
   liftCommandMT (B.withInteractionId ii) $ do
     hidden <- lift $ showImplicitArguments
     tel <- lift $ lookupSection (qnameModule f) -- don't shadow the names in this telescope
-    let cs'  :: [A.Clause] = List.map (extlam_dropLLifted casectxt hidden) cs
-    pcs      :: [Doc]     <- lift $ inTopContext $ addContext tel $ mapM prettyA cs'
-    let pcs' :: [String]   = List.map (extlam_dropName casectxt . render) pcs
+    pcs      :: [Doc]      <- lift $ inTopContext $ addContext tel $ mapM prettyA cs
+    let pcs' :: [String]    = List.map (extlam_dropName casectxt . render) pcs
     lift $ reportSDoc "interaction.case" 60 $ TCP.vcat
       [ TCP.text "InteractionTop.Cmd_make_case"
       , TCP.nest 2 $ TCP.vcat
         [ TCP.text "cs   = " TCP.<+> TCP.vcat (map prettyA cs)
-        , TCP.text "cs'  = " TCP.<+> TCP.vcat (map prettyA cs')
         , TCP.text "pcs  = " TCP.<+> TCP.vcat (map return pcs)
         , TCP.text "pcs' = " TCP.<+> TCP.vcat (map TCP.text pcs')
         ]
@@ -933,7 +1018,6 @@ interpret (Cmd_make_case ii rng s) = do
       [ TCP.text "InteractionTop.Cmd_make_case"
       , TCP.nest 2 $ TCP.vcat
         [ TCP.text "cs   = " TCP.<+> TCP.text (show cs)
-        , TCP.text "cs'  = " TCP.<+> TCP.text (show cs')
         ]
       ]
     putResponse $ Resp_MakeCase (makeCaseVariant casectxt) pcs'
@@ -955,15 +1039,6 @@ interpret (Cmd_make_case ii rng s) = do
         replEquals ("=" : ws) = "→" : ws
         replEquals (w   : ws) = w : replEquals ws
         replEquals []         = []
-
-    -- Drops pattern added to extended lambda functions when lambda lifting them
-    extlam_dropLLifted :: CaseContext -> Bool -> A.Clause -> A.Clause
-    extlam_dropLLifted Nothing _ x = x
-    extlam_dropLLifted _ _ (A.Clause (A.LHS _ A.LHSProj{}) _ _ _ _) = __IMPOSSIBLE__
-    extlam_dropLLifted _ _ (A.Clause (A.LHS _ A.LHSWith{}) _ _ _ _) = __IMPOSSIBLE__
-    extlam_dropLLifted (Just (ExtLamInfo h nh _)) hidden cl@A.Clause{ A.clauseLHS = A.LHS info (A.LHSHead name nps) }
-      = let n = if hidden then h + nh else nh
-        in cl{ A.clauseLHS = A.LHS info (A.LHSHead name (drop n nps)) }
 
 interpret (Cmd_compute cmode ii rng s) = display_info . Info_NormalForm =<< do
   liftLocalState $ do
@@ -1084,7 +1159,7 @@ cmd_load' file argv unsolvedOK mode cmd = do
     putResponse Resp_ClearRunningInfo
 
     -- Remove any prior syntax highlighting.
-    putResponse Resp_ClearHighlighting
+    putResponse (Resp_ClearHighlighting NotOnlyTokenBased)
 
 
     ok <- lift $ Imp.typeCheckMain f mode
@@ -1194,8 +1269,11 @@ give_gen force ii rng s0 giveRefine = do
     -- the highlighting is moved together with the text when the hole goes away.
     -- To make it work for refine we'd have to adjust the ranges.
     when literally $ lift $ do
-      printHighlightingInfo =<< generateTokenInfoFromString rng s
-      highlightExpr ae
+      l <- envHighlightingLevel <$> ask
+      when (l /= None) $ do
+        printHighlightingInfo KeepHighlighting =<<
+          generateTokenInfoFromString rng s
+        highlightExpr ae
     putResponse $ Resp_GiveAction ii $ mkNewTxt literally ce
     lift $ reportSLn "interaction.give" 30 $ "putResponse GiveAction passed"
     -- display new goal set (if not measuring time)
@@ -1484,7 +1562,7 @@ tellToUpdateHighlighting
   :: Maybe (HighlightingInfo, HighlightingMethod, ModuleToSource) -> IO [Response]
 tellToUpdateHighlighting Nothing                = return []
 tellToUpdateHighlighting (Just (info, method, modFile)) =
-  return [Resp_HighlightingInfo info method modFile]
+  return [Resp_HighlightingInfo info KeepHighlighting method modFile]
 
 -- | Tells the Emacs mode to go to the first error position (if any).
 

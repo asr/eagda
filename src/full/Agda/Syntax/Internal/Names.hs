@@ -101,10 +101,12 @@ instance NamesIn a => NamesIn (Type' a) where
 instance NamesIn Sort where
   namesIn s = case s of
     Type l   -> namesIn l
-    Prop     -> Set.empty
+    Prop l   -> namesIn l
     Inf      -> Set.empty
     SizeUniv -> Set.empty
-    DLub a b -> namesIn (a, b)
+    PiSort a b -> namesIn (a, b)
+    UnivSort a -> namesIn a
+    MetaS _ es -> namesIn es
 
 instance NamesIn Term where
   namesIn v = case v of

@@ -754,13 +754,13 @@ primComp = do
                  Pi a b | nelims > 0  -> redReturn =<< compPi t a b (ignoreBlocking sphi) u a0
                         | otherwise -> fallback
 
-                 s@Sort{} -> compSort fallback iz io ineg phi u a0 s
+                 Sort (Type l) -> compSort fallback iz io ineg phi u a0 l
 
                  Def q [Apply la, Apply lb, Apply bA, Apply phi', Apply bT, Apply f, Apply pf] | Just q == mGlue -> do
                    compGlue phi u a0 la lb bA phi' bT f pf
 
                  -- Path/PathP
-                 d | PathType _ _ _ bA x y <- pathV (El Prop d) -> do
+                 d | PathType _ _ _ bA x y <- pathV (El dummySort d) -> do
                    if nelims > 0 then compPathP iz ineg imax sphi u a0 l bA x y else fallback
 
                  Def q [Apply _ , Apply bA , Apply x , Apply y] | Just q == mId -> do
@@ -874,14 +874,14 @@ primComp = do
       [la,lb,bA,phi',bT,f,pf] <- mapM open xs
       pure tCGlue <#> la <#> lb <@> bA <@> phi' <@> bT <@> f <@> pf <@> phi <@> u <@> a0
 
-  compSort fallback iz io ineg phi u a0 s = do
+  compSort fallback iz io ineg phi u a0 l = do
    checkPrims <- all isJust <$> sequence [getBuiltin' builtinPathToEquiv, getPrimitiveTerm' builtinGlue]
    if not checkPrims then fallback else (redReturn =<<) . runNamesT [] $ do
     p2equiv <- fromMaybe __IMPOSSIBLE__ <$> getBuiltin' builtinPathToEquiv
     tGlue <- fromMaybe __IMPOSSIBLE__ <$> getPrimitiveTerm' builtinGlue
     tComp <- fromMaybe __IMPOSSIBLE__ <$> getPrimitiveTerm' "primComp"
     tEmpty <- fromMaybe __IMPOSSIBLE__ <$> getBuiltin' builtinIsOneEmpty
-    l <- open $ runNames [] (lam "i" (\ _ -> pure $ Level $ lvlView s))
+    l <- open $ runNames [] (lam "i" (\ _ -> pure $ Level l))
     [phi,e,a0] <- mapM (open . unArg) [phi,u,a0]
     let transp p = pure tComp <#> l <@> p <@> iz
                               <@> lam "i" (\ i -> pure tEmpty <#> (l <@> i)
@@ -1407,7 +1407,7 @@ primTrustMe = do
     -- Andreas, 2013-07-22.
     -- Note that we cannot call the conversion checker here,
     -- because 'reduce' might be called in a context where
-    -- some bound variables do not have a type (just 'Prop),
+    -- some bound variables do not have a type (just dummyType),
     -- and the conversion checker for eliminations does not
     -- like this.
     -- We can only do untyped equality, e.g., by normalisation.
@@ -1620,7 +1620,7 @@ garr :: Monad tcm => (Relevance -> Relevance) -> tcm Type -> tcm Type -> tcm Typ
 garr f a b = do
   a' <- a
   b' <- b
-  return $ El (getSort a' `sLub` getSort b') $
+  return $ El (funSort (getSort a') (getSort b')) $
     Pi (mapRelevance f $ defaultDom a') (NoAbs "_" b')
 
 gpi :: (MonadTCM tcm, MonadDebug tcm)
@@ -1629,7 +1629,7 @@ gpi info name a b = do
   a <- a
   b <- addContext (name, defaultArgDom info a) b
   let y = stringToArgName name
-  return $ El (getSort a `dLub` Abs y (getSort b))
+  return $ El (piSort (getSort a) (Abs y (getSort b)))
               (Pi (defaultArgDom info a) (Abs y b))
 
 hPi, nPi :: (MonadTCM tcm, MonadDebug tcm)
@@ -1705,9 +1705,6 @@ el t = El (mkType 0) <$> t
 
 tset :: Monad tcm => tcm Type
 tset = return $ sort (mkType 0)
-
-tSetOmega :: Monad tcm => tcm Type
-tSetOmega = return $ sort Inf
 
 sSizeUniv :: Sort
 sSizeUniv = mkType 0

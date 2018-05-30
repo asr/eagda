@@ -277,6 +277,15 @@ Other features
       Disable projection of irrelevant
       record fields (see :ref:`irrelevance`)
 
+:samp:`--no-auto-inline`
+      Disable automatic compile-time inlining.
+      Only definitions marked INLINE will be inlined.
+
+:samp:`--no-print-pattern-synonyms`
+      Always expand :ref:`pattern-synonyms` during printing. With this option
+      enabled you can use pattern synonyms freely, but Agda will not use any
+      pattern synonyms when printing goal types or error messages, or when generating
+      patterns for case splits.
 
 .. _warnings:
 

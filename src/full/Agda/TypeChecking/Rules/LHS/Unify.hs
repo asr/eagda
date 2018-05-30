@@ -447,6 +447,7 @@ data UnifyStep
     }
   | Conflict
     { conflictAt         :: Int
+    , conflictType       :: Type
     , conflictDatatype   :: QName
     , conflictParameters :: Args
     , conflictLeft       :: Term
@@ -454,6 +455,7 @@ data UnifyStep
     }
   | Cycle
     { cycleAt            :: Int
+    , cycleType          :: Type
     , cycleDatatype      :: QName
     , cycleParameters    :: Args
     , cycleVar           :: Int
@@ -512,15 +514,17 @@ instance PrettyTCM UnifyStep where
       , text "indices:    " <+> prettyList_ (map prettyTCM ixs)
       , text "constructor:" <+> prettyTCM c
       ])
-    Conflict k d pars u v -> text "Conflict" $$ nest 2 (vcat $
+    Conflict k a d pars u v -> text "Conflict" $$ nest 2 (vcat $
       [ text "position:   " <+> text (show k)
+      , text "type:       " <+> prettyTCM a
       , text "datatype:   " <+> prettyTCM d
       , text "parameters: " <+> prettyList_ (map prettyTCM pars)
       , text "lhs:        " <+> prettyTCM u
       , text "rhs:        " <+> prettyTCM v
       ])
-    Cycle k d pars i u -> text "Cycle" $$ nest 2 (vcat $
+    Cycle k a d pars i u -> text "Cycle" $$ nest 2 (vcat $
       [ text "position:   " <+> text (show k)
+      , text "type:       " <+> prettyTCM a
       , text "datatype:   " <+> prettyTCM d
       , text "parameters: " <+> prettyList_ (map prettyTCM pars)
       , text "variable:   " <+> text (show i)
@@ -633,7 +637,7 @@ dataStrategy :: Int -> UnifyStrategy
 dataStrategy k s = do
   Equal (Dom _ _ a) u v <- liftTCM $ eqConstructorForm =<< eqUnLevel (getEqualityUnraised k s)
   case unEl a of
-    Def d es -> do
+    Def d es | Type{} <- getSort a -> do
       npars <- catMaybesMP $ liftTCM $ getNumberOfParameters d
       let (pars,ixs) = splitAt npars $ fromMaybe __IMPOSSIBLE__ $ allApplyElims es
       hpars <- fromMaybeMP $ isHom k pars
@@ -642,9 +646,9 @@ dataStrategy k s = do
          <+> text " with (homogeneous) parameters " <+> prettyTCM hpars
       case (u, v) of
         (Con c _ _   , Con c' _ _  ) | c == c' -> return $ Injectivity k a d hpars ixs c
-        (Con c _ _   , Con c' _ _  ) -> return $ Conflict k d hpars u v
-        (Var i []  , v         ) -> ifOccursStronglyRigid i v $ return $ Cycle k d hpars i v
-        (u         , Var j []  ) -> ifOccursStronglyRigid j u $ return $ Cycle k d hpars j u
+        (Con c _ _   , Con c' _ _  ) -> return $ Conflict k a d hpars u v
+        (Var i []  , v         ) -> ifOccursStronglyRigid i v $ return $ Cycle k a d hpars i v
+        (u         , Var j []  ) -> ifOccursStronglyRigid j u $ return $ Cycle k a d hpars j u
         _ -> mzero
     _ -> mzero
   where
@@ -678,23 +682,33 @@ literalStrategy k s = do
 etaExpandVarStrategy :: Int -> UnifyStrategy
 etaExpandVarStrategy k s = do
   Equal (Dom _ _ a) u v <- liftTCM $ eqUnLevel (getEquality k s)
-  shouldEtaExpand u a s `mplus` shouldEtaExpand v a s
+  shouldEtaExpand u v a s `mplus` shouldEtaExpand v u a s
   where
     -- TODO: use IsEtaVar to check if the term is a variable
-    shouldEtaExpand :: Term -> Type -> UnifyStrategy
-    shouldEtaExpand (Var i es) a s = do
+    shouldEtaExpand :: Term -> Term -> Type -> UnifyStrategy
+    shouldEtaExpand (Var i es) v a s = do
       fi       <- fromMaybeMP $ findFlexible i (flexVars s)
       liftTCM $ reportSDoc "tc.lhs.unify" 50 $
         text "Found flexible variable " <+> text (show i)
-      -- Issue 2888: Do this even if there aren't any projections. Otherwise we
-      -- end up eta expanding the equation instead, which the forcing
-      -- translation doesn't like.
+      -- Issue 2888: Do this if there are projections or if it's a singleton
+      -- record or if it's unified against a record constructor term. Basically
+      -- we need to avoid EtaExpandEquation if EtaExpandVar is possible, or the
+      -- forcing translation is unhappy.
       let Dom _ _ b = getVarTypeUnraised (varCount s - 1 - i) s
       (d, pars) <- catMaybesMP $ liftTCM $ isEtaRecordType b
+      ps        <- fromMaybeMP $ allProjElims es
+      sing      <- liftTCM $ (Right True ==) <$> isSingletonRecord d pars
+      con       <- liftTCM $ isRecCon v  -- is the other term a record constructor?
+      guard $ not (null ps) || sing || con
+      liftTCM $ reportSDoc "tc.lhs.unify" 50 $
+        text "with projections " <+> prettyTCM (map snd ps)
       liftTCM $ reportSDoc "tc.lhs.unify" 50 $
         text "at record type " <+> prettyTCM d
       return $ EtaExpandVar fi d pars
-    shouldEtaExpand _ _ _ = mzero
+    shouldEtaExpand _ _ _ _ = mzero
+
+    isRecCon (Con c _ _) = isJust <$> isRecordConstructor (conName c)
+    isRecCon _           = return False
 
 etaExpandEquationStrategy :: Int -> UnifyStrategy
 etaExpandEquationStrategy k s = do
@@ -775,8 +789,8 @@ injectivePragmaStrategy k s = do
 
 skipIrrelevantStrategy :: Int -> UnifyStrategy
 skipIrrelevantStrategy k s = do
-  let i = getEqInfo k s
-  guard $ isIrrelevant i
+  let Equal a _ _ = getEquality k s
+  guard $ isIrrelevantOrProp a
   return $ SkipIrrelevantEquation k
 
 

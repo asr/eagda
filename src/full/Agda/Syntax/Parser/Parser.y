@@ -176,6 +176,7 @@ import Agda.Utils.Impossible
     'TERMINATING'             { TokKeyword KwTERMINATING $$ }
 
     setN                      { TokSetN $$ }
+    propN                     { TokPropN $$ }
     tex                       { TokTeX $$ }
     comment                   { TokComment $$ }
 
@@ -312,6 +313,7 @@ Token
     | 'WARNING_ON_USAGE'        { TokKeyword KwWARNING_ON_USAGE $1 }
 
     | setN                      { TokSetN $1 }
+    | propN                     { TokPropN $1 }
     | tex                       { TokTeX $1 }
     | comment                   { TokComment $1 }
 
@@ -724,6 +726,7 @@ Expr3NoCurly
     | 'quoteContext'                    { QuoteContext (getRange $1) }
     | 'unquote'                         { Unquote (getRange $1) }
     | setN                              { SetN (getRange (fst $1)) (snd $1) }
+    | propN                             { PropN (getRange (fst $1)) (snd $1) }
     | '{{' Expr DoubleCloseBrace                        { InstanceArg (getRange ($1,$2,$3))
                                                           (maybeNamed $2) }
     | '(' Expr ')'                      { Paren (getRange ($1,$2,$3)) $2 }
@@ -999,6 +1002,7 @@ DomainFreeBindingAbsurd
 
 DoStmts :: { [DoStmt] }
 DoStmts : DoStmt              { [$1] }
+        | DoStmt vsemi        { [$1] }    -- #3046
         | DoStmt semi DoStmts { $1 : $3 }
 
 DoStmt :: { DoStmt }
@@ -1767,6 +1771,7 @@ Declarations0
 Declarations1 :: { [Declaration] }
 Declarations1
     : Declaration semi Declarations1 { $1 ++ $3 }
+    | Declaration vsemi              { $1 } -- #3046
     | Declaration                    { $1 }
 
 TopDeclarations :: { [Declaration] }
@@ -1873,33 +1878,34 @@ mkName (i, s) = do
               TokLiteral{}  -> "a literal"
               TokSymbol s _ -> case s of
                 SymDot               -> __IMPOSSIBLE__ -- "reserved"
-                SymSemi              -> __IMPOSSIBLE__ -- "used to separate declarations"
+                SymSemi              -> "used to separate declarations"
                 SymVirtualSemi       -> __IMPOSSIBLE__
                 SymBar               -> "used for with-arguments"
                 SymColon             -> "part of declaration syntax"
                 SymArrow             -> "the function arrow"
                 SymEqual             -> "part of declaration syntax"
                 SymLambda            -> "used for lambda-abstraction"
-                SymUnderscore        -> __IMPOSSIBLE__
+                SymUnderscore        -> "used for anonymous identifiers"
                 SymQuestionMark      -> "a meta variable"
-                SymAs                -> __IMPOSSIBLE__ -- "used for as-patterns"
-                SymOpenParen         -> __IMPOSSIBLE__ -- "used to parenthesize expressions"
-                SymCloseParen        -> __IMPOSSIBLE__ -- "used to parenthesize expressions"
+                SymAs                -> "used for as-patterns"
+                SymOpenParen         -> "used to parenthesize expressions"
+                SymCloseParen        -> "used to parenthesize expressions"
                 SymOpenIdiomBracket  -> "an idiom bracket"
                 SymCloseIdiomBracket -> "an idiom bracket"
                 SymDoubleOpenBrace   -> "used for instance arguments"
                 SymDoubleCloseBrace  -> "used for instance arguments"
-                SymOpenBrace         -> __IMPOSSIBLE__ -- "used for hidden arguments"
-                SymCloseBrace        -> __IMPOSSIBLE__ -- "used for hidden arguments"
+                SymOpenBrace         -> "used for hidden arguments"
+                SymCloseBrace        -> "used for hidden arguments"
                 SymOpenVirtualBrace  -> __IMPOSSIBLE__
                 SymCloseVirtualBrace -> __IMPOSSIBLE__
                 SymOpenPragma        -> __IMPOSSIBLE__ -- "used for pragmas"
                 SymClosePragma       -> __IMPOSSIBLE__ -- "used for pragmas"
                 SymEllipsis          -> __IMPOSSIBLE__ -- "used for function clauses"
                 SymDotDot            -> __IMPOSSIBLE__ -- "a modality"
-                SymEndComment        -> __IMPOSSIBLE__ -- "the end-of-comment brace"
+                SymEndComment        -> "the end-of-comment brace"
               TokString{}   -> __IMPOSSIBLE__
               TokSetN{}     -> "a type universe"
+              TokPropN{}    -> "a prop universe"
               TokTeX{}      -> __IMPOSSIBLE__  -- used by the LaTeX backend only
               TokComment{}  -> __IMPOSSIBLE__
               TokDummy{}    -> __IMPOSSIBLE__

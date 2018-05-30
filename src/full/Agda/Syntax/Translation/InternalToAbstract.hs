@@ -22,6 +22,7 @@ module Agda.Syntax.Translation.InternalToAbstract
   ) where
 
 import Prelude hiding (mapM_, mapM, null)
+import Control.Arrow ((&&&))
 import Control.Monad.State hiding (mapM_, mapM)
 import Control.Monad.Reader hiding (mapM_, mapM)
 
@@ -467,7 +468,8 @@ reifyTerm expandAnonDefs0 v = do
             {- else -} (reify a)
       where
         mkPi b (Arg info a) = do
-          (x, b) <- reify b
+          -- #2776: Out-of-scope dots are not helpful at this point.
+          (x, b) <- reify b{ absName = unNotInScopeName $ absName b }
           return $ A.Pi noExprInfo [TypedBindings noRange $ Arg info (TBind noRange [pure $ BindName x] a)] b
         -- We can omit the domain type if it doesn't have any free variables
         -- and it's mentioned in the target type.
@@ -525,7 +527,17 @@ reifyTerm expandAnonDefs0 v = do
                 | isAbsurdLambdaName x -> do
                   -- get hiding info from last pattern, which should be ()
                   let h = getHiding $ last $ namedClausePats cl
-                  elims (A.AbsurdLam exprNoRange h) =<< reify (drop n es)
+                      n = length (namedClausePats cl) - 1  -- drop all args before the absurd one
+                      absLam = A.AbsurdLam exprNoRange h
+                  if | n > length es -> do -- We don't have all arguments before the absurd one!
+                        let name (I.VarP _ x) = patVarNameToString $ dbPatVarName x
+                            name _            = __IMPOSSIBLE__  -- only variables before absurd pattern
+                            vars = map (getArgInfo &&& name . namedArg) $ drop (length es) $ init $ namedClausePats cl
+                            lam (i, s) = do
+                              x <- freshName_ s
+                              return $ A.Lam exprNoRange (A.DomainFree i $ A.BindName x)
+                        foldr ($) absLam <$> mapM lam vars
+                      | otherwise -> elims absLam =<< reify (drop n es)
 
       -- Otherwise (no absurd lambda):
        _ -> do
@@ -537,13 +549,18 @@ reifyTerm expandAnonDefs0 v = do
 
         -- Check whether we have an extended lambda and display forms are on.
         df <- displayFormsEnabled
-        toppars <- size <$> do lookupSection $ qnameModule x
-        let extLam = case def of
-             Function{ funExtLam = Just{}, funProjection = Just{} } -> __IMPOSSIBLE__
-             Function{ funExtLam = Just (ExtLamInfo h nh sys) } -> Just (toppars + h + nh, sys)
-             _ -> Nothing
+
+        -- #3004: give up if we have to print a pattern lambda inside its own body!
+        alreadyPrinting <- view ePrintingPatternLambdas
+
+        extLam <- case def of
+          Function{ funExtLam = Just{}, funProjection = Just{} } -> __IMPOSSIBLE__
+          Function{ funExtLam = Just (ExtLamInfo m sys) } -> Just . (,sys) . size <$> lookupSection m
+          _ -> return Nothing
         case extLam of
-          Just (pars,sys) | df -> reifyExtLam x pars sys (defClauses defn) es
+          Just (pars, sys) | df, notElem x alreadyPrinting ->
+            locally ePrintingPatternLambdas (x :) $
+            reifyExtLam x pars sys (defClauses defn) es
 
         -- Otherwise (ordinary function call):
           _ -> do
@@ -798,12 +815,12 @@ instance BlankVars A.ProblemEq where
   blank bound = id
 
 instance BlankVars A.Clause where
-  blank bound (A.Clause lhs strippedPats rhs [] ca) =
+  blank bound (A.Clause lhs strippedPats rhs (A.WhereDecls _ []) ca) =
     let bound' = varsBoundIn lhs `Set.union` bound
     in  A.Clause (blank bound' lhs)
                  (blank bound' strippedPats)
-                 (blank bound' rhs) [] ca
-  blank bound (A.Clause lhs strippedPats rhs (_:_) ca) = __IMPOSSIBLE__
+                 (blank bound' rhs) noWhereDecls ca
+  blank bound (A.Clause lhs strippedPats rhs _ ca) = __IMPOSSIBLE__
 
 instance BlankVars A.LHS where
   blank bound (A.LHS i core) = A.LHS i $ blank bound core
@@ -851,7 +868,7 @@ instance BlankVars A.Expr where
                               in  uncurry (A.Pi i) $ blank bound' (tel, e)
     A.Fun i a b            -> uncurry (A.Fun i) $ blank bound (a, b)
     A.Set _ _              -> e
-    A.Prop _               -> e
+    A.Prop _ _             -> e
     A.Let _ _ _            -> __IMPOSSIBLE__
     A.Rec i es             -> A.Rec i $ blank bound es
     A.RecUpdate i e es     -> uncurry (A.RecUpdate i) $ blank bound (e, es)
@@ -1047,16 +1064,18 @@ instance Reify NamedClause A.Clause where
     ps  <- reifyPatterns $ namedClausePats cl
     lhs <- uncurry (SpineLHS empty) <$> reifyDisplayFormP f ps []
     -- Unless @toDrop@ we have already dropped the module patterns from the clauses
-    -- (e.g. for extended lambdas).
+    -- (e.g. for extended lambdas). We still get here with toDrop = True and
+    -- pattern lambdas when doing make-case, so take care to drop the right
+    -- number of parameters.
     lhs <- if not toDrop then return lhs else do
-      nfv <- getDefFreeVars f `catchError` \_ -> return 0
+      nfv <- (size <.> lookupSection =<< getDefModule f) `catchError` \_ -> return 0
       return $ dropParams nfv lhs
     lhs <- stripImps lhs
     reportSLn "reify.clause" 60 $ "reifying NamedClause, lhs = " ++ show lhs
     rhs <- caseMaybe (clauseBody cl) (return AbsurdRHS) $ \ e -> do
        RHS <$> reify e <*> pure Nothing
     reportSLn "reify.clause" 60 $ "reifying NamedClause, rhs = " ++ show rhs
-    let result = A.Clause (spineToLhs lhs) [] rhs [] (I.clauseCatchall cl)
+    let result = A.Clause (spineToLhs lhs) [] rhs A.noWhereDecls (I.clauseCatchall cl)
     reportSLn "reify.clause" 60 $ "reified NamedClause, result = " ++ show result
     return result
     where
@@ -1080,7 +1099,7 @@ instance Reify (QNamed System) [A.Clause] where
       ps <- stripImplicits $ ps ++ [defaultNamedArg ep]
       let
         lhs = SpineLHS (LHSRange noRange) f ps
-        result = A.Clause (spineToLhs lhs) [] rhs [] False
+        result = A.Clause (spineToLhs lhs) [] rhs A.noWhereDecls False
       return result
 
 instance Reify Type Expr where
@@ -1097,16 +1116,25 @@ instance Reify Sort Expr where
         I.Type a -> do
           a <- reify a
           return $ A.App defaultAppInfo_ (A.Set noExprInfo 0) (defaultNamedArg a)
-        I.Prop       -> return $ A.Prop noExprInfo
+        I.Prop (I.Max [])                -> return $ A.Prop noExprInfo 0
+        I.Prop (I.Max [I.ClosedLevel n]) -> return $ A.Prop noExprInfo n
+        I.Prop a -> do
+          a <- reify a
+          return $ A.App defaultAppInfo_ (A.Prop noExprInfo 0) (defaultNamedArg a)
         I.Inf       -> A.Var <$> freshName_ ("Setω" :: String)
         I.SizeUniv  -> do
           I.Def sizeU [] <- primSizeUniv
           return $ A.Def sizeU
-        I.DLub s1 s2 -> do
-          lub <- freshName_ ("dLub" :: String) -- TODO: hack
+        I.PiSort s1 s2 -> do
+          pis <- freshName_ ("piSort" :: String) -- TODO: hack
           (e1,e2) <- reify (s1, I.Lam defaultArgInfo $ fmap Sort s2)
           let app x y = A.App defaultAppInfo_ x (defaultNamedArg y)
-          return $ A.Var lub `app` e1 `app` e2
+          return $ A.Var pis `app` e1 `app` e2
+        I.UnivSort s -> do
+          univs <- freshName_ ("univSort" :: String) -- TODO: hack
+          e <- reify s
+          return $ A.App defaultAppInfo_ (A.Var univs) $ defaultNamedArg e
+        I.MetaS x es -> reify $ I.MetaV x es
 
 instance Reify Level Expr where
   reifyWhen = reifyWhenE

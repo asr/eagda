@@ -62,6 +62,7 @@ import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Rules.LHS
 import Agda.TypeChecking.SizedTypes
 import Agda.TypeChecking.SizedTypes.Solve
+import Agda.TypeChecking.Sort
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.Unquote
@@ -110,7 +111,7 @@ isType_ e = traceCall (IsType_ e) $ do
     A.Fun i (Arg info t) b -> do
       a <- setArgInfo info . defaultDom <$> isType_ t
       b <- isType_ b
-      s <- ptsRule a b
+      s <- inferFunSort (getSort a) (getSort b)
       let t' = El s $ Pi a $ NoAbs underscore b
       noFunctionsIntoSize b t'
       return t'
@@ -120,23 +121,31 @@ isType_ e = traceCall (IsType_ e) $ do
         t0  <- instantiateFull =<< isType_ e
         tel <- instantiateFull tel
         return (t0, telePi tel t0)
+      checkTelePiSort t'
       noFunctionsIntoSize t0 t'
       return t'
     A.Set _ n    -> do
       return $ sort (mkType n)
+    A.Prop _ n -> do
+      unlessM isPropEnabled $ genericError
+        "Use the --enable-prop flag to use the Prop universe"
+      return $ sort (mkProp n)
     A.App i s arg
       | visible arg,
         A.Set _ 0 <- unScope s ->
       ifNotM hasUniversePolymorphism
           (typeError $ GenericError "Use --universe-polymorphism to enable level arguments to Set")
-      $ {- else -} do
-        lvl <- levelType
-        -- allow NonStrict variables when checking level
-        --   Set : (NonStrict) Level -> Set\omega
-        n   <- levelView =<< do
-          applyRelevanceToContext NonStrict $
-            checkNamedArg arg lvl
-        return $ sort (Type n)
+      -- allow NonStrict variables when checking level
+      --   Set : (NonStrict) Level -> Set\omega
+      $ {- else -} applyRelevanceToContext NonStrict $
+          sort . Type <$> checkLevel arg
+    A.App i s arg
+      | visible arg,
+        A.Prop _ 0 <- unScope s ->
+      ifNotM hasUniversePolymorphism
+          (typeError $ GenericError "Use --universe-polymorphism to enable level arguments to Prop")
+      $ {- else -} applyRelevanceToContext NonStrict $
+          sort . Prop <$> checkLevel arg
 
     -- Issue #707: Check an existing interaction point
     A.QuestionMark minfo ii -> caseMaybeM (lookupInteractionMeta ii) fallback $ \ x -> do
@@ -167,8 +176,10 @@ isType_ e = traceCall (IsType_ e) $ do
 
     _ -> fallback
 
-ptsRule :: (LensSort a, LensSort b) => a -> b -> TCM Sort
-ptsRule a b = pts <$> reduce (getSort a) <*> reduce (getSort b)
+checkLevel :: NamedArg A.Expr -> TCM Level
+checkLevel arg = do
+  lvl <- levelType
+  levelView =<< checkNamedArg arg lvl
 
 -- | Ensure that a (freshly created) function type does not inhabit 'SizeUniv'.
 --   Precondition:  When @noFunctionsIntoSize t tBlame@ is called,
@@ -535,6 +546,7 @@ checkExtendedLambda i di qname cs e t = do
    -- Try to get rid of unsolved size metas before we
    -- fix the type of the extended lambda auxiliary function
    solveSizeConstraints DontDefaultToInfty
+   lamMod <- inFreshModuleIfFreeParams currentModule  -- #2883: need a fresh module if refined params
    t <- instantiateFull t
    ifBlockedType t (\ m t' -> postponeTypeCheckingProblem_ $ CheckExpr e t') $ \ _ t -> do
      j   <- currentOrFreshMutualBlock
@@ -546,14 +558,6 @@ checkExtendedLambda i di qname cs e t = do
        text "extended lambda's implementation \"" <> prettyTCM qname <>
        text "\" has type: " $$ prettyTCM t -- <+> text " where clauses: " <+> text (show cs)
      args     <- getContextArgs
-     freevars <- getCurrentModuleFreeVars
-     let argsNoParam = drop freevars args -- don't count module parameters
-     let (hid, notHid) = List.partition notVisible argsNoParam
-     reportSDoc "tc.term.exlam" 30 $ vcat $
-       [ text "dropped args: " <+> prettyTCM (take freevars args)
-       , text "hidden  args: " <+> prettyTCM hid
-       , text "visible args: " <+> prettyTCM notHid
-       ]
 
      -- Andreas, Ulf, 2016-02-02: We want to postpone type checking an extended lambda
      -- in case the lhs checker failed due to insufficient type info for the patterns.
@@ -564,16 +568,8 @@ checkExtendedLambda i di qname cs e t = do
        addConstant qname =<< do
          useTerPragma $
            (defaultDefn info qname t emptyFunction) { defMutual = j }
-       checkFunDef' t info NotDelayed (Just $ ExtLamInfo (length hid) (length notHid) Nothing) Nothing di qname cs
+       checkFunDef' t info NotDelayed (Just $ ExtLamInfo lamMod Nothing) Nothing di qname cs
        return $ Def qname $ map Apply args)
-     `catchIlltypedPatternBlockedOnMeta` \ (err, x) -> do
-       -- We could not check the extended lambda because we are blocked on a meta.
-       -- It has to be blocked on some meta, so we can postpone,
-       -- being sure it will be retried when a meta is solved
-       -- (which might be the blocking meta in which case we actually make progress).
-       reportSDoc "tc.term.exlam" 50 $ vcat $
-         [ text "checking extended lambda got stuck on meta: " <+> text (show x) ]
-       postponeTypeCheckingProblem (CheckExpr e t) $ isInstantiatedMeta x
   where
     -- Concrete definitions cannot use information about abstract things.
     abstract ConcreteDef = inConcreteMode
@@ -750,7 +746,6 @@ checkRecordExpression mfs e t = do
           vs  <- newArgsMeta rt
           target <- reduce $ piApply rt vs
           s  <- case unEl target of
-                  Level l -> return $ Type l
                   Sort s  -> return s
                   v       -> do
                     reportSDoc "impossible" 10 $ vcat
@@ -845,7 +840,11 @@ checkExpr e t0 =
 
     e <- scopedExpr e
 
-    tryInsertHiddenLambda e t $ case e of
+    let irrelevantIfProp = if isProp t
+                           then applyRelevanceToContext Irrelevant
+                           else id
+
+    irrelevantIfProp $ tryInsertHiddenLambda e t $ case e of
 
         A.ScopedExpr scope e -> __IMPOSSIBLE__ -- setScope scope >> checkExpr e t
 
@@ -871,7 +870,7 @@ checkExpr e t0 =
             reportSDoc "tc.univ.poly" 10 $
               text "checking Set " <+> prettyTCM n <+>
               text "against" <+> prettyTCM t
-            coerce (Sort $ Type n) (sort $ sSuc $ Type n) t
+            coerce (Sort $ Type n) (sort $ Type $ levelSuc n) t
 
         e0@(A.App i q (Arg ai e))
           | A.Quote _ <- unScope q, visible ai -> do
@@ -921,6 +920,7 @@ checkExpr e t0 =
                     t0  <- instantiateFull =<< isType_ e
                     tel <- instantiateFull tel
                     return (t0, telePi tel t0)
+            checkTelePiSort t'
             noFunctionsIntoSize t0 t'
             let s = getSort t'
                 v = unEl t'
@@ -933,14 +933,16 @@ checkExpr e t0 =
         A.Fun _ (Arg info a) b -> do
             a' <- isType_ a
             b' <- isType_ b
-            s <- ptsRule a' b'
+            s  <- inferFunSort (getSort a') (getSort b')
             let v = Pi (defaultArgDom info a') (NoAbs underscore b')
             noFunctionsIntoSize b' $ El s v
             coerce v (sort s) t
         A.Set _ n    -> do
           coerce (Sort $ mkType n) (sort $ mkType $ n + 1) t
-        A.Prop _     -> do
-          typeError $ GenericError "Prop is no longer supported"
+        A.Prop _ n   -> do
+          unlessM isPropEnabled $ genericError
+            "Use the --enable-prop flag to use the Prop universe"
+          coerce (Sort $ mkProp n) (sort $ mkType $ n + 1) t
 
         A.Rec _ fs  -> checkRecordExpression fs e t
 
@@ -989,6 +991,15 @@ checkExpr e t0 =
         -- Application
         _   | Application hd args <- appView e -> checkApplication hd args e t
 
+      `catchIlltypedPatternBlockedOnMeta` \ (err, x) -> do
+        -- We could not check the term because the type of some pattern is blocked.
+        -- It has to be blocked on some meta, so we can postpone,
+        -- being sure it will be retried when a meta is solved
+        -- (which might be the blocking meta in which case we actually make progress).
+        reportSDoc "tc.term" 50 $ vcat $
+          [ text "checking pattern got stuck on meta: " <+> text (show x) ]
+        postponeTypeCheckingProblem (CheckExpr e t) $ isInstantiatedMeta x
+
   where
   -- | Call checkExpr with an hidden lambda inserted if appropriate,
   --   else fallback.
@@ -1012,6 +1023,7 @@ checkExpr e t0 =
         reduce a >>= isSizeType >>= \case
           Just (BoundedLt u) -> ifBlocked u (\ _ _ -> fallback) $ \ _ v -> do
             ifM (checkSizeNeverZero v) proceed fallback
+            `catchError` \_ -> fallback
           _ -> proceed
 
     | otherwise = fallback
@@ -1343,7 +1355,7 @@ checkLetBinding b@(A.LetPatBind i p e) ret =
     p <- expandPatternSynonyms p
     (v, t) <- inferExpr' ExpandLast e
     let -- construct a type  t -> dummy  for use in checkLeftHandSide
-        t0 = El (getSort t) $ Pi (defaultDom t) (NoAbs underscore typeDontCare)
+        t0 = El (getSort t) $ Pi (defaultDom t) (NoAbs underscore dummyType)
         p0 = Arg defaultArgInfo (Named Nothing p)
     reportSDoc "tc.term.let.pattern" 10 $ vcat
       [ text "let-binding pattern p at type t"

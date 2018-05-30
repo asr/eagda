@@ -8,6 +8,7 @@ import Prelude hiding ((<>))
 #endif
 
 import Control.Monad
+import Control.Monad.Reader
 import Control.Monad.Trans.Maybe
 
 import Data.Function
@@ -117,7 +118,7 @@ recordModule = mnameFromList . qnameToList
 --   does not refer to a record or the record is abstract.
 getRecordDef :: QName -> TCM Defn
 getRecordDef r = maybe err return =<< isRecord r
-  where err = typeError $ ShouldBeRecordType (El Prop $ Def r [])
+  where err = typeError $ ShouldBeRecordType (El dummySort $ Def r [])
 
 -- | Get the record name belonging to a field name.
 getRecordOfField :: QName -> TCM (Maybe QName)
@@ -224,7 +225,8 @@ origProjection f = do
 --   Precondition: @t@ is reduced.
 --
 --   See also: 'Agda.TypeChecking.Datatypes.getConType'
-getDefType :: QName -> Type -> TCM (Maybe Type)
+getDefType :: (HasConstInfo m, MonadReduce m, MonadDebug m)
+           => QName -> Type -> m (Maybe Type)
 getDefType f t = do
   -- Andreas, Issue #1973: we need to take the original projection
   -- since the parameters from the reduced type t are correct for
@@ -348,7 +350,8 @@ isInductiveRecord :: QName -> TCM Bool
 isInductiveRecord r = maybe False (\ d -> recInduction d /= Just CoInductive) <$> isRecord r
 
 -- | Check if a type is an eta expandable record and return the record identifier and the parameters.
-isEtaRecordType :: Type -> TCM (Maybe (QName, Args))
+isEtaRecordType :: (HasConstInfo m)
+                => Type -> m (Maybe (QName, Args))
 isEtaRecordType a = case unEl a of
   Def d es -> do
     let vs = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
@@ -566,10 +569,12 @@ etaExpandRecord' forceEta r pars u = do
   (tel, _, _, args) <- etaExpandRecord'_ forceEta r pars def u
   return (tel, args)
 
-etaExpandRecord_ :: QName -> Args -> Defn -> Term -> TCM (Telescope, ConHead, ConInfo, Args)
+etaExpandRecord_ :: (MonadReader TCEnv m, HasOptions m, MonadDebug m)
+                 => QName -> Args -> Defn -> Term -> m (Telescope, ConHead, ConInfo, Args)
 etaExpandRecord_ = etaExpandRecord'_ False
 
-etaExpandRecord'_ :: Bool -> QName -> Args -> Defn -> Term -> TCM (Telescope, ConHead, ConInfo, Args)
+etaExpandRecord'_ :: (MonadReader TCEnv m, HasOptions m, MonadDebug m)
+                  => Bool -> QName -> Args -> Defn -> Term -> m (Telescope, ConHead, ConInfo, Args)
 etaExpandRecord'_ forceEta r pars def u = do
   let Record{ recConHead     = con
             , recFields      = xs
@@ -667,7 +672,7 @@ isSingletonRecordModuloRelevance r ps = mapRight isJust <$> isSingletonRecord' T
 
 -- | Return the unique (closed) inhabitant if exists.
 --   In case of counting irrelevance in, the returned inhabitant
---   contains garbage.
+--   contains dummy terms.
 isSingletonRecord' :: Bool -> QName -> Args -> TCM (Either MetaId (Maybe Term))
 isSingletonRecord' regardIrrelevance r ps = do
   reportSLn "tc.meta.eta" 30 $ "Is " ++ prettyShow r ++ " a singleton record type?"
@@ -681,9 +686,9 @@ isSingletonRecord' regardIrrelevance r ps = do
     case tel of
       EmptyTel -> return $ Right $ Just []
       ExtendTel dom tel
-        | isIrrelevant dom && regardIrrelevance -> do
+        | isIrrelevantOrProp dom && regardIrrelevance -> do
           underAbstraction dom tel $ \ tel ->
-            emap (Arg (domInfo dom) garbage :) <$> check tel
+            emap (Arg (domInfo dom) dummyTerm :) <$> check tel
         | otherwise -> do
           isSing <- isSingletonType' regardIrrelevance $ unDom dom
           case isSing of
@@ -691,8 +696,6 @@ isSingletonRecord' regardIrrelevance r ps = do
             Right Nothing  -> return $ Right Nothing
             Right (Just v) -> underAbstraction dom tel $ \ tel ->
               emap (Arg (domInfo dom) v :) <$> check tel
-  garbage :: Term
-  garbage = Sort Prop
 
 -- | Check whether a type has a unique inhabitant and return it.
 --   Can be blocked by a metavar.

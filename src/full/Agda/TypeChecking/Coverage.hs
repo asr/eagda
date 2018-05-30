@@ -19,6 +19,7 @@ module Agda.TypeChecking.Coverage
 import Prelude hiding (null)
 
 import Control.Monad
+import Control.Monad.Reader
 import Control.Monad.Trans ( lift )
 
 import Data.Either (lefts)
@@ -39,13 +40,16 @@ import Agda.Syntax.Internal.Pattern
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Monad.Builtin
 
+import Agda.TypeChecking.Rules.LHS (checkSortOfSplitVar)
 import Agda.TypeChecking.Rules.LHS.Problem (allFlexVars)
 import Agda.TypeChecking.Rules.LHS.Unify
 
 import Agda.TypeChecking.Coverage.Match
 import Agda.TypeChecking.Coverage.SplitTree
 
+import Agda.TypeChecking.Conversion (tryConversion, equalType)
 import Agda.TypeChecking.Datatypes (getConForm)
+import Agda.TypeChecking.Irrelevance (applyRelevanceToContext)
 import Agda.TypeChecking.Patterns.Internal (dotPatternsToPatterns)
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Substitute
@@ -81,10 +85,10 @@ import Agda.Utils.Impossible
 data SplitClause = SClause
   { scTel    :: Telescope
     -- ^ Type of variables in @scPats@.
-  , scPats   :: [NamedArg DeBruijnPattern]
+  , scPats   :: [NamedArg SplitPattern]
     -- ^ The patterns leading to the currently considered branch of
     --   the split tree.
-  , scSubst  :: PatternSubstitution
+  , scSubst  :: Substitution' SplitPattern
     -- ^ Substitution from 'scTel' to old context.
     --   Only needed directly after split on variable:
     --   * To update 'scTarget'
@@ -112,8 +116,8 @@ data SplitClause = SClause
 data Covering = Covering
   { covSplitArg     :: Arg Nat
      -- ^ De Bruijn level (counting dot patterns) of argument we split on.
-  , covSplitClauses :: [(QName, SplitClause)]
-      -- ^ Covering clauses, indexed by constructor these clauses share.
+  , covSplitClauses :: [(SplitTag, SplitClause)]
+      -- ^ Covering clauses, indexed by constructor/literal these clauses share.
   }
 
 -- | Project the split clauses out of a covering.
@@ -124,7 +128,7 @@ splitClauses (Covering _ qcs) = map snd qcs
 clauseToSplitClause :: Clause -> SplitClause
 clauseToSplitClause cl = SClause
   { scTel    = clauseTel  cl
-  , scPats   = namedClausePats cl
+  , scPats   = toSplitPatterns $ namedClausePats cl
   , scSubst  = idS  -- Andreas, 2014-07-15  TODO: Is this ok?
   , scCheckpoints = Map.empty -- #2996: not __IMPOSSIBLE__ for debug printing
   , scTarget = clauseType cl
@@ -235,29 +239,25 @@ data CoverResult = CoverResult
 --
 cover :: QName -> [Clause] -> SplitClause ->
          TCM CoverResult
-cover f cs sc@(SClause tel ps _ _ target) = do
+cover f cs sc@(SClause tel ps _ _ target) = updateRelevance $ do
   reportSDoc "tc.cover.cover" 10 $ inTopContext $ vcat
     [ text "checking coverage of pattern:"
     , nest 2 $ text "tel  =" <+> prettyTCM tel
-    , nest 2 $ text "ps   =" <+> do addContext tel $ prettyTCMPatternList ps
+    , nest 2 $ text "ps   =" <+> do addContext tel $ prettyTCMPatternList $ fromSplitPatterns ps
+    ]
+  reportSDoc "tc.cover.cover" 60 $ vcat
+    [ nest 2 $ text "ps   =" <+> pretty ps
     ]
   cs' <- normaliseProjP cs
   ps <- (traverse . traverse . traverse) dotPatternsToPatterns ps
   case match cs' ps of
-    Yes (i,(mps,ls0)) -> do
+    Yes (i,mps) -> do
       exact <- allM mps isTrivialPattern
       let noExactClause = if exact || clauseCatchall (cs !! i)
                           then Set.empty
                           else Set.singleton i
       reportSLn "tc.cover.cover" 10 $ "pattern covered by clause " ++ show i
-      -- Check if any earlier clauses could match with appropriate literals
-      let lsis = mapMaybe (\(j,c) -> (,j) <$> matchLits c ps) $ zip [0..i-1] cs
-      reportSLn "tc.cover.cover"  10 $ "literal matches: " ++ show lsis
-      -- Andreas, 2016-10-08, issue #2243 (#708)
-      -- If we have several literal matches with the same literals
-      -- only take the first matching clause of these.
-      let is = Map.elems $ Map.fromListWith min $ (ls0,i) : lsis
-      return $ CoverResult (SplittingDone (size tel)) (Set.fromList is) [] noExactClause
+      return $ CoverResult (SplittingDone (size tel)) (Set.singleton i) [] noExactClause
 
     No        ->  do
       reportSLn "tc.cover" 20 $ "pattern is not covered"
@@ -270,12 +270,15 @@ cover f cs sc@(SClause tel ps _ _ target) = do
           -- type error before getting to this point.
           inferMissingClause f sc
           return $ CoverResult (SplittingDone (size tel)) Set.empty [] Set.empty
-        _ -> return $ CoverResult (SplittingDone (size tel)) Set.empty [(tel, ps)] Set.empty
+        _ -> do
+          let ps' = fromSplitPatterns ps
+          return $ CoverResult (SplittingDone (size tel)) Set.empty [(tel, ps')] Set.empty
 
     -- We need to split!
     -- If all clauses have an unsplit copattern, we try that first.
-    Block res bs -> tryIf (getAny res) splitRes $ do
-      let done = return $ CoverResult (SplittingDone (size tel)) Set.empty [(tel, ps)] Set.empty
+    Block res bs -> tryIf res splitRes $ do
+      let ps' = fromSplitPatterns ps
+          done = return $ CoverResult (SplittingDone (size tel)) Set.empty [(tel, ps')] Set.empty
       if null bs then done else do
       -- Otherwise, if there are variables to split, we try them
       -- in the order determined by a split strategy.
@@ -290,6 +293,14 @@ cover f cs sc@(SClause tel ps _ _ target) = do
         continue xs YesAllowPartialCover $ \ err -> do
           typeError $ SplitError err
   where
+    updateRelevance :: TCM a -> TCM a
+    updateRelevance cont = do
+      let rel = caseMaybe target Relevant $ \b ->
+                  if isProp (unArg b)
+                  then Irrelevant
+                  else getRelevance b
+      applyRelevanceToContext rel cont
+
     continue
       :: [BlockingVar]
       -> AllowPartialCover
@@ -350,7 +361,7 @@ cover f cs sc@(SClause tel ps _ _ target) = do
         return $ CoverResult tree (Set.unions useds) (concat psss) (Set.unions noex)
 
     gatherEtaSplits :: Int -> SplitClause
-                    -> [NamedArg DeBruijnPattern] -> [NamedArg DeBruijnPattern]
+                    -> [NamedArg SplitPattern] -> [NamedArg SplitPattern]
     gatherEtaSplits n sc []
        | n >= 0    = __IMPOSSIBLE__ -- we should have encountered the main
                                     -- split by now already
@@ -358,30 +369,30 @@ cover f cs sc@(SClause tel ps _ _ target) = do
     gatherEtaSplits n sc (p:ps) = case namedArg p of
       VarP _ x
        | n == 0    -> case p' of -- this is the main split
-           VarP  _ _    -> __IMPOSSIBLE__
+           VarP  _ _    -> p : gatherEtaSplits (-1) sc ps
            DotP  _ _    -> __IMPOSSIBLE__
            ConP  _ _ qs -> qs ++ gatherEtaSplits (-1) sc ps
-           LitP  _      -> __IMPOSSIBLE__
+           LitP  _      -> gatherEtaSplits (-1) sc ps
            ProjP{}      -> __IMPOSSIBLE__
        | otherwise ->
            updateNamedArg (\ _ -> p') p : gatherEtaSplits (n-1) sc ps
-        where p' = lookupS (scSubst sc) $ dbPatVarIndex x
+        where p' = lookupS (scSubst sc) $ splitPatVarIndex x
       DotP  _ _    -> p : gatherEtaSplits (n-1) sc ps -- count dot patterns
       ConP  _ _ qs -> gatherEtaSplits n sc (qs ++ ps)
       LitP  _      -> gatherEtaSplits n sc ps
       ProjP{}      -> gatherEtaSplits n sc ps
 
-    addEtaSplits :: Int -> [NamedArg DeBruijnPattern] -> SplitTree -> SplitTree
+    addEtaSplits :: Int -> [NamedArg SplitPattern] -> SplitTree -> SplitTree
     addEtaSplits k []     t = t
     addEtaSplits k (p:ps) t = case namedArg p of
       VarP  _ _     -> addEtaSplits (k+1) ps t
       DotP  _ _     -> addEtaSplits (k+1) ps t
-      ConP c cpi qs -> SplitAt (p $> k) [(conName c , addEtaSplits k (qs ++ ps) t)]
+      ConP c cpi qs -> SplitAt (p $> k) [(SplitCon (conName c) , addEtaSplits k (qs ++ ps) t)]
       LitP  _       -> __IMPOSSIBLE__
       ProjP{}       -> __IMPOSSIBLE__
 
-    etaRecordSplits :: Int -> [NamedArg DeBruijnPattern] -> (QName,SplitClause)
-                    -> SplitTree -> (QName,SplitTree)
+    etaRecordSplits :: Int -> [NamedArg SplitPattern] -> (SplitTag,SplitClause)
+                    -> SplitTree -> (SplitTag,SplitTree)
     etaRecordSplits n ps (q , sc) t =
       (q , addEtaSplits 0 (gatherEtaSplits n sc ps) t)
 
@@ -404,7 +415,7 @@ inferMissingClause f (SClause tel ps _ cps (Just t)) = setCurrentRange f $ do
     return $ Clause { clauseLHSRange  = noRange
                     , clauseFullRange = noRange
                     , clauseTel       = tel
-                    , namedClausePats = ps
+                    , namedClausePats = fromSplitPatterns ps
                     , clauseBody      = Just rhs
                     , clauseType      = Just t
                     , clauseCatchall  = False
@@ -414,7 +425,7 @@ inferMissingClause f (SClause tel ps _ cps (Just t)) = setCurrentRange f $ do
 inferMissingClause _ (SClause _ _ _ _ Nothing) = __IMPOSSIBLE__
 
 splitStrategy :: BlockingVars -> Telescope -> TCM BlockingVars
-splitStrategy bs tel = return $ updateLast clearBlockingVarCons xs
+splitStrategy bs tel = return $ updateLast setBlockingVarOverlap xs
   -- Make sure we do not insists on precomputed coverage when
   -- we make our last try to split.
   -- Otherwise, we will not get a nice error message.
@@ -474,7 +485,7 @@ fixTarget sc@SClause{ scTel = sctel, scPats = ps, scSubst = sigma, scCheckpoints
     reportSDoc "tc.cover.target" 20 $ sep
       [ text "split clause telescope: " <+> prettyTCM sctel
       , text "old patterns          : " <+> do
-          addContext sctel $ prettyTCMPatternList ps
+          addContext sctel $ prettyTCMPatternList $ fromSplitPatterns ps
       ]
     reportSDoc "tc.cover.target" 60 $ sep
       [ text "substitution          : " <+> text (show sigma)
@@ -483,7 +494,7 @@ fixTarget sc@SClause{ scTel = sctel, scPats = ps, scSubst = sigma, scCheckpoints
       [ text "target type before substitution (variables may be wrong): " <+> do
           addContext sctel $ prettyTCM a
       ]
-    TelV tel b <- telViewUpToPath (-1) $ applyPatSubst sigma $ unArg a
+    TelV tel b <- telViewUpToPath (-1) $ applySplitPSubst sigma $ unArg a
     reportSDoc "tc.cover.target" 15 $ sep
       [ text "target type telescope (after substitution): " <+> do
           addContext sctel $ prettyTCM tel
@@ -513,7 +524,7 @@ fixTarget sc@SClause{ scTel = sctel, scPats = ps, scSubst = sigma, scCheckpoints
       ]
     reportSDoc "tc.cover.target" 30 $ sep
       [ text "new split clause patterns    : " <+> do
-          addContext sctel' $ prettyTCMPatternList ps'
+          addContext sctel' $ prettyTCMPatternList $ fromSplitPatterns ps'
       ]
     reportSDoc "tc.cover.target" 60 $ sep
       [ text "new split clause substitution: " <+> text (show $ scSubst sc')
@@ -560,7 +571,7 @@ computeNeighbourhood
   -> Args                         -- ^ Data type indices.
   -> Nat                          -- ^ Index of split variable.
   -> Telescope                    -- ^ Telescope for the patterns.
-  -> [NamedArg DeBruijnPattern]   -- ^ Patterns before doing the split.
+  -> [NamedArg SplitPattern]      -- ^ Patterns before doing the split.
   -> Map CheckpointId Substitution -- ^ Current checkpoints
   -> QName                        -- ^ Constructor to fit into hole.
   -> CoverM (Maybe SplitClause)   -- ^ New split clause if successful.
@@ -619,7 +630,7 @@ computeNeighbourhood delta1 n delta2 d pars ixs hix tel ps cps c = do
       debugSubst "rho0" rho0
 
       -- We have Δ₁' ⊢ ρ₀ : Δ₁Γ, so split it into the part for Δ₁ and the part for Γ
-      let (rho1,rho2) = splitS (size gamma) rho0
+      let (rho1,rho2) = splitS (size gamma) $ toSplitPSubst rho0
 
       -- Andreas, 2015-05-01  I guess it is fine to use no @conPType@
       -- as the result of splitting is never used further down the pipeline.
@@ -632,7 +643,7 @@ computeNeighbourhood delta1 n delta2 d pars ixs hix tel ps cps c = do
 
       -- Compute final context and substitution
       let rho3    = consS conp rho1            -- Δ₁' ⊢ ρ₃ : Δ₁(x:D)
-          delta2' = applyPatSubst rho3 delta2  -- Δ₂' = Δ₂ρ₃
+          delta2' = applySplitPSubst rho3 delta2  -- Δ₂' = Δ₂ρ₃
           delta'  = delta1' `abstract` delta2' -- Δ'  = Δ₁'Δ₂'
           rho     = liftS (size delta2) rho3   -- Δ' ⊢ ρ : Δ₁(x:D)Δ₂
 
@@ -644,7 +655,7 @@ computeNeighbourhood delta1 n delta2 d pars ixs hix tel ps cps c = do
       let ps' = applySubst rho ps
       debugPlugged delta' ps'
 
-      let cps'   = applySubst (fromPatternSubstitution rho) cps
+      let cps' = applySplitPSubst rho cps
 
       return $ Just $ SClause delta' ps' rho cps' Nothing -- target fixed later
 
@@ -656,7 +667,7 @@ computeNeighbourhood delta1 n delta2 d pars ixs hix tel ps cps c = do
           [ text "context=" <+> (inTopContext . prettyTCM =<< getContextTelescope)
           , text "con    =" <+> prettyTCM con
           , text "ctype  =" <+> prettyTCM ctype
-          , text "ps     =" <+> do inTopContext $ addContext tel $ prettyTCMPatternList ps
+          , text "ps     =" <+> do inTopContext $ addContext tel $ prettyTCMPatternList $ fromSplitPatterns ps
           , text "d      =" <+> prettyTCM d
           , text "pars   =" <+> do prettyList $ map prettyTCM pars
           , text "ixs    =" <+> do addContext delta1 $ prettyList $ map prettyTCM ixs
@@ -687,13 +698,13 @@ computeNeighbourhood delta1 n delta2 d pars ixs hix tel ps cps c = do
     debugPs tel ps =
       liftTCM $ reportSDoc "tc.cover.split.con" 20 $
         inTopContext $ addContext tel $ nest 2 $ vcat
-          [ text "ps     =" <+> prettyTCMPatternList ps
+          [ text "ps     =" <+> prettyTCMPatternList (fromSplitPatterns ps)
           ]
 
     debugPlugged delta' ps' =
       liftTCM $ reportSDoc "tc.cover.split.con" 20 $
         inTopContext $ addContext delta' $ nest 2 $ vcat
-          [ text "ps'    =" <+> do prettyTCMPatternList ps'
+          [ text "ps'    =" <+> do prettyTCMPatternList $ fromSplitPatterns ps'
           ]
 
 -- | Introduce trailing pattern variables via 'fixTarget'?
@@ -710,7 +721,7 @@ data AllowPartialCover
 
 -- | Entry point from @Interaction.MakeCase@.
 splitClauseWithAbsurd :: SplitClause -> Nat -> TCM (Either SplitError (Either SplitClause Covering))
-splitClauseWithAbsurd c x = split' Inductive NoAllowPartialCover NoFixTarget c (BlockingVar x Nothing)
+splitClauseWithAbsurd c x = split' Inductive NoAllowPartialCover NoFixTarget c (BlockingVar x [] [] True)
   -- Andreas, 2016-05-03, issue 1950:
   -- Do not introduce trailing pattern vars after split,
   -- because this does not work for with-clauses.
@@ -719,8 +730,8 @@ splitClauseWithAbsurd c x = split' Inductive NoAllowPartialCover NoFixTarget c (
 --   @splitLast CoInductive@ is used in the @refine@ tactics.
 
 splitLast :: Induction -> Telescope -> [NamedArg DeBruijnPattern] -> TCM (Either SplitError Covering)
-splitLast ind tel ps = split ind NoAllowPartialCover sc (BlockingVar 0 Nothing)
-  where sc = SClause tel ps empty empty Nothing
+splitLast ind tel ps = split ind NoAllowPartialCover sc (BlockingVar 0 [] [] True)
+  where sc = SClause tel (toSplitPatterns ps) empty empty Nothing
 
 -- | @split ind splitClause x = return res@
 --   splits @splitClause@ at pattern var @x@ (de Bruijn index).
@@ -758,7 +769,7 @@ lookupPatternVar SClause{ scTel = tel, scPats = pats } x = arg $>
   where n = if k < 0
             then __IMPOSSIBLE__
             else fromMaybe __IMPOSSIBLE__ $ permPicks perm !!! k
-        perm = fromMaybe __IMPOSSIBLE__ $ dbPatPerm pats
+        perm = fromMaybe __IMPOSSIBLE__ $ dbPatPerm $ fromSplitPatterns pats
         k = size tel - x - 1
         arg = telVars (size tel) tel !! k
 
@@ -787,9 +798,8 @@ split' :: Induction
        -> SplitClause
        -> BlockingVar
        -> TCM (Either SplitError (Either SplitClause Covering))
-split' ind allowPartialCover fixtarget sc@(SClause tel ps _ cps target) (BlockingVar x mcons) =
+split' ind allowPartialCover fixtarget sc@(SClause tel ps _ cps target) (BlockingVar x pcons' plits overlap) =
  liftTCM $ runExceptT $ do
-
   debugInit tel x ps cps
 
   -- Split the telescope at the variable
@@ -798,24 +808,53 @@ split' ind allowPartialCover fixtarget sc@(SClause tel ps _ cps target) (Blockin
     let (tel1, dom : tel2) = splitAt (size tel - x - 1) $ telToList tel
     return (fst $ unDom dom, snd <$> dom, telFromList tel1, telFromList tel2)
 
-  -- Check that t is a datatype or a record
-  -- Andreas, 2010-09-21, isDatatype now directly throws an exception if it fails
-  -- cons = constructors of this datatype
-  (d, pars, ixs, cons) <- inContextOfT $ isDatatype ind t
-
   -- Compute the neighbourhoods for the constructors
-  ns <- catMaybes <$> do
-    forM cons $ \ con ->
-      fmap (con,) <$> do
-        msc <- computeNeighbourhood delta1 n delta2 d pars ixs x tel ps cps con
-        case fixtarget of
-          NoFixTarget  -> return msc
-          YesFixTarget -> Trav.forM msc $ \ sc -> do
-            lift $ snd <$> fixTarget sc{ scTarget = target }
+  let computeNeighborhoods = do
+        -- Check that t is a datatype or a record
+        -- Andreas, 2010-09-21, isDatatype now directly throws an exception if it fails
+        -- cons = constructors of this datatype
+        (d, pars, ixs, cons) <- inContextOfT $ isDatatype ind t
+        mns <- forM cons $ \ con -> fmap (SplitCon con,) <$>
+          computeNeighbourhood delta1 n delta2 d pars ixs x tel ps cps con
+        return $ catMaybes mns
+
+      computeLitNeighborhoods = do
+        typeOk <- liftTCM $ do
+          t' <- litType $ headWithDefault {-'-} __IMPOSSIBLE__ plits
+          liftTCM $ dontAssignMetas $ tryConversion $ equalType (unDom t) t'
+        unless typeOk $ throwError . NotADatatype =<< do liftTCM $ buildClosure (unDom t)
+        ns <- forM plits $ \lit -> do
+          let delta2' = subst 0 (Lit lit) delta2
+              delta'  = delta1 `abstract` delta2'
+              rho     = liftS x $ consS (LitP lit) idS
+              ps'     = applySubst rho ps
+              cps'    = applySplitPSubst rho cps
+          return (SplitLit lit , SClause delta' ps' rho cps' Nothing)
+        ca <- do
+          let delta' = tel -- telescope is unchanged for catchall branch
+              varp   = VarP PatOSplit $ SplitPatVar
+                         { splitPatVarName   = underscore
+                         , splitPatVarIndex  = 0
+                         , splitExcludedLits = plits
+                         }
+              rho    = liftS x $ consS varp $ raiseS 1
+              ps'    = applySubst rho ps
+          return (SplitCatchall , SClause delta' ps' rho cps Nothing)
+        return $ ns ++ [ ca ]
+
+  ns <- if null pcons' && not (null plits)
+        then computeLitNeighborhoods
+        else computeNeighborhoods
+
+  ns <- case fixtarget of
+    NoFixTarget  -> return ns
+    YesFixTarget -> lift $ forM ns $ \(con,sc) ->
+      (con,) . snd <$> fixTarget sc{ scTarget = target }
 
   case ns of
     []  -> do
-      let rho = liftS x $ consS (VarP PatOAbsurd $ DBPatVar absurdPatternName 0) $ raiseS 1
+      let absurdp = VarP PatOAbsurd $ SplitPatVar underscore 0 []
+          rho = liftS x $ consS absurdp $ raiseS 1
           ps' = applySubst rho ps
       return $ Left $ SClause
                { scTel  = tel
@@ -824,6 +863,11 @@ split' ind allowPartialCover fixtarget sc@(SClause tel ps _ cps target) (Blockin
                , scCheckpoints        = __IMPOSSIBLE__ -- not used
                , scTarget             = Nothing
                }
+
+    -- Jesper, 2018-05-24: If the datatype is in Prop we can
+    -- only do empty splits, unless the target is in Prop too.
+    (_ : _) | isProp t && not (isIrrelevant relTarget) ->
+      throwError . IrrelevantDatatype =<< do liftTCM $ buildClosure (unDom t)
 
     -- Andreas, 2011-10-03
     -- if more than one constructor matches, we cannot be irrelevant
@@ -835,20 +879,27 @@ split' ind allowPartialCover fixtarget sc@(SClause tel ps _ cps target) (Blockin
   -- all the data type constructors
   -- Andreas, 2017-10-08 ... unless partial covering is explicitly allowed.
     _ | allowPartialCover == NoAllowPartialCover,
-        Just pcons' <- mcons,
-        let pcons = map conName pcons',
-        let cons = (map fst ns),
-        let diff = Set.fromList cons Set.\\ Set.fromList pcons,
+        overlap == False,
+        let ptags = map (SplitCon . conName) pcons' ++ map SplitLit plits,
+        let tags  = map fst ns,
+        let diff  = Set.fromList tags Set.\\ Set.fromList ptags,
         not (Set.null diff) -> do
           liftTCM $ reportSDoc "tc.cover.precomputed" 10 $ vcat
-            [ hsep $ text "pcons =" : map prettyTCM pcons
-            , hsep $ text "cons  =" : map prettyTCM cons
+            [ hsep $ text "ptags =" : map prettyTCM ptags
+            , hsep $ text "tags  =" : map prettyTCM tags
             ]
           throwError (GenericSplitError "precomputed set of constructors does not cover all cases")
 
-    _  -> return $ Right $ Covering (lookupPatternVar sc x) ns
+    _  -> do
+      liftTCM $ checkSortOfSplitVar $ unDom t
+      return $ Right $ Covering (lookupPatternVar sc x) ns
 
   where
+    relTarget = caseMaybe target Relevant $ \b ->
+            if isProp (unArg b)
+            then Irrelevant
+            else getRelevance b
+
     inContextOfT, inContextOfDelta2 :: (MonadTCM tcm, MonadDebug tcm) => tcm a -> tcm a
     inContextOfT      = addContext tel . escapeContext (x + 1)
     inContextOfDelta2 = addContext tel . escapeContext x
@@ -860,7 +911,7 @@ split' ind allowPartialCover fixtarget sc@(SClause tel ps _ cps target) (Blockin
         , nest 2 $ vcat
           [ text "tel     =" <+> prettyTCM tel
           , text "x       =" <+> prettyTCM x
-          , text "ps      =" <+> do addContext tel $ prettyTCMPatternList ps
+          , text "ps      =" <+> do addContext tel $ prettyTCMPatternList $ fromSplitPatterns ps
           , text "cps     =" <+> prettyTCM cps
           ]
         ]
@@ -919,14 +970,14 @@ splitResult f sc@(SClause tel ps _ _ target) = do
         -- Andreas, 2018-03-19, issue #2971, check that we have a "strong" record type,
         -- i.e., with all the projections.  Otherwise, we may not split.
         ifNotM (strongRecord fs) (failure CosplitIrrelevantProjections) $ {-else-} do
-        let es = patternsToElims ps
+        let es = patternsToElims $ fromSplitPatterns ps
         -- Note: module parameters are part of ps
         let self  = defaultArg $ Def f [] `applyE` es
             pargs = vs ++ [self]
         reportSDoc "tc.cover" 20 $ sep
           [ text   "we are              self = " <+> (addContext tel $ prettyTCM $ unArg self)
           ]
-        let n = defaultArg $ permRange $ fromMaybe __IMPOSSIBLE__ $ dbPatPerm ps
+        let n = defaultArg $ permRange $ fromMaybe __IMPOSSIBLE__ $ dbPatPerm $ fromSplitPatterns ps
             -- Andreas & James, 2013-11-19 includes the dot patterns!
             -- See test/succeed/CopatternsAndDotPatterns.agda for a case with dot patterns
             -- and copatterns which fails for @n = size tel@ with a broken case tree.
@@ -944,7 +995,7 @@ splitResult f sc@(SClause tel ps _ _ target) = do
                          , scSubst  = idS
                          , scTarget = target'
                          }
-            return (unArg proj, sc')
+            return (SplitCon (unArg proj), sc')
       _ -> failure $ CosplitNoRecordType tel $ unArg t
   where
   -- A record type is strong if it has all the projections.
