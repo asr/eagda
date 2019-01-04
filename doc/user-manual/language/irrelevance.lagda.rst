@@ -1,6 +1,8 @@
 ..
   ::
 
+  {-# OPTIONS --irrelevant-projections #-}
+
   module language.irrelevance where
 
   open import Agda.Builtin.Nat
@@ -126,21 +128,6 @@ What can be done to irrelevant arguments
   zero-not-one : .(0 ≡ 1) → ⊥
   zero-not-one ()
 
-**Example 4.** We can match on an irrelevant record (see :ref:`record-types`) as long as we only use the fields irrelevantly. ::
-
-  record _×_ (A B : Set) : Set where
-    constructor _,_
-    field
-      fst : A
-      snd : B
-
-  irrElim : {A B C : Set} → .(A × B) → (.A → .B → C) → C
-  irrElim (a , b) f = f a b
-
-  lemma : {A B C : Set} {a a' : A} {b b' : B}
-        → (f : .A -> .B -> C) -> irrElim (a , b) f ≡ f a' b'
-  lemma f = refl
-
 What can't be done to irrelevant arguments
 ------------------------------------------
 
@@ -181,6 +168,28 @@ What can't be done to irrelevant arguments
   Cannot pattern match against irrelevant argument of type Nat
   when checking that the pattern zero has type Nat
 
+**Example 4.** We also can't match on an irrelevant record (see
+  :ref:`record-types`).
+
+.. code-block:: agda
+
+  record Σ (A : Set) (B : A → Set) : Set where
+    constructor _,_
+    field
+      fst : A
+      snd : B fst
+
+  irrElim : {A : Set} {B : A → Set} → .(Σ A B) → _
+  irrElim (a , b) = ?
+
+.. code-block:: text
+
+  Cannot pattern match against irrelevant argument of type Σ A B
+  when checking that the pattern a , b has type Σ A B
+
+If this were allowed, `b` would have type `B a` but this type is not
+even well-formed because `a` is irrelevant!
+
 Irrelevant declarations
 =======================
 
@@ -205,7 +214,7 @@ This axiom is not provable inside Agda, but it is often very useful when working
 Irrelevant record fields
 ========================
 
-Record fields (see :ref:`record-types`) can be marked as irrelevant by prefixing their name with a dot in the definition of the record type.
+Record fields (see :ref:`record-types`) can be marked as irrelevant by prefixing their name with a dot in the definition of the record type.  Projections for irrelevant fields are only created if option ``--irrelevant-projections`` is supplied (since Agda > 2.5.4).
 
 **Example 1.** A record type containing pairs of numbers satisfying certain properties. ::
 

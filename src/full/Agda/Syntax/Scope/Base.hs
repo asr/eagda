@@ -36,6 +36,7 @@ import Agda.Syntax.Fixity
 import Agda.Syntax.Abstract.Name as A
 import Agda.Syntax.Concrete.Name as C
 import qualified Agda.Syntax.Concrete as C
+import Agda.Syntax.Concrete.Fixity as C
 
 import Agda.Utils.AssocList (AssocList)
 import qualified Agda.Utils.AssocList as AssocList
@@ -109,11 +110,13 @@ data ScopeInfo = ScopeInfo
       , scopeInverseName   :: Map A.QName [C.QName]
       , scopeInverseModule :: Map A.ModuleName [C.QName]
       , scopeInScope       :: InScopeSet
+      , scopeFixities      :: C.Fixities    -- ^ Maps concrete names to fixities
+      , scopePolarities    :: C.Polarities  -- ^ Maps concrete names to polarities
       }
   deriving (Data, Show)
 
 instance Eq ScopeInfo where
-  ScopeInfo c1 m1 v1 l1 p1 _ _ _ == ScopeInfo c2 m2 v2 l2 p2 _ _ _ =
+  ScopeInfo c1 m1 v1 l1 p1 _ _ _ _ _ == ScopeInfo c2 m2 v2 l2 p2 _ _ _ _ _ =
     c1 == c2 && m1 == m2 && v1 == v2 && l1 == l2 && p1 == p2
 
 -- | Local variables.
@@ -150,12 +153,18 @@ instance Ord LocalVar where
 -- | We show shadowed variables as prefixed by a ".", as not in scope.
 instance Pretty LocalVar where
   pretty (LocalVar x _ []) = pretty x
-  pretty (LocalVar x _ xs) = text "." <> pretty x
+  pretty (LocalVar x _ xs) = "." <> pretty x
 
 -- | Shadow a local name by a non-empty list of imports.
 shadowLocal :: [AbstractName] -> LocalVar -> LocalVar
 shadowLocal [] _ = __IMPOSSIBLE__
 shadowLocal ys (LocalVar x b zs) = LocalVar x b (ys ++ zs)
+
+-- | Treat patternBound variable as a module parameter
+patternToModuleBound :: LocalVar -> LocalVar
+patternToModuleBound x
+ | localBinder x == PatternBound = x { localBinder = LambdaBound }
+ | otherwise                     = x
 
 -- | Project name of unshadowed local variable.
 notShadowedLocal :: LocalVar -> Maybe A.Name
@@ -245,6 +254,8 @@ data KindOfName
   | FldName        -- ^ Record field name.
   | DefName        -- ^ Ordinary defined name.
   | PatternSynName -- ^ Name of a pattern synonym.
+  | GeneralizeName -- ^ Name to be generalized
+  | DisallowedGeneralizeName -- ^ Generalizable variable from a let open
   | MacroName      -- ^ Name of a macro
   | QuotableName   -- ^ A name that can only be quoted.
   deriving (Eq, Show, Data, Enum, Bounded)
@@ -274,7 +285,14 @@ data AbstractName = AbsName
     -- ^ The kind (definition, constructor, record field etc.).
   , anameLineage :: WhyInScope
     -- ^ Explanation where this name came from.
+  , anameMetadata :: NameMetadata
+    -- ^ Additional information needed during scope checking. Currently used
+    --   for generalized data/record params.
   }
+  deriving (Data, Show)
+
+data NameMetadata = NoMetadata
+                  | GeneralizedVarsMetadata (Map A.QName A.Name)
   deriving (Data, Show)
 
 -- | A decoration of abstract syntax module names.
@@ -332,12 +350,12 @@ data ResolvedName
 
 instance Pretty ResolvedName where
   pretty = \case
-    VarName x _         -> text "variable"    <+> pretty x
+    VarName x _         -> "variable"    <+> pretty x
     DefinedName a x     -> pretty a           <+> pretty x
-    FieldName xs        -> text "field"       <+> pretty xs
-    ConstructorName xs  -> text "constructor" <+> pretty xs
-    PatternSynResName x -> text "pattern"     <+> pretty x
-    UnknownName         -> text "<unknown name>"
+    FieldName xs        -> "field"       <+> pretty xs
+    ConstructorName xs  -> "constructor" <+> pretty xs
+    PatternSynResName x -> "pattern"     <+> pretty x
+    UnknownName         -> "<unknown name>"
 
 -- * Operations on name and module maps.
 
@@ -410,6 +428,8 @@ emptyScopeInfo = ScopeInfo
   , scopeInverseName   = Map.empty
   , scopeInverseModule = Map.empty
   , scopeInScope       = Set.empty
+  , scopeFixities      = Map.empty
+  , scopePolarities    = Map.empty
   }
 
 -- | Map functions over the names and modules in a scope.
@@ -671,6 +691,14 @@ restrictLocalPrivate m = mapScope' PrivateNS (Map.mapMaybe rName) (Map.mapMaybe 
 removeOnlyQualified :: Scope -> Scope
 removeOnlyQualified s = setNameSpace OnlyQualifiedNS emptyNameSpace s
 
+-- | Disallow using generalized variables from the scope
+disallowGeneralizedVars :: Scope -> Scope
+disallowGeneralizedVars = mapScope_ ((fmap . map) disallow) id id
+  where
+    disallow a = a { anameKind = disallowGen (anameKind a) }
+    disallowGen GeneralizeName = DisallowedGeneralizeName
+    disallowGen k              = k
+
 -- | Add an explanation to why things are in scope.
 inScopeBecause :: (WhyInScope -> WhyInScope) -> Scope -> Scope
 inScopeBecause f = mapScope_ mapName mapMod id
@@ -704,6 +732,27 @@ everythingInScope scope = allThingsInScope $ mergeScopes $
   where
     look m = fromMaybe __IMPOSSIBLE__ $ Map.lookup m $ scopeModules scope
     s0     = look $ scopeCurrent scope
+
+everythingInScopeQualified :: ScopeInfo -> NameSpace
+everythingInScopeQualified scope =
+  allThingsInScope $ mergeScopes $
+    chase Set.empty scopes
+  where
+    s0      = look $ scopeCurrent scope
+    scopes  = s0 : map look (scopeParents s0)
+    look m  = fromMaybe __IMPOSSIBLE__ $ Map.lookup m $ scopeModules scope
+    lookP   = restrictPrivate . look
+
+    -- We start with the current module and all its parents and look through
+    -- all their imports and submodules.
+    chase seen [] = []
+    chase seen (s : ss)
+      | Set.member name seen = chase seen ss
+      | otherwise = s : chase (Set.insert name seen) (imports ++ submods ++ ss)
+      where
+        name    = scopeName s
+        imports = map lookP $ Map.elems $ scopeImports s
+        submods = map (lookP . amodName) $ concat $ Map.elems $ allNamesInScope s
 
 -- | Compute a flattened scope. Only include unqualified names or names
 -- qualified by modules in the first argument.
@@ -903,7 +952,7 @@ recomputeInverseScopeMaps :: ScopeInfo -> ScopeInfo
 recomputeInverseScopeMaps scope = billToPure [ Scoping , InverseScopeLookup ] $
   scope { scopeInverseName   = nameMap
         , scopeInverseModule = Map.fromList [ (x, findModule x) | x <- Map.keys moduleMap ++ Map.keys importMap ]
-        , scopeInScope       = Set.unions $ map (scopeSet . snd) scopes
+        , scopeInScope       = nsInScope $ everythingInScopeQualified scope
         }
   where
     this = scopeCurrent scope
@@ -916,15 +965,12 @@ recomputeInverseScopeMaps scope = billToPure [ Scoping , InverseScopeLookup ] $
     restrict m s | m `elem` current = s
                  | otherwise = restrictPrivate s
 
-    scopeSet     s = Set.unions $ map (namespaceSet . snd) $ scopeNameSpaces s
-    namespaceSet s = nsInScope s
-
     internalName :: C.QName -> Bool
     internalName C.QName{} = False
     internalName (C.Qual m n) = intern m || internalName n
       where
       -- Recognize fresh names created Parser.y
-      intern (C.Name _ [ C.Id ('.' : '#' : _) ]) = True
+      intern (C.Name _ _ [ C.Id ('.' : '#' : _) ]) = True
       intern _ = False
 
     findName :: Ord a => Map a [(A.ModuleName, C.Name)] -> a -> [C.QName]
@@ -1000,19 +1046,19 @@ instance Pretty NameSpace where
 
 prettyNameSpace :: NameSpace -> [Doc]
 prettyNameSpace (NameSpace names mods _) =
-    blockOfLines (text "names")   (map pr $ Map.toList names) ++
-    blockOfLines (text "modules") (map pr $ Map.toList mods)
+    blockOfLines "names"   (map pr $ Map.toList names) ++
+    blockOfLines "modules" (map pr $ Map.toList mods)
   where
     pr :: (Pretty a, Pretty b) => (a,b) -> Doc
-    pr (x, y) = pretty x <+> text "-->" <+> pretty y
+    pr (x, y) = pretty x <+> "-->" <+> pretty y
 
 instance Pretty Scope where
   pretty (scope@Scope{ scopeName = name, scopeParents = parents, scopeImports = imps }) =
     vcat $
-      [ text "scope" <+> pretty name ] ++ ind (
+      [ "scope" <+> pretty name ] ++ ind (
         concat [ blockOfLines (pretty nsid) $ prettyNameSpace $ scopeNameSpace nsid scope
                | nsid <- [minBound..maxBound] ]
-      ++ blockOfLines (text "imports")
+      ++ blockOfLines "imports"
            (case Map.keys imps of [] -> []; ks -> [ prettyList ks ])
       )
     where ind = map $ nest 2
@@ -1023,14 +1069,14 @@ blockOfLines _  [] = []
 blockOfLines hd ss = hd : map (nest 2) ss
 
 instance Pretty ScopeInfo where
-  pretty (ScopeInfo this mods toBind locals ctx _ _ _) = vcat $
-    [ text "ScopeInfo"
-    , text "  current = " <> pretty this
+  pretty (ScopeInfo this mods toBind locals ctx _ _ _ _ _) = vcat $
+    [ "ScopeInfo"
+    , "  current = " <> pretty this
     ] ++
-    (if null toBind then [] else [ text "  toBind  = " <> pretty locals ]) ++
-    (if null locals then [] else [ text "  locals  = " <> pretty locals ]) ++
-    [ text "  context = " <> pretty ctx
-    , text "  modules"
+    (if null toBind then [] else [ "  toBind  = " <> pretty locals ]) ++
+    (if null locals then [] else [ "  locals  = " <> pretty locals ]) ++
+    [ "  context = " <> pretty ctx
+    , "  modules"
     ] ++
     map (nest 4) (List.filter (not . null) $ map pretty $ Map.elems mods)
 

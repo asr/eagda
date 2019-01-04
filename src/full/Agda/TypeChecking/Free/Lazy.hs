@@ -287,6 +287,7 @@ instance Free Term where
     Level l      -> freeVars' l
     MetaV m ts   -> go (Flexible $ singleton m) $ freeVars' ts
     DontCare mt  -> goRel Irrelevant $ freeVars' mt
+    Dummy{}      -> mempty
 
 instance Free a => Free (Type' a) where
   freeVars' (El s t) =
@@ -305,6 +306,8 @@ instance Free Sort where
       PiSort s1 s2 -> go WeaklyRigid $ freeVars' (s1, s2)
       UnivSort s -> go WeaklyRigid $ freeVars' s
       MetaS x es -> go (Flexible $ singleton x) $ freeVars' es
+      DefS _ es  -> go WeaklyRigid $ freeVars' es
+      DummyS{}   -> mempty
 
 instance Free Level where
   freeVars' (Max as) = freeVars' as

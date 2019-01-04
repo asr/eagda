@@ -27,6 +27,7 @@ vimFile file =
 escape :: String -> String
 escape = concatMap esc
     where
+        escchars :: String
         escchars = "$\\^.*~[]"
         esc c   | c `elem` escchars = ['\\',c]
                 | otherwise         = [c]
@@ -77,9 +78,9 @@ toVim ns = unlines $ matches mcons micons mdefs midefs mflds miflds
         midefs = concatMap parts defs
         miflds = concatMap parts flds
 
-        parts (NoName _ _) = []
-        parts (Name _ [_]) = []
-        parts (Name _ ps)  = [ rawNameToString x | Id x <- ps ]
+        parts (NoName _ _)   = []
+        parts (Name _ _ [_]) = []
+        parts (Name _ _ ps)  = [ rawNameToString x | Id x <- ps ]
 
 generateVimFile :: FilePath -> TCM ()
 generateVimFile file = do

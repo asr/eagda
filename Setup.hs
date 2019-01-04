@@ -1,41 +1,69 @@
+{-# LANGUAGE CPP #-}
 
-import Data.List
 import Distribution.Simple
 import Distribution.Simple.LocalBuildInfo
 import Distribution.Simple.Setup
 import Distribution.Simple.BuildPaths (exeExtension)
 import Distribution.PackageDescription
+-- ASR (2018-07-20): GHC 7.10 does not support the macro
+-- @MIN_VERSION_Cabal@.
+#if __GLASGOW_HASKELL__ > 710
+#if MIN_VERSION_Cabal(2,3,0)
+import Distribution.System ( buildPlatform )
+#endif
+#endif
 import System.FilePath
+import System.FilePath.Find
 import System.Process
 import System.Exit
+
 
 main = defaultMainWithHooks hooks
 
 hooks = simpleUserHooks { regHook = checkAgdaPrimitiveAndRegister }
 
-builtins :: [String]
-builtins =
-  [ "Bool", "Char", "Coinduction", "Equality", "Float"
-  , "FromNat", "FromNeg", "FromString", "IO", "Int", "List"
-  , "Nat", "Reflection", "Size", "Strict", "String"
-  , "TrustMe", "Unit", "Word" ]
+builtins :: FilePath -> IO [FilePath]
+builtins = find always (extension ==? ".agda")
+
+agdaExeExtension :: String
+-- ASR (2018-07-20): GHC 7.10 does not support the macro
+-- @MIN_VERSION_Cabal@.
+#if __GLASGOW_HASKELL__ > 710
+#if MIN_VERSION_Cabal(2,3,0)
+agdaExeExtension = exeExtension buildPlatform
+#else
+agdaExeExtension = exeExtension
+#endif
+#else
+agdaExeExtension = exeExtension
+#endif
 
 checkAgdaPrimitive :: PackageDescription -> LocalBuildInfo -> RegisterFlags -> IO ()
+-- ASR (2018-12-23): This fun run twice using Cabal < 2.0.0.0. Because
+-- GHC 7.10 does not support the macro @MIN_VERSION_Cabal@, I only
+-- could avoid the second run of this function on GHC > 7.10. See
+-- Issue #3444.
+#if __GLASGOW_HASKELL__ > 710
+#if !MIN_VERSION_Cabal(2,0,0)
 checkAgdaPrimitive pkg info flags | regGenPkgConf flags /= NoFlag = return ()   -- Gets run twice, only do this the second time
+#endif
+#endif
 checkAgdaPrimitive pkg info flags = do
-  let dirs = absoluteInstallDirs pkg info NoCopyDest
-      agda = buildDir info </> "agda" </> "agda" <.> exeExtension
-      primMod ms = (ms, datadir dirs </> "lib" </> "prim" </> "Agda" </> foldr1 (</>) ms <.> "agda")
-      prims      = primMod ["Primitive"] : [ primMod ["Builtin", m] | m <- builtins ]
+  let dirs   = absoluteInstallDirs pkg info NoCopyDest
+      agda   = buildDir info </> "agda" </> "agda" <.> agdaExeExtension
+      auxDir = datadir dirs </> "lib" </> "prim" </> "Agda"
+      prim   = auxDir </> "Primitive" <.> "agda"
 
-      checkPrim (ms, file) = do
+      checkPrim file = do
         ok <- rawSystem agda [file, "-v0"]
         case ok of
           ExitSuccess   -> return ()
-          ExitFailure _ -> putStrLn $ "WARNING: Failed to typecheck " ++ intercalate "." ("Agda" : ms) ++ "!"
+          ExitFailure _ -> putStrLn $ "WARNING: Failed to typecheck " ++ file ++ "!"
 
   putStrLn "Generating Agda library interface files..."
-  mapM_ checkPrim prims
+  checkPrim prim
+  auxBuiltins <- builtins (auxDir </> "Builtin")
+  mapM_ checkPrim auxBuiltins
 
 checkAgdaPrimitiveAndRegister :: PackageDescription -> LocalBuildInfo -> UserHooks -> RegisterFlags -> IO ()
 checkAgdaPrimitiveAndRegister pkg info hooks flags = do

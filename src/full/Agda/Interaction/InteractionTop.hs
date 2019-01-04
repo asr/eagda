@@ -96,9 +96,10 @@ import Agda.Utils.Maybe
 import qualified Agda.Utils.Maybe.Strict as Strict
 import Agda.Utils.Monad
 import Agda.Utils.Null
-import Agda.Utils.Pretty
+import Agda.Utils.Pretty as P
 import Agda.Utils.String
 import Agda.Utils.Time
+import Agda.Utils.Tuple
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -162,16 +163,16 @@ type CommandM = StateT CommandState TCM
 localStateCommandM :: CommandM a -> CommandM a
 localStateCommandM m = do
   cSt <- get
-  tcSt <- lift $ get
+  tcSt <- getTC
   x <- m
-  lift $ put tcSt
+  putTC tcSt
   put cSt
   return x
 
 -- | Restore 'TCState', do not touch 'CommandState'.
 
 liftLocalState :: TCM a -> CommandM a
-liftLocalState = lift . localState
+liftLocalState = lift . localTCState
 
 -- | Build an opposite action to 'lift' for state monads.
 
@@ -186,11 +187,22 @@ revLift run lift f = do
     put st
     return a
 
+revLiftTC
+    :: MonadTCState m
+    => (forall c . m c -> TCState -> k (c, TCState))  -- ^ run
+    -> (forall b . k b -> m b)                        -- ^ lift
+    -> (forall x . (m a -> k x) -> k x) -> m a        -- ^ reverse lift in double negative position
+revLiftTC run lift f = do
+    st <- getTC
+    (a, st) <- lift $ f (`run` st)
+    putTC st
+    return a
+
 -- | Opposite of 'liftIO' for 'CommandM'.
 --   Use only if main errors are already catched.
 
 commandMToIO :: (forall x . (CommandM a -> IO x) -> IO x) -> CommandM a
-commandMToIO ci_i = revLift runStateT lift $ \ct -> revLift runSafeTCM liftIO $ ci_i . (. ct)
+commandMToIO ci_i = revLift runStateT lift $ \ct -> revLiftTC runSafeTCM liftIO $ ci_i . (. ct)
 
 -- | Lift a TCM action transformer to a CommandM action transformer.
 
@@ -246,7 +258,7 @@ handleCommand_ = handleCommand id (return ())
 
 handleCommand :: (forall a. CommandM a -> CommandM a) -> CommandM () -> CommandM () -> CommandM ()
 handleCommand wrap onFail cmd = handleNastyErrors $ wrap $ do
-    oldState <- lift get
+    oldState <- getTC
 
     -- -- Andreas, 2016-11-18 OLD CODE:
     -- -- onFail and handleErr are executed in "new" command state (not TCState).
@@ -264,16 +276,16 @@ handleCommand wrap onFail cmd = handleNastyErrors $ wrap $ do
       -- Andreas, 2016-11-18, issue #2174
       -- Reset TCState after error is handled, to get rid of metas created during failed command
       lift $ do
-        newPersistentState <- use lensPersistentState
-        put oldState
-        lensPersistentState .= newPersistentState
+        newPersistentState <- useTC lensPersistentState
+        putTC oldState
+        lensPersistentState `setTCLens` newPersistentState
 
   where
     -- Preserves state so we can do unsolved meta highlighting
     catchErr :: CommandM a -> (TCErr -> CommandM a) -> CommandM a
     catchErr m h = do
       s       <- get
-      (x, s') <- lift $ do disableDestructiveUpdate (runStateT m s)
+      (x, s') <- lift $ do runStateT m s
          `catchError_` \ e ->
            runStateT (h e) s
       put s'
@@ -305,17 +317,21 @@ handleCommand wrap onFail cmd = handleNastyErrors $ wrap $ do
         meta    <- lift $ computeUnsolvedMetaWarnings
         constr  <- lift $ computeUnsolvedConstraints
         err     <- lift $ errorHighlighting e
-        modFile <- lift $ use stModuleToSource
-        method  <- lift $ view eHighlightingMethod
+        modFile <- lift $ useTC stModuleToSource
+        method  <- lift $ viewTC eHighlightingMethod
         let info = compress $ mconcat $
                      -- Errors take precedence over unsolved things.
                      err : if unsolvedNotOK then [meta, constr] else []
         s1 <- lift $ prettyError e
-        s2 <- lift $ prettyTCWarnings' =<< Imp.errorWarningsOfTCErr e
-        let s = List.intercalate "\n" $ filter (not . null) $ s1 : s2
-        x <- lift $ optShowImplicit <$> use stPragmaOptions
+        s2 <- lift $ prettyTCWarnings' =<< Imp.getAllWarningsOfTCErr e
+        let strErr  = if null s2 then s1
+                                 else delimiter "Error" ++ "\n" ++ s1
+        let strWarn = List.intercalate "\n" $ delimiter "Warning(s)"
+                                            : filter (not . null) s2
+        let str     = if null s2 then strErr else strErr ++ "\n\n" ++ strWarn
+        x <- lift $ optShowImplicit <$> useTC stPragmaOptions
         unless (null s1) $ mapM_ putResponse $
-            [ Resp_DisplayInfo $ Info_Error s ] ++
+            [ Resp_DisplayInfo $ Info_Error str ] ++
             tellEmacsToJumpToError (getRange e) ++
             [ Resp_HighlightingInfo info KeepHighlighting
                                     method modFile ] ++
@@ -392,17 +408,17 @@ nextCommand =
 maybeAbort :: CommandM () -> CommandM ()
 maybeAbort c = do
   commandState <- get
-  tcState      <- lift get
-  tcEnv        <- lift ask
+  tcState      <- getTC
+  tcEnv        <- askTC
   result       <- liftIO $ race
                     (runTCM tcEnv tcState $ runStateT c commandState)
                     (waitForAbort $ commandQueue commandState)
   case result of
     Left (((), commandState), tcState) -> do
-      lift $ put tcState
+      putTC tcState
       put commandState
     Right () -> do
-      lift $ put $ initState
+      putTC $ initState
         { stPersistentState = stPersistentState tcState
         , stPreScopeState   =
             (stPreScopeState initState)
@@ -481,6 +497,10 @@ data Interaction' range
   | Cmd_solveAll B.Rewrite
   | Cmd_solveOne B.Rewrite InteractionId range String
 
+    -- | Solve (all goals / the goal at point) by using Auto.
+  | Cmd_autoOne            InteractionId range String
+  | Cmd_autoAll
+
     -- | Parse the given expression (as if it were defined at the
     -- top-level of the current module) and infer its type.
   | Cmd_infer_toplevel  B.Rewrite  -- Normalise the type?
@@ -510,8 +530,7 @@ data Interaction' range
     -- command tries not to do that. One result of this is that the
     -- command uses the current include directories, whatever they happen
     -- to be.
-  | Cmd_load_highlighting_info
-                        FilePath
+  | Cmd_load_highlighting_info FilePath
 
     -- | Tells Agda to compute token-based highlighting information
     -- for the file.
@@ -555,8 +574,6 @@ data Interaction' range
 
   | Cmd_refine_or_intro Bool InteractionId range String
 
-  | Cmd_auto            InteractionId range String
-
   | Cmd_context         B.Rewrite InteractionId range String
 
   | Cmd_helper_function B.Rewrite InteractionId range String
@@ -564,6 +581,11 @@ data Interaction' range
   | Cmd_infer           B.Rewrite InteractionId range String
 
   | Cmd_goal_type       B.Rewrite InteractionId range String
+
+  -- | Grabs the current goal's type and checks the expression in the hole
+  -- against it. Returns the elaborated term.
+  | Cmd_elaborate_give
+                        B.Rewrite InteractionId range String
 
     -- | Displays the current goal and context.
   | Cmd_goal_type_context B.Rewrite InteractionId range String
@@ -727,11 +749,13 @@ updateInteractionPointsAfter Cmd_give{}                          = True
 updateInteractionPointsAfter Cmd_refine{}                        = True
 updateInteractionPointsAfter Cmd_intro{}                         = True
 updateInteractionPointsAfter Cmd_refine_or_intro{}               = True
-updateInteractionPointsAfter Cmd_auto{}                          = True
+updateInteractionPointsAfter Cmd_autoOne{}                       = True
+updateInteractionPointsAfter Cmd_autoAll{}                       = True
 updateInteractionPointsAfter Cmd_context{}                       = False
 updateInteractionPointsAfter Cmd_helper_function{}               = False
 updateInteractionPointsAfter Cmd_infer{}                         = False
 updateInteractionPointsAfter Cmd_goal_type{}                     = False
+updateInteractionPointsAfter Cmd_elaborate_give{}                = True
 updateInteractionPointsAfter Cmd_goal_type_context{}             = False
 updateInteractionPointsAfter Cmd_goal_type_context_infer{}       = False
 updateInteractionPointsAfter Cmd_goal_type_context_check{}       = False
@@ -755,7 +779,7 @@ interpret (Cmd_compile b file argv) =
             (if b == QuickLaTeX
              then Imp.ScopeCheck
              else Imp.TypeCheck) $ \(i, mw) -> do
-    mw <- lift $ Imp.applyFlagsToMaybeWarnings RespectFlags mw
+    mw <- lift $ Imp.applyFlagsToMaybeWarnings mw
     case mw of
       Imp.NoWarnings -> do
         lift $ case b of
@@ -825,7 +849,7 @@ interpret ToggleImplicitArgs = do
              ps { optShowImplicit = not $ optShowImplicit ps } }
 
 interpret (Cmd_load_highlighting_info source) = do
-  l <- envHighlightingLevel <$> ask
+  l <- asksTC envHighlightingLevel
   when (l /= None) $ do
     -- Make sure that the include directories have
     -- been set.
@@ -836,26 +860,28 @@ interpret (Cmd_load_highlighting_info source) = do
       absSource <- liftIO $ absolute source
       case ex of
         False -> return Nothing
-        True  -> do
-          mmi <- (getVisitedModule =<<
-                    moduleName absSource)
-                   `catchError`
-                 \_ -> return Nothing
+        True  -> (do
+          si <- Imp.sourceInfo absSource
+          let m = Imp.siModuleName si
+          checkModuleName m absSource Nothing
+          mmi <- getVisitedModule m
           case mmi of
             Nothing -> return Nothing
-            Just mi -> do
-              sourceH <- liftIO $ hashFile absSource
-              if sourceH == iSourceHash (miInterface mi)
+            Just mi ->
+              if hashText (Imp.siSource si) ==
+                 iSourceHash (miInterface mi)
                then do
-                modFile <- use stModuleToSource
-                method  <- view eHighlightingMethod
+                modFile <- useTC stModuleToSource
+                method  <- viewTC eHighlightingMethod
                 return $ Just (iHighlighting $ miInterface mi, method, modFile)
                else
-                return Nothing
+                return Nothing)
+            `catchError`
+          \_ -> return Nothing
     mapM_ putResponse resp
 
 interpret (Cmd_tokenHighlighting source remove) = do
-  info <- do l <- envHighlightingLevel <$> ask
+  info <- do l <- asksTC envHighlightingLevel
              if l == None
                then return Nothing
                else do
@@ -872,7 +898,7 @@ interpret (Cmd_tokenHighlighting source remove) = do
     Nothing   -> return ()
 
 interpret (Cmd_highlight ii rng s) = do
-  l <- envHighlightingLevel <$> ask
+  l <- asksTC envHighlightingLevel
   when (l /= None) $ do
     scope <- getOldInteractionScope ii
     removeOldInteractionScope ii
@@ -903,13 +929,13 @@ interpret (Cmd_intro pmLambda ii rng _) = do
   ss <- lift $ B.introTactic pmLambda ii
   liftCommandMT (B.withInteractionId ii) $ case ss of
     []    -> do
-      display_info $ Info_Intro $ text "No introduction forms found."
+      display_info $ Info_Intro $ "No introduction forms found."
     [s]   -> give_gen WithoutForce ii rng s Intro
     _:_:_ -> do
       display_info $ Info_Intro $
-        sep [ text "Don't know which constructor to introduce of"
+        sep [ "Don't know which constructor to introduce of"
             , let mkOr []     = []
-                  mkOr [x, y] = [text x <+> text "or" <+> text y]
+                  mkOr [x, y] = [text x <+> "or" <+> text y]
                   mkOr (x:xs) = text x : mkOr xs
               in nest 2 $ fsep $ punctuate comma (mkOr ss)
             ]
@@ -918,12 +944,12 @@ interpret (Cmd_refine_or_intro pmLambda ii r s) = interpret $
   let s' = trim s
   in (if null s' then Cmd_intro pmLambda else Cmd_refine) ii r s'
 
-interpret (Cmd_auto ii rng s) = do
+interpret (Cmd_autoOne ii rng s) = do
   -- Andreas, 2014-07-05 Issue 1226:
   -- Save the state to have access to even those interaction ids
   -- that Auto solves (since Auto gives the solution right away).
-  st <- lift $ get
-  (time , res) <- maybeTimed $ lift $ Auto.auto ii rng s
+  st <- getTC
+  (time , res) <- maybeTimed $ Auto.auto ii rng s
   case autoProgress res of
    Solutions sols -> do
     lift $ reportSLn "auto" 10 $ "Auto produced the following solutions " ++ show sols
@@ -932,7 +958,7 @@ interpret (Cmd_auto ii rng s) = do
       -- For highlighting, Resp_GiveAction needs to access
       -- the @oldInteractionScope@s of the interaction points solved by Auto.
       -- We dig them out from the state before Auto was invoked.
-      insertOldInteractionScope ii =<< liftLocalState (put st >> getInteractionScope ii)
+      insertOldInteractionScope ii =<< liftLocalState (putTC st >> getInteractionScope ii)
       -- Andreas, 2014-07-07: NOT TRUE:
       -- -- Andreas, 2014-07-05: The following should be obsolete,
       -- -- as Auto has removed the interaction points already:
@@ -951,6 +977,23 @@ interpret (Cmd_auto ii rng s) = do
    Refinement s -> give_gen WithoutForce ii rng s Refine
   maybe (return ()) (display_info . Info_Time) time
 
+interpret Cmd_autoAll = do
+  iis <- getInteractionPoints
+  unless (null iis) $ do
+    let time = 1000 `div` length iis
+    st <- getTC
+    solved <- forM iis $ \ ii -> do
+      rng <- getInteractionRange ii
+      res <- Auto.auto ii rng ("-t " ++ show time ++ "ms")
+      case autoProgress res of
+        Solutions sols -> forM sols $ \ (jj, s) -> do
+            oldInteractionScope <- liftLocalState (putTC st >> getInteractionScope jj)
+            insertOldInteractionScope jj oldInteractionScope
+            putResponse $ Resp_GiveAction ii $ Give_String s
+            return jj
+        _ -> return []
+    modifyTheInteractionPoints (List.\\ concat solved)
+
 interpret (Cmd_context norm ii _ _) =
   display_info . Info_Context =<< liftLocalState (prettyContext norm False ii)
 
@@ -966,6 +1009,18 @@ interpret (Cmd_goal_type norm ii _ _) =
   display_info . Info_CurrentGoal
     =<< liftLocalState (B.withInteractionId ii $ prettyTypeOfMeta norm ii)
 
+interpret (Cmd_elaborate_give norm ii rng s) = do
+  have <- liftLocalState $ B.withInteractionId ii $ do
+    expr <- B.parseExprIn ii rng s
+    goal <- B.typeOfMeta AsIs ii
+    term <- case goal of
+      OfType _ ty -> checkExpr expr =<< isType_ ty
+      _           -> __IMPOSSIBLE__
+    nf <- normalForm norm term
+    txt <- localTC (\ e -> e { envPrintMetasBare = True }) (TCP.prettyTCM nf)
+    return $ show txt
+  give_gen WithoutForce ii rng have ElaborateGive
+
 interpret (Cmd_goal_type_context norm ii rng s) =
   cmd_goal_type_context_and empty norm ii rng s
 
@@ -976,7 +1031,7 @@ interpret (Cmd_goal_type_context_infer norm ii rng s) = do
   have <- if all Char.isSpace s then return empty else liftLocalState $ do
     typ <- B.withInteractionId ii $
       prettyATop =<< B.typeInMeta ii norm =<< B.parseExprIn ii rng s
-    return $ text "Have:" <+> typ
+    return $ "Have:" <+> typ
   cmd_goal_type_context_and have norm ii rng s
 
 interpret (Cmd_goal_type_context_check norm ii rng s) = do
@@ -987,7 +1042,7 @@ interpret (Cmd_goal_type_context_check norm ii rng s) = do
       OfType _ ty -> checkExpr expr =<< isType_ ty
       _           -> __IMPOSSIBLE__
     txt <- TCP.prettyTCM =<< normalForm norm term
-    return $ text "Elaborates to:" <+> txt
+    return $ "Elaborates to:" <+> txt
   cmd_goal_type_context_and have norm ii rng s
 
 interpret (Cmd_show_module_contents norm ii rng s) =
@@ -1004,20 +1059,21 @@ interpret (Cmd_make_case ii rng s) = do
   liftCommandMT (B.withInteractionId ii) $ do
     hidden <- lift $ showImplicitArguments
     tel <- lift $ lookupSection (qnameModule f) -- don't shadow the names in this telescope
+    unicode <- getsTC $ optUseUnicode . getPragmaOptions
     pcs      :: [Doc]      <- lift $ inTopContext $ addContext tel $ mapM prettyA cs
-    let pcs' :: [String]    = List.map (extlam_dropName casectxt . render) pcs
+    let pcs' :: [String]    = List.map (extlam_dropName unicode casectxt . render) pcs
     lift $ reportSDoc "interaction.case" 60 $ TCP.vcat
-      [ TCP.text "InteractionTop.Cmd_make_case"
+      [ "InteractionTop.Cmd_make_case"
       , TCP.nest 2 $ TCP.vcat
-        [ TCP.text "cs   = " TCP.<+> TCP.vcat (map prettyA cs)
-        , TCP.text "pcs  = " TCP.<+> TCP.vcat (map return pcs)
-        , TCP.text "pcs' = " TCP.<+> TCP.vcat (map TCP.text pcs')
+        [ "cs   = " TCP.<+> TCP.vcat (map prettyA cs)
+        , "pcs  = " TCP.<+> TCP.vcat (map return pcs)
+        , "pcs' = " TCP.<+> TCP.vcat (map TCP.text pcs')
         ]
       ]
     lift $ reportSDoc "interaction.case" 90 $ TCP.vcat
-      [ TCP.text "InteractionTop.Cmd_make_case"
+      [ "InteractionTop.Cmd_make_case"
       , TCP.nest 2 $ TCP.vcat
-        [ TCP.text "cs   = " TCP.<+> TCP.text (show cs)
+        [ "cs   = " TCP.<+> TCP.text (show cs)
         ]
       ]
     putResponse $ Resp_MakeCase (makeCaseVariant casectxt) pcs'
@@ -1031,12 +1087,14 @@ interpret (Cmd_make_case ii rng s) = do
     -- very dirty hack, string manipulation by dropping the function name
     -- and replacing the last " = " with " -> ". It's important not to replace
     -- the equal sign in named implicit with an arrow!
-    extlam_dropName :: CaseContext -> String -> String
-    extlam_dropName Nothing x = x
-    extlam_dropName Just{}  x
+    extlam_dropName :: Bool -> CaseContext -> String -> String
+    extlam_dropName _ Nothing x = x
+    extlam_dropName unicode Just{}  x
         = unwords $ reverse $ replEquals $ reverse $ drop 1 $ words x
       where
-        replEquals ("=" : ws) = "→" : ws
+        replEquals ("=" : ws)
+           | unicode   = "→" : ws
+           | otherwise = "->" : ws
         replEquals (w   : ws) = w : replEquals ws
         replEquals []         = []
 
@@ -1054,7 +1112,7 @@ interpret Cmd_abort = return ()
 -- | Show warnings
 interpretWarnings :: CommandM (String, String)
 interpretWarnings = do
-  mws <- lift $ Imp.getAllWarnings AllWarnings RespectFlags
+  mws <- lift $ Imp.getMaybeWarnings AllWarnings
   case filter isNotMeta <$> mws of
     Imp.SomeWarnings ws@(_:_) -> do
       let (we, wa) = classifyWarnings ws
@@ -1073,10 +1131,11 @@ interpretWarnings = do
 solveInstantiatedGoals :: B.Rewrite -> Maybe InteractionId -> CommandM ()
 solveInstantiatedGoals norm mii = do
   -- Andreas, 2016-10-23 issue #2280: throw away meta elims.
-  out <- lift $ local (\ e -> e { envPrintMetasBare = True }) $ do
+  out <- lift $ localTC (\ e -> e { envPrintMetasBare = True }) $ do
     sip <- B.getSolvedInteractionPoints False norm
            -- only solve metas which have a proper instantiation, i.e., not another meta
-    maybe id (\ ii -> filter ((ii ==) . fst)) mii <$> mapM prt sip
+    let sip' = maybe id (\ ii -> filter ((ii ==) . fst3)) mii sip
+    mapM prt sip'
   putResponse $ Resp_SolveAll out
   where
       prt (i, m, e) = do
@@ -1128,15 +1187,18 @@ cmd_load' :: FilePath -> [String]
 cmd_load' file argv unsolvedOK mode cmd = do
     f <- liftIO $ absolute file
     ex <- liftIO $ doesFileExist $ filePath f
-    let relativeTo | ex        = ProjectRoot f
-                   | otherwise = CurrentDir
+    unless ex $ typeError $ GenericError $
+      "The file " ++ file ++ " was not found."
 
     -- Forget the previous "current file" and interaction points.
-    modify $ \st -> st { theInteractionPoints = []
-                       , theCurrentFile       = Nothing
-                       }
+    modify $ \ st -> st { theInteractionPoints = []
+                        , theCurrentFile       = Nothing
+                        }
 
     t <- liftIO $ getModificationTime file
+
+    -- Parse the file.
+    si <- lift (Imp.sourceInfo f)
 
     -- All options are reset when a file is reloaded, including the
     -- choice of whether or not to display implicit arguments.
@@ -1146,7 +1208,8 @@ cmd_load' file argv unsolvedOK mode cmd = do
       Left err   -> lift $ typeError $ GenericError err
       Right opts -> do
         let update o = o { optAllowUnsolved = unsolvedOK && optAllowUnsolved o}
-        lift $ TM.setCommandLineOptions' relativeTo $ mapPragmaOptions update opts
+            root     = projectRoot f (Imp.siModuleName si)
+        lift $ TM.setCommandLineOptions' root $ mapPragmaOptions update opts
         displayStatus
 
     -- Reset the state, preserving options and decoded modules. Note
@@ -1162,7 +1225,7 @@ cmd_load' file argv unsolvedOK mode cmd = do
     putResponse (Resp_ClearHighlighting NotOnlyTokenBased)
 
 
-    ok <- lift $ Imp.typeCheckMain f mode
+    ok <- lift $ Imp.typeCheckMain f mode si
 
     -- The module type checked. If the file was not changed while the
     -- type checker was running then the interaction points and the
@@ -1180,7 +1243,7 @@ cmd_load' file argv unsolvedOK mode cmd = do
 withCurrentFile :: CommandM a -> CommandM a
 withCurrentFile m = do
   mfile <- fmap fst <$> gets theCurrentFile
-  local (\ e -> e { envCurrentPath = mfile }) m
+  localTC (\ e -> e { envCurrentPath = mfile }) m
 
 -- | Available backends.
 
@@ -1201,7 +1264,7 @@ instance Read CompilerBackend where
               _            -> OtherBackend t
     return (b, s)
 
-data GiveRefine = Give | Refine | Intro
+data GiveRefine = Give | Refine | Intro | ElaborateGive
   deriving (Eq, Show)
 
 -- | A "give"-like action (give, refine, etc).
@@ -1227,9 +1290,10 @@ give_gen force ii rng s0 giveRefine = do
   unless (null s) $ do
     let give_ref =
           case giveRefine of
-            Give   -> B.give
-            Refine -> B.refine
-            Intro  -> B.refine
+            Give          -> B.give
+            Refine        -> B.refine
+            Intro         -> B.refine
+            ElaborateGive -> B.give
     -- save scope of the interaction point (for printing the given expr. later)
     scope     <- lift $ getInteractionScope ii
     -- parse string and "give", obtaining an abstract expression
@@ -1263,13 +1327,13 @@ give_gen force ii rng s0 giveRefine = do
     -- WRONG: let literally = (giveRefine == Give || null iis) && rng /= noRange
     -- Ulf, 2015-03-30, if we're doing intro we can't do literal give since
     -- there is nothing in the hole (issue 1892).
-    let literally = giveRefine /= Intro && ae == ae0 && rng /= noRange
+    let literally = giveRefine /= Intro && giveRefine /= ElaborateGive && ae == ae0 && rng /= noRange
     -- Ulf, 2014-01-24: This works for give since we're highlighting the string
     -- that's already in the buffer. Doing it before the give action means that
     -- the highlighting is moved together with the text when the hole goes away.
     -- To make it work for refine we'd have to adjust the ranges.
     when literally $ lift $ do
-      l <- envHighlightingLevel <$> ask
+      l <- asksTC envHighlightingLevel
       when (l /= None) $ do
         printHighlightingInfo KeepHighlighting =<<
           generateTokenInfoFromString rng s
@@ -1290,12 +1354,12 @@ give_gen force ii rng s0 giveRefine = do
 
 highlightExpr :: A.Expr -> TCM ()
 highlightExpr e =
-  local (\e -> e { envModuleNestingLevel = 0
+  localTC (\e -> e { envModuleNestingLevel = 0
                  , envHighlightingLevel  = NonInteractive
                  , envHighlightingMethod = Direct }) $
     generateAndPrintSyntaxInfo decl Full True
   where
-    dummy = mkName_ (NameId 0 0) "dummy"
+    dummy = mkName_ (NameId 0 0) ("dummy" :: String)
     info  = mkDefInfo (nameConcrete dummy) noFixity' PublicAccess ConcreteDef (getRange e)
     decl  = A.Axiom NoFunSig info defaultArgInfo Nothing (qnameFromList [dummy]) e
 
@@ -1326,9 +1390,22 @@ prettyContext
 prettyContext norm rev ii = B.withInteractionId ii $ do
   ctx <- B.contextOfMeta ii norm
   es  <- mapM (prettyATop . B.ofExpr) ctx
-  ns  <- mapM (showATop   . B.ofName) ctx
+  xs  <- mapM (abstractToConcrete_ . B.ofName) ctx
+  let ns = map (nameConcrete . B.ofName) ctx
+      ss = map C.isInScope xs
   return $ align 10 $ applyWhen rev reverse $
-    filter (not . null . fst) $ zip ns $ map (text ":" <+>) es
+    filter (not . null . fst) $
+      zip (zipWith prettyCtxName ns xs)
+          (zipWith prettyCtxType es ss)
+  where
+    prettyCtxName n x
+      | n == x                 = show x
+      | isInScope n == InScope = show n ++ " = " ++ show x
+      | otherwise              = show x
+    prettyCtxType e nis = ":" <+> (e P.<> notInScopeMarker nis)
+    notInScopeMarker nis = case isInScope nis of
+      C.InScope    -> ""
+      C.NotInScope -> "  (not in scope)"
 
 -- | Create type of application of new helper function that would solve the goal.
 
@@ -1348,7 +1425,7 @@ cmd_goal_type_context_and doc norm ii _ _ = display_info . Info_GoalType =<< do
     goal <- B.withInteractionId ii $ prettyTypeOfMeta norm ii
     ctx  <- prettyContext norm True ii
     return $ vcat
-      [ text "Goal:" <+> goal
+      [ "Goal:" <+> goal
       , doc
       , text (replicate 60 '\x2014')
       , ctx
@@ -1363,11 +1440,11 @@ showModuleContents norm rng s = display_info . Info_ModuleContents =<< do
     (modules, types) <- B.moduleContents norm rng s
     types' <- forM types $ \ (x, t) -> do
       t <- TCP.prettyTCM t
-      return (prettyShow x, text ":" <+> t)
+      return (prettyShow x, ":" <+> t)
     return $ vcat
-      [ text "Modules"
+      [ "Modules"
       , nest 2 $ vcat $ map (text . show) modules
-      , text "Names"
+      , "Names"
       , nest 2 $ align 10 types'
       ]
 
@@ -1382,9 +1459,9 @@ searchAbout norm rg nm = do
        hits <- findMentions norm rg tnm
        forM hits $ \ (x, t) -> do
          t <- TCP.prettyTCM t
-         return (prettyShow x, text ":" <+> t)
+         return (prettyShow x, ":" <+> t)
     display_info $ Info_SearchAbout $
-      text "Definitions about" <+> text (List.intercalate ", " $ words nm) $$
+      "Definitions about" <+> text (List.intercalate ", " $ words nm) $$
       nest 2 (align 10 fancy)
 
 -- | Explain why something is in scope.
@@ -1419,49 +1496,51 @@ whyInScope s = display_info . Info_WhyInScope =<< do
           where
             asVar :: TCM Doc
             asVar = do
-              TCP.text "* a variable bound at" TCP.<+> TCP.prettyTCM (nameBindingSite $ localVar x)
+              "* a variable bound at" TCP.<+> TCP.prettyTCM (nameBindingSite $ localVar x)
             shadowing :: LocalVar -> TCM Doc
-            shadowing (LocalVar _ _ [])    = TCP.text "shadowing"
-            shadowing _ = TCP.text "in conflict with"
+            shadowing (LocalVar _ _ [])    = "shadowing"
+            shadowing _ = "in conflict with"
         names   xs = TCP.vcat $ map pName xs
         modules ms = TCP.vcat $ map pMod ms
 
-        pKind DefName        = TCP.text "defined name"
-        pKind ConName        = TCP.text "constructor"
-        pKind FldName        = TCP.text "record field"
-        pKind PatternSynName = TCP.text "pattern synonym"
-        pKind MacroName      = TCP.text "macro name"
-        pKind QuotableName   = TCP.text "quotable name"
+        pKind DefName        = "defined name"
+        pKind ConName        = "constructor"
+        pKind FldName        = "record field"
+        pKind PatternSynName = "pattern synonym"
+        pKind GeneralizeName = "generalizable variable"
+        pKind DisallowedGeneralizeName = "generalizable variable from let open"
+        pKind MacroName      = "macro name"
+        pKind QuotableName   = "quotable name"
 
         pName :: AbstractName -> TCM Doc
         pName a = TCP.sep
-          [ TCP.text "* a"
+          [ "* a"
             TCP.<+> pKind (anameKind a)
             TCP.<+> TCP.text (prettyShow $ anameName a)
-          , TCP.nest 2 $ TCP.text "brought into scope by"
+          , TCP.nest 2 $ "brought into scope by"
           ] TCP.$$
           TCP.nest 2 (pWhy (nameBindingSite $ qnameName $ anameName a) (anameLineage a))
         pMod :: AbstractModule -> TCM Doc
         pMod  a = TCP.sep
-          [ TCP.text "* a module" TCP.<+> TCP.text (prettyShow $ amodName a)
-          , TCP.nest 2 $ TCP.text "brought into scope by"
+          [ "* a module" TCP.<+> TCP.text (prettyShow $ amodName a)
+          , TCP.nest 2 $ "brought into scope by"
           ] TCP.$$
           TCP.nest 2 (pWhy (nameBindingSite $ qnameName $ mnameToQName $ amodName a) (amodLineage a))
 
         pWhy :: Range -> WhyInScope -> TCM Doc
-        pWhy r Defined = TCP.text "- its definition at" TCP.<+> TCP.prettyTCM r
+        pWhy r Defined = "- its definition at" TCP.<+> TCP.prettyTCM r
         pWhy r (Opened (C.QName x) w) | isNoName x = pWhy r w
         pWhy r (Opened m w) =
-          TCP.text "- the opening of"
+          "- the opening of"
           TCP.<+> TCP.text (show m)
-          TCP.<+> TCP.text "at"
+          TCP.<+> "at"
           TCP.<+> TCP.prettyTCM (getRange m)
           TCP.$$
           pWhy r w
         pWhy r (Applied m w) =
-          TCP.text "- the application of"
+          "- the application of"
           TCP.<+> TCP.text (show m)
-          TCP.<+> TCP.text "at"
+          TCP.<+> "at"
           TCP.<+> TCP.prettyTCM (getRange m)
           TCP.$$
           pWhy r w
@@ -1553,7 +1632,7 @@ maybeTimed work = do
   doTime <- lift $ hasVerbosity "profile.interactive" 10
   if not doTime then (Nothing,) <$> work else do
     (r, time) <- measureTime work
-    return (Just $ text "Time:" <+> pretty time, r)
+    return (Just $ "Time:" <+> pretty time, r)
 
 -- | Tell to highlight the code using the given highlighting
 -- info (unless it is @Nothing@).

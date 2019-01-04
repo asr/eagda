@@ -116,7 +116,7 @@ termDecl' d = case d of
     A.Field {}            -> return mempty
     A.Primitive {}        -> return mempty
     A.Mutual _ ds
-      | [A.RecSig{}, A.RecDef _ _ _ _ _ _ _ rds] <- unscopeDefs ds
+      | [A.RecSig{}, A.RecDef _ _ _ _ _ _ _ _ rds] <- unscopeDefs ds
                           -> termDecls rds
     A.Mutual i ds         -> termMutual $ getNames ds
     A.Section _ _ _ ds    -> termDecls ds
@@ -127,11 +127,12 @@ termDecl' d = case d of
     A.Pragma {}           -> return mempty
     A.Open {}             -> return mempty
     A.PatternSynDef {}    -> return mempty
-        -- open and pattern synonym defs are just artifacts from the concrete syntax
+    A.Generalize {}       -> return mempty
+        -- open, pattern synonym and generalize defs are just artifacts from the concrete syntax
     A.ScopedDecl scope ds -> {- withScope_ scope $ -} termDecls ds
         -- scope is irrelevant as we are termination checking Syntax.Internal
     A.RecSig{}            -> return mempty
-    A.RecDef _ r _ _ _ _ _ ds -> termDecls ds
+    A.RecDef _ r _ _ _ _ _ _ ds -> termDecls ds
     -- These should all be wrapped in mutual blocks
     A.FunDef{}      -> __IMPOSSIBLE__
     A.DataSig{}     -> __IMPOSSIBLE__
@@ -150,7 +151,7 @@ termDecl' d = case d of
     -- for symbols that need to be termination-checked.
     getNames = concatMap getName
     getName (A.FunDef i x delayed cs)   = [x]
-    getName (A.RecDef _ _ _ _ _ _ _ ds) = getNames ds
+    getName (A.RecDef _ _ _ _ _ _ _ _ ds) = getNames ds
     getName (A.Mutual _ ds)             = getNames ds
     getName (A.Section _ _ _ ds)        = getNames ds
     getName (A.ScopedDecl _ ds)         = getNames ds
@@ -167,14 +168,14 @@ termMutual
      --   (For error-reporting only.)
   -> TCM Result
 termMutual names0 = ifNotM (optTerminationCheck <$> pragmaOptions) (return mempty) $ {-else-}
- inTopContext $ disableDestructiveUpdate $ do
+ inTopContext $ do
 
   -- Get set of mutually defined names from the TCM.
   -- This includes local and auxiliary functions introduced
   -- during type-checking.
-  mid <- fromMaybe __IMPOSSIBLE__ <$> asks envMutualBlock
+  mid <- fromMaybe __IMPOSSIBLE__ <$> asksTC envMutualBlock
   mutualBlock <- lookupMutualBlock mid
-  let allNames = Set.elems $ mutualNames mutualBlock
+  let allNames = filter (not . isAbsurdLambdaName) $ Set.elems $ mutualNames mutualBlock
       names    = if null names0 then allNames else names0
       i        = mutualInfo mutualBlock
       -- Andreas, 2014-03-26
@@ -338,7 +339,7 @@ reportCalls no calls = do
     --   ]
     reportSDoc "term.matrices" 30 $ vcat
       [ text $ "Idempotent call matrices (" ++ no ++ "dot patterns):\n"
-      , nest 2 $ vcat $ punctuate (text "\n") $ map pretty idems
+      , nest 2 $ vcat $ punctuate "\n" $ map pretty idems
       ]
     -- reportSDoc "term.matrices" 30 $ vcat
     --   [ text $ "Other call matrices (" ++ no ++ "dot patterns):"
@@ -434,8 +435,15 @@ termDef name = terSetCurrent name $ inConcreteOrAbstractMode name $ \ def -> do
   let t = defType def
 
   liftTCM $ reportSDoc "term.def.fun" 5 $
-    sep [ text "termination checking body of" <+> prettyTCM name
-        , nest 2 $ text ":" <+> prettyTCM t
+    sep [ "termination checking type of" <+> prettyTCM name
+        , nest 2 $ ":" <+> prettyTCM t
+        ]
+
+  termType t `mappend` do
+
+  liftTCM $ reportSDoc "term.def.fun" 5 $
+    sep [ "termination checking body of" <+> prettyTCM name
+        , nest 2 $ ":" <+> prettyTCM t
         ]
 
   -- If --without-K, we disregard all arguments (and result)
@@ -449,9 +457,48 @@ termDef name = terSetCurrent name $ inConcreteOrAbstractMode name $ \ def -> do
 
       case theDef def of
         Function{ funClauses = cls, funDelayed = delayed } ->
-          terSetDelayed delayed $ forM' cls $ termClause
+          terSetDelayed delayed $ forM' cls $ \ cl -> do
+            if hasDefP (namedClausePats cl) -- generated hcomp clause, should be safe.
+                                            -- TODO find proper strategy.
+              then return empty
+              else termClause cl
 
         _ -> return empty
+  where
+    hasDefP :: [NamedArg DeBruijnPattern] -> Bool
+    hasDefP ps = getAny $ flip foldPattern ps $ \ (x :: DeBruijnPattern) ->
+                  case x of
+                    DefP{} -> Any True
+                    _      -> Any False
+
+
+-- | Collect calls in type signature @f : (x1:A1)...(xn:An) -> B@.
+--   It is treated as if there were the additional function clauses.
+--   @@
+--      f = A1
+--      f x1 = A2
+--      f x1 x2 = A3
+--      ...
+--      f x1 ... xn = B
+--   @@
+
+termType :: Type -> TerM Calls
+termType = loop 0
+  where
+  loop n t = do
+    ps <- mkPats n
+    reportSDoc "term.type" 60 $ vcat
+      [ text $ "termType " ++ show n ++ " with " ++ show (length ps) ++ " patterns"
+      , nest 2 $ "looking at type " <+> prettyTCM t
+      ]
+    tel <- getContextTelescope  -- Andreas, 2018-11-15, issue #3394, forgotten initialization of terSizeDepth
+    terSetPatterns ps $ terSetSizeDepth tel $ do
+      ifNotPiType t {-then-} extract {-else-} $ \ dom absB -> do
+        extract dom `mappend` underAbstractionAbs dom absB (loop $! n + 1)
+
+  -- create n variable patterns
+  mkPats n  = zipWith mkPat (downFrom n) <$> getContextNames
+  mkPat i x = notMasked $ VarP PatOSystem $ DBPatVar (prettyShow x) i
 
 -- | Mask arguments and result for termination checking
 --   according to type of function.
@@ -466,9 +513,9 @@ setMasks t cont = do
       d <- (isNothing <$> isDataOrRecord (unEl t)) `or2M` (isJust <$> isSizeType t)
       when d $
         reportSDoc "term.mask" 20 $ do
-          text "argument type "
+          "argument type "
             <+> prettyTCM t
-            <+> text " is not data or record type, ignoring structural descent for --without-K"
+            <+> " is not data or record type, ignoring structural descent for --without-K"
       return d
     -- Check result types
     d  <- isNothing <.> isDataOrRecord . unEl $ core
@@ -537,6 +584,7 @@ instance TermToPattern Term DeBruijnPattern where
     -- Leaves.
     Var i []    -> varP . (`DBPatVar` i) . prettyShow <$> nameOfBV i
     Lit l       -> return $ LitP l
+    Dummy s     -> __IMPOSSIBLE_VERBOSE__ s
     t           -> return $ dotP t
 
 
@@ -576,9 +624,9 @@ termClause' :: Clause -> TerM Calls
 termClause' clause = do
   Clause{ clauseTel = tel, namedClausePats = ps, clauseBody = body } <- etaExpandClause clause
   liftTCM $ reportSDoc "term.check.clause" 25 $ vcat
-    [ text "termClause"
-    , nest 2 $ text "tel =" <+> prettyTCM tel
-    , nest 2 $ text "ps  =" <+> do addContext tel $ prettyTCMPatternList ps
+    [ "termClause"
+    , nest 2 $ "tel =" <+> prettyTCM tel
+    , nest 2 $ "ps  =" <+> do addContext tel $ prettyTCMPatternList ps
     ]
   forM' body $ \ v -> addContext tel $ do
     -- TODO: combine the following two traversals, avoid full normalisation.
@@ -614,8 +662,8 @@ termClause' clause = do
                     (if delayed == Delayed then "delayed " else "") ++
                     "clause of")
                 <+> prettyTCM f
-            , nest 2 $ text "lhs:" <+> sep (map prettyTCM pats)
-            , nest 2 $ text "rhs:" <+> prettyTCM v
+            , nest 2 $ "lhs:" <+> sep (map prettyTCM pats)
+            , nest 2 $ "rhs:" <+> prettyTCM v
             ]
 
 
@@ -653,7 +701,7 @@ instance ExtractCalls Sort where
   extract s = do
     liftTCM $ do
       reportSDoc "term.sort" 20 $
-        text "extracting calls from sort" <+> prettyTCM s
+        "extracting calls from sort" <+> prettyTCM s
       reportSDoc "term.sort" 50 $
         text ("s = " ++ show s)
     case s of
@@ -664,6 +712,8 @@ instance ExtractCalls Sort where
       PiSort s1 s2 -> extract (s1, s2)
       UnivSort s -> extract s
       MetaS x es -> return empty
+      DefS d es  -> return empty
+      DummyS{}   -> return empty
 
 -- | Extract recursive calls from a type.
 
@@ -692,26 +742,6 @@ constructor c ind args = do
              (False, _)           -> const Order.unknown
     terModifyGuarded g' $ extract arg
 
--- | Handle guardedness preserving type constructor.
-
-guardPresTyCon :: QName -> Elims -> (QName -> Elims -> TerM Calls) -> TerM Calls
-guardPresTyCon g es cont = do
-  ifNotM (terGetGuardingTypeConstructors) (cont g es) $ {- else -} do
-
-    def <- liftTCM $ getConstInfo g
-    let occs = defArgOccurrences def
-        preserves = (StrictPos <=)
-        -- Data or record type constructor.
-        con = constructor g Inductive $   -- guardedness preserving
-                zip (argsFromElims es)
-                    (map preserves occs ++ repeat False)
-
-    case theDef def of
-      Datatype{} -> con
-      Record{}   -> con
-      _          -> cont g es
-
-
 -- | Extract calls from with function application.
 
 withFunction :: QName -> Elims -> TerM Calls
@@ -719,7 +749,7 @@ withFunction g es = do
   v <- liftTCM $ -- billTo [Benchmark.Termination, Benchmark.With] $  -- 0ms
          expandWithFunctionCall g es
   liftTCM $ reportSDoc "term.with.call" 30 $
-    text "termination checking expanded with-function call:" <+> prettyTCM v
+    "termination checking expanded with-function call:" <+> prettyTCM v
   extract v
 
 -- | Handles function applications @g es@.
@@ -734,7 +764,7 @@ function g es0 = ifM (terGetInlineWithFunctions `and2M` do isJust <$> isWithFunc
 
     -- let gArgs = Def g es0
     liftTCM $ reportSDoc "term.function" 30 $
-      text "termination checking function call " <+> prettyTCM (Def g es0)
+      "termination checking function call " <+> prettyTCM (Def g es0)
 
     -- First, look for calls in the arguments of the call gArgs.
 
@@ -762,8 +792,8 @@ function g es0 = ifM (terGetInlineWithFunctions `and2M` do isJust <$> isWithFunc
     -- Then, consider call gArgs itself.
 
     liftTCM $ reportSDoc "term.found.call" 20 $
-      sep [ text "found call from" <+> prettyTCM f
-          , nest 2 $ text "to" <+> prettyTCM g
+      sep [ "found call from" <+> prettyTCM f
+          , nest 2 $ "to" <+> prettyTCM g
           ]
 
     -- insert this call into the call list
@@ -775,7 +805,6 @@ function g es0 = ifM (terGetInlineWithFunctions `and2M` do isJust <$> isWithFunc
        -- call is to one of the mutally recursive functions
        Just gInd -> do
          delayed <- terGetDelayed
-         pats    <- terGetPatterns
          -- Andreas, 2017-02-14, issue #2458:
          -- If we have inlined with-functions, we could be illtyped,
          -- hence, do not reduce anything.
@@ -802,7 +831,7 @@ function g es0 = ifM (terGetInlineWithFunctions `and2M` do isJust <$> isWithFunc
            --  reportSLn "term.reduce" 90 $ "normalizing call arguments"
            --  modifyAllowedReductions (List.\\ [UnconfirmedReductions,RecursiveReductions]) $
            --    forM es0 $ \ e -> do
-           --      reportSDoc "term.reduce" 95 $ text "normalizing " <+> prettyTCM e
+           --      reportSDoc "term.reduce" 95 $ "normalizing " <+> prettyTCM e
            --      etaContract =<< normalise e
 
          -- Compute the call matrix.
@@ -835,7 +864,11 @@ function g es0 = ifM (terGetInlineWithFunctions `and2M` do isJust <$> isWithFunc
          -- otherwise its free variables with be prepended to the call
          -- in the error message.
          doc <- liftTCM $ withCurrentModule (qnameModule g) $ buildClosure $
-           Def g $ filter ((/= Inserted) . getOrigin) es0
+           Def g $ reverse $ dropWhile ((Inserted ==) . getOrigin) $ reverse es0
+           -- Andreas, 2018-07-22, issue #3136
+           -- Dropping only inserted arguments at the end, since
+           -- dropping arguments in the middle might make the printer crash.
+           -- Def g $ filter ((/= Inserted) . getOrigin) es0
            -- Andreas, 2017-01-05, issue #2376
            -- Remove arguments inserted by etaExpandClause.
 
@@ -847,13 +880,15 @@ function g es0 = ifM (terGetInlineWithFunctions `and2M` do isJust <$> isWithFunc
                       , callInfoRange  = getRange g
                       , callInfoCall   = doc
                       }]
-         liftTCM $ reportSDoc "term.kept.call" 5 $ vcat
-           [ text "kept call from" <+> text (prettyShow f) <+> hsep (map prettyTCM pats)
-           , nest 2 $ text "to" <+> text (prettyShow g) <+>
-                       hsep (map (parens . prettyTCM) args)
-           , nest 2 $ text "call matrix (with guardedness): "
-           , nest 2 $ pretty cm
-           ]
+         verboseS "term.kept.call" 5 $ do
+           pats <- terGetPatterns
+           reportSDoc "term.kept.call" 5 $ vcat
+             [ "kept call from" <+> text (prettyShow f) <+> hsep (map prettyTCM pats)
+             , nest 2 $ "to" <+> text (prettyShow g) <+>
+                         hsep (map (parens . prettyTCM) args)
+             , nest 2 $ "call matrix (with guardedness): "
+             , nest 2 $ pretty cm
+             ]
          return $ CallGraph.insert src tgt cm info calls
 
 -- | Extract recursive calls from a term.
@@ -861,7 +896,7 @@ function g es0 = ifM (terGetInlineWithFunctions `and2M` do isJust <$> isWithFunc
 instance ExtractCalls Term where
   extract t = do
     liftTCM $ reportSDoc "term.check.term" 50 $ do
-      text "looking for calls in" <+> prettyTCM t
+      "looking for calls in" <+> prettyTCM t
 
     -- Instantiate top-level MetaVar.
     t <- liftTCM $ instantiate t
@@ -886,7 +921,7 @@ instance ExtractCalls Term where
         constructor c ind argsg
 
       -- Function, data, or record type.
-      Def g es -> guardPresTyCon g es function
+      Def g es -> function g es
 
       -- Abstraction. Preserves guardedness.
       Lam h b -> extract b
@@ -894,15 +929,17 @@ instance ExtractCalls Term where
       -- Neutral term. Destroys guardedness.
       Var i es -> terUnguarded $ extract es
 
-      -- Dependent function space.
-      Pi a (Abs x b) -> CallGraph.union <$> (terUnguarded $ extract a) <*> do
-         a <- maskSizeLt a  -- OR: just do not add a to the context!
-         terPiGuarded $ addContext (x, a) $ terRaise $ extract b
+      -- Dependent function space. Destroys guardedness.
+      Pi a (Abs x b) ->
+        terUnguarded $
+        CallGraph.union <$>
+        extract a <*> do
+          a <- maskSizeLt a  -- OR: just do not add a to the context!
+          addContext (x, a) $ terRaise $ extract b
 
-      -- Non-dependent function space.
-      Pi a (NoAbs _ b) -> CallGraph.union
-         <$> terUnguarded (extract a)
-         <*> terPiGuarded (extract b)
+      -- Non-dependent function space. Destroys guardedness.
+      Pi a (NoAbs _ b) ->
+        terUnguarded $ CallGraph.union <$> extract a <*> extract b
 
       -- Literal.
       Lit l -> return empty
@@ -921,6 +958,9 @@ instance ExtractCalls Term where
       Level l -> -- billTo [Benchmark.Termination, Benchmark.Level] $ do
         -- Andreas, 2014-03-26 Benchmark discontinued, < 0.3% spent on levels.
         extract l
+
+      -- Dummy.
+      Dummy{} -> return empty
 
 -- | Extract recursive calls from level expressions.
 
@@ -962,13 +1002,13 @@ maskSizeLt !dom = liftTCM $ do
  -}
 compareArgs :: [Elim] -> TerM (Int, Int, [[Order]])
 compareArgs es = do
-  liftTCM $ reportSDoc "term.compareArgs" 90 $ vcat
-    [ text $ "comparing " ++ show (length es) ++ " args"
-    ]
   pats <- terGetPatterns
+  liftTCM $ reportSDoc "term.compareArgs" 90 $ vcat
+    [ text $ "comparing " ++ show (length es) ++ " args to " ++ show (length pats) ++ " patterns"
+    ]
   -- apats <- annotatePatsWithUseSizeLt pats
   -- reportSDoc "term.compare" 20 $
-  --   text "annotated patterns = " <+> sep (map prettyTCM apats)
+  --   "annotated patterns = " <+> sep (map prettyTCM apats)
   -- matrix <- forM es $ \ e -> forM apats $ \ (b, p) -> terSetUseSizeLt b $ compareElim e p
   matrix <- withUsableVars pats $ forM es $ \ e -> forM pats $ \ p -> compareElim e p
 
@@ -980,14 +1020,18 @@ compareArgs es = do
     filterM (isCoinductiveProjection True) $ mapMaybe (fmap snd . isProjElim) es
   cutoff <- terGetCutOff
   let ?cutoff = cutoff
-  let guardedness = decr True $ projsCaller - projsCallee
+  useGuardedness <- optGuardedness <$> liftTCM pragmaOptions
+  let guardedness =
+        if useGuardedness
+        then decr True $ projsCaller - projsCallee
+        else Order.Unknown
   liftTCM $ reportSDoc "term.guardedness" 30 $ sep
-    [ text "compareArgs:"
+    [ "compareArgs:"
     , nest 2 $ text $ "projsCaller = " ++ prettyShow projsCaller
     , nest 2 $ text $ "projsCallee = " ++ prettyShow projsCallee
     , nest 2 $ text $ "guardedness of call: " ++ prettyShow guardedness
     ]
-  return $ addGuardedness guardedness (size es) (size pats) matrix
+  return $ addGuardedness guardedness (size es, size pats, matrix)
 
 -- | Traverse patterns from left to right.
 --   When we come to a projection pattern,
@@ -1009,9 +1053,9 @@ compareElim :: Elim -> Masked DeBruijnPattern -> TerM Order
 compareElim e p = do
   liftTCM $ do
     reportSDoc "term.compare" 30 $ sep
-      [ text "compareElim"
-      , nest 2 $ text "e = " <> prettyTCM e
-      , nest 2 $ text "p = " <> prettyTCM p
+      [ "compareElim"
+      , nest 2 $ "e = " <> prettyTCM e
+      , nest 2 $ "p = " <> prettyTCM p
       ]
     reportSDoc "term.compare" 50 $ sep
       [ nest 2 $ text $ "e = " ++ show e
@@ -1074,15 +1118,10 @@ makeCM :: Int -> Int -> [[Order]] -> CallMatrix
 makeCM ncols nrows matrix = CallMatrix $
   Matrix.fromLists (Matrix.Size nrows ncols) matrix
 
-{- To turn off guardedness, restore this code.
--- | 'addGuardedness' does nothing.
-addGuardedness :: Integral n => Order -> n -> n -> [[Order]] -> (n, n, [[Order]])
-addGuardedness g nrows ncols m = (nrows, ncols, m)
--}
-
--- | 'addGuardedness' adds guardedness flag in the upper left corner (0,0).
-addGuardedness :: Order -> Int -> Int -> [[Order]] -> (Int, Int, [[Order]])
-addGuardedness o nrows ncols m =
+-- | 'addGuardedness' adds guardedness flag in the upper left corner
+-- (0,0).
+addGuardedness :: Order -> (Int, Int, [[Order]]) -> (Int, Int, [[Order]])
+addGuardedness o (nrows, ncols, m) =
   (nrows + 1, ncols + 1,
    (o : replicate ncols Order.unknown) : map (Order.unknown :) m)
 
@@ -1102,22 +1141,24 @@ offsetFromConstructor c = maybe 1 (const 0) <$> do
 subPatterns :: DeBruijnPattern -> [DeBruijnPattern]
 subPatterns = foldPattern $ \case
   ConP _ _ ps -> map namedArg ps
+  DefP _ _ ps -> map namedArg ps -- TODO check semantics
   VarP _ _    -> mempty
   LitP _      -> mempty
   DotP _ _    -> mempty
   ProjP _ _   -> mempty
+  IApplyP{}   -> mempty
 
 
 compareTerm :: Term -> Masked DeBruijnPattern -> TerM Order
 compareTerm t p = do
 --   reportSDoc "term.compare" 25 $
---     text " comparing term " <+> prettyTCM t <+>
---     text " to pattern " <+> prettyTCM p
+--     " comparing term " <+> prettyTCM t <+>
+--     " to pattern " <+> prettyTCM p
   t <- liftTCM $ stripAllProjections t
   o <- compareTerm' t p
   liftTCM $ reportSDoc "term.compare" 25 $
-    text " comparing term " <+> prettyTCM t <+>
-    text " to pattern " <+> prettyTCM p <+>
+    " comparing term " <+> prettyTCM t <+>
+    " to pattern " <+> prettyTCM p <+>
     text (" results in " ++ prettyShow o)
   return o
 
@@ -1295,6 +1336,7 @@ compareVar i (Masked m p) = do
   let no = return Order.unknown
   case p of
     ProjP{}   -> no
+    IApplyP _ _ _ x  -> compareVarVar i (Masked m x)
     LitP{}    -> no
     DotP{}   -> no
     VarP _ x  -> compareVarVar i (Masked m x)
@@ -1305,6 +1347,10 @@ compareVar i (Masked m p) = do
     ConP c _ ps -> if m then no else setUsability True <$> do
       decrease <$> offsetFromConstructor (conName c)
                <*> (Order.supremum <$> mapM (compareVar i . notMasked . namedArg) ps)
+    DefP _ c ps -> if m then no else setUsability True <$> do
+      decrease <$> offsetFromConstructor c
+               <*> (Order.supremum <$> mapM (compareVar i . notMasked . namedArg) ps)
+      -- This should be fine for c == hcomp
 
 -- | Compare two variables.
 --

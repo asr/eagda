@@ -27,6 +27,10 @@ General options
       For use with the Emacs mode (no need to invoke
       yourself)
 
+:samp:`--interaction-json`
+    For use with other editors such as Atom (no need to invoke
+    yourself)
+
 Compilation
 ~~~~~~~~~~~
 
@@ -72,6 +76,11 @@ Generating highlighted source code
 :samp:`--css={URL}`
       Set URL of the CSS file used by the HTML files to
       :samp:`{URL}` (can be relative)
+
+:samp:`--html-highlight=[code,all,auto]`
+      Whether to highlight non-Agda code as comments in
+      generated HTML files (default: all;
+      see :ref: `generating-html`)
 
 :samp:`--dependency-graph={FILE}`
       Generate a Dot_ file :samp:`{FILE}`
@@ -258,12 +267,24 @@ Other features
       Ignore universe levels (this makes Agda
       inconsistent; see :ref:`universe-levels`)
 
+:samp:`--omega-in-omega`
+      Enable typing rule `Setω : Setω` (this makes
+      Agda inconsistent).
+
 :samp:`--sized-types`
-      Use sized types (default, inconsistent with
-      "musical" coinduction; see :ref:`sized-types`)
+      Enable sized types (default, inconsistent with constructor-based
+      guarded corecursion; see :ref:`sized-types`)
 
 :samp:`--no-sized-types`
       Disable sized types (see :ref:`sized-types`)
+
+:samp:`--guardedness`
+      Enable constructor-based guarded corecursion, disable sized
+      types (see :ref:`coinduction`)
+
+:samp:`--no-guardedness`
+      Disable constructor-based guarded corecursion (default; see
+      :ref:`coinduction`)
 
 :samp:`--universe-polymorphism`
       Enable universe polymorphism (default;
@@ -310,82 +331,90 @@ A group of warnings can be enabled by ``-W {group}``, where
 Individual warnings can be turned on and off by ``-W {Name}`` and ``-W
 {noName}`` respectively. The flags available are:
 
-:samp:`OverlappingTokensWarning`
-      Multi-line comments spanning one or more literate text blocks.
-:samp:`UnknownNamesInFixityDecl`
-      Names not declared in the same scope as their syntax or fixity declaration.
-:samp:`UnknownFixityInMixfixDecl`
-      Mixfix names without an associated fixity declaration.
-:samp:`UnknownNamesInPolarityPragmas`
-      Names not declared in the same scope as their polarity pragmas.
-:samp:`PolarityPragmasButNotPostulates`
-      Polarity pragmas for non-postulates.
-:samp:`UselessPrivate`
-      ``private`` blocks where they have no effect.
-:samp:`UselessAbstract`
-      ``abstract`` blocks where they have no effect.
-:samp:`UselessInstance`
-      ``instance`` blocks where they have no effect.
-:samp:`EmptyMutual`
-      Empty ``mutual`` blocks.
-:samp:`EmptyAbstract`
-      Empty ``abstract`` blocks.
-:samp:`EmptyPrivate`
-      Empty ``private`` blocks.
-:samp:`EmptyInstance`
-      Empty ``instance`` blocks.
-:samp:`EmptyMacro`
-      Empty ``macro`` blocks.
-:samp:`EmptyPostulate`
-      Empty ``postulate`` blocks.
-:samp:`InvalidTerminationCheckPragma`
-      Termination checking pragmas before non-function or ``mutual`` blocks.
-:samp:`InvalidNoPositivityCheckPragma`
-      No positivity checking pragmas before non-`data``, ``record`` or ``mutual`` blocks.
-:samp:`InvalidCatchallPragma`
-      ``CATCHALL`` pragmas before a non-function clause.
-:samp:`OldBuiltin`
-      Deprecated ``BUILTIN`` pragmas.
-:samp:`EmptyRewritePragma`
-      Empty ``REWRITE`` pragmas.
-:samp:`UselessPublic`
-      ``public`` blocks where they have no effect.
-:samp:`UnreachableClauses`
-      Unreachable function clauses.
-:samp:`UselessInline`
-      ``INLINE`` pragmas where they have no effect.
-:samp:`DeprecationWarning`
-      Feature deprecation.
-:samp:`InversionDepthReached`
-      Inversions of pattern-matching failed due to exhausted inversion depth.
-:samp:`TerminationIssue`
-      Failed termination checks.
+:samp:`AbsurdPatternRequiresNoRHS`
+      RHS given despite an absurd pattern in the LHS.
 :samp:`CoverageIssue`
       Failed coverage checks.
 :samp:`CoverageNoExactSplit`
       Failed exact split checks.
+:samp:`DeprecationWarning`
+      Feature deprecation.
+:samp:`EmptyAbstract`
+      Empty ``abstract`` blocks.
+:samp:`EmptyInstance`
+      Empty ``instance`` blocks.
+:samp:`EmptyMacro`
+      Empty ``macro`` blocks.
+:samp:`EmptyMutual`
+      Empty ``mutual`` blocks.
+:samp:`EmptyPostulate`
+      Empty ``postulate`` blocks.
+:samp:`EmptyPrivate`
+      Empty ``private`` blocks.
+:samp:`EmptyRewritePragma`
+      Empty ``REWRITE`` pragmas.
+:samp:`InvalidCatchallPragma`
+      ``CATCHALL`` pragmas before a non-function clause.
+:samp:`InvalidNoPositivityCheckPragma`
+      No positivity checking pragmas before non-`data``, ``record`` or ``mutual`` blocks.
+:samp:`InvalidTerminationCheckPragma`
+      Termination checking pragmas before non-function or ``mutual`` blocks.
+:samp:`InversionDepthReached`
+      Inversions of pattern-matching failed due to exhausted inversion depth.
+:samp:`MissingDefinitions`
+      Names declared without an accompanying definition.
+:samp:`ModuleDoesntExport`
+      Names mentioned in an import statement which are not exported by the module in question.
+:samp:`NotAllowedInMutual`
+      Declarations not allowed in a mutual block.
 :samp:`NotStrictlyPositive`
       Failed strict positivity checks.
-:samp:`UnsolvedMetaVariables`
-      Unsolved meta variables.
-:samp:`UnsolvedInteractionMetas`
-      Unsolved interaction meta variables.
-:samp:`UnsolvedConstraints`
-      Unsolved constraints.
+:samp:`OldBuiltin`
+      Deprecated ``BUILTIN`` pragmas.
+:samp:`OverlappingTokensWarning`
+      Multi-line comments spanning one or more literate text blocks.
+:samp:`PolarityPragmasButNotPostulates`
+      Polarity pragmas for non-postulates.
+:samp:`SafeFlagNoPositivityCheck`
+      ``NO_POSITIVITY_CHECK`` pragmas with the safe flag.
+:samp:`SafeFlagNonTerminating`
+      ``NON_TERMINATING`` pragmas with the safe flag.
+:samp:`SafeFlagPolarity`
+      ``POLARITY`` pragmas with the safe flag.
 :samp:`SafeFlagPostulate`
       ``postulate`` blocks with the safe flag
 :samp:`SafeFlagPragma`
       Unsafe ``OPTIONS`` pragmas with the safe flag.
-:samp:`SafeFlagNonTerminating`
-      ``NON_TERMINATING`` pragmas with the safe flag.
-:samp:`SafeFlagTerminating`
-      ``TERMINATING`` pragmas with the safe flag.
 :samp:`SafeFlagPrimTrustMe`
       ``primTrustMe`` usages with the safe flag.
-:samp:`SafeFlagNoPositivityCheck`
-      ``NO_POSITIVITY_CHECK`` pragmas with the safe flag.
-:samp:`SafeFlagPolarity`
-      ``POLARITY`` pragmas with the safe flag.
+:samp:`SafeFlagTerminating`
+      ``TERMINATING`` pragmas with the safe flag.
+:samp:`TerminationIssue`
+      Failed termination checks.
+:samp:`UnknownFixityInMixfixDecl`
+      Mixfix names without an associated fixity declaration.
+:samp:`UnknownNamesInFixityDecl`
+      Names not declared in the same scope as their syntax or fixity declaration.
+:samp:`UnknownNamesInPolarityPragmas`
+      Names not declared in the same scope as their polarity pragmas.
+:samp:`UnreachableClauses`
+      Unreachable function clauses.
+:samp:`UnsolvedConstraints`
+      Unsolved constraints.
+:samp:`UnsolvedInteractionMetas`
+      Unsolved interaction meta variables.
+:samp:`UnsolvedMetaVariables`
+      Unsolved meta variables.
+:samp:`UselessAbstract`
+      ``abstract`` blocks where they have no effect.
+:samp:`UselessInline`
+      ``INLINE`` pragmas where they have no effect.
+:samp:`UselessInstance`
+      ``instance`` blocks where they have no effect.
+:samp:`UselessPrivate`
+      ``private`` blocks where they have no effect.
+:samp:`UselessPublic`
+      ``public`` blocks where they have no effect.
 
 For example, the following command runs Agda with all warnings
 enabled, except for warnings about empty ``abstract`` blocks:

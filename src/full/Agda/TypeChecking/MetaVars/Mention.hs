@@ -18,6 +18,7 @@ instance MentionsMeta Term where
     Pi a b       -> mm (a, b)
     Sort s       -> mm s
     Level l      -> mm l
+    Dummy{}      -> False
     DontCare v   -> False   -- we don't have to look inside don't cares when deciding to wake constraints
     MetaV y args -> x == y || mm args   -- TODO: we really only have to look one level deep at meta args
     where
@@ -49,6 +50,8 @@ instance MentionsMeta Sort where
     PiSort s1 s2 -> mentionsMeta x (s1, s2)
     UnivSort s -> mentionsMeta x s
     MetaS m es -> x == m || mentionsMeta x es
+    DefS d es  -> mentionsMeta x es
+    DummyS{}   -> False
 
 instance MentionsMeta t => MentionsMeta (Abs t) where
   mentionsMeta x = mentionsMeta x . unAbs
@@ -101,7 +104,7 @@ instance MentionsMeta Constraint where
     UnBlock _           -> True   -- this might be a postponed typechecking
                                   -- problem and we don't have a handle on
                                   -- what metas it depends on
-    FindInScope{}       -> True   -- this needs to be woken up for any meta
+    FindInstance{}      -> True   -- this needs to be woken up for any meta
     IsEmpty r t         -> mm t
     CheckSizeLtSat t    -> mm t
     CheckFunDef{}       -> True   -- not sure what metas this depends on

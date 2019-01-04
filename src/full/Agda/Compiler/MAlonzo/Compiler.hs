@@ -166,7 +166,7 @@ ghcPreModule _ m ifile = ifM uptodate noComp yesComp
       m   <- show . A.mnameToConcrete <$> curMName
       out <- outFile_
       reportSLn "compile.ghc" 1 $ repl [m, ifile, out] "Compiling <<0>> in <<1>> to <<2>>"
-      stImportedModules .= Set.empty  -- we use stImportedModules to accumulate the required Haskell imports
+      stImportedModules `setTCLens` Set.empty  -- we use stImportedModules to accumulate the required Haskell imports
       return (Recompile ())
 
 ghcPostModule :: GHCOptions -> GHCModuleEnv -> IsMain -> ModuleName -> [[HS.Decl]] -> TCM IsMain
@@ -215,7 +215,7 @@ imports = (hsImps ++) <$> imps where
   decl m = HS.ImportDecl m True Nothing
 
   mnames :: TCM [ModuleName]
-  mnames = Set.elems <$> use stImportedModules
+  mnames = Set.elems <$> useTC stImportedModules
 
   uniq :: [HS.ModuleName] -> [HS.ModuleName]
   uniq = List.map head . List.group . List.sort
@@ -229,13 +229,13 @@ definition :: GHCModuleEnv -> Definition -> TCM [HS.Decl]
 {- Andreas, 2012-10-02: Invariant no longer holds
 definition kit (Defn NonStrict _ _  _ _ _ _ _ _) = __IMPOSSIBLE__
 -}
-definition env Defn{defArgInfo = info, defName = q} | isIrrelevant info = do
+definition env Defn{defArgInfo = info, defName = q} | not $ usableModality info = do
   reportSDoc "compile.ghc.definition" 10 $
-    text "Not compiling" <+> prettyTCM q <> text "."
+    "Not compiling" <+> prettyTCM q <> "."
   return []
 definition env Defn{defName = q, defType = ty, theDef = d} = do
   reportSDoc "compile.ghc.definition" 10 $ vcat
-    [ text "Compiling" <+> prettyTCM q <> text ":"
+    [ "Compiling" <+> prettyTCM q <> ":"
     , nest 2 $ text (show d)
     ]
   pragma <- getHaskellPragma q
@@ -303,6 +303,8 @@ definition env Defn{defName = q, defType = ty, theDef = d} = do
                  , sharpC
                  ]
 
+      DataOrRecSig{} -> __IMPOSSIBLE__
+
       Axiom{} -> do
         ar <- typeArity ty
         return $ [ compiledTypeSynonym q ty ar | Just (HsType r ty) <- [pragma] ] ++
@@ -324,6 +326,7 @@ definition env Defn{defName = q, defType = ty, theDef = d} = do
         cds <- mapM (flip condecl ind) cs
         return $ tvaldecl q ind (np + ni) cds cl
       Constructor{} -> return []
+      GeneralizableVar{} -> return []
       Record{ recPars = np, recClause = cl, recConHead = con,
               recInduction = ind } ->
         let -- Non-recursive record types are treated as being
@@ -825,7 +828,7 @@ callGHC opts modIsMain mods = do
 
   -- Warn if no main function and not --no-main
   when (modIsMain /= isMain) $
-    genericWarning =<< fsep (pwords "No main function defined in" ++ [prettyTCM agdaMod <> text "."] ++
+    genericWarning =<< fsep (pwords "No main function defined in" ++ [prettyTCM agdaMod <> "."] ++
                              pwords "Use --no-main to suppress this warning.")
 
   let overridableArgs =

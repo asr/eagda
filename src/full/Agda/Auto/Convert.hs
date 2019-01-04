@@ -116,6 +116,8 @@ tomy imi icns typs = do
            return (Def narg clauses' Nothing Nothing, [])
      (cont, projfcns2) <- case defn of
       MB.Axiom {} -> return (Postulate, [])
+      MB.DataOrRecSig{} -> return (Postulate, [])
+      MB.GeneralizableVar{} -> __IMPOSSIBLE__
       MB.AbstractDefn{} -> return (Postulate, [])
       MB.Function {MB.funClauses = clauses} -> clausesToDef clauses
       -- MB.Primitive {MB.primClauses = []} -> throwError $ strMsg "Auto: Primitive functions are not supported" -- Andreas, 2013-06-17 breaks interaction/AutoMisc
@@ -299,6 +301,10 @@ literalsNotImplemented :: MB.TCM a
 literalsNotImplemented = MB.typeError $ MB.NotImplemented $
   "The Agda synthesizer (Agsy) does not support literals yet"
 
+hitsNotImplemented :: MB.TCM a
+hitsNotImplemented = MB.typeError $ MB.NotImplemented $
+  "The Agda synthesizer (Agsy) does not support HITs yet"
+
 class Conversion m a b where
   convert :: a -> m b
 
@@ -323,6 +329,7 @@ instance Conversion TOM I.Clause (Maybe ([Pat O], MExp O)) where
 
 instance Conversion TOM (Cm.Arg I.Pattern) (Pat O) where
   convert p = case Cm.unArg p of
+    I.IApplyP _ _ _ n  -> return $ PatVar (show n)
     I.VarP _ n  -> return $ PatVar (show n)
     I.DotP _ _  -> return $ PatVar "_"
       -- because Agda includes these when referring to variables in the body
@@ -338,6 +345,7 @@ instance Conversion TOM (Cm.Arg I.Pattern) (Pat O) where
     -- UNSUPPORTED CASES
     I.ProjP{}   -> lift copatternsNotImplemented
     I.LitP _    -> lift literalsNotImplemented
+    I.DefP{}    -> lift hitsNotImplemented
 
 instance Conversion TOM I.Type (MExp O) where
   convert (I.El _ t) = convert t -- sort info is thrown away
@@ -380,6 +388,7 @@ instance Conversion TOM I.Term (MExp O) where
         return $ NotM $ Pi Nothing (getHiding info) (Free.freeIn 0 y) x' (Abs (Id name) y')
       I.Sort (I.Type (I.Max [I.ClosedLevel l])) -> return $ NotM $ Sort $ Set $ fromIntegral l
       I.Sort _ -> return $ NotM $ Sort UnknownSort
+      I.Dummy{}-> return $ NotM $ Sort UnknownSort
       t@I.MetaV{} -> do
         t <- lift $ instantiate t
         case t of
@@ -423,6 +432,7 @@ fmExp m (I.Pi x y)  = fmType m (Cm.unDom x) || fmType m (I.unAbs y)
 fmExp m (I.Sort _) = False
 fmExp m (I.MetaV mid _) = mid == m
 fmExp m (I.DontCare _) = False
+fmExp _ I.Dummy{} = False
 
 fmExps :: I.MetaId -> I.Args -> Bool
 fmExps m [] = False
@@ -544,9 +554,10 @@ modifyAbstractExpr = f
  where
   f (A.App i e1 (Cm.Arg info (Cm.Named n e2))) =
         A.App i (f e1) (Cm.Arg info (Cm.Named n (f e2)))
-  f (A.Lam i (A.DomainFree info (A.BindName n)) _)
-     | prettyShow (A.nameConcrete n) == abslamvarname =
-        A.AbsurdLam i $ Cm.argInfoHiding info
+  f (A.Lam i (A.DomainFree x) _)
+     | A.BindName n <- Cm.namedArg x
+     , prettyShow (A.nameConcrete n) == abslamvarname =
+        A.AbsurdLam i $ Cm.getHiding x
   f (A.Lam i b e) = A.Lam i b (f e)
   f (A.Rec i xs) = A.Rec i (map (mapLeft (over exprFieldA f)) xs)
   f (A.RecUpdate i e xs) = A.RecUpdate i (f e) (map (over exprFieldA f) xs)
@@ -572,6 +583,7 @@ constructPats cmap mainm clause = do
       let hid = getHiding $ Cm.argInfo p
       in case Cm.namedArg p of
        I.VarP _ n -> return ((hid, Id n) : ns, HI hid (CSPatVar $ length ns))
+       I.IApplyP _ _ _ n -> return ((hid, Id n) : ns, HI hid (CSPatVar $ length ns))
        I.ConP con _ ps -> do
         let c = I.conName con
         (c2, _) <- runStateT (getConst True c TMAll) (S {sConsts = (cmap, []), sMetas = initMapS, sEqs = initMapS, sCurMeta = Nothing, sMainMeta = mainm})
@@ -584,6 +596,8 @@ constructPats cmap mainm clause = do
         return (ns, HI hid (CSPatExp t2))
        I.ProjP{} -> copatternsNotImplemented
        I.LitP{} -> literalsNotImplemented
+       I.DefP{} -> hitsNotImplemented
+
  (names, pats) <- cnvps [] (IP.unnumberPatVars $ I.namedClausePats clause)
  return (reverse names, pats)
 

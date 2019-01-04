@@ -1,5 +1,4 @@
 {-# LANGUAGE CPP               #-}
-{-# LANGUAGE OverloadedStrings #-}
 
 -- | Function for generating highlighted, hyperlinked HTML from Agda
 -- sources.
@@ -16,6 +15,7 @@ module Agda.Interaction.Highlighting.HTML
   ) where
 
 import Prelude hiding ((!!), concatMap)
+import Control.Arrow ((***))
 import Control.Monad
 import Control.Monad.Trans
 
@@ -26,7 +26,9 @@ import Data.Maybe
 import qualified Data.IntMap as IntMap
 import qualified Data.Map    as Map
 import qualified Data.List   as List
+import Data.List.Split (splitWhen, chunksOf)
 import Data.Text.Lazy (Text)
+import qualified Data.Text.Lazy as T
 
 import qualified Network.URI.Encode
 
@@ -42,8 +44,9 @@ import Text.Blaze.Html.Renderer.Text
 
 import Paths_Agda
 
-import Agda.Interaction.Highlighting.Precise
 import Agda.Interaction.Options
+import Agda.Interaction.Highlighting.Precise
+import Agda.Interaction.Highlighting.Common
 
 import Agda.Interaction.Highlighting.Generate
   (computeUnsolvedMetaWarnings, computeUnsolvedConstraints)
@@ -52,7 +55,7 @@ import qualified Agda.Syntax.Concrete as C
 import Agda.Syntax.Common
 import Agda.Syntax.Abstract.Name (ModuleName)
 
-import Agda.TypeChecking.Monad (TCM)
+import Agda.TypeChecking.Monad (TCM, useTC)
 import qualified Agda.TypeChecking.Monad as TCM
 
 import Agda.Utils.FileName (filePath)
@@ -70,35 +73,77 @@ import Agda.Utils.Impossible
 defaultCSSFile :: FilePath
 defaultCSSFile = "Agda.css"
 
+-- | The directive inserted before the rendered code blocks
+
+rstDelimiter :: String
+rstDelimiter = ".. raw:: html\n"
+
+-- | Determine how to highlight the file
+
+highlightOnlyCode :: HtmlHighlight -> FileType -> Bool
+highlightOnlyCode HighlightAll  _ = False
+highlightOnlyCode HighlightCode _ = True
+highlightOnlyCode HighlightAuto AgdaFileType = False
+highlightOnlyCode HighlightAuto MdFileType   = True
+highlightOnlyCode HighlightAuto RstFileType  = True
+highlightOnlyCode HighlightAuto TexFileType  = False
+
+-- | Determine the generated file extension
+
+highlightedFileExt :: HtmlHighlight -> FileType -> String
+highlightedFileExt hh ft
+  | not $ highlightOnlyCode hh ft = "html"
+  | otherwise = case ft of
+      AgdaFileType -> "html"
+      MdFileType   -> "md"
+      RstFileType  -> "rst"
+      TexFileType  -> "tex"
+
 -- | Generates HTML files from all the sources which have been
 --   visited during the type checking phase.
 --
 --   This function should only be called after type checking has
 --   completed successfully.
 
+type PageGen = FilePath    -- ^ Output directory
+  -> FileType              -- ^ Source file type
+  -> Bool                  -- ^ Return value of `highlightOnlyCode`
+  -> String                -- ^ Output file extension (return
+                           --   value of `highlightedFileExt`)
+  -> C.TopLevelModuleName
+  -> Text
+  -> CompressedFile        -- ^ Highlighting information
+  -> TCM ()
+
 generateHTML :: TCM ()
 generateHTML = generateHTMLWithPageGen pageGen
   where
-  pageGen :: FilePath -> C.TopLevelModuleName -> CompressedFile -> TCM ()
-  pageGen dir mod hinfo = generatePage renderer dir mod
+  pageGen :: PageGen
+  pageGen dir ft pc ext mod contents hinfo =
+    generatePage (renderer pc ft) ext dir mod
     where
-    renderer :: FilePath -> FilePath -> String -> Text
-    renderer css _ contents = page css mod $ code $ tokenStream contents hinfo
+    renderer :: Bool -> FileType -> FilePath -> FilePath -> Text
+    renderer onlyCode fileType css _ =
+      page css onlyCode mod $
+      code onlyCode fileType $
+      tokenStream contents hinfo
 
 -- | Prepare information for HTML page generation.
 --
---   The page generator receives the file path of the module,
---   the top level module name of the module
---   and the highlighting information of the module.
+--   The page generator receives the output directory as well as the
+--   module's top level module name, its source code, and its
+--   highlighting information.
 
 generateHTMLWithPageGen
-  :: (FilePath -> C.TopLevelModuleName -> CompressedFile -> TCM ())  -- ^ Page generator
+  :: PageGen
+     -- ^ Page generator.
   -> TCM ()
 generateHTMLWithPageGen generatePage = do
       options <- TCM.commandLineOptions
 
       -- There is a default directory given by 'defaultHTMLDir'
       let dir = optHTMLDir options
+      let htmlHighlight = optHTMLHighlight options
       liftIO $ createDirectoryIfMissing True dir
 
       -- If the default CSS file should be used, then it is copied to
@@ -113,37 +158,42 @@ generateHTMLWithPageGen generatePage = do
         , "reached from the given module, including library files."
         ]
 
-      -- Pull highlighting info from the state and generate all the
-      -- web pages.-
-      mapM_ (uncurry $ generatePage dir) =<<
-        map (mapSnd $ TCM.iHighlighting . TCM.miInterface) .
-          Map.toList <$> TCM.getVisitedModules
+      -- Pull source code and highlighting info from the state and
+      -- generate all the web pages.
+      mapM_ (\(n, mi) ->
+              let i  = TCM.miInterface mi
+                  ft = TCM.iFileType i in
+              generatePage dir ft
+                (highlightOnlyCode htmlHighlight ft)
+                (highlightedFileExt htmlHighlight ft) n
+                (TCM.iSource i) (TCM.iHighlighting i)) .
+        Map.toList =<< TCM.getVisitedModules
 
 -- | Converts module names to the corresponding HTML file names.
 
-modToFile :: C.TopLevelModuleName -> FilePath
-modToFile m =
+modToFile :: C.TopLevelModuleName -> String -> FilePath
+modToFile m ext =
   Network.URI.Encode.encode $
-    render (pretty m) <.> "html"
+    render (pretty m) <.> ext
 
 -- | Generates a highlighted, hyperlinked version of the given module.
 
 generatePage
-  :: (FilePath -> FilePath -> String -> Text)  -- ^ Page renderer
-  -> FilePath              -- ^ Directory in which to create files.
-  -> C.TopLevelModuleName  -- ^ Module to be highlighted.
+  :: (FilePath -> FilePath -> Text)  -- ^ Page renderer.
+  -> String                          -- ^ Output file extension.
+  -> FilePath                        -- ^ Directory in which to create
+                                     --   files.
+  -> C.TopLevelModuleName            -- ^ Module to be highlighted.
   -> TCM ()
-generatePage renderpage dir mod = do
-  f <- fromMaybe __IMPOSSIBLE__ . Map.lookup mod <$> use TCM.stModuleToSource
-  contents <- liftIO $ UTF8.readTextFile $ filePath f
-  css      <- fromMaybe defaultCSSFile . optCSSFile <$>
-                TCM.commandLineOptions
-  let html = renderpage css (filePath f) contents
+generatePage renderPage ext dir mod = do
+  f   <- fromMaybe __IMPOSSIBLE__ . Map.lookup mod <$> useTC TCM.stModuleToSource
+  css <- fromMaybe defaultCSSFile . optCSSFile <$> TCM.commandLineOptions
+  let target = dir </> modToFile mod ext
+  let html = renderPage css $ filePath f
   TCM.reportSLn "html" 1 $ "Generating HTML for " ++
                            render (pretty mod) ++
                            " (" ++ target ++ ")."
   liftIO $ UTF8.writeTextToFile target html
-  where target = dir </> modToFile mod
 
 
 -- | Attach multiple Attributes
@@ -154,29 +204,40 @@ h !! as = h ! mconcat as
 -- | Constructs the web page, including headers.
 
 page :: FilePath              -- ^ URL to the CSS file.
+     -> Bool                  -- ^ Whether to reserve literate
      -> C.TopLevelModuleName  -- ^ Module to be highlighted.
      -> Html
      -> Text
-page css modName pagecontent = renderHtml $ docTypeHtml $ hdr <> rest
-
+page css htmlHighlight modName pageContent =
+  renderHtml $ if htmlHighlight
+               then pageContent
+               else docTypeHtml $ hdr <> rest
   where
 
     hdr = Html5.head $ mconcat
       [ meta !! [ charset "utf-8" ]
       , Html5.title (toHtml $ render $ pretty modName)
       , link !! [ rel "stylesheet"
-                , href (stringValue css)
+                , href $ stringValue css
                 ]
       ]
 
-    rest = body (pre pagecontent)
+    rest = body $ pre pageContent
+
+-- | Position, Contents, Infomation
+
+type TokenInfo =
+  ( Int
+  , String
+  , Aspects
+  )
 
 -- | Constructs token stream ready to print.
 
 tokenStream
-     :: String         -- ^ The contents of the module.
+     :: Text           -- ^ The contents of the module.
      -> CompressedFile -- ^ Highlighting information.
-     -> [(Int, String, Aspects)]  -- ^ (position, contents, info)
+     -> [TokenInfo]
 tokenStream contents info =
   map (\cs -> case cs of
           (mi, (pos, _)) : _ ->
@@ -184,27 +245,69 @@ tokenStream contents info =
           [] -> __IMPOSSIBLE__) $
   List.groupBy ((==) `on` fst) $
   map (\(pos, c) -> (IntMap.lookup pos infoMap, (pos, c))) $
-  zip [1..] contents
+  zip [1..] (T.unpack contents)
   where
   infoMap = toMap (decompress info)
 
 -- | Constructs the HTML displaying the code.
 
-code :: [(Int, String, Aspects)]
+code :: Bool     -- ^ Whether to generate non-code contents as-is
+     -> FileType -- ^ Source file type
+     -> [TokenInfo]
      -> Html
-code = mconcat . map mkHtml
+code onlyCode fileType = mconcat . if onlyCode
+  then case fileType of
+         -- Explicitly written all cases, so people
+         -- get compile error when adding new file types
+         -- when they forget to modify the code here
+         RstFileType  -> map mkRst . splitByMarkup
+         MdFileType   -> map mkMd . chunksOf 2 . splitByMarkup
+         AgdaFileType -> map mkHtml
+         -- Any points for using this option?
+         TexFileType  -> map mkMd . chunksOf 2 . splitByMarkup
+  else map mkHtml
   where
-  mkHtml :: (Int, String, Aspects) -> Html
+  trd (_, _, a) = a
+
+  splitByMarkup :: [TokenInfo] -> [[TokenInfo]]
+  splitByMarkup = splitWhen $ (== Just Markup) . aspect . trd
+
+  mkHtml :: TokenInfo -> Html
   mkHtml (pos, s, mi) =
     -- Andreas, 2017-06-16, issue #2605:
     -- Do not create anchors for whitespace.
     applyUnless (mi == mempty) (annotate pos mi) $ toHtml s
 
+  -- | Proposed in #3373, implemented in #3384
+  mkRst :: [TokenInfo] -> Html
+  mkRst = mconcat . (toHtml rstDelimiter :) . map go
+    where
+      go token@(_, s, mi) = if aspect mi == Just Background
+        then preEscapedToHtml s
+        else mkHtml token
+
+  -- | Proposed in #3137, implemented in #3313
+  --   Improvement proposed in #3366, implemented in #3367
+  mkMd :: [[TokenInfo]] -> Html
+  mkMd = mconcat . go
+    where
+      work token@(_, s, mi) = case aspect mi of
+        Just Background -> preEscapedToHtml s
+        Just Markup     -> __IMPOSSIBLE__
+        _               -> mkHtml token
+      go [a, b] = [ mconcat $ work <$> a
+                  , pre ! class_ "agda-code" $ mconcat $ work <$> b
+                  ]
+      go [a]    = work <$> a
+      go _      = __IMPOSSIBLE__
+
   -- | Put anchors that enable referencing that token.
-  --   We put a fail safe numeric anchor (file position) for internal references (issue #2756),
-  --   as well as a heuristic name anchor for external references (issue #2604).
+  --   We put a fail safe numeric anchor (file position) for internal references
+  --   (issue #2756), as well as a heuristic name anchor for external references
+  --   (issue #2604).
   annotate :: Int -> Aspects -> Html -> Html
-  annotate pos mi = applyWhen hereAnchor (anchorage nameAttributes mempty <>) . anchorage posAttributes
+  annotate pos mi = applyWhen hereAnchor
+      (anchorage nameAttributes mempty <>) . anchorage posAttributes
     where
     -- | Warp an anchor (<A> tag) with the given attributes around some HTML.
     anchorage :: [Attribute] -> Html -> Html
@@ -239,6 +342,7 @@ code = mconcat . map mkHtml
       opClass = if op then ["Operator"] else []
     aspectClasses a = [show a]
 
+
     otherAspectClasses = map show
 
     -- Notes are not included.
@@ -267,4 +371,4 @@ code = mconcat . map mkHtml
         (++ "#" ++
          Network.URI.Encode.encode (show pos))
          -- Network.URI.Encode.encode (fromMaybe (show pos) aName)) -- Named links disabled
-        (Network.URI.Encode.encode $ modToFile m)
+        (Network.URI.Encode.encode $ modToFile m "html")

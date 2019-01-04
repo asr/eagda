@@ -13,7 +13,6 @@ import Control.Exception
 
 import Data.Array.IArray
 import Data.Word
-import qualified Data.ByteString.Lazy as L
 import qualified Data.Foldable as Fold
 import Data.Hashable
 import qualified Data.HashTable.IO as H
@@ -27,6 +26,7 @@ import Data.IntSet (IntSet)
 import qualified Data.Set as Set
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
+import Data.Text.Lazy (Text)
 import Data.Traversable ( mapM )
 
 import Data.Void
@@ -66,9 +66,9 @@ instance {-# OVERLAPPING #-} EmbPrj String where
   icod_   = icodeString
   value i = (! i) `fmap` gets stringE
 
-instance EmbPrj L.ByteString where
-  icod_   = icodeX bstringD bstringC
-  value i = (! i) `fmap` gets bstringE
+instance EmbPrj Text where
+  icod_   = icodeX textD textC
+  value i = (! i) `fmap` gets textE
 
 instance EmbPrj Integer where
   icod_   = icodeInteger
@@ -152,6 +152,19 @@ instance EmbPrj Bool where
     valu []  = valuN True
     valu [0] = valuN False
     valu _   = malformed
+
+instance EmbPrj FileType where
+  icod_ AgdaFileType = icodeN' IsData
+  icod_ MdFileType   = icodeN 0 IsRecord
+  icod_ RstFileType  = icodeN 1 IsRecord
+  icod_ TexFileType  = icodeN 2 IsRecord
+
+  value = vcase $ \case
+    []  -> valuN AgdaFileType
+    [0] -> valuN MdFileType
+    [1] -> valuN RstFileType
+    [2] -> valuN TexFileType
+    _   -> malformed
 
 instance EmbPrj DataOrRecord where
   icod_ IsData   = icodeN' IsData
@@ -261,13 +274,13 @@ instance EmbPrj SerialisedRange where
     valu _      = malformed
 
 instance EmbPrj C.Name where
-  icod_ (C.NoName a b) = icodeN 0 C.NoName a b
-  icod_ (C.Name r xs)  = icodeN' C.Name r xs
+  icod_ (C.NoName a b)    = icodeN 0 C.NoName a b
+  icod_ (C.Name r nis xs) = icodeN 1 C.Name r nis xs
 
   value = vcase valu where
-    valu [0, a, b] = valuN C.NoName a b
-    valu [r, xs]   = valuN C.Name   r xs
-    valu _         = malformed
+    valu [0, a, b]       = valuN C.NoName a b
+    valu [1, r, nis, xs] = valuN C.Name   r nis xs
+    valu _               = malformed
 
 instance EmbPrj NamePart where
   icod_ Hole   = icodeN' Hole
@@ -278,6 +291,15 @@ instance EmbPrj NamePart where
     valu [a] = valuN Id a
     valu _   = malformed
 
+instance EmbPrj NameInScope where
+  icod_ InScope    = icodeN' InScope
+  icod_ NotInScope = icodeN 0 NotInScope
+
+  value = vcase valu where
+    valu []  = valuN InScope
+    valu [0] = valuN NotInScope
+    valu _   = malformed
+
 instance EmbPrj C.QName where
   icod_ (Qual    a b) = icodeN' Qual a b
   icod_ (C.QName a  ) = icodeN' C.QName a
@@ -286,6 +308,15 @@ instance EmbPrj C.QName where
     valu [a, b] = valuN Qual    a b
     valu [a]    = valuN C.QName a
     valu _      = malformed
+
+instance (EmbPrj a, EmbPrj b) => EmbPrj (ImportedName' a b) where
+  icod_ (ImportedModule a) = icodeN 1 ImportedModule a
+  icod_ (ImportedName a)   = icodeN 2 ImportedName a
+
+  value = vcase valu where
+    valu [1, a] = valuN ImportedModule a
+    valu [2, a] = valuN ImportedName a
+    valu _ = malformed
 
 instance EmbPrj Agda.Syntax.Fixity.Associativity where
   icod_ LeftAssoc  = icodeN' LeftAssoc
@@ -393,7 +424,7 @@ instance EmbPrj a => EmbPrj (Arg a) where
   value = valueN Arg
 
 instance EmbPrj a => EmbPrj (Dom a) where
-  icod_ (Dom i b e) = icodeN' Dom i b e
+  icod_ (Dom a b c d) = icodeN' Dom a b c d
 
   value = valueN Dom
 
@@ -429,10 +460,12 @@ instance EmbPrj Hiding where
 
 instance EmbPrj Quantity where
   icod_ Quantity0 = return 0
-  icod_ Quantityω = return 1
+  icod_ Quantity1 = return 1
+  icod_ Quantityω = return 2
 
   value 0 = return Quantity0
-  value 1 = return Quantityω
+  value 1 = return Quantity1
+  value 2 = return Quantityω
   value _ = malformed
 
 instance EmbPrj Modality where
@@ -457,11 +490,13 @@ instance EmbPrj Origin where
   icod_ Inserted    = return 1
   icod_ Reflected   = return 2
   icod_ CaseSplit   = return 3
+  icod_ Substitution = return 4
 
   value 0 = return UserWritten
   value 1 = return Inserted
   value 2 = return Reflected
   value 3 = return CaseSplit
+  value 4 = return Substitution
   value _ = malformed
 
 instance EmbPrj FreeVariables where
@@ -552,10 +587,12 @@ instance EmbPrj Delayed where
 instance EmbPrj Impossible where
   icod_ (Impossible a b)  = icodeN 0 Impossible a b
   icod_ (Unreachable a b) = icodeN 1 Unreachable a b
+  icod_ (ImpMissingDefinitions a b) = icodeN 2 ImpMissingDefinitions a b
 
   value = vcase valu where
     valu [0, a, b] = valuN Impossible  a b
     valu [1, a, b] = valuN Unreachable a b
+    valu [2, a, b] = valuN ImpMissingDefinitions a b
     valu _         = malformed
 
 instance EmbPrj Empty where

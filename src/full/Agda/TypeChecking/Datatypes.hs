@@ -52,6 +52,17 @@ getConstructorData c = do
     Constructor{conData = d} -> return d
     _                        -> __IMPOSSIBLE__
 
+-- | Is the datatype of this constructor a Higher Inductive Type?
+--   Precondition: The argument must refer to a constructor of a datatype or record.
+consOfHIT :: QName -> TCM Bool
+consOfHIT c = do
+  d <- getConstructorData c
+  def <- theDef <$> getConstInfo d
+  case def of
+    Datatype {dataPathCons = xs} -> return $ not $ null xs
+    Record{} -> return False
+    _  -> __IMPOSSIBLE__
+
 -- | @getConType c t@ computes the constructor parameters from type @t@
 --   and returns them plus the instantiated type of constructor @c@.
 --   This works also if @t@ is a function type ending in a data/record type;
@@ -72,9 +83,9 @@ getConType
        --     @ct@   is the type of the constructor instantiated to the parameters.
 getConType c t = do
   reportSDoc "tc.getConType" 30 $ sep $
-    [ text "getConType: constructor "
+    [ "getConType: constructor "
     , prettyTCM c
-    , text " at type "
+    , " at type "
     , prettyTCM t
     ]
   TelV tel t <- telView t

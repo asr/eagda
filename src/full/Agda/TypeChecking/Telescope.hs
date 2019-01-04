@@ -5,9 +5,9 @@ module Agda.TypeChecking.Telescope where
 import Prelude hiding (null)
 
 import Control.Applicative hiding (empty)
-import Control.Monad (unless, guard)
+import Control.Monad
 
-import Data.Foldable (forM_)
+import Data.Foldable (forM_, find)
 import Data.IntSet (IntSet)
 import qualified Data.IntSet as IntSet
 import qualified Data.List as List
@@ -23,6 +23,7 @@ import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Free
+import Agda.TypeChecking.Warnings
 
 import Agda.Utils.Functor
 import Agda.Utils.List
@@ -90,8 +91,8 @@ xs `withNamedArgsFromTel` tel =
 
 teleNamedArgs :: (DeBruijn a) => Telescope -> [NamedArg a]
 teleNamedArgs tel =
-  [ Arg info (Named (Just $ Ranged noRange $ argNameToString name) (deBruijnVar i))
-  | (i, Dom {domInfo = info, unDom = (name,_)}) <- zip (downFrom $ size l) l ]
+  [ fmap (deBruijnVar i <$) $ namedArgFromDom dom
+  | (i, dom) <- zip (downFrom $ size l) l ]
   where l = telToList tel
 
 -- | A variant of `teleNamedArgs` which takes the argument names (and the argument info)
@@ -150,7 +151,7 @@ varDependencies tel = allDependencies IntSet.empty
     ts = flattenTel tel
 
     directDependencies :: Int -> IntSet
-    directDependencies i = allFreeVars $ ts !! (n-1-i)
+    directDependencies i = allFreeVars $ indexWithDefault __IMPOSSIBLE__ ts (n-1-i)
 
     allDependencies :: IntSet -> IntSet -> IntSet
     allDependencies =
@@ -211,7 +212,8 @@ splitTelescopeExact is tel = guard ok $> SplitTel tel1 tel2 perm
     checkDependencies soFar []     = True
     checkDependencies soFar (j:js) = ok && checkDependencies (IntSet.insert j soFar) js
       where
-        fv' = allFreeVars $ ts0 !! (n-1-j)
+        fv' = allFreeVars $  -- newline because of CPP
+                indexWithDefault __IMPOSSIBLE__ ts0 (n-1-j)
         fv  = fv' `IntSet.intersection` IntSet.fromAscList [ 0 .. n-1 ]
         ok  = fv `IntSet.isSubsetOf` soFar
 
@@ -347,57 +349,154 @@ telViewUpToPath n t = do
     absV a x (TelV tel t) = TelV (ExtendTel a (Abs x tel)) t
 
 -- | [[ (i,(x,y)) ]] = [(i=0) -> x, (i=1) -> y]
-type Boundary = [(Term,(Term,Term))]
+type Boundary = Boundary' (Term,Term)
+type Boundary' a = [(Term,a)]
 
 -- | Like @telViewUpToPath@ but also returns the @Boundary@ expected
 -- by the Path types encountered. The boundary terms live in the
 -- telescope given by the @TelView@.
-telViewUpToPathBoundary :: Int -> Type -> TCM (TelView,Boundary)
-telViewUpToPathBoundary 0 t = return $ (TelV EmptyTel t,[])
-telViewUpToPathBoundary n t = do
+-- Each point of the boundary has the type of the codomain of the Path type it got taken from, see @fullBoundary@.
+telViewUpToPathBoundary' :: Int -> Type -> TCM (TelView,Boundary)
+telViewUpToPathBoundary' 0 t = return $ (TelV EmptyTel t,[])
+telViewUpToPathBoundary' n t = do
   vt <- pathViewAsPi' $ t
   case vt of
-    Left ((a,b),xy) -> addEndPoints xy . absV a (absName b) <$> telViewUpToPathBoundary (n - 1) (absBody b)
+    Left ((a,b),xy) -> addEndPoints xy . absV a (absName b) <$> telViewUpToPathBoundary' (n - 1) (absBody b)
     Right (El _ t) | Pi a b <- t
-                   -> absV a (absName b) <$> telViewUpToPathBoundary (n - 1) (absBody b)
-    _              -> return $ (TelV EmptyTel t,[])
+                   -> absV a (absName b) <$> telViewUpToPathBoundary' (n - 1) (absBody b)
+    Right t        -> return $ (TelV EmptyTel t,[])
   where
     absV a x (TelV tel t, cs) = (TelV (ExtendTel a (Abs x tel)) t, cs)
     addEndPoints xy (telv@(TelV tel _),cs) = (telv, (var $ size tel - 1, xyInTel):cs)
       where
-       xyInTel = raise (size tel) xy `apply` drop 1 (teleArgs tel)
+       xyInTel = raise (size tel) xy
+
+
+fullBoundary :: Telescope -> Boundary -> Boundary
+fullBoundary tel bs =
+      -- tel = Γ
+      -- ΔΓ ⊢ b
+      -- Δ ⊢ a = PiPath Γ bs b
+      -- Δ.Γ ⊢ T is the codomain of the PathP at variable i
+      -- Δ.Γ ⊢ i : I
+      -- Δ.Γ ⊢ [ (i=0) -> t_i; (i=1) -> u_i ] : T
+      -- Δ.Γ | PiPath Γ bs A ⊢ teleElims tel bs : b
+   let es = teleElims tel bs
+       l  = size tel
+   in map (\ (t@(Var i []), xy) -> (t, xy `applyE` (drop (l - i) es))) bs
+
+-- | @(TelV Γ b, [(i,t_i,u_i)]) <- telViewUpToPathBoundary n a@
+--  Input:  Δ ⊢ a
+--  Output: ΔΓ ⊢ b
+--          ΔΓ ⊢ i : I
+--          ΔΓ ⊢ [ (i=0) -> t_i; (i=1) -> u_i ] : b
+telViewUpToPathBoundary :: Int -> Type -> TCM (TelView,Boundary)
+telViewUpToPathBoundary i a = do
+   (telv@(TelV tel b), bs) <- telViewUpToPathBoundary' i a
+   return $ (telv, fullBoundary tel bs)
+
+-- | @(TelV Γ b, [(i,t_i,u_i)]) <- telViewUpToPathBoundaryP n a@
+--  Input:  Δ ⊢ a
+--  Output: Δ.Γ ⊢ b
+--          Δ.Γ ⊢ T is the codomain of the PathP at variable i
+--          Δ.Γ ⊢ i : I
+--          Δ.Γ ⊢ [ (i=0) -> t_i; (i=1) -> u_i ] : T
+-- Useful to reconstruct IApplyP patterns after teleNamedArgs Γ.
+telViewUpToPathBoundaryP :: Int -> Type -> TCM (TelView,Boundary)
+telViewUpToPathBoundaryP = telViewUpToPathBoundary'
+
+telViewPathBoundaryP :: Type -> TCM (TelView,Boundary)
+telViewPathBoundaryP = telViewUpToPathBoundaryP (-1)
+
+
+-- | @teleElimsB args bs = es@
+--  Input:  Δ.Γ ⊢ args : Γ
+--          Δ.Γ ⊢ T is the codomain of the PathP at variable i
+--          Δ.Γ ⊢ i : I
+--          Δ.Γ ⊢ bs = [ (i=0) -> t_i; (i=1) -> u_i ] : T
+--  Output: Δ.Γ | PiPath Γ bs A ⊢ es : A
+teleElims :: DeBruijn a => Telescope -> Boundary' (a,a) -> [Elim' a]
+teleElims tel [] = map Apply $ teleArgs tel
+teleElims tel boundary = recurse (teleArgs tel)
+  where
+    recurse = fmap updateArg
+    matchVar x =
+      snd <$> flip find boundary (\case
+        (Var i [],_) -> i == x
+        _            -> __IMPOSSIBLE__)
+    updateArg a@(Arg info p) =
+      case deBruijnView p of
+        Just i | Just (t,u) <- matchVar i -> IApply t u p
+        _                                 -> Apply a
 
 pathViewAsPi :: Type -> TCM (Either (Dom Type, Abs Type) Type)
 pathViewAsPi t = either (Left . fst) Right <$> pathViewAsPi' t
 
 pathViewAsPi' :: Type -> TCM (Either ((Dom Type, Abs Type), (Term,Term)) Type)
 pathViewAsPi' t = do
-  pathViewAsPi'whnf =<< reduce t
+  pathViewAsPi'whnf <*> reduce t
 
-pathViewAsPi'whnf :: Type -> TCM (Either ((Dom Type, Abs Type), (Term,Term)) Type)
-pathViewAsPi'whnf t = do
-  t <- pathView t
-  case t of
-    PathType s l p a x y -> do
+pathViewAsPi'whnf :: TCM (Type -> Either ((Dom Type, Abs Type), (Term,Term)) Type)
+pathViewAsPi'whnf = do
+  view <- pathView'
+  minterval  <- getBuiltin' builtinInterval
+  return $ \ t -> case view t of
+    PathType s l p a x y | Just interval <- minterval ->
       let name | Lam _ (Abs n _) <- unArg a = n
                | otherwise = "i"
-      i <- El Inf <$> primInterval
-      return $ Left $ ((defaultDom $ i, Abs name $ El (raise 1 s) $ raise 1 (unArg a) `apply` [defaultArg $ var 0]), (unArg x, unArg y))
+          i = El Inf interval
+      in
+        Left $ ((defaultDom $ i, Abs name $ El (raise 1 s) $ raise 1 (unArg a) `apply` [defaultArg $ var 0]), (unArg x, unArg y))
 
-    OType t    -> return $ Right t
+    _    -> Right t
 
 -- | returns Left (a,b) in case the type is @Pi a b@ or @PathP b _ _@
 --   assumes the type is in whnf.
 piOrPath :: Type -> TCM (Either (Dom Type, Abs Type) Type)
 piOrPath t = do
-  t <- pathViewAsPi'whnf t
+  t <- pathViewAsPi'whnf <*> pure t
   case t of
     Left (p,_) -> return $ Left p
     Right (El _ (Pi a b)) -> return $ Left (a,b)
     Right t -> return $ Right t
 
+telView'UpToPath :: Int -> Type -> TCM TelView
+telView'UpToPath 0 t = return $ TelV EmptyTel t
+telView'UpToPath n t = do
+  vt <- pathViewAsPi'whnf <*> pure t
+  case vt of
+    Left ((a,b),_)     -> absV a (absName b) <$> telViewUpToPath (n - 1) (absBody b)
+    Right (El _ t) | Pi a b <- t
+                   -> absV a (absName b) <$> telViewUpToPath (n - 1) (absBody b)
+    Right t        -> return $ TelV EmptyTel t
+  where
+    absV a x (TelV tel t) = TelV (ExtendTel a (Abs x tel)) t
+
+telView'Path :: Type -> TCM TelView
+telView'Path = telView'UpToPath (-1)
+
 isPath :: Type -> TCM (Maybe (Dom Type, Abs Type))
 isPath t = either Just (const Nothing) <$> pathViewAsPi t
+
+telePatterns :: (DeBruijn a, DeBruijn (Pattern' a)) =>
+                 Telescope -> Boundary -> [NamedArg (Pattern' a)]
+telePatterns = telePatterns' teleNamedArgs
+
+telePatterns' :: (DeBruijn a, DeBruijn (Pattern' a)) =>
+                (forall a. (DeBruijn a) => Telescope -> [NamedArg a]) -> Telescope -> Boundary -> [NamedArg (Pattern' a)]
+telePatterns' f tel [] = f tel
+telePatterns' f tel boundary = recurse $ f tel
+  where
+    recurse = (fmap . fmap . fmap) updateVar
+    matchVar x =
+      snd <$> flip find boundary (\case
+        (Var i [],_) -> i == x
+        _            -> __IMPOSSIBLE__)
+    o = PatOSystem
+    updateVar x =
+      case deBruijnView x of
+        Just i | Just (t,u) <- matchVar i -> IApplyP o t u x
+        _                           -> VarP o x
 
 -- | Decomposing a function type.
 
@@ -430,23 +529,29 @@ ifNotPiType = flip . ifPiType
 
 ifNotPiOrPathType :: (MonadReduce tcm, MonadTCM tcm) => Type -> (Type -> tcm a) -> (Dom Type -> Abs Type -> tcm a) -> tcm a
 ifNotPiOrPathType t no yes = do
-  ifPiType t yes (\ t -> either (uncurry yes . fst) (const $ no t) =<< liftTCM (pathViewAsPi'whnf t))
+  ifPiType t yes (\ t -> either (uncurry yes . fst) (const $ no t) =<< (liftTCM pathViewAsPi'whnf <*> pure t))
 
 
--- | A safe variant of piApply.
+-- | A safe variant of 'piApply'.
 
-piApplyM :: MonadReduce m => Type -> Args -> m Type
-piApplyM t []           = return t
-piApplyM t (arg : args) = do
-  (_, b) <- mustBePi t
-  absApp b (unArg arg) `piApplyM` args
+class PiApplyM a where
+  piApplyM :: MonadReduce m => Type -> a -> m Type
 
-piApply1 :: MonadReduce m => Type -> Term -> m Type
-piApply1 t v = do
-  (_, b) <- mustBePi t
-  return $ absApp b v
+instance PiApplyM Term where
+  piApplyM t v = ifNotPiType t __IMPOSSIBLE__ {-else-} $ \ _ b -> return $ absApp b v
+
+instance PiApplyM a => PiApplyM (Arg a) where
+  piApplyM t = piApplyM t . unArg
+
+instance PiApplyM a => PiApplyM (Named n a) where
+  piApplyM t = piApplyM t . namedThing
+
+instance PiApplyM a => PiApplyM [a] where
+  piApplyM t = foldl (\ mt v -> mt >>= (`piApplyM` v)) (return t)
+
 
 -- | Compute type arity
+
 typeArity :: Type -> TCM Nat
 typeArity t = do
   TelV tel _ <- telView t
@@ -462,16 +567,17 @@ data OutputTypeName
   | OutputTypeNameNotYetKnown
   | NoOutputTypeName
 
--- | Strips all Pi's and return the head definition name, if possible.
-getOutputTypeName :: Type -> TCM OutputTypeName
+-- | Strips all Pi's and return the argument telescope and head
+--   definition name, if possible.
+getOutputTypeName :: Type -> TCM (Telescope, OutputTypeName)
 getOutputTypeName t = do
   TelV tel t' <- telView t
-  ifBlocked (unEl t') (\ _ _ -> return OutputTypeNameNotYetKnown) $ \ _ v ->
+  ifBlocked (unEl t') (\ _ _ -> return (tel , OutputTypeNameNotYetKnown)) $ \ _ v ->
     case v of
       -- Possible base types:
-      Def n _  -> return $ OutputTypeName n
-      Sort{}   -> return NoOutputTypeName
-      Var n _  -> return OutputTypeVar
+      Def n _  -> return (tel , OutputTypeName n)
+      Sort{}   -> return (tel , NoOutputTypeName)
+      Var n _  -> return (tel , OutputTypeVar)
       -- Not base types:
       Con{}    -> __IMPOSSIBLE__
       Lam{}    -> __IMPOSSIBLE__
@@ -480,10 +586,20 @@ getOutputTypeName t = do
       MetaV{}  -> __IMPOSSIBLE__
       Pi{}     -> __IMPOSSIBLE__
       DontCare{} -> __IMPOSSIBLE__
+      Dummy s    -> __IMPOSSIBLE_VERBOSE__ s
 
+-- | Register the definition with the given type as an instance
 addTypedInstance :: QName -> Type -> TCM ()
-addTypedInstance x t = do
-  n <- getOutputTypeName t
+addTypedInstance = addTypedInstance' 0
+
+-- | As @addTypedInstance@, but also takes a number of arguments
+--   that should not raise a warning when they are explicit.
+--   (used for adding record fields as instances).
+addTypedInstance' :: Int -> QName -> Type -> TCM ()
+addTypedInstance' npars x t = do
+  (tel , n) <- getOutputTypeName t
+  forM_ (drop npars $ telToList tel) $ \ dom -> do
+    when (visible dom) $ warning $ InstanceWithExplicitArg x
   case n of
     OutputTypeName n -> addNamedInstance x n
     OutputTypeNameNotYetKnown -> addUnknownInstance x

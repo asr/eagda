@@ -1,4 +1,5 @@
 {-# LANGUAGE CPP             #-}
+{-# LANGUAGE NondecreasingIndentation #-}
 
 module Agda.Interaction.MakeCase where
 
@@ -6,6 +7,7 @@ import Prelude hiding (mapM, mapM_, null)
 
 import Control.Applicative hiding (empty)
 import Control.Monad hiding (mapM, mapM_, forM)
+import Control.Monad.Reader (asks)
 
 import qualified Data.Map as Map
 import qualified Data.List as List
@@ -14,14 +16,15 @@ import Data.Traversable
 
 import Agda.Syntax.Common
 import Agda.Syntax.Position
+import Agda.Syntax.Concrete (NameInScope(..), LensInScope(..))
 import qualified Agda.Syntax.Concrete as C
 import qualified Agda.Syntax.Abstract as A
 import qualified Agda.Syntax.Abstract.Views as A
 import qualified Agda.Syntax.Info as A
 import Agda.Syntax.Internal
 import Agda.Syntax.Internal.Pattern
-import Agda.Syntax.Scope.Base  ( ResolvedName(..), Binder(..) )
-import Agda.Syntax.Scope.Monad ( resolveName )
+import Agda.Syntax.Scope.Base  ( ResolvedName(..), Binder(..), KindOfName(..), allKindsOfNames )
+import Agda.Syntax.Scope.Monad ( resolveName, resolveName' )
 import Agda.Syntax.Translation.ConcreteToAbstract
 import Agda.Syntax.Translation.InternalToAbstract
 
@@ -64,7 +67,8 @@ parseVariables
   -> InteractionId   -- ^ The hole of this function we are working on.
   -> Range           -- ^ The range of this hole.
   -> [String]        -- ^ The words the user entered in this hole (variable names).
-  -> TCM [Int]       -- ^ The computed de Bruijn indices of the variables to split on.
+  -> TCM [(Int,NameInScope)] -- ^ The computed de Bruijn indices of the variables to split on,
+                             --   with information about whether each variable is in scope.
 parseVariables f tel ii rng ss = do
 
   -- Get into the context of the meta.
@@ -87,12 +91,15 @@ parseVariables f tel ii rng ss = do
     reportSDoc "interaction.case" 20 $ do
       m   <- currentModule
       tel <- lookupSection m
+      cxt <- getContextTelescope
       vcat
-       [ text "parseVariables:"
-       , text "current module  =" <+> prettyTCM m
-       , text "current section =" <+> inTopContext (prettyTCM tel)
+       [ "parseVariables:"
+       , "current module  =" <+> prettyTCM m
+       , "current section =" <+> inTopContext (prettyTCM tel)
        , text $ "function's fvs  = " ++ show fv
        , text $ "number of locals= " ++ show nlocals
+       , "context         =" <+> do inTopContext $ prettyTCM cxt
+       , "checkpoints     =" <+> do (text . show) =<< asksTC envCheckpoints
        ]
 
     -- Resolve each string to a variable.
@@ -111,8 +118,12 @@ parseVariables f tel ii rng ss = do
               , prettyTCM v
               ]
 
+      -- Jesper, 2018-12-19: Don't consider generalizable names since
+      -- they can be shadowed by hidden variables.
+      let kinds = List.delete GeneralizeName allKindsOfNames
+          cname = C.QName $ C.Name r C.InScope $ C.stringNameParts s
       -- Note: the range in the concrete name is only approximate.
-      resName <- resolveName $ C.QName $ C.Name r $ C.stringNameParts s
+      resName <- resolveName' kinds Nothing cname
       case resName of
 
         -- Fail if s is a name, but not of a variable.
@@ -132,7 +143,7 @@ parseVariables f tel ii rng ss = do
             -- around, so the new clauses will still make sense.
             (Var i [] , PatternBound) -> do
               when (i < nlocals) __IMPOSSIBLE__
-              return $ i - nlocals
+              return (i - nlocals , C.InScope)
             (Var i [] , LambdaBound)
               | i < nlocals -> failLocal
               | otherwise   -> failModuleBound
@@ -144,6 +155,7 @@ parseVariables f tel ii rng ss = do
         UnknownName -> do
           let xs' = filter ((s ==) . fst) xs
           when (null xs') $ failUnbound
+          reportSLn "interaction.case" 20 $ "matching names corresponding to indices " ++ show xs'
           -- Andreas, 2018-05-28, issue #3095
           -- We want to act on an ambiguous name if it corresponds to only one local index.
           let xs'' = mapMaybe (\ (_,i) -> if i < nlocals then Nothing else Just $ i - nlocals) xs'
@@ -152,7 +164,7 @@ parseVariables f tel ii rng ss = do
           let xs''' = mapMaybe (\ i -> if i < fv then Nothing else Just i) xs''
           case xs''' of
             []  -> failModuleBound
-            [i] -> return i
+            [i] -> return (i , C.NotInScope)
             -- Issue 1325: Variable names in context can be ambiguous.
             _   -> failAmbiguous
 
@@ -170,8 +182,8 @@ getClauseForIP f clauseNo = do
       return (extlam, c, cs1)
     d -> do
       reportSDoc "impossible" 10 $ vcat
-        [ text "getClauseForIP" <+> prettyTCM f <+> text (show clauseNo)
-          <+> text "received"
+        [ "getClauseForIP" <+> prettyTCM f <+> text (show clauseNo)
+          <+> "received"
         , text (show d)
         ]
       __IMPOSSIBLE__
@@ -182,12 +194,15 @@ getClauseForIP f clauseNo = do
 makeCase :: InteractionId -> Range -> String -> TCM (QName, CaseContext, [A.Clause])
 makeCase hole rng s = withInteractionId hole $ do
 
+  -- Jesper, 2018-12-10: print unsolved metas in dot patterns as _
+  localTC (\ e -> e { envPrintMetasBare = True }) $ do
+
   -- Get function clause which contains the interaction point.
 
   InteractionPoint { ipMeta = mm, ipClause = ipCl} <- lookupInteractionPoint hole
   let meta = fromMaybe __IMPOSSIBLE__ mm
   (f, clauseNo, rhs) <- case ipCl of
-    IPClause f clauseNo rhs-> return (f, clauseNo, rhs)
+    IPClause f clauseNo rhs -> return (f, clauseNo, rhs)
     IPNoClause -> typeError $ GenericError $
       "Cannot split here, as we are not in a function definition"
   (casectxt, clause, prevClauses) <- getClauseForIP f clauseNo
@@ -195,13 +210,13 @@ makeCase hole rng s = withInteractionId hole $ do
       tel  = clauseTel  clause
       ps   = namedClausePats clause
   reportSDoc "interaction.case" 10 $ vcat
-    [ text "splitting clause:"
+    [ "splitting clause:"
     , nest 2 $ vcat
-      [ text "f       =" <+> prettyTCM f
-      , text "context =" <+> ((inTopContext . prettyTCM) =<< getContextTelescope)
-      , text "tel     =" <+> (inTopContext . prettyTCM) tel
-      , text "perm    =" <+> text (show perm)
-      , text "ps      =" <+> text (show ps)
+      [ "f       =" <+> prettyTCM f
+      , "context =" <+> ((inTopContext . prettyTCM) =<< getContextTelescope)
+      , "tel     =" <+> (inTopContext . prettyTCM) tel
+      , "perm    =" <+> text (show perm)
+      , "ps      =" <+> text (show ps)
       ]
     ]
 
@@ -251,8 +266,7 @@ makeCase hole rng s = withInteractionId hole $ do
               isVarP _ = Nothing
           -- If all are already coming from the user, there is really nothing todo!
           when (all ((UserWritten ==) . getOrigin) trailingPatVars) $ do
-            typeError . GenericDocError =<< do
-              text "Cannot split on result here, because" <+> prettyTCM err
+            typeError $ SplitError err
           -- Otherwise, we make these user-written
           let xs = map (dbPatVarIndex . namedArg) trailingPatVars
           return [makePatternVarsVisible xs sc]
@@ -261,16 +275,17 @@ makeCase hole rng s = withInteractionId hole $ do
           -- Andreas, 2016-05-03: do not introduce function arguments after projection.
           -- This is sometimes annoying and can anyway be done by another C-c C-c.
           -- mapM (snd <.> fixTarget) $ splitClauses cov
-          return $ splitClauses cov
+          return cov
     checkClauseIsClean ipCl
     (f, casectxt,) <$> mapM (makeAbstractClause f rhs) scs
   else do
     -- split on variables
     xs <- parseVariables f tel hole rng vars
+    reportSLn "interaction.case" 30 $ "parsedVariables: " ++ show (zip xs vars)
     -- Variables that are not in scope yet are brought into scope (@toShow@)
     -- The other variables are split on (@toSplit@).
-    let (toShow, toSplit) = flip mapEither (zip xs vars) $ \ (x, s) ->
-          if take 1 s == "." then Left x else Right x
+    let (toShow, toSplit) = flip mapEither (zip xs vars) $ \ ((x,nis), s) ->
+          if (nis == C.NotInScope) then Left x else Right x
     let sc = makePatternVarsVisible toShow $ clauseToSplitClause clause
     scs <- split f toSplit sc
     -- filter out clauses that are already covered
@@ -278,7 +293,7 @@ makeCase hole rng s = withInteractionId hole $ do
     cs <- forM scs $ \(sc, isAbsurd) -> do
             if isAbsurd then makeAbsurdClause f sc else makeAbstractClause f rhs sc
     reportSDoc "interaction.case" 65 $ vcat
-      [ text "split result:"
+      [ "split result:"
       , nest 2 $ vcat $ map (text . show . A.deepUnscope) cs
       ]
     checkClauseIsClean ipCl
@@ -311,7 +326,7 @@ makeCase hole rng s = withInteractionId hole $ do
   -- In this case, we refuse to split, as this might lose the refinements.
   checkClauseIsClean :: IPClause -> TCM ()
   checkClauseIsClean ipCl = do
-    sips <- filter ipSolved . Map.elems <$> use stInteractionPoints
+    sips <- filter ipSolved . Map.elems <$> useTC stInteractionPoints
     when (List.any ((== ipCl) . ipClause) sips) $
       typeError $ GenericError $ "Cannot split as clause rhs has been refined.  Please reload"
 
@@ -337,11 +352,11 @@ makeAbsurdClause :: QName -> SplitClause -> TCM A.Clause
 makeAbsurdClause f (SClause tel sps _ _ t) = do
   let ps = fromSplitPatterns sps
   reportSDoc "interaction.case" 10 $ vcat
-    [ text "Interaction.MakeCase.makeAbsurdClause: split clause:"
+    [ "Interaction.MakeCase.makeAbsurdClause: split clause:"
     , nest 2 $ vcat
-      [ text "context =" <+> do (inTopContext . prettyTCM) =<< getContextTelescope
-      , text "tel     =" <+> do inTopContext $ prettyTCM tel
-      , text "ps      =" <+> do inTopContext $ addContext tel $ prettyTCMPatternList ps -- P.sep <$> prettyTCMPatterns ps
+      [ "context =" <+> do (inTopContext . prettyTCM) =<< getContextTelescope
+      , "tel     =" <+> do inTopContext $ prettyTCM tel
+      , "ps      =" <+> do inTopContext $ addContext tel $ prettyTCMPatternList ps -- P.sep <$> prettyTCMPatterns ps
       ]
     ]
   withCurrentModule (qnameModule f) $ do
@@ -352,7 +367,7 @@ makeAbsurdClause f (SClause tel sps _ _ t) = do
     let c = Clause noRange noRange tel ps Nothing t False Nothing
     -- Normalise the dot patterns
     ps <- addContext tel $ normalise $ namedClausePats c
-    reportSDoc "interaction.case" 60 $ text "normalized patterns: " <+> text (show ps)
+    reportSDoc "interaction.case" 60 $ "normalized patterns: " <+> text (show ps)
     inTopContext $ reify $ QNamed f $ c { namedClausePats = ps }
 
 
@@ -362,7 +377,7 @@ makeAbstractClause :: QName -> A.RHS -> SplitClause -> TCM A.Clause
 makeAbstractClause f rhs cl = do
 
   lhs <- A.clauseLHS <$> makeAbsurdClause f cl
-  reportSDoc "interaction.case" 60 $ text "reified lhs: " <+> text (show lhs)
+  reportSDoc "interaction.case" 60 $ "reified lhs: " <+> text (show lhs)
   return $ A.Clause lhs [] rhs A.noWhereDecls False
   -- let ii = InteractionId (-1)  -- Dummy interaction point since we never type check this.
   --                              -- Can end up in verbose output though (#1842), hence not __IMPOSSIBLE__.

@@ -61,13 +61,13 @@ displayForm q es = do
   else do
     -- Display debug info about the @Open@s.
     verboseS "tc.display.top" 100 $ unlessDebugPrinting $ do
-      cps <- view eCheckpoints
+      cps <- viewTC eCheckpoints
       cxt <- getContextTelescope
       reportSDoc "tc.display.top" 100 $ return $ vcat
-        [ text "displayForm for" <+> pretty q
-        , nest 2 $ text "cxt =" <+> pretty cxt
-        , nest 2 $ text "cps =" <+> vcat (map pretty (Map.toList cps))
-        , nest 2 $ text "dfs =" <+> vcat (map pshow odfs) ]
+        [ "displayForm for" <+> pretty q
+        , nest 2 $ "cxt =" <+> pretty cxt
+        , nest 2 $ "cps =" <+> vcat (map pretty (Map.toList cps))
+        , nest 2 $ "dfs =" <+> vcat (map pshow odfs) ]
     -- Use only the display forms that can be opened in the current context.
     dfs   <- catMaybes <$> mapM tryGetOpen odfs
     scope <- getScope

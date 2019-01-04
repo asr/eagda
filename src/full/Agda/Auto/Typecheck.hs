@@ -370,7 +370,7 @@ iotastep smartcheck e = case rawValue e of
      Left (Left hnas) -> mbret $ Left $ Left (hna : hnas)
    Left (Right blks) -> mbret $ Left (Right blks)
    Left (Left hna) -> mbret $ Left $ Left (hna : as')
- dopats _ _ = __IMPOSSIBLE__
+ dopats _ _ = mbfailed "bad patterns"
 
  dopat :: Pat o -> PEval o -> EE (MyMB (Either (Either (PEval o) (HNNBlks o)) (PEval o, [ICExp o])) o)
  dopat (PatConApp c pas) a =
@@ -641,7 +641,7 @@ comp' ineq lhs@(TrBr trs1 e1) rhs@(TrBr trs2 e2) = comp ineq e1 e2
           b2 <- f cl as
           return $ b1 && b2
 
-         ALProj{} -> __IMPOSSIBLE__
+         ALProj{} -> return False  -- Not impossible: #2966
 
 
          ALConPar as -> f cl as

@@ -24,7 +24,9 @@ import qualified Data.Text as T
 import Test.Tasty
 import Test.Tasty.Silver
 import Test.Tasty.Silver.Advanced (readFileMaybe)
+import Test.Tasty.Silver.Filter
 
+import UserManual.Tests (examplesInUserManual)
 import Utils
 
 import Agda.Utils.Three
@@ -36,6 +38,9 @@ allLaTeXProgs = ["pdflatex", "xelatex", "lualatex"]
 
 testDir :: FilePath
 testDir = "test" </> "LaTeXAndHTML" </> "succeed"
+
+disabledTests :: [RegexFilter]
+disabledTests = []
 
 -- | List of test groups with names
 --
@@ -62,7 +67,7 @@ taggedListOfAllTests = do
   inpFiles <- getAgdaFilesInDir NonRec testDir
   agdaBin  <- getAgdaBin
   return $
-    [ (k, mkLaTeXOrHTMLTest k agdaBin f)
+    [ (k, mkLaTeXOrHTMLTest k False agdaBin f)
     | f <- inpFiles
     -- Note that the LaTeX backends are only tested on the @.lagda@
     -- and @.lagda.tex@ files.
@@ -70,6 +75,10 @@ taggedListOfAllTests = do
                          | any (`List.isSuffixOf` takeExtensions f)
                                [".lagda",".lagda.tex"]
                          ]
+    ] ++
+    [ (k, mkLaTeXOrHTMLTest k True agdaBin f)
+    | f <- examplesInUserManual
+    , k <- [LaTeX, QuickLaTeX]
     ]
 
 data LaTeXResult
@@ -87,10 +96,12 @@ data Kind = LaTeX | QuickLaTeX | HTML
 
 mkLaTeXOrHTMLTest
   :: Kind
+  -> Bool     -- ^ Should the file be copied to the temporary test
+              --   directory before the test is run?
   -> FilePath -- ^ Agda binary.
   -> FilePath -- ^ Input file.
   -> TestTree
-mkLaTeXOrHTMLTest k agdaBin inp =
+mkLaTeXOrHTMLTest k copy agdaBin inp =
   goldenVsAction
     testName
     goldenFile
@@ -100,7 +111,11 @@ mkLaTeXOrHTMLTest k agdaBin inp =
   extension = case k of
     LaTeX      -> "tex"
     QuickLaTeX -> "quick.tex"
-    HTML       -> "html"
+    HTML       -> if "MdHighlight" `List.isPrefixOf` inFileName
+                  then "md"
+                  else if "RsTHighlight" `List.isPrefixOf` inFileName
+                  then "rst"
+                  else "html"
 
   flags :: FilePath -> [String]
   flags dir = case k of
@@ -110,13 +125,17 @@ mkLaTeXOrHTMLTest k agdaBin inp =
     where
     latexFlags = ["--latex", "--latex-dir=" ++ dir]
 
+  inFileName  = takeFileName inp
   testName    = asTestName testDir inp ++ "_" ++ show k
-  flagFile    = dropAgdaExtension inp <.> "flags"
-  goldenFile  = dropAgdaExtension inp <.> extension
+  baseName    = if copy
+                then testDir </> dropAgdaExtension inFileName
+                else dropAgdaExtension inp
+  flagFile    = baseName <.> "flags"
+  goldenFile  = baseName <.> extension
   -- For removing a LaTeX compiler when testing @Foo.lagda@, you can
   -- create a file @Foo.compile@ with the list of the LaTeX compilers
   -- that you want to use (e.g. ["xelatex", "lualatex"]).
-  compFile    = dropAgdaExtension inp <.> ".compile"
+  compFile    = baseName <.> ".compile"
   outFileName = case k of
     LaTeX      -> golden
     HTML       -> Network.URI.Encode.encode golden
@@ -135,11 +154,14 @@ mkLaTeXOrHTMLTest k agdaBin inp =
     extraFlags <- if flagFileExists
                   then lines <$> readFile flagFile
                   else return []
-    let agdaArgs = flags outDir ++
-                   [ "-i" ++ testDir
-                   , inp
+    let newFile  = outDir </> inFileName
+        agdaArgs = flags outDir ++
+                   [ "-i" ++ if copy then outDir else testDir
+                   , if copy then newFile else inp
                    , "--ignore-interfaces"
+                   , "--no-libraries"
                    ] ++ extraFlags
+    when copy $ copyFile inp newFile
     res@(ret, _, _) <- PT.readProcessWithExitCode agdaBin agdaArgs T.empty
     if ret /= ExitSuccess then
       return $ AgdaFailed res

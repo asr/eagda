@@ -73,13 +73,15 @@ recordPatternToProjections p =
         typeError $ ShouldBeRecordPattern p
       let t = unArg $ fromMaybe __IMPOSSIBLE__ $ conPType ci
       reportSDoc "tc.rec" 45 $ vcat
-        [ text "recordPatternToProjections: "
-        , nest 2 $ text "constructor pattern " <+> prettyTCM p <+> text " has type " <+> prettyTCM t
+        [ "recordPatternToProjections: "
+        , nest 2 $ "constructor pattern " <+> prettyTCM p <+> " has type " <+> prettyTCM t
         ]
       reportSLn "tc.rec" 70 $ "  type raw: " ++ show t
       fields <- getRecordTypeFields t
       concat <$> zipWithM comb (map proj fields) (map namedArg ps)
     ProjP{}      -> __IMPOSSIBLE__ -- copattern cannot appear here
+    IApplyP{}    -> typeError $ ShouldBeRecordPattern p
+    DefP{}       -> typeError $ ShouldBeRecordPattern p
   where
     proj p = (`applyE` [Proj ProjSystem $ unArg p])
     comb :: (Term -> Term) -> DeBruijnPattern -> TCM [Term -> Term]
@@ -132,17 +134,17 @@ getEtaAndArity SplitCatchall = return (False, 1)
 translateCompiledClauses :: CompiledClauses -> TCM CompiledClauses
 translateCompiledClauses cc = do
   reportSDoc "tc.cc.record" 20 $ vcat
-    [ text "translate record patterns in compiled clauses"
+    [ "translate record patterns in compiled clauses"
     , nest 2 $ return $ pretty cc
     ]
   cc <- loop cc
   reportSDoc "tc.cc.record" 20 $ vcat
-    [ text "translated compiled clauses (no eta record patterns):"
+    [ "translated compiled clauses (no eta record patterns):"
     , nest 2 $ return $ pretty cc
     ]
   cc <- recordExpressionsToCopatterns cc
   reportSDoc "tc.cc.record" 20 $ vcat
-    [ text "translated compiled clauses (record expressions to copatterns):"
+    [ "translated compiled clauses (record expressions to copatterns):"
     , nest 2 $ return $ pretty cc
     ]
   return cc
@@ -179,7 +181,7 @@ translateCompiledClauses cc = do
           [(c, b)] | not comatch -> -- possible eta-match
             getConstructorInfo c >>= \ case
               RecordCon YesEta fs ->
-                let ch = ConHead c Inductive $ map unArg fs in
+                let ch = ConHead c Inductive fs in
                 yesEtaCase ch b
               _ -> noEtaCase
           _ -> noEtaCase
@@ -495,8 +497,8 @@ translateRecordPatterns clause = do
       -- Permutation taking the new variable and dot patterns to the
       -- new telescope.
       newPerm = adjustForDotPatterns $
-                  reorderTel_ $ map (maybe dummyDom snd) newTel'
-        -- It is important that dummyDom does not mention any variable
+                  reorderTel_ $ map (maybe __DUMMY_DOM__ snd) newTel'
+        -- It is important that __DUMMY_DOM__ does not mention any variable
         -- (see the definition of reorderTel).
         where
         isDotP n = case List.genericIndex cs n of
@@ -530,36 +532,36 @@ translateRecordPatterns clause = do
             }
 
   reportSDoc "tc.lhs.recpat" 20 $ vcat
-      [ text "Original clause:"
+      [ "Original clause:"
       , nest 2 $ inTopContext $ vcat
-        [ text "delta =" <+> prettyTCM (clauseTel clause)
-        , text "pats  =" <+> text (show $ clausePats clause)
+        [ "delta =" <+> prettyTCM (clauseTel clause)
+        , "pats  =" <+> text (show $ clausePats clause)
         ]
-      , text "Intermediate results:"
+      , "Intermediate results:"
       , nest 2 $ vcat
-        [ text "ps        =" <+> text (show ps)
-        , text "s         =" <+> prettyTCM s
-        , text "cs        =" <+> prettyTCM cs
-        , text "flattenedOldTel =" <+> (text . show) flattenedOldTel
-        , text "newTel'   =" <+> (text . show) newTel'
-        , text "newPerm   =" <+> prettyTCM newPerm
+        [ "ps        =" <+> text (show ps)
+        , "s         =" <+> prettyTCM s
+        , "cs        =" <+> prettyTCM cs
+        , "flattenedOldTel =" <+> (text . show) flattenedOldTel
+        , "newTel'   =" <+> (text . show) newTel'
+        , "newPerm   =" <+> prettyTCM newPerm
         ]
       ]
 
   reportSDoc "tc.lhs.recpat" 20 $ vcat
-        [ text "lhsSubst' =" <+> (text . show) lhsSubst'
-        , text "lhsSubst  =" <+> (text . show) lhsSubst
-        , text "newTel  =" <+> prettyTCM newTel
+        [ "lhsSubst' =" <+> (text . show) lhsSubst'
+        , "lhsSubst  =" <+> (text . show) lhsSubst
+        , "newTel  =" <+> prettyTCM newTel
         ]
 
   reportSDoc "tc.lhs.recpat" 10 $
     escapeContext (size $ clauseTel clause) $ vcat
-      [ text "Translated clause:"
+      [ "Translated clause:"
       , nest 2 $ vcat
-        [ text "delta =" <+> prettyTCM (clauseTel c)
-        , text "ps    =" <+> text (show $ clausePats c)
-        , text "body  =" <+> text (show $ clauseBody c)
-        , text "body  =" <+> addContext (clauseTel c) (maybe (text "_|_") prettyTCM (clauseBody c))
+        [ "delta =" <+> prettyTCM (clauseTel c)
+        , "ps    =" <+> text (show $ clausePats c)
+        , "body  =" <+> text (show $ clauseBody c)
+        , "body  =" <+> addContext (clauseTel c) (maybe "_|_" prettyTCM (clauseBody c))
         ]
       ]
 
@@ -578,7 +580,7 @@ translateRecordPatterns clause = do
 newtype RecPatM a = RecPatM (TCMT (ReaderT Nat (StateT Nat IO)) a)
   deriving (Functor, Applicative, Monad,
             MonadIO, MonadTCM, HasOptions, MonadDebug,
-            MonadReader TCEnv, MonadState TCState)
+            MonadTCEnv, MonadTCState)
 
 -- | Runs a computation in the 'RecPatM' monad.
 
@@ -619,15 +621,15 @@ type Changes = [Change]
 
 instance Pretty (Kind -> Nat) where
   pretty f =
-    P.text "(VarPat:" P.<+> P.text (show $ f VarPat) P.<+>
-    P.text "DotPat:"  P.<+> P.text (show $ f DotPat) P.<> P.text ")"
+    "(VarPat:" P.<+> P.text (show $ f VarPat) P.<+>
+    "DotPat:"  P.<+> P.text (show $ f DotPat) P.<> ")"
 
 instance PrettyTCM (Kind -> Nat) where
   prettyTCM = return . pretty
 
 instance PrettyTCM Change where
   prettyTCM (Left  p) = prettyTCM p
-  prettyTCM (Right (f, x, t)) = text "Change" <+> prettyTCM f <+> text x <+> prettyTCM t
+  prettyTCM (Right (f, x, t)) = "Change" <+> prettyTCM f <+> text x <+> prettyTCM t
 
 -- | Record pattern trees.
 
@@ -710,10 +712,14 @@ translatePattern p@(ConP c ci ps)
   | otherwise = do
       (ps, s, cs) <- translatePatterns ps
       return (ConP c ci ps, s, cs)
+translatePattern p@(DefP o q ps) = do
+      (ps, s, cs) <- translatePatterns ps
+      return (DefP o q ps, s, cs)
 translatePattern p@VarP{} = removeTree (Leaf p)
 translatePattern p@DotP{} = removeTree (Leaf p)
 translatePattern p@LitP{} = return (p, [], [])
 translatePattern p@ProjP{}= return (p, [], [])
+translatePattern p@IApplyP{}= return (p, [], [])
 
 translatePatterns :: [NamedArg Pattern] -> RecPatM ([NamedArg Pattern], [Term], Changes)
 translatePatterns ps = do
@@ -750,8 +756,8 @@ recordTree p@(ConP c ci ps) | Just PatOSystem <- conPRecord ci = do
     Just ts -> liftTCM $ do
       t <- reduce t
       reportSDoc "tc.rec" 45 $ vcat
-        [ text "recordTree: "
-        , nest 2 $ text "constructor pattern " <+> prettyTCM p <+> text " has type " <+> prettyTCM t
+        [ "recordTree: "
+        , nest 2 $ "constructor pattern " <+> prettyTCM p <+> " has type " <+> prettyTCM t
         ]
       -- Andreas, 2018-03-03, see #2989:
       -- The content of an @Arg@ might not be reduced (if @Arg@ is @Irrelevant@).
@@ -760,10 +766,12 @@ recordTree p@(ConP c ci ps) | Just PatOSystem <- conPRecord ci = do
       let proj p = (`applyE` [Proj ProjSystem $ unArg p])
       return $ Right $ RecCon t $ zip (map proj fields) ts
 recordTree p@(ConP _ ci _) = return $ Left $ translatePattern p
+recordTree p@DefP{} = return $ Left $ translatePattern p
 recordTree p@VarP{} = return (Right (Leaf p))
 recordTree p@DotP{} = return (Right (Leaf p))
 recordTree p@LitP{} = return $ Left $ translatePattern p
 recordTree p@ProjP{}= return $ Left $ translatePattern p
+recordTree p@IApplyP{}= return $ Left $ translatePattern p
 
 ------------------------------------------------------------------------
 -- Translation of the clause telescope and body

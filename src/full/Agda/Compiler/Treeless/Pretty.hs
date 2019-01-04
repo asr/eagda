@@ -1,7 +1,9 @@
-
+{-# LANGUAGE CPP #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Agda.Compiler.Treeless.Pretty () where
+
+import Prelude hiding ((!!)) -- don't use partial functions!
 
 import Control.Arrow ((&&&), (***), first, second)
 import Control.Monad.Reader
@@ -11,6 +13,10 @@ import qualified Data.Map as Map
 import Agda.Syntax.Treeless
 import Agda.Compiler.Treeless.Subst
 import Agda.Utils.Pretty
+import Agda.Utils.List
+
+#include "undefined.h"
+import Agda.Utils.Impossible
 
 data PEnv = PEnv { pPrec :: Int
                  , pFresh :: [String]
@@ -54,7 +60,10 @@ prec :: Int -> P a -> P a
 prec p = local $ \ e -> e { pPrec = p }
 
 name :: Int -> P String
-name x = asks $ (!! x) . (++ map (("^" ++) . show) [1..]) . pBound
+name x = asks
+  $ (\ xs -> indexWithDefault __IMPOSSIBLE__ xs x)
+  . (++ map (("^" ++) . show) [1..])
+  . pBound
 
 runP :: P a -> a
 runP p = runReader p PEnv{ pPrec = 0, pFresh = names, pBound = [] }
@@ -120,9 +129,9 @@ pTerm t = case t of
                                , pure $ text $ opName op
                                , pTerm' r b ]
   TApp (TPrim PIf) [a, b, c] ->
-    paren 0 $ (\ a b c -> sep [ text "if" <+> a
-                              , nest 2 $ text "then" <+> b
-                              , nest 2 $ text "else" <+> c ])
+    paren 0 $ (\ a b c -> sep [ "if" <+> a
+                              , nest 2 $ "then" <+> b
+                              , nest 2 $ "else" <+> c ])
               <$> pTerm' 0 a
               <*> pTerm' 0 b
               <*> pTerm c
@@ -141,9 +150,9 @@ pTerm t = case t of
     where
       (n, b) = tLamView t
   TLet{} -> paren 0 $ withNames (length es) $ \ xs ->
-    (\ (binds, b) -> sep [ text "let" <+> vcat [ sep [ text x <+> text "="
-                                                     , nest 2 e ] | (x, e) <- binds ]
-                              <+> text "in", b ])
+    (\ (binds, b) -> sep [ "let" <+> vcat [ sep [ text x <+> "="
+                                                , nest 2 e ] | (x, e) <- binds ]
+                              <+> "in", b ])
       <$> pLets (zip xs es) b
     where
       (es, b) = tLetView t
@@ -155,24 +164,24 @@ pTerm t = case t of
 
   TCase x _ def alts -> paren 0 $
     (\ sc alts defd ->
-      sep [ text "case" <+> sc <+> text "of"
-          , nest 2 $ vcat (alts ++ [ text "_ →" <+> defd | null alts || def /= TError TUnreachable ]) ]
+      sep [ "case" <+> sc <+> "of"
+          , nest 2 $ vcat (alts ++ [ "_ →" <+> defd | null alts || def /= TError TUnreachable ]) ]
     ) <$> pTerm' 0 (TVar x)
       <*> mapM pAlt alts
       <*> pTerm' 0 def
     where
       pAlt (TALit l b) = pAlt' <$> pTerm' 0 (TLit l) <*> pTerm' 0 b
       pAlt (TAGuard g b) =
-        pAlt' <$> ((text "_" <+> text "|" <+>) <$> pTerm' 0 g)
+        pAlt' <$> (("_" <+> "|" <+>) <$> pTerm' 0 g)
               <*> (pTerm' 0 b)
       pAlt (TACon c a b) =
         withNames' a b $ \ xs -> bindNames xs $
         pAlt' <$> pTerm' 0 (TApp (TCon c) [TVar i | i <- reverse [0..a - 1]])
               <*> pTerm' 0 b
-      pAlt' p b = sep [p <+> text "→", nest 2 b]
+      pAlt' p b = sep [p <+> "→", nest 2 b]
 
-  TUnit -> pure $ text "()"
-  TSort -> pure $ text "Set"
-  TErased -> pure $ text "_"
-  TError err -> paren 9 $ pure $ text "error" <+> text (show (show err))
-  TCoerce t -> paren 9 $ (text "coe" <+>) <$> pTerm' 10 t
+  TUnit -> pure "()"
+  TSort -> pure "Set"
+  TErased -> pure "_"
+  TError err -> paren 9 $ pure $ "error" <+> text (show (show err))
+  TCoerce t -> paren 9 $ ("coe" <+>) <$> pTerm' 10 t

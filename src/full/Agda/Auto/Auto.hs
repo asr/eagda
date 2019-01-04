@@ -24,6 +24,7 @@ import Agda.TypeChecking.Telescope
 import Agda.Syntax.Common (Hiding(..))
 import qualified Agda.Syntax.Abstract as A
 import Agda.Syntax.Abstract.Pretty (prettyA)
+import qualified Agda.Syntax.Concrete.Name as C
 import qualified Text.PrettyPrint as PP
 import qualified Agda.TypeChecking.Pretty as TCM
 import Agda.Syntax.Position
@@ -35,6 +36,7 @@ import Agda.TypeChecking.Reduce (normalise)
 import Agda.Syntax.Common
 import qualified Agda.Syntax.Scope.Base as Scope
 import Agda.Syntax.Scope.Monad (withCurrentModule)
+import Agda.Syntax.Concrete.Name (NameInScope(..), LensInScope(..))
 import qualified Agda.Syntax.Abstract.Name as AN
 import qualified Agda.TypeChecking.Monad.Base as TCM
 import Agda.TypeChecking.EtaContract (etaContract)
@@ -104,12 +106,14 @@ stopWithMsg msg = return $ AutoResult (Solutions []) (Just msg)
 --   If the @autoMessage@ part of the result is set to @Just msg@, the
 --   message @msg@ produced by Agsy should be displayed to the user.
 
+{-# SPECIALIZE auto :: InteractionId -> Range -> String -> TCM AutoResult #-}
 auto
-  :: InteractionId
+  :: MonadTCM tcm
+  => InteractionId
   -> Range
   -> String
-  -> TCM AutoResult
-auto ii rng argstr = do
+  -> tcm AutoResult
+auto ii rng argstr = liftTCM $ do
 
   -- Parse hints and other configuration.
   let autoOptions = parseArgs argstr
@@ -175,7 +179,7 @@ auto ii rng argstr = do
         ticks <- liftIO $ newIORef 0
 
         let exsearch initprop recinfo defdfv =
-             liftIO $ System.Timeout.timeout (getTimeOut timeout * 1000000)
+             liftIO $ System.Timeout.timeout (getTimeOut timeout * 1000)
                     $ loop 0
              where
                loop d = do
@@ -274,7 +278,7 @@ auto ii rng argstr = do
                  ) eqcons
           res <- exsearch initprop recinfo defdfv
           riis <- map swap <$> getInteractionIdsAndMetas
-          let timeoutString | isNothing res = " after timeout (" ++ show timeout ++ "s)"
+          let timeoutString | isNothing res = " after timeout (" ++ show timeout ++ "ms)"
                             | otherwise     = ""
           if listmode then do
             rsols <- liftM reverse $ liftIO $ readIORef sols
@@ -322,7 +326,7 @@ auto ii rng argstr = do
                     -- On exception, try next solution
                     flip catchError (const $ loop terms') $ do
                       exprs <- getsols term
-                      reportSDoc "auto" 20 $ TCM.text "Trying solution " TCM.<+> TCM.prettyTCM exprs
+                      reportSDoc "auto" 20 $ "Trying solution " TCM.<+> TCM.prettyTCM exprs
                       giveress <- forM exprs $ \ (mi, expr0) -> do
                         let expr = killRange expr0
                         case lookup mi riis of
@@ -363,7 +367,7 @@ auto ii rng argstr = do
           let [rectyp'] = mymrectyp
           defdfv <- getdfv mi def
           myrecdef <- liftIO $ newIORef $ ConstDef {cdname = "", cdorigin = (Nothing, def), cdtype = rectyp', cdcont = Postulate, cddeffreevars = defdfv}
-          sols <- liftIO $ System.Timeout.timeout (getTimeOut timeout * 1000000) (
+          sols <- liftIO $ System.Timeout.timeout (getTimeOut timeout * 1000) (
              let r d = do
                   sols <- liftIO $ caseSplitSearch ticks __IMPOSSIBLE__ myhints meqr __IMPOSSIBLE__ d myrecdef ctx mytype pats
                   case sols of
@@ -414,9 +418,9 @@ auto ii rng argstr = do
            Just (def, _, _) | def == n -> return Nothing
            _ -> do
             cn <- withMetaInfo minfo $ runAbsToCon $ toConcrete n
-            if head (show cn) == '.' then -- not in scope
+            if C.isInScope cn == C.NotInScope then
               return Nothing
-             else do
+            else do
               c <- getConstInfo n
               ctyp <- normalise $ defType c
               cdfv <- withMetaInfo minfo $ getDefFreeVars n

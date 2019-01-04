@@ -1,4 +1,4 @@
-{-# OPTIONS --enable-prop #-}
+{-# OPTIONS --prop #-}
 
 data TestProp : Prop where
   p₁ p₂ : TestProp

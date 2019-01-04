@@ -93,6 +93,7 @@ instance EmbPrj I.Term where
   icod_ (MetaV    a b) = __IMPOSSIBLE__
   icod_ (DontCare a  ) = icodeN 8 DontCare a
   icod_ (Level    a  ) = icodeN 9 Level a
+  icod_ (Dummy s)      = __IMPOSSIBLE__
 
   value = vcase valu where
     valu [a]       = valuN var   a
@@ -142,6 +143,8 @@ instance EmbPrj I.Sort where
   icod_ (PiSort a b) = icodeN 4 PiSort a b
   icod_ (UnivSort a) = icodeN 5 UnivSort a
   icod_ (MetaS a b)  = __IMPOSSIBLE__
+  icod_ (DefS a b)   = icodeN 6 DefS a b
+  icod_ (DummyS s)   = __IMPOSSIBLE__
 
   value = vcase valu where
     valu [0, a]    = valuN Type  a
@@ -150,6 +153,7 @@ instance EmbPrj I.Sort where
     valu [3]       = valuN Inf
     valu [4, a, b] = valuN PiSort a b
     valu [5, a]    = valuN UnivSort a
+    valu [6, a, b] = valuN DefS a b
     valu _         = malformed
 
 instance EmbPrj DisplayForm where
@@ -185,8 +189,12 @@ instance EmbPrj MutualId where
   icod_ (MutId a) = icode a
   value n         = MutId `fmap` value n
 
+instance EmbPrj CompKit where
+  icod_ (CompKit a b) = icodeN' CompKit a b
+  value = valueN CompKit
+
 instance EmbPrj Definition where
-  icod_ (Defn a b c d e f g h i j k l m n) = icodeN' Defn a b (P.killRange c) d e f g h i j k l m n
+  icod_ (Defn a b c d e f g h i j k l m n o p) = icodeN' Defn a b (P.killRange c) d e f g h i j k l m n o p
 
   value = valueN Defn
 
@@ -259,6 +267,23 @@ instance EmbPrj IsForced where
   value 1 = return NotForced
   value _ = malformed
 
+instance EmbPrj NumGeneralizableArgs where
+  icod_ NoGeneralizableArgs       = icodeN' NoGeneralizableArgs
+  icod_ (SomeGeneralizableArgs a) = icodeN' SomeGeneralizableArgs a
+
+  value = vcase valu where
+    valu []  = valuN NoGeneralizableArgs
+    valu [a] = valuN SomeGeneralizableArgs a
+    valu _   = malformed
+
+instance EmbPrj DoGeneralize where
+  icod_ YesGeneralize = return 0
+  icod_ NoGeneralize  = return 1
+
+  value 0 = return YesGeneralize
+  value 1 = return NoGeneralize
+  value _ = malformed
+
 instance EmbPrj Occurrence where
   icod_ StrictPos = return 0
   icod_ Mixed     = return 1
@@ -288,19 +313,22 @@ instance EmbPrj Defn where
   icod_ (Axiom       a b)                         = icodeN 0 Axiom a b
   icod_ (Function    a b t c d e f g h i j k m n) =
     icodeN 1 (\ a b -> Function a b t) a b c d e f g h i j k m n
-  icod_ (Datatype    a b c d e f g h i)           = icodeN 2 Datatype a b c d e f g h i
+  icod_ (Datatype    a b c d e f g h i j)         = icodeN 2 Datatype a b c d e f g h i j
   icod_ (Record      a b c d e f g h i j k)       = icodeN 3 Record a b c d e f g h i j k
   icod_ (Constructor a b c d e f g h i j)         = icodeN 4 Constructor a b c d e f g h i j
   icod_ (Primitive   a b c d e)                   = icodeN 5 Primitive a b c d e
   icod_ AbstractDefn{}                            = __IMPOSSIBLE__
+  icod_ GeneralizableVar                          = icodeN 6 GeneralizableVar
+  icod_ DataOrRecSig{}                            = __IMPOSSIBLE__
 
   value = vcase valu where
     valu [0, a, b]                                  = valuN Axiom a b
     valu [1, a, b, c, d, e, f, g, h, i, j, k, m, n] = valuN (\ a b -> Function a b Nothing) a b c d e f g h i j k m n
-    valu [2, a, b, c, d, e, f, g, h, i]             = valuN Datatype a b c d e f g h i
+    valu [2, a, b, c, d, e, f, g, h, i, j]          = valuN Datatype a b c d e f g h i j
     valu [3, a, b, c, d, e, f, g, h, i, j, k]       = valuN Record  a b c d e f g h i j k
     valu [4, a, b, c, d, e, f, g, h, i, j]          = valuN Constructor a b c d e f g h i j
     valu [5, a, b, c, d, e]                         = valuN Primitive   a b c d e
+    valu [6]                                        = valuN GeneralizableVar
     valu _                                          = malformed
 
 instance EmbPrj FunctionFlag where
@@ -403,6 +431,8 @@ instance EmbPrj a => EmbPrj (I.Pattern' a) where
   icod_ (LitP a    ) = icodeN 2 LitP a
   icod_ (DotP a b  ) = icodeN 3 DotP a b
   icod_ (ProjP a b ) = icodeN 4 ProjP a b
+  icod_ (IApplyP a b c d) = icodeN 5 IApplyP a b c d
+  icod_ (DefP a b c) = icodeN 6 DefP a b c
 
   value = vcase valu where
     valu [0, a, b] = valuN VarP a b
@@ -410,6 +440,8 @@ instance EmbPrj a => EmbPrj (I.Pattern' a) where
     valu [2, a]    = valuN LitP a
     valu [3, a, b] = valuN DotP a b
     valu [4, a, b] = valuN ProjP a b
+    valu [5, a, b, c, d] = valuN IApplyP a b c d
+    valu [6, a, b, c] = valuN DefP a b c
     valu _         = malformed
 
 instance EmbPrj a => EmbPrj (Builtin a) where

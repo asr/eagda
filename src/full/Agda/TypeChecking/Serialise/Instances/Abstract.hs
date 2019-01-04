@@ -76,9 +76,18 @@ instance EmbPrj WhyInScope where
     valu _         = malformed
 
 instance EmbPrj AbstractName where
-  icod_ (AbsName a b c) = icodeN' AbsName a b c
+  icod_ (AbsName a b c d) = icodeN' AbsName a b c d
 
   value = valueN AbsName
+
+instance EmbPrj NameMetadata where
+  icod_ NoMetadata                  = icodeN' NoMetadata
+  icod_ (GeneralizedVarsMetadata a) = icodeN' GeneralizedVarsMetadata a
+
+  value = vcase valu where
+    valu []  = valuN NoMetadata
+    valu [a] = valuN GeneralizedVarsMetadata a
+    valu _   = malformed
 
 instance EmbPrj AbstractModule where
   icod_ (AbsModule a b) = icodeN' AbsModule a b
@@ -92,6 +101,8 @@ instance EmbPrj KindOfName where
   icod_ PatternSynName = icodeN 3 PatternSynName
   icod_ QuotableName   = icodeN 4 QuotableName
   icod_ MacroName      = icodeN 5 MacroName
+  icod_ GeneralizeName = icodeN 6 GeneralizeName
+  icod_ DisallowedGeneralizeName = icodeN 7 DisallowedGeneralizeName
 
   value = vcase valu where
     valu []  = valuN DefName
@@ -100,6 +111,8 @@ instance EmbPrj KindOfName where
     valu [3] = valuN PatternSynName
     valu [4] = valuN QuotableName
     valu [5] = valuN MacroName
+    valu [6] = valuN GeneralizeName
+    valu [7] = valuN DisallowedGeneralizeName
     valu _   = malformed
 
 instance EmbPrj Binder where
@@ -190,6 +203,6 @@ instance EmbPrj Precedence where
     valu _         = malformed
 
 instance EmbPrj ScopeInfo where
-  icod_ (ScopeInfo a b c d e f g h) = icodeN' (\ a b c d e -> ScopeInfo a b c d e f g h) a b c d e
+  icod_ (ScopeInfo a b c d e f g h i j) = icodeN' (\ a b c d e -> ScopeInfo a b c d e f g h i j) a b c d e
 
-  value = valueN (\ a b c d e -> ScopeInfo a b c d e Map.empty Map.empty Set.empty)
+  value = valueN (\ a b c d e -> ScopeInfo a b c d e Map.empty Map.empty Set.empty Map.empty Map.empty)

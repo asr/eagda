@@ -24,11 +24,12 @@ import Agda.Syntax.Abstract.Name
 import Agda.Syntax.Internal as I
 import Agda.Syntax.Position
 
+import Agda.TypeChecking.Irrelevance
 import Agda.TypeChecking.Monad
-import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Reduce.Monad ()
+import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
 
 import {-# SOURCE #-} Agda.TypeChecking.ProjectionLike (eligibleForProjectionLike)
@@ -116,9 +117,9 @@ recordModule = mnameFromList . qnameToList
 
 -- | Get the definition for a record. Throws an exception if the name
 --   does not refer to a record or the record is abstract.
-getRecordDef :: QName -> TCM Defn
+getRecordDef :: (MonadTCM m, HasConstInfo m) => QName -> m Defn
 getRecordDef r = maybe err return =<< isRecord r
-  where err = typeError $ ShouldBeRecordType (El dummySort $ Def r [])
+  where err = typeError $ ShouldBeRecordType (El __DUMMY_SORT__ $ Def r [])
 
 -- | Get the record name belonging to a field name.
 getRecordOfField :: QName -> TCM (Maybe QName)
@@ -136,8 +137,8 @@ recordFieldNames = map (fmap (nameConcrete . qnameName)) . recFields
 -- | Find all records with at least the given fields.
 findPossibleRecords :: [C.Name] -> TCM [QName]
 findPossibleRecords fields = do
-  defs  <- HMap.elems <$> use (stSignature . sigDefinitions)
-  idefs <- HMap.elems <$> use (stImports   . sigDefinitions)
+  defs  <- HMap.elems <$> useTC (stSignature . sigDefinitions)
+  idefs <- HMap.elems <$> useTC (stImports   . sigDefinitions)
   return $ cands defs ++ cands idefs
   where
     cands defs = [ defName d | d <- defs, possible d ]
@@ -187,14 +188,16 @@ isRecord r = do
 -- | Reduce a type and check whether it is a record type.
 --   Succeeds only if type is not blocked by a meta var.
 --   If yes, return its name, parameters, and definition.
-isRecordType :: Type -> TCM (Maybe (QName, Args, Defn))
+isRecordType :: (MonadReduce m, HasConstInfo m)
+             => Type -> m (Maybe (QName, Args, Defn))
 isRecordType t = either (const Nothing) Just <$> tryRecordType t
 
 -- | Reduce a type and check whether it is a record type.
 --   Succeeds only if type is not blocked by a meta var.
 --   If yes, return its name, parameters, and definition.
 --   If no, return the reduced type (unless it is blocked).
-tryRecordType :: Type -> TCM (Either (Blocked Type) (QName, Args, Defn))
+tryRecordType :: (MonadReduce m, HasConstInfo m)
+              => Type -> m (Either (Blocked Type) (QName, Args, Defn))
 tryRecordType t = ifBlockedType t (\ m a -> return $ Left $ Blocked m a) $ \ nb t -> do
   let no = return $ Left $ NotBlocked nb t
   case unEl t of
@@ -239,9 +242,9 @@ getDefType f t = do
   -- if @f@ is not a projection (like) function, @a@ is the correct type
       fallback = return $ Just a
   reportSDoc "tc.deftype" 20 $ vcat
-    [ text "definition f = " <> prettyTCM f <+> text ("  -- raw: " ++ prettyShow f)
-    , text "has type   a = " <> prettyTCM a
-    , text "principal  t = " <> prettyTCM t
+    [ "definition f = " <> prettyTCM f <+> text ("  -- raw: " ++ prettyShow f)
+    , "has type   a = " <> prettyTCM a
+    , "principal  t = " <> prettyTCM t
     ]
   caseMaybe mp fallback $
     \ (Projection{ projIndex = n }) -> if n <= 0 then fallback else do
@@ -262,7 +265,7 @@ getDefType f t = do
             let pars = fromMaybe __IMPOSSIBLE__ $ allApplyElims $ take npars es
             reportSDoc "tc.deftype" 20 $ vcat
               [ text $ "head d     = " ++ prettyShow d
-              , text "parameters =" <+> sep (map prettyTCM pars)
+              , "parameters =" <+> sep (map prettyTCM pars)
               ]
             reportSLn "tc.deftype" 60 $ "parameters = " ++ show pars
             if length pars < npars then failure "does not supply enough parameters"
@@ -273,8 +276,8 @@ getDefType f t = do
     failNotDef  = failure "is not a Def."
     failure reason = do
       reportSDoc "tc.deftype" 25 $ sep
-        [ text "Def. " <+> prettyTCM f <+> text " is projection(like)"
-        , text "but the type "
+        [ "Def. " <+> prettyTCM f <+> " is projection(like)"
+        , "but the type "
         , prettyTCM t
         , text $ "of its argument " ++ reason
         ]
@@ -312,7 +315,7 @@ data ElimType
 instance PrettyTCM ElimType where
   prettyTCM (ArgT a)    = prettyTCM a
   prettyTCM (ProjT a b) =
-    text "." <> parens (prettyTCM a <+> text "->" <+> prettyTCM b)
+    "." <> parens (prettyTCM a <+> "->" <+> prettyTCM b)
 
 -- | Given a head and its type, compute the types of the eliminations.
 
@@ -449,9 +452,9 @@ expandRecordVar i gamma0 = do
   -- This must be a eta-expandable record type.
   let failure = do
         reportSDoc "tc.meta.assign.proj" 25 $
-          text "failed to eta-expand variable " <+> pretty x <+>
-          text " since its type " <+> prettyTCM a <+>
-          text " is not a record type"
+          "failed to eta-expand variable " <+> pretty x <+>
+          " since its type " <+> prettyTCM a <+>
+          " is not a record type"
         return Nothing
   caseMaybeM (isRecordType a) failure $ \ (r, pars, def) -> do
     if recEtaEquality def == NoEta then return Nothing else Just <$> do
@@ -556,24 +559,27 @@ curryAt t n = do
 
     where @tel@ is the record telescope instantiated at the parameters @pars@.
 -}
-etaExpandRecord :: QName -> Args -> Term -> TCM (Telescope, Args)
+etaExpandRecord :: (MonadTCM m, HasConstInfo m, MonadDebug m)
+                => QName -> Args -> Term -> m (Telescope, Args)
 etaExpandRecord = etaExpandRecord' False
 
 -- | Eta expand a record regardless of whether it's an eta-record or not.
-forceEtaExpandRecord :: QName -> Args -> Term -> TCM (Telescope, Args)
+forceEtaExpandRecord :: (MonadTCM m, HasConstInfo m, MonadDebug m)
+                     => QName -> Args -> Term -> m (Telescope, Args)
 forceEtaExpandRecord = etaExpandRecord' True
 
-etaExpandRecord' :: Bool -> QName -> Args -> Term -> TCM (Telescope, Args)
+etaExpandRecord' :: (MonadTCM m, HasConstInfo m, MonadDebug m)
+                 => Bool -> QName -> Args -> Term -> m (Telescope, Args)
 etaExpandRecord' forceEta r pars u = do
   def <- getRecordDef r
   (tel, _, _, args) <- etaExpandRecord'_ forceEta r pars def u
   return (tel, args)
 
-etaExpandRecord_ :: (MonadReader TCEnv m, HasOptions m, MonadDebug m)
+etaExpandRecord_ :: (MonadTCEnv m, HasOptions m, MonadDebug m)
                  => QName -> Args -> Defn -> Term -> m (Telescope, ConHead, ConInfo, Args)
 etaExpandRecord_ = etaExpandRecord'_ False
 
-etaExpandRecord'_ :: (MonadReader TCEnv m, HasOptions m, MonadDebug m)
+etaExpandRecord'_ :: (MonadTCEnv m, HasOptions m, MonadDebug m)
                   => Bool -> QName -> Args -> Defn -> Term -> m (Telescope, ConHead, ConInfo, Args)
 etaExpandRecord'_ forceEta r pars def u = do
   let Record{ recConHead     = con
@@ -590,7 +596,7 @@ etaExpandRecord'_ forceEta r pars def u = do
       let args = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
       when (con /= con_) $ do
         reportSDoc "impossible" 10 $ vcat
-          [ text "etaExpandRecord_: the following two constructors should be identical"
+          [ "etaExpandRecord_: the following two constructors should be identical"
           , nest 2 $ text $ "con  = " ++ prettyShow con
           , nest 2 $ text $ "con_ = " ++ prettyShow con_
           ]
@@ -603,10 +609,10 @@ etaExpandRecord'_ forceEta r pars def u = do
       -- thus, we can use them in Proj directly.
       let xs' = for xs $ fmap $ \ x -> u `applyE` [Proj ProjSystem x]
       reportSDoc "tc.record.eta" 20 $ vcat
-        [ text "eta expanding" <+> prettyTCM u <+> text ":" <+> prettyTCM r
+        [ "eta expanding" <+> prettyTCM u <+> ":" <+> prettyTCM r
         , nest 2 $ vcat
-          [ text "tel' =" <+> prettyTCM tel'
-          , text "args =" <+> prettyTCM xs'
+          [ "tel' =" <+> prettyTCM tel'
+          , "args =" <+> prettyTCM xs'
           ]
         ]
       return (tel', con, ConOSystem, xs')
@@ -682,14 +688,14 @@ isSingletonRecord' regardIrrelevance r ps = do
   check :: Telescope -> TCM (Either MetaId (Maybe [Arg Term]))
   check tel = do
     reportSDoc "tc.meta.eta" 30 $
-      text "isSingletonRecord' checking telescope " <+> prettyTCM tel
+      "isSingletonRecord' checking telescope " <+> prettyTCM tel
     case tel of
       EmptyTel -> return $ Right $ Just []
-      ExtendTel dom tel
-        | isIrrelevantOrProp dom && regardIrrelevance -> do
-          underAbstraction dom tel $ \ tel ->
-            emap (Arg (domInfo dom) dummyTerm :) <$> check tel
-        | otherwise -> do
+      ExtendTel dom tel -> ifM (return regardIrrelevance `and2M` isIrrelevantOrPropM dom)
+        {-then-}
+          (underAbstraction dom tel $ \ tel ->
+            emap (Arg (domInfo dom) __DUMMY_TERM__ :) <$> check tel)
+        {-else-} $ do
           isSing <- isSingletonType' regardIrrelevance $ unDom dom
           case isSing of
             Left mid       -> return $ Left mid
@@ -730,11 +736,11 @@ isEtaVar u a = runMaybeT $ isEtaVarG u a Nothing []
     isEtaVarG :: Term -> Type -> Maybe Int -> [Elim' Int] -> MaybeT TCM Int
     isEtaVarG u a mi es = do
       (u, a) <- liftTCM $ reduce (u, a)
-      liftTCM $ reportSDoc "tc.lhs" 80 $ text "isEtaVarG" <+> nest 2 (vcat
-        [ text "u  = " <+> text (show u)
-        , text "a  = " <+> prettyTCM a
-        , text "mi = " <+> text (show mi)
-        , text "es = " <+> prettyList (map (text . show) es)
+      liftTCM $ reportSDoc "tc.lhs" 80 $ "isEtaVarG" <+> nest 2 (vcat
+        [ "u  = " <+> text (show u)
+        , "a  = " <+> prettyTCM a
+        , "mi = " <+> text (show mi)
+        , "es = " <+> prettyList (map (text . show) es)
         ])
       case (u, unEl a) of
         (Var i' es', _) -> do
@@ -817,5 +823,7 @@ instance NormaliseProjP (Pattern' x) where
   normaliseProjP p@VarP{}        = return p
   normaliseProjP p@DotP{}        = return p
   normaliseProjP (ConP c cpi ps) = ConP c cpi <$> normaliseProjP ps
+  normaliseProjP (DefP o q ps) = DefP o q <$> normaliseProjP ps
   normaliseProjP p@LitP{}        = return p
   normaliseProjP (ProjP o d0)    = ProjP o <$> getOriginalProjection d0
+  normaliseProjP p@IApplyP{}     = return p

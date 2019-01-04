@@ -55,9 +55,9 @@ catchConstraint c v = liftTCM $
 
 addConstraint :: Constraint -> TCM ()
 addConstraint c = do
-    pids <- asks envActiveProblems
+    pids <- asksTC envActiveProblems
     reportSDoc "tc.constr.add" 20 $ hsep
-      [ text "adding constraint"
+      [ "adding constraint"
       , text (show $ Set.toList pids)
       , prettyTCM c ]
     -- Need to reduce to reveal possibly blocking metas
@@ -65,21 +65,17 @@ addConstraint c = do
     cs <- simpl c
     if ([c] /= cs)
       then do
-        reportSDoc "tc.constr.add" 20 $ text "  simplified:" <+> prettyList (map prettyTCM cs)
+        reportSDoc "tc.constr.add" 20 $ "  simplified:" <+> prettyList (map prettyTCM cs)
         mapM_ solveConstraint_ cs
       else mapM_ addConstraint' cs
-    -- the added constraint can cause IFS constraints to be solved (but only
+    -- the added constraint can cause instance constraints to be solved (but only
     -- the constraints which aren’t blocked on an uninstantiated meta)
-    unless (isIFSConstraint c) $
-       wakeConstraints (isWakeableIFSConstraint . clValue . theConstraint)
+    unless (isInstanceConstraint c) $
+       wakeConstraints' (isWakeableInstanceConstraint . clValue . theConstraint)
   where
-    isWakeableIFSConstraint :: Constraint -> TCM Bool
-    isWakeableIFSConstraint (FindInScope _ b _) = caseMaybe b (return True) (\m -> isInstantiatedMeta m)
-    isWakeableIFSConstraint _ = return False
-
-    isIFSConstraint :: Constraint -> Bool
-    isIFSConstraint FindInScope{} = True
-    isIFSConstraint _             = False
+    isWakeableInstanceConstraint :: Constraint -> TCM Bool
+    isWakeableInstanceConstraint (FindInstance _ b _) = caseMaybe b (return True) (\m -> isInstantiatedMeta m)
+    isWakeableInstanceConstraint _ = return False
 
     isLvl LevelCmp{} = True
     isLvl _          = False
@@ -90,8 +86,8 @@ addConstraint c = do
       cs <- map theConstraint <$> getAllConstraints
       lvls <- instantiateFull $ List.filter (isLvl . clValue) cs
       when (not $ null lvls) $ do
-        reportSDoc "tc.constr.lvl" 40 $ text "simplifying level constraint" <+> prettyTCM c
-                                        $$ nest 2 (hang (text "using") 2 (prettyTCM lvls))
+        reportSDoc "tc.constr.lvl" 40 $ "simplifying level constraint" <+> prettyTCM c
+                                        $$ nest 2 (hang "using" 2 (prettyTCM lvls))
       return $ simplifyLevelConstraint c $ map clValue lvls
 
 -- | Don't allow the argument to produce any constraints.
@@ -131,7 +127,7 @@ ifNoConstraints_ check ifNo ifCs = ifNoConstraints check (const ifNo) (\pid _ ->
 --   to the @blocker@-generated constraints @cs@.
 guardConstraint :: Constraint -> TCM () -> TCM ()
 guardConstraint c blocker =
-  ifNoConstraints_ blocker (solveConstraint_ c) (addConstraint . Guarded c)
+  ifNoConstraints_ blocker (solveConstraint c) (addConstraint . Guarded c)
 
 whenConstraints :: TCM () -> TCM () -> TCM ()
 whenConstraints action handler =
@@ -139,35 +135,47 @@ whenConstraints action handler =
     stealConstraints pid
     handler
 
+-- | Wake constraints matching the given predicate (and aren't instance
+--   constraints if 'isConsideringInstance').
+wakeConstraints' :: (ProblemConstraint -> TCM Bool) -> TCM ()
+wakeConstraints' p = do
+  skipInstance <- isConsideringInstance
+  wakeConstraints (\ c -> (&&) (not $ skipInstance && isInstanceConstraint (clValue $ theConstraint c)) <$> p c)
+
 -- | Wake up the constraints depending on the given meta.
 wakeupConstraints :: MetaId -> TCM ()
 wakeupConstraints x = do
-  wakeConstraints (return . mentionsMeta x)
+  wakeConstraints' (return . mentionsMeta x)
   solveAwakeConstraints
 
 -- | Wake up all constraints.
 wakeupConstraints_ :: TCM ()
 wakeupConstraints_ = do
-  wakeConstraints (return . const True)
+  wakeConstraints' (return . const True)
   solveAwakeConstraints
 
 solveAwakeConstraints :: TCM ()
 solveAwakeConstraints = solveAwakeConstraints' False
 
 solveAwakeConstraints' :: Bool -> TCM ()
-solveAwakeConstraints' force = do
+solveAwakeConstraints' = solveSomeAwakeConstraints (const True)
+
+-- | Solve awake constraints matching the predicate. If the second argument is
+--   True solve constraints even if already 'isSolvingConstraints'.
+solveSomeAwakeConstraints :: (ProblemConstraint -> Bool) -> Bool -> TCM ()
+solveSomeAwakeConstraints solveThis force = do
     verboseS "profile.constraints" 10 $ liftTCM $ tickMax "max-open-constraints" . List.genericLength =<< getAllConstraints
     whenM ((force ||) . not <$> isSolvingConstraints) $ nowSolvingConstraints $ do
      -- solveSizeConstraints -- Andreas, 2012-09-27 attacks size constrs too early
      -- Ulf, 2016-12-06: Don't inherit problems here! Stored constraints
      -- already contain all their dependencies.
-     locally eActiveProblems (const Set.empty) solve
+     locallyTC eActiveProblems (const Set.empty) solve
   where
     solve = do
-      reportSDoc "tc.constr.solve" 10 $ hsep [ text "Solving awake constraints."
+      reportSDoc "tc.constr.solve" 10 $ hsep [ "Solving awake constraints."
                                              , text . show . length =<< getAwakeConstraints
-                                             , text "remaining." ]
-      whenJustM takeAwakeConstraint $ \ c -> do
+                                             , "remaining." ]
+      whenJustM (takeAwakeConstraint' solveThis) $ \ c -> do
         withConstraint solveConstraint c
         solve
 
@@ -175,8 +183,8 @@ solveConstraint :: Constraint -> TCM ()
 solveConstraint c = do
     verboseS "profile.constraints" 10 $ liftTCM $ tick "attempted-constraints"
     verboseBracket "tc.constr.solve" 20 "solving constraint" $ do
-      pids <- asks envActiveProblems
-      reportSDoc "tc.constr.solve" 20 $ text (show $ Set.toList pids) <+> prettyTCM c
+      pids <- asksTC envActiveProblems
+      reportSDoc "tc.constr.solve.constr" 20 $ text (show $ Set.toList pids) <+> prettyTCM c
       solveConstraint_ c
 
 solveConstraint_ :: Constraint -> TCM ()
@@ -225,24 +233,25 @@ solveConstraint_ (UnBlock m)                =
       InstV{} -> __IMPOSSIBLE__
       -- Open (whatever that means)
       Open -> __IMPOSSIBLE__
-      OpenIFS -> __IMPOSSIBLE__
-solveConstraint_ (FindInScope m b cands)      = findInScope m cands
+      OpenInstance -> __IMPOSSIBLE__
+solveConstraint_ (FindInstance m b cands)     = findInstance m cands
 solveConstraint_ (CheckFunDef d i q cs)       = checkFunDef d i q cs
 solveConstraint_ (HasBiggerSort a)            = hasBiggerSort a
 solveConstraint_ (HasPTSRule a b)             = hasPTSRule a b
 
 checkTypeCheckingProblem :: TypeCheckingProblem -> TCM Term
 checkTypeCheckingProblem p = case p of
-  CheckExpr e t                  -> checkExpr e t
+  CheckExpr cmp e t              -> checkExpr' cmp e t
   CheckArgs eh r args t0 t1 k    -> checkArguments eh r args t0 t1 k
-  CheckLambda args body target   -> checkPostponedLambda args body target
+  CheckLambda cmp args body target -> checkPostponedLambda cmp args body target
   UnquoteTactic tac hole t       -> unquoteTactic tac hole t $ return hole
+  DoQuoteTerm cmp et t           -> doQuoteTerm cmp et t
 
 debugConstraints :: TCM ()
 debugConstraints = verboseS "tc.constr" 50 $ do
-  awake    <- use stAwakeConstraints
-  sleeping <- use stSleepingConstraints
-  reportSDoc "" 0 $ vcat
-    [ text "Current constraints"
-    , nest 2 $ vcat [ text "awake " <+> vcat (map prettyTCM awake)
-                    , text "asleep" <+> vcat (map prettyTCM sleeping) ] ]
+  awake    <- useTC stAwakeConstraints
+  sleeping <- useTC stSleepingConstraints
+  reportSDoc "tc.constr" 50 $ vcat
+    [ "Current constraints"
+    , nest 2 $ vcat [ "awake " <+> vcat (map prettyTCM awake)
+                    , "asleep" <+> vcat (map prettyTCM sleeping) ] ]

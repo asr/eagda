@@ -29,6 +29,11 @@ module Agda.TypeChecking.Names where
 
 import Control.Monad
 import Control.Applicative
+
+#if __GLASGOW_HASKELL__ >= 800
+import qualified Control.Monad.Fail as Fail
+#endif
+
 import Control.Monad.Identity
 import Control.Monad.Reader
 import Control.Monad.State
@@ -76,9 +81,25 @@ instance HasBuiltins m => HasBuiltins (NamesT m) where
   getBuiltinThing b = lift $ getBuiltinThing b
 
 newtype NamesT m a = NamesT { unName :: ReaderT Names m a }
-  deriving (Functor, Applicative, Monad, MonadTrans, MonadIO, HasOptions, MonadDebug)
+  deriving ( Functor
+           , Applicative
+           , Monad
+#if __GLASGOW_HASKELL__ >= 800
+           , Fail.MonadFail
+#endif
+           , MonadTrans
+           , MonadState s
+           , MonadIO
+           , HasOptions
+           , MonadDebug
+           , MonadTCEnv
+           , MonadTCState
+           , MonadTCM
+           , ReadTCState
+           , MonadReduce
+           )
 
-deriving instance MonadState s m => MonadState s (NamesT m)
+-- deriving instance MonadState s m => MonadState s (NamesT m)
 
 type Names = [String]
 
@@ -88,13 +109,20 @@ runNamesT n m = runReaderT (unName m) n
 runNames :: Names -> NamesT Identity a -> a
 runNames n m = runIdentity (runNamesT n m)
 
-inCxt :: (Monad m, Subst t a) => Names -> a -> NamesT m a
-inCxt ctx a = do
-  ctx' <- NamesT ask
+currentCxt :: Monad m => NamesT m Names
+currentCxt = NamesT ask
+
+cxtSubst :: Monad m => Names -> NamesT m (Substitution' a)
+cxtSubst ctx = do
+  ctx' <- currentCxt
   if (ctx `isSuffixOf` ctx')
-     then return $ raise (genericLength ctx' - genericLength ctx) a
+     then return $ raiseS (genericLength ctx' - genericLength ctx)
      else fail $ "thing out of context (" ++ show ctx ++ " is not a sub context of " ++ show ctx' ++ ")"
 
+inCxt :: (Monad m, Subst t a) => Names -> a -> NamesT m a
+inCxt ctx a = do
+  sigma <- cxtSubst ctx
+  return $ applySubst sigma a
 
 -- closed terms
 cl' :: Applicative m => a -> NamesT m a
@@ -128,7 +156,7 @@ bind :: ( Monad m
         , Free a
         ) =>
         ArgName -> (NamesT m b -> NamesT m a) -> NamesT m (Abs a)
-bind n f = mkAbs n <$> bind' n f
+bind n f = Abs n <$> bind' n f
 
 #if __GLASGOW_HASKELL__ <= 708
 glam :: (Functor m, Monad m)
@@ -154,10 +182,3 @@ ilam :: Monad m
     => ArgName -> (NamesT m Term -> NamesT m Term) -> NamesT m Term
 ilam n f = glam (setRelevance Irrelevant defaultArgInfo) n f
 
-
-instance MonadTCM m => MonadTCM (NamesT m) where
-   liftTCM = lift . liftTCM
-
-instance MonadReader r m => MonadReader r (NamesT m) where
-  ask = lift ask
-  local f (NamesT m) = NamesT $ mapReaderT (local f) m

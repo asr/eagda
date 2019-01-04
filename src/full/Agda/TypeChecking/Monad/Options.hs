@@ -5,6 +5,7 @@ module Agda.TypeChecking.Monad.Options where
 import Prelude hiding (mapM)
 
 import Control.Monad.Reader hiding (mapM)
+import Control.Monad.Writer
 import Control.Monad.State  hiding (mapM)
 
 import Data.Maybe
@@ -47,7 +48,7 @@ import Agda.Utils.Impossible
 
 setPragmaOptions :: PragmaOptions -> TCM ()
 setPragmaOptions opts = do
-  stPragmaOptions %= Lens.mapSafeMode (Lens.getSafeMode opts ||)
+  stPragmaOptions `modifyTCLens` Lens.mapSafeMode (Lens.getSafeMode opts ||)
   clo <- commandLineOptions
   let unsafe = unsafePragmaOptions opts
   when (Lens.getSafeMode clo && not (null unsafe)) $ warning $ SafeFlagPragma unsafe
@@ -55,7 +56,7 @@ setPragmaOptions opts = do
   case ok of
     Left err   -> __IMPOSSIBLE__
     Right opts -> do
-      stPragmaOptions .= optPragmaOptions opts
+      stPragmaOptions `setTCLens` optPragmaOptions opts
       updateBenchmarkingStatus
 
 -- | Sets the command line options (both persistent and pragma options
@@ -69,34 +70,47 @@ setPragmaOptions opts = do
 -- An empty list of relative include directories (@'Left' []@) is
 -- interpreted as @["."]@.
 setCommandLineOptions :: CommandLineOptions -> TCM ()
-setCommandLineOptions = setCommandLineOptions' CurrentDir
+setCommandLineOptions opts = do
+  root <- liftIO (absolute =<< getCurrentDirectory)
+  setCommandLineOptions' root opts
 
-setCommandLineOptions' :: RelativeTo -> CommandLineOptions -> TCM ()
-setCommandLineOptions' relativeTo opts = do
+setCommandLineOptions'
+  :: AbsolutePath
+     -- ^ The base directory of relative paths.
+  -> CommandLineOptions
+  -> TCM ()
+setCommandLineOptions' root opts = do
   z <- liftIO $ runOptM $ checkOpts opts
   case z of
     Left err   -> __IMPOSSIBLE__
     Right opts -> do
       incs <- case optAbsoluteIncludePaths opts of
         [] -> do
-          opts' <- setLibraryPaths relativeTo opts
+          opts' <- setLibraryPaths root opts
           let incs = optIncludePaths opts'
-          setIncludeDirs incs relativeTo
+          setIncludeDirs incs root
           getIncludeDirs
         incs -> return incs
-      modify $ Lens.setCommandLineOptions opts{ optAbsoluteIncludePaths = incs }
+      modifyTC $ Lens.setCommandLineOptions opts{ optAbsoluteIncludePaths = incs }
       setPragmaOptions (optPragmaOptions opts)
       updateBenchmarkingStatus
 
 libToTCM :: LibM a -> TCM a
 libToTCM m = do
-  z <- liftIO $ runExceptT m
+  (z, warns) <- liftIO $ runWriterT $ runExceptT m
+
+  unless (null warns) $ warnings $ map LibraryWarning warns
   case z of
     Left s  -> typeError $ GenericDocError s
     Right x -> return x
 
-setLibraryPaths :: RelativeTo -> CommandLineOptions -> TCM CommandLineOptions
-setLibraryPaths rel o = setLibraryIncludes =<< addDefaultLibraries rel o
+setLibraryPaths
+  :: AbsolutePath
+     -- ^ The base directory of relative paths.
+  -> CommandLineOptions
+  -> TCM CommandLineOptions
+setLibraryPaths root o =
+  setLibraryIncludes =<< addDefaultLibraries root o
 
 setLibraryIncludes :: CommandLineOptions -> TCM CommandLineOptions
 setLibraryIncludes o = do
@@ -105,13 +119,16 @@ setLibraryIncludes o = do
     paths     <- libToTCM $ libraryIncludePaths (optOverrideLibrariesFile o) installed libs
     return o{ optIncludePaths = paths ++ optIncludePaths o }
 
-addDefaultLibraries :: RelativeTo -> CommandLineOptions -> TCM CommandLineOptions
-addDefaultLibraries rel o
+addDefaultLibraries
+  :: AbsolutePath
+     -- ^ The base directory of relative paths.
+  -> CommandLineOptions
+  -> TCM CommandLineOptions
+addDefaultLibraries root o
   | or [ not $ null $ optLibraries o
        , not $ optUseLibs o
        , optShowVersion o ] = pure o
   | otherwise = do
-  root <- getProjectRoot rel
   (libs, incs) <- libToTCM $ getDefaultLibraries (filePath root) (optDefaultLibs o)
   return o{ optIncludePaths = incs ++ optIncludePaths o, optLibraries = libs }
 
@@ -126,16 +143,16 @@ setOptionsFromPragma ps = do
 -- | Disable display forms.
 enableDisplayForms :: TCM a -> TCM a
 enableDisplayForms =
-  local $ \e -> e { envDisplayFormsEnabled = True }
+  localTC $ \e -> e { envDisplayFormsEnabled = True }
 
 -- | Disable display forms.
 disableDisplayForms :: TCM a -> TCM a
 disableDisplayForms =
-  local $ \e -> e { envDisplayFormsEnabled = False }
+  localTC $ \e -> e { envDisplayFormsEnabled = False }
 
 -- | Check if display forms are enabled.
 displayFormsEnabled :: TCM Bool
-displayFormsEnabled = asks envDisplayFormsEnabled
+displayFormsEnabled = asksTC envDisplayFormsEnabled
 
 -- | Gets the include directories.
 --
@@ -149,22 +166,6 @@ getIncludeDirs = do
     [] -> __IMPOSSIBLE__
     _  -> return incs
 
--- | Which directory should form the base of relative include paths?
-
-data RelativeTo
-  = ProjectRoot AbsolutePath
-    -- ^ The root directory of the \"project\" containing the given
-    -- file. The file needs to be syntactically correct, with a module
-    -- name matching the file name.
-  | CurrentDir
-    -- ^ The current working directory.
-
-getProjectRoot :: RelativeTo -> TCM AbsolutePath
-getProjectRoot CurrentDir = liftIO (absolute =<< getCurrentDirectory)
-getProjectRoot (ProjectRoot f) = do
-  m <- moduleName' f
-  return (projectRoot f m)
-
 -- | Makes the given directories absolute and stores them as include
 -- directories.
 --
@@ -173,14 +174,12 @@ getProjectRoot (ProjectRoot f) = do
 --
 -- An empty list is interpreted as @["."]@.
 
-setIncludeDirs :: [FilePath] -- ^ New include directories.
-               -> RelativeTo -- ^ How should relative paths be interpreted?
+setIncludeDirs :: [FilePath]    -- ^ New include directories.
+               -> AbsolutePath  -- ^ The base directory of relative paths.
                -> TCM ()
-setIncludeDirs incs relativeTo = do
+setIncludeDirs incs root = do
   -- save the previous include dirs
-  oldIncs <- gets Lens.getAbsoluteIncludePaths
-
-  root <- getProjectRoot relativeTo
+  oldIncs <- getsTC Lens.getAbsoluteIncludePaths
 
   -- Add the current dir if no include path is given
   incs <- return $ if null incs then ["."] else incs
@@ -198,9 +197,9 @@ setIncludeDirs incs relativeTo = do
   incs <- return $ incs ++ [primdir]
 
   reportSDoc "setIncludeDirs" 10 $ return $ vcat
-    [ text "Old include directories:"
+    [ "Old include directories:"
     , nest 2 $ vcat $ map pretty oldIncs
-    , text "New include directories:"
+    , "New include directories:"
     , nest 2 $ vcat $ map pretty incs
     ]
 
@@ -219,28 +218,12 @@ setIncludeDirs incs relativeTo = do
   -- "new-path/M.agda".
   when (oldIncs /= incs) $ do
     ho <- getInteractionOutputCallback
+    tcWarnings <- useTC stTCWarnings -- restore already generated warnings
     resetAllState
+    setTCLens stTCWarnings tcWarnings
     setInteractionOutputCallback ho
 
   Lens.putAbsoluteIncludePaths incs
-
-  -- Andreas, 2016-07-11 (reconstructing semantics):
-  --
-  -- Check that the module name of the project root
-  -- is still correct wrt. to the changed include path.
-  --
-  -- E.g. if the include path was "/" and file "/A/B" was named "module A.B",
-  -- and then the include path changes to "/A/", the module name
-  -- becomes invalid; correct would then be "module B".
-
-  case relativeTo of
-    CurrentDir -> return ()
-    ProjectRoot f -> void $ moduleName f
-     -- Andreas, 2016-07-12 WAS:
-     -- do
-     --  m <- moduleName' f
-     --  checkModuleName m f Nothing
-
 
 setInputFile :: FilePath -> TCM ()
 setInputFile file =
@@ -261,7 +244,7 @@ getInputFile' = mapM (liftIO . absolute) =<< do
 hasInputFile :: TCM Bool
 hasInputFile = isJust <$> optInputFile <$> commandLineOptions
 
-isPropEnabled :: TCM Bool
+isPropEnabled :: HasOptions m => m Bool
 isPropEnabled = optProp <$> pragmaOptions
 
 {-# SPECIALIZE hasUniversePolymorphism :: TCM Bool #-}
@@ -339,7 +322,7 @@ getVerbosity = optVerbose <$> pragmaOptions
 type VerboseKey = String
 
 parseVerboseKey :: VerboseKey -> [String]
-parseVerboseKey = wordsBy (`elem` ".:")
+parseVerboseKey = wordsBy (`elem` (".:" :: String))
 
 -- | Check whether a certain verbosity level is activated.
 --
@@ -372,8 +355,8 @@ whenExactVerbosity k n = whenM $ liftTCM $ hasExactVerbosity k n
 {-# SPECIALIZE verboseS :: VerboseKey -> Int -> TCM () -> TCM () #-}
 -- {-# SPECIALIZE verboseS :: MonadIO m => VerboseKey -> Int -> TCMT m () -> TCMT m () #-} -- RULE left-hand side too complicated to desugar
 {-# SPECIALIZE verboseS :: MonadTCM tcm => VerboseKey -> Int -> tcm () -> tcm () #-}
-verboseS :: (MonadReader TCEnv m, HasOptions m) => VerboseKey -> Int -> m () -> m ()
-verboseS k n action = whenM (hasVerbosity k n) $ locally eIsDebugPrinting (const True) action
+verboseS :: (MonadTCEnv m, HasOptions m) => VerboseKey -> Int -> m () -> m ()
+verboseS k n action = whenM (hasVerbosity k n) $ locallyTC eIsDebugPrinting (const True) action
 
 -- | Verbosity lens.
 verbosity :: VerboseKey -> Lens' Int TCState
@@ -384,4 +367,3 @@ verbosity k = stPragmaOptions . verbOpt . Trie.valueAt (parseVerboseKey k) . def
 
     defaultTo :: Eq a => a -> Lens' a (Maybe a)
     defaultTo x f m = f (fromMaybe x m) <&> \ v -> if v == x then Nothing else Just v
-

@@ -152,7 +152,7 @@ makeConfiguration ds cs ps vs = TermConf
       return $ QName { qnameModule = MName []
                      , qnameName   = Name
                         { nameId          = NameId n 1
-                        , nameConcrete    = C.Name noRange [C.Id s]
+                        , nameConcrete    = C.Name noRange C.InScope [C.Id s]
                         , nameBindingSite = noRange
                         , nameFixity      = noFixity'
                         }
@@ -449,17 +449,17 @@ instance ShrinkC a b => ShrinkC (Elim' a) (Elim' b) where
   shrinkC conf Proj{}    = []
   noShrink = fmap noShrink
 
--- Andreas 2010-09-21: simplify? since Sort Prop is no longer abused as DontCare
 instance ShrinkC Sort Sort where
-  shrinkC conf Prop{} = []
   shrinkC conf s = mkProp 0 : case s of
     Type n     -> [] -- No Level instance yet -- Type <$> shrinkC conf n
-    Prop{}     -> __IMPOSSIBLE__
+    Prop{}     -> []
     Inf        -> []
     SizeUniv   -> []
     PiSort s1 s2 -> __IMPOSSIBLE__
     UnivSort s -> __IMPOSSIBLE__
     MetaS x es -> __IMPOSSIBLE__
+    DefS d es -> __IMPOSSIBLE__
+    DummyS{} -> __IMPOSSIBLE__
   noShrink = id
 
 instance ShrinkC Telescope Telescope where
@@ -473,8 +473,8 @@ instance ShrinkC Type Type where
   noShrink = id
 
 instance ShrinkC Term Term where
-  shrinkC conf (DontCare _)  = []
-  shrinkC conf (Sort Prop{}) = []
+  shrinkC conf DontCare{}  = []
+  shrinkC conf Dummy{}     = []
   shrinkC conf t           = filter validType $ case t of
     Var i es     -> map unArg (argsFromElims es) ++
                     (uncurry Var <$> shrinkC conf (VarName i, NoType es))
@@ -491,7 +491,8 @@ instance ShrinkC Term Term where
     Sort s       -> Sort <$> shrinkC conf s
     MetaV m es   -> map unArg (argsFromElims es) ++
                     (MetaV m <$> shrinkC conf (NoType es))
-    DontCare _   -> []
+    DontCare _   -> __IMPOSSIBLE__
+    Dummy{}      -> __IMPOSSIBLE__
     where
       validType t
         | not (tcIsType conf) = True
@@ -523,6 +524,7 @@ instance KillVar Term where
     Pi a b                 -> uncurry Pi  $ killVar i (a, b)
     MetaV m args           -> MetaV m     $ killVar i args
     DontCare mv            -> DontCare    $ killVar i mv
+    Dummy{}                -> t
 
 instance KillVar Type where
   killVar i (El s t) = El s $ killVar i t

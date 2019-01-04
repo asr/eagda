@@ -166,6 +166,18 @@ building Agda from source.
 For more information, refer to the `Homebrew documentation
 <https://docs.brew.sh/>`_.
 
+.. NOTE::
+
+   If Emacs cannot find the ``agda-mode`` executable, it might help to
+   install the exec-path-from-shell_ package by doing ``M-x
+   package-install RET exec-path-from-shell RET``, and adding
+
+   .. code-block:: elisp
+
+     (exec-path-from-shell-initialize)
+
+   to your ``.emacs`` file.
+
 .. _installation-development-version:
 
 Installation of the Development Version
@@ -179,7 +191,8 @@ the `Agda wiki <http://wiki.portal.chalmers.se/agda/pmwiki.php>`_:
 * In the top-level directory of the Agda source tree
 
   * Follow the :ref:`instructions <installation-from-hackage>` for
-    installing Agda from Hackage or
+    installing Agda from Hackage (except run ``cabal install``
+    instead of ``cabal install Agda``) or
 
   * You can try to install Agda (including a compiled Emacs mode) by
     running the following command:
@@ -187,6 +200,13 @@ the `Agda wiki <http://wiki.portal.chalmers.se/agda/pmwiki.php>`_:
     .. code-block:: bash
 
       make install
+
+    Note that on a Mac, because ICU is installed in a non-standard location,
+    you need to specify this location on the command line:
+
+    .. code-block:: bash
+
+      make install-bin CABAL_OPTS='--extra-lib-dirs=/usr/local/opt/icu4c/lib --extra-include-dirs=/usr/local/opt/icu4c/include'
 
 .. _installation-flags:
 
@@ -197,7 +217,7 @@ When installing Agda the following flags can be used:
 
 :samp:`cpphs`
    Use `cpphs <https://hackage.haskell.org/package/cpphs>`_ instead of
-   cpp. Default: on.
+   cpp. Default: off.
 
 :samp:`debug`
    Enable debugging features that may slow Agda down. Default: off.
@@ -207,3 +227,5 @@ When installing Agda the following flags can be used:
    :ref:`grapheme-clusters`). Note that if ``enable-cluster-counting``
    is ``False``, then the ``--count-clusters`` flag triggers an error
    message. Default: off.
+
+.. _exec-path-from-shell: https://github.com/purcell/exec-path-from-shell

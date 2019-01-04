@@ -49,21 +49,21 @@ import Agda.Utils.Impossible
 dontAssignMetas :: TCM a -> TCM a
 dontAssignMetas cont = do
   reportSLn "tc.meta" 45 $ "don't assign metas"
-  local (\ env -> env { envAssignMetas = False }) cont
+  localTC (\ env -> env { envAssignMetas = False }) cont
 
 -- | Get the meta store.
 getMetaStore :: TCM MetaStore
-getMetaStore = use stMetaStore
+getMetaStore = useTC stMetaStore
 
 modifyMetaStore :: (MetaStore -> MetaStore) -> TCM ()
-modifyMetaStore f = stMetaStore %= f
+modifyMetaStore f = stMetaStore `modifyTCLens` f
 
 -- | Run a computation and record which new metas it created.
 metasCreatedBy :: TCM a -> TCM (a, Set MetaId)
 metasCreatedBy m = do
-  before <- Map.keysSet <$> use stMetaStore
+  before <- Map.keysSet <$> useTC stMetaStore
   a <- m
-  after  <- Map.keysSet <$> use stMetaStore
+  after  <- Map.keysSet <$> useTC stMetaStore
   return (a, after Set.\\ before)
 
 -- | Lookup a meta variable
@@ -76,11 +76,6 @@ updateMetaVar m f = modifyMetaStore $ Map.adjust f m
 
 getMetaPriority :: MetaId -> TCM MetaPriority
 getMetaPriority = mvPriority <.> lookupMeta
-
-{- UNUSED
-getMetaRelevance :: MetaId -> TCM Relevance
-getMetaRelevance x = miRelevance . mvInfo <$> lookupMeta x
--}
 
 isSortMeta :: MetaId -> TCM Bool
 isSortMeta m = isSortMeta_ <$> lookupMeta m
@@ -183,10 +178,12 @@ createMetaInfo' :: RunMetaOccursCheck -> TCM MetaInfo
 createMetaInfo' b = do
   r   <- getCurrentRange
   cl  <- buildClosure r
+  gen <- viewTC eGeneralizeMetas
   return MetaInfo
     { miClosRange       = cl
     , miMetaOccursCheck = b
     , miNameSuggestion  = ""
+    , miGeneralizable   = hide $ defaultArg gen
     }
 
 setValueMetaName :: Term -> MetaNameSuggestion -> TCM ()
@@ -208,6 +205,11 @@ setMetaNameSuggestion mi s = unless (null s || isUnderscore s) $ do
   updateMetaVar mi $ \ mvar ->
     mvar { mvInfo = (mvInfo mvar) { miNameSuggestion = s }}
 
+setMetaArgInfo :: MetaId -> ArgInfo -> TCM ()
+setMetaArgInfo m i = updateMetaVar m $ \ mv ->
+  mv { mvInfo = (mvInfo mv)
+        { miGeneralizable = setArgInfo i (miGeneralizable (mvInfo mv)) } }
+
 updateMetaVarRange :: MetaId -> Range -> TCM ()
 updateMetaVarRange mi r = updateMetaVar mi (setRange r)
 
@@ -219,13 +221,13 @@ setMetaOccursCheck mi b = updateMetaVar mi $ \ mvar ->
 
 modifyInteractionPoints :: (InteractionPoints -> InteractionPoints) -> TCM ()
 modifyInteractionPoints f =
-  stInteractionPoints %= f
+  stInteractionPoints `modifyTCLens` f
 
 -- | Register an interaction point during scope checking.
 --   If there is no interaction id yet, create one.
 registerInteractionPoint :: Bool -> Range -> Maybe Nat -> TCM InteractionId
 registerInteractionPoint preciseRange r maybeId = do
-  m <- use stInteractionPoints
+  m <- useTC stInteractionPoints
   -- If we're given an interaction id we shouldn't look up by range.
   -- This is important when doing 'refine', since all interaction points
   -- created by the refine gets the same range.
@@ -268,8 +270,8 @@ findInteractionPoint_ r m = do
 -- | Hook up meta variable to interaction point.
 connectInteractionPoint :: InteractionId -> MetaId -> TCM ()
 connectInteractionPoint ii mi = do
-  ipCl <- asks envClause
-  m <- use stInteractionPoints
+  ipCl <- asksTC envClause
+  m <- useTC stInteractionPoints
   let ip = InteractionPoint { ipRange = __IMPOSSIBLE__, ipMeta = Just mi, ipSolved = False, ipClause = ipCl }
   -- The interaction point needs to be present already, we just set the meta.
   case Map.insertLookupWithKey (\ key new old -> new { ipRange = ipRange old }) ii ip m of
@@ -279,21 +281,22 @@ connectInteractionPoint ii mi = do
 -- | Mark an interaction point as solved.
 removeInteractionPoint :: InteractionId -> TCM ()
 removeInteractionPoint ii = do
-  stInteractionPoints %= Map.update (\ ip -> Just ip{ ipSolved = True }) ii
+  stInteractionPoints `modifyTCLens` Map.update (\ ip -> Just ip{ ipSolved = True }) ii
 
 -- | Get a list of interaction ids.
-getInteractionPoints :: TCM [InteractionId]
-getInteractionPoints = Map.keys <$> use stInteractionPoints
+{-# SPECIALIZE getInteractionPoints :: TCM [InteractionId] #-}
+getInteractionPoints :: MonadTCM tcm => tcm [InteractionId]
+getInteractionPoints = Map.keys <$> useTC stInteractionPoints
 
 -- | Get all metas that correspond to unsolved interaction ids.
 getInteractionMetas :: TCM [MetaId]
 getInteractionMetas =
-  mapMaybe ipMeta . filter (not . ipSolved) . Map.elems <$> use stInteractionPoints
+  mapMaybe ipMeta . filter (not . ipSolved) . Map.elems <$> useTC stInteractionPoints
 
 -- | Get all metas that correspond to unsolved interaction ids.
 getInteractionIdsAndMetas :: TCM [(InteractionId,MetaId)]
 getInteractionIdsAndMetas =
-  mapMaybe f . filter (not . ipSolved . snd) . Map.toList <$> use stInteractionPoints
+  mapMaybe f . filter (not . ipSolved . snd) . Map.toList <$> useTC stInteractionPoints
   where f (ii, ip) = (ii,) <$> ipMeta ip
 
 -- | Does the meta variable correspond to an interaction point?
@@ -303,9 +306,10 @@ isInteractionMeta :: MetaId -> TCM (Maybe InteractionId)
 isInteractionMeta x = lookup x . map swap <$> getInteractionIdsAndMetas
 
 -- | Get the information associated to an interaction point.
-lookupInteractionPoint :: InteractionId -> TCM InteractionPoint
+{-# SPECIALIZE lookupInteractionPoint :: InteractionId -> TCM InteractionPoint #-}
+lookupInteractionPoint :: MonadTCM tcm => InteractionId -> tcm InteractionPoint
 lookupInteractionPoint ii =
-  fromMaybeM err $ Map.lookup ii <$> use stInteractionPoints
+  fromMaybeM err $ Map.lookup ii <$> useTC stInteractionPoints
   where
     err  = fail $ "no such interaction point: " ++ show ii
 
@@ -318,7 +322,7 @@ lookupInteractionId ii = fromMaybeM err2 $ ipMeta <$> lookupInteractionPoint ii
 
 -- | Check whether an interaction id is already associated with a meta variable.
 lookupInteractionMeta :: InteractionId -> TCM (Maybe MetaId)
-lookupInteractionMeta ii = lookupInteractionMeta_ ii <$> use stInteractionPoints
+lookupInteractionMeta ii = lookupInteractionMeta_ ii <$> useTC stInteractionPoints
 
 lookupInteractionMeta_ :: InteractionId -> InteractionPoints -> Maybe MetaId
 lookupInteractionMeta_ ii m = ipMeta =<< Map.lookup ii m
@@ -342,12 +346,13 @@ newMeta' inst mi p perm j = do
                   , mvListeners        = Set.empty
                   , mvFrozen           = Instantiable }
   -- printing not available (import cycle)
-  -- reportSDoc "tc.meta.new" 50 $ text "new meta" <+> prettyTCM j'
-  stMetaStore %= Map.insert x mv
+  -- reportSDoc "tc.meta.new" 50 $ "new meta" <+> prettyTCM j'
+  stMetaStore `modifyTCLens` Map.insert x mv
   return x
 
 -- | Get the 'Range' for an interaction point.
-getInteractionRange :: InteractionId -> TCM Range
+{-# SPECIALIZE getInteractionRange :: InteractionId -> TCM Range #-}
+getInteractionRange :: MonadTCM tcm => InteractionId -> tcm Range
 getInteractionRange = ipRange <.> lookupInteractionPoint
 
 -- | Get the 'Range' for a meta variable.
@@ -364,25 +369,26 @@ withMetaInfo :: Closure Range -> TCM a -> TCM a
 withMetaInfo mI cont = enterClosure mI $ \ r ->
   setCurrentRange r cont
 
+getMetaVariables :: (MetaVariable -> Bool) -> TCM [MetaId]
+getMetaVariables p = do
+  store <- getMetaStore
+  return [ i | (i, mv) <- Map.assocs store, p mv ]
+
 getInstantiatedMetas :: TCM [MetaId]
-getInstantiatedMetas = do
-    store <- getMetaStore
-    return [ i | (i, MetaVar{ mvInstantiation = mi }) <- Map.assocs store, isInst mi ]
-    where
-        isInst Open                           = False
-        isInst OpenIFS                        = False
-        isInst BlockedConst{}                 = False
-        isInst PostponedTypeCheckingProblem{} = False
-        isInst InstV{}                        = True
+getInstantiatedMetas = getMetaVariables (isInst . mvInstantiation)
+  where
+    isInst Open                           = False
+    isInst OpenInstance                   = False
+    isInst BlockedConst{}                 = False
+    isInst PostponedTypeCheckingProblem{} = False
+    isInst InstV{}                        = True
 
 getOpenMetas :: TCM [MetaId]
-getOpenMetas = do
-    store <- getMetaStore
-    return [ i | (i, MetaVar{ mvInstantiation = mi }) <- Map.assocs store, isOpenMeta mi ]
+getOpenMetas = getMetaVariables (isOpenMeta . mvInstantiation)
 
 isOpenMeta :: MetaInstantiation -> Bool
 isOpenMeta Open                           = True
-isOpenMeta OpenIFS                        = True
+isOpenMeta OpenInstance                   = True
 isOpenMeta BlockedConst{}                 = True
 isOpenMeta PostponedTypeCheckingProblem{} = True
 isOpenMeta InstV{}                        = False
@@ -424,7 +430,7 @@ freezeMetas = freezeMetas' $ const True
 
 -- | Freeze some meta variables and return the list of metas that got frozen.
 freezeMetas' :: (MetaId -> Bool) -> TCM [MetaId]
-freezeMetas' p = execWriterT $ stMetaStore %== Map.traverseWithKey freeze
+freezeMetas' p = execWriterT $ modifyTCLensM stMetaStore $ Map.traverseWithKey freeze
   where
   freeze :: Monad m => MetaId -> MetaVariable -> WriterT [MetaId] m MetaVariable
   freeze m mvar

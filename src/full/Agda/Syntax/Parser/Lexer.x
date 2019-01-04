@@ -44,7 +44,6 @@ $op          = [ \- \! \# \$ \% \& \* \+ \/ \< \= \> \^ \| \~ \? \` \[ \] \, \: 
 $idstart     = [ $digit $alpha $op ]
 $idchar      = [ $idstart ' \\ ]
 $nonalpha    = $idchar # $alpha
-$nonalphanum = $nonalpha # $digit
 $white_notab = $white # \t
 $white_nonl  = $white_notab # \n
 
@@ -98,6 +97,7 @@ tokens :-
 <pragma_>   "MEASURE"                  { keyword KwMEASURE }
 <pragma_>   "NO_POSITIVITY_CHECK"      { keyword KwNO_POSITIVITY_CHECK }
 <pragma_>   "NO_TERMINATION_CHECK"     { keyword KwNO_TERMINATION_CHECK }
+<pragma_>   "NO_UNIVERSE_CHECK"        { keyword KwNO_UNIVERSE_CHECK }
 <pragma_>   "NON_TERMINATING"          { keyword KwNON_TERMINATING }
 <pragma_>   "OPTIONS"                  { keyword KwOPTIONS }
 <pragma_>   "POLARITY"                 { keyword KwPOLARITY }
@@ -191,6 +191,7 @@ tokens :-
 <0,code> tactic         { keyword KwTactic }
 <0,code> syntax         { keyword KwSyntax }
 <0,code> pattern        { keyword KwPatternSyn }
+<0,code> variable       { keyword KwVariable }
 
 -- The parser is responsible to put the lexer in the imp_dir_ state when it
 -- expects an import directive keyword. This means that if you run the

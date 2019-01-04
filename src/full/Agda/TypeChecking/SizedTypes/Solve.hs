@@ -130,7 +130,7 @@ solveSizeConstraints flag =  do
       ] ++ map prettyTCM cs0
   let -- Error for giving up
       cannotSolve = typeError . GenericDocError =<<
-        vcat (text "Cannot solve size constraints" : map prettyTCM cs0)
+        vcat ("Cannot solve size constraints" : map prettyTCM cs0)
 
   -- 2. Cluster the constraints by common size metas.
 
@@ -175,7 +175,7 @@ solveSizeConstraints flag =  do
           mapM (runMaybeT . castConstraintToCurrentContext) cs
 
         reportSDoc "tc.size.solve" 20 $ vcat $
-          [ text "converted size constraints to context: " <+> do
+          [ "converted size constraints to context: " <+> do
               tel <- getContextTelescope
               inTopContext $ prettyTCM tel
           ] ++ map (nest 2 . prettyTCM) cs'
@@ -200,8 +200,8 @@ solveSizeConstraints flag =  do
         unless (m `Set.member` constrainedMetas) $ do
         unlessM (isFrozen m) $ do
         reportSDoc "tc.size.solve" 20 $
-          text "solution " <+> prettyTCM (MetaV m []) <+>
-          text " := "      <+> prettyTCM inf
+          "solution " <+> prettyTCM (MetaV m []) <+>
+          " := "      <+> prettyTCM inf
         assignMeta 0 m t (List.downFrom $ size tel) inf
 
   -- -- Double check.
@@ -267,17 +267,17 @@ castConstraintToCurrentContext' cl = do
   sigma <- liftTCM $ getModuleParameterSub modN
 
   -- Debug printing.
-  reportSDoc "tc.constr.cast" 40 $ text "casting constraint" $$ do
+  reportSDoc "tc.constr.cast" 40 $ "casting constraint" $$ do
     tel <- getContextTelescope
     inTopContext $ nest 2 $ vcat $
-      [ text "current module                = " <+> prettyTCM modM
-      , text "current module telescope      = " <+> prettyTCM gamma1
-      , text "current context               = " <+> prettyTCM tel
-      , text "constraint module             = " <+> prettyTCM modN
-      , text "constraint module telescope   = " <+> prettyTCM delta1
-      , text "constraint context            = " <+> (prettyTCM =<< enterClosure cl (const $ getContextTelescope))
-      , text "constraint                    = " <+> enterClosure cl prettyTCM
-      , text "module parameter substitution = " <+> prettyTCM sigma
+      [ "current module                = " <+> prettyTCM modM
+      , "current module telescope      = " <+> prettyTCM gamma1
+      , "current context               = " <+> prettyTCM tel
+      , "constraint module             = " <+> prettyTCM modN
+      , "constraint module telescope   = " <+> prettyTCM delta1
+      , "constraint context            = " <+> (prettyTCM =<< enterClosure cl (const $ getContextTelescope))
+      , "constraint                    = " <+> enterClosure cl prettyTCM
+      , "module parameter substitution = " <+> prettyTCM sigma
       ]
 
   -- If gamma2 < 0, we must be in the wrong context.
@@ -321,11 +321,11 @@ castConstraintToCurrentContext :: Closure TCM.Constraint -> MaybeT TCM TCM.Const
 castConstraintToCurrentContext cl = do
   -- The checkpoint of the contraint
   let cp = envCurrentCheckpoint $ clEnv cl
-  sigma <- caseMaybeM (view $ eCheckpoints . key cp)
+  sigma <- caseMaybeM (viewTC $ eCheckpoints . key cp)
           (do
             -- We are not in a descendant of the constraint checkpoint.
             -- Here be dragons!!
-            gamma <- asks envContext -- The target context
+            gamma <- asksTC envContext -- The target context
             let findInGamma (Dom {unDom = (x, t)}) =
                   -- match by name (hazardous)
                   -- This is one of the seven deadly sins (not respecting alpha).
@@ -341,7 +341,7 @@ castConstraintToCurrentContext cl = do
             -- Turn cand into a substitution.
             -- Since we ignored the free variables in sorts, we better patch up
             -- the substitution with some dummy term rather than __IMPOSSIBLE__.
-            return $ parallelS $ map (maybe dummyTerm var) cand
+            return $ parallelS $ map (maybe __DUMMY_TERM__ var) cand
           ) return -- Phew, we've got the checkpoint! All is well.
   -- Apply substitution to constraint and pray that the Gods are merciful on us.
   return $ applySubst sigma (clValue cl)
@@ -363,7 +363,7 @@ solveSizeConstraints_ flag cs0 = do
     forM ccs $ \ (c0, HypSizeConstraint cxt hids hs sc) -> do
       case simplify1 (\ sc -> return [sc]) sc of
         Left _ -> typeError . GenericDocError =<< do
-          text "Contradictory size constraint" <+> prettyTCM c0
+          "Contradictory size constraint" <+> prettyTCM c0
         Right cs -> return $ (c0,) . HypSizeConstraint cxt hids hs <$> cs
 
   -- Cluster constraints according to the meta variables they mention.
@@ -393,7 +393,7 @@ solveCluster flag ccs = do
           [ text $ "Cannot solve size constraints" ] ++ map prettyTCM cs ++
           [ text $ "Reason: " ++ reason ]
   reportSDoc "tc.size.solve" 20 $ vcat $
-    [ text "Solving constraint cluster" ] ++ map prettyTCM cs
+    [ "Solving constraint cluster" ] ++ map prettyTCM cs
   -- Find the super context of all contexts.
 {-
   -- We use the @'ctxId'@s.
@@ -408,7 +408,7 @@ solveCluster flag ccs = do
           _          -> a
       res = foldl' max (Right ci) cis'
       noContext ((c,is),(c',is')) = typeError . GenericDocError =<< vcat
-        [ text "Cannot solve size constraints; the following constraints have no common typing context:"
+        [ "Cannot solve size constraints; the following constraints have no common typing context:"
         , prettyTCM c
         , prettyTCM c'
         ]
@@ -427,9 +427,9 @@ solveCluster flag ccs = do
       csC :: [SizeConstraint]
       csC = applyWhen (null hs) (mapMaybe canonicalizeSizeConstraint) csL
   reportSDoc "tc.size.solve" 30 $ vcat $
-    [ text "Size hypotheses" ] ++
+    [ "Size hypotheses" ] ++
     map (prettyTCM . HypSizeConstraint gamma hids hs) hs ++
-    [ text "Canonicalized constraints" ] ++
+    [ "Canonicalized constraints" ] ++
     map (prettyTCM . HypSizeConstraint gamma hids hs) csC
 
   -- -- ALT:
@@ -460,8 +460,8 @@ solveCluster flag ccs = do
   --     csC = for cs $ \ (HypSizeConstraint cxt _ _ c) -> sub (size cxt) c
 
   -- reportSDoc "tc.size.solve" 30 $ vcat $
-  --   [ text "Size hypotheses" ]           ++ map prettyC hs ++
-  --   [ text "Canonicalized constraints" ] ++ map prettyC csC
+  --   [ "Size hypotheses" ]           ++ map prettyC hs ++
+  --   [ "Canonicalized constraints" ] ++ map prettyC csC
 
   -- Convert size metas to flexible vars.
   let metas :: [SizeMeta]
@@ -478,7 +478,7 @@ solveCluster flag ccs = do
   -- --    g :: Size.Graph NamedRigid Int Label
   -- g <- either err return $ constraintGraph csF hg
   -- reportSDoc "tc.size.solve" 40 $ vcat $
-  --   [ text "Constraint graph"
+  --   [ "Constraint graph"
   --   , text (show g)
   --   ]
 
@@ -492,7 +492,7 @@ solveCluster flag ccs = do
     iterateSolver Map.empty hg csF emptySolution
 
   -- Convert solution to meta instantiation.
-  forM_ (Map.assocs $ theSolution sol) $ \ (m, a) -> do
+  solved <- fmap Set.unions $ forM (Map.assocs $ theSolution sol) $ \ (m, a) -> do
     unless (validOffset a) __IMPOSSIBLE__
     -- Solution does not contain metas
     u <- unSizeExpr $ fmap __IMPOSSIBLE__ a
@@ -507,13 +507,14 @@ solveCluster flag ccs = do
     t <- getMetaType x
     reportSDoc "tc.size.solve" 20 $ inTopContext $ modifyContext (const gamma) $ do
       let args = map (Apply . defaultArg . var) xs
-      text "solution " <+> prettyTCM (MetaV x args) <+> text " := " <+> prettyTCM u
+      "solution " <+> prettyTCM (MetaV x args) <+> " := " <+> prettyTCM u
     reportSDoc "tc.size.solve" 60 $ vcat
       [ text $ "  xs = " ++ show xs
       , text $ "  u  = " ++ show u
       ]
-    unlessM (isFrozen x) $
+    ifM (isFrozen x) (return Set.empty) $ do
       assignMeta n x t xs u
+      return $ Set.singleton x
     -- WRONG:
     -- let partialSubst = List.sort $ zip xs $ map var $ downFrom n
     -- assignMeta' n x t (length xs) partialSubst u
@@ -525,13 +526,12 @@ solveCluster flag ccs = do
   ims <- Set.fromList <$> getInteractionMetas
 
   --  ms = unsolved size metas from cluster
-  let ms = Set.fromList (map sizeMetaId metas) Set.\\  -- Some CPP or ghc does not like trailing backslash, thus, this comment!
-             Set.mapMonotonic MetaId (Map.keysSet $ theSolution sol)
+  let ms = Set.fromList (map sizeMetaId metas) Set.\\ solved
   --  Make sure they do not contain an interaction point
   let noIP = Set.null $ Set.intersection ims ms
 
   unless (null ms) $ reportSDoc "tc.size.solve" 30 $ fsep $
-    [ text "cluster did not solve these size metas: " ] ++ map prettyTCM (Set.toList ms)
+    [ "cluster did not solve these size metas: " ] ++ map prettyTCM (Set.toList ms)
 
   solvedAll <- do
     -- If no metas are left, we have solved this cluster completely.
@@ -547,12 +547,12 @@ solveCluster flag ccs = do
         -- If one variable is frozen, we cannot set it (and hence not all) to ∞
         let no = do
               reportSDoc "tc.size.solve" 30 $
-                prettyTCM (MetaV m []) <+> text "is frozen, cannot set it to ∞"
+                prettyTCM (MetaV m []) <+> "is frozen, cannot set it to ∞"
               return False
-        ifM (isFrozen m `or2M` do not <$> asks envAssignMetas) no $ {-else-} do
+        ifM (isFrozen m `or2M` do not <$> asksTC envAssignMetas) no $ {-else-} do
           reportSDoc "tc.size.solve" 20 $
-            text "solution " <+> prettyTCM (MetaV m []) <+>
-            text " := "      <+> prettyTCM inf
+            "solution " <+> prettyTCM (MetaV m []) <+>
+            " := "      <+> prettyTCM inf
           t <- jMetaType . mvJudgement <$> lookupMeta m
           TelV tel core <- telView t
           unlessM (isJust <$> isSizeType core) __IMPOSSIBLE__
@@ -564,7 +564,7 @@ solveCluster flag ccs = do
     let cs0 = map fst ccs
         -- Error for giving up
         cannotSolve = typeError . GenericDocError =<<
-          vcat (text "Cannot solve size constraints" : map prettyTCM cs0)
+          vcat ("Cannot solve size constraints" : map prettyTCM cs0)
     flip catchError (const cannotSolve) $
       noConstraints $
         forM_ cs0 $ \ cl -> enterClosure cl solveConstraint
@@ -738,7 +738,7 @@ instance PrettyTCM HypSizeConstraint where
       -- text ("[#cxt=" ++ show (size cxt) ++ "]") <+> do
       prettyList (map prettyTCM cxtNames) <+> do
       applyUnless (null hs)
-       (((hcat $ punctuate (text ", ") $ map prettyTCM hs) <+> text "|-") <+>)
+       (((hcat $ punctuate ", " $ map prettyTCM hs) <+> "|-") <+>)
        (prettyTCM c)
 
 -- | Turn a constraint over de Bruijn indices into a size constraint.
@@ -749,7 +749,7 @@ computeSizeConstraint c = do
     case clValue c of
       ValueCmp CmpLeq _ u v -> do
         reportSDoc "tc.size.solve" 50 $ sep $
-          [ text "converting size constraint"
+          [ "converting size constraint"
           , prettyTCM c
           ]
         ma <- sizeExpr u
@@ -769,7 +769,7 @@ sizeExpr :: Term -> TCM (Maybe DBSizeExpr)
 sizeExpr u = do
   u <- reduce u -- Andreas, 2009-02-09.
                 -- This is necessary to surface the solutions of metavariables.
-  reportSDoc "tc.conv.size" 60 $ text "sizeExpr:" <+> prettyTCM u
+  reportSDoc "tc.conv.size" 60 $ "sizeExpr:" <+> prettyTCM u
   s <- sizeView u
   case s of
     SizeInf     -> return $ Just Infty

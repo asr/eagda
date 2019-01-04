@@ -16,12 +16,12 @@ data _≡_ {a} {A : Set a} (x : A) : A → Set (lsuc a) where
 
 {-# BUILTIN EQUALITY _≡_ #-}
 
--- The type of primTrustMe has to match the flavor of EQUALITY
+-- The type of primErase has to match the flavor of EQUALITY
 
-primitive primTrustMe : ∀ {a}{A : Set a} {x y : A} → _≡_ x y
+primitive primEraseEquality : ∀ {a}{A : Set a} {x y : A} → _≡_ x y → _≡_ x y
 
-testTM : primTrustMe {x = a} {y = a} ≡ refl
-testTM = refl
+testTM : (eq : a ≡ a) → primEraseEquality {x = a} {y = a} eq ≡ refl
+testTM _ = refl
 
 -- Testing rewrite
 

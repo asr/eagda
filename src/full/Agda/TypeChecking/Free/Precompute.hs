@@ -72,6 +72,7 @@ instance PrecomputeFreeVars Term where
       Level l    -> Level      <$> precomputeFreeVars l
       MetaV x es -> MetaV x    <$> precomputeFreeVars es
       DontCare t -> DontCare   <$> precomputeFreeVars t
+      Dummy{}    -> pure t
 
 -- The other instances are boilerplate.
 
@@ -85,6 +86,8 @@ instance PrecomputeFreeVars Sort where
       PiSort s1 s2 -> uncurry PiSort <$> precomputeFreeVars (s1, s2)
       UnivSort s -> UnivSort <$> precomputeFreeVars s
       MetaS x es -> MetaS x <$> precomputeFreeVars es
+      DefS d es  -> DefS d <$> precomputeFreeVars es
+      DummyS{}   -> pure s
 
 instance PrecomputeFreeVars Level where
   precomputeFreeVars (Max ls) = Max <$> precomputeFreeVars ls
@@ -119,4 +122,3 @@ instance PrecomputeFreeVars a => PrecomputeFreeVars (Maybe a) where
 
 instance (PrecomputeFreeVars a, PrecomputeFreeVars b) => PrecomputeFreeVars (a, b) where
   precomputeFreeVars (x, y) = (,) <$> precomputeFreeVars x <*> precomputeFreeVars y
-

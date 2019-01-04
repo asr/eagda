@@ -55,7 +55,7 @@ data QuotingKit = QuotingKit
 
 quotingKit :: TCM QuotingKit
 quotingKit = do
-  currentFile     <- fromMaybe __IMPOSSIBLE__ <$> asks envCurrentPath
+  currentFile     <- fromMaybe __IMPOSSIBLE__ <$> asksTC envCurrentPath
   hidden          <- primHidden
   instanceH       <- primInstance
   visible         <- primVisible
@@ -155,6 +155,8 @@ quotingKit = do
       quoteSort PiSort{} = pure unsupportedSort
       quoteSort UnivSort{} = pure unsupportedSort
       quoteSort (MetaS x es) = quoteTerm $ MetaV x es
+      quoteSort (DefS d es) = quoteTerm $ Def d es
+      quoteSort (DummyS s) =__IMPOSSIBLE_VERBOSE__ s
 
       quoteType :: Type -> ReduceM Term
       quoteType (El _ t) = quoteTerm t
@@ -173,6 +175,8 @@ quotingKit = do
       quotePat (ConP c _ ps)     = conP !@ quoteQName (conName c) @@ quotePats ps
       quotePat (LitP l)          = litP !@ quoteLit l
       quotePat (ProjP _ x)       = projP !@ quoteQName x
+      quotePat (IApplyP o t u x)  = pure unsupported
+      quotePat DefP{}             = pure unsupported
 
       quoteClause :: Clause -> ReduceM Term
       quoteClause cl@Clause{namedClausePats = ps, clauseBody = body} =
@@ -240,6 +244,7 @@ quotingKit = do
           MetaV x es -> meta !@! quoteMeta currentFile x @@ quoteArgs vs
             where vs = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
           DontCare{} -> pure unsupported -- could be exposed at some point but we have to take care
+          Dummy s    -> __IMPOSSIBLE_VERBOSE__ s
 
       defParameters :: Definition -> [ReduceM Term]
       defParameters def = map par hiding
@@ -264,6 +269,8 @@ quotingKit = do
               !@! quoteName (conName c)
               @@ quoteList (quoteArg (pure . quoteName)) fs
           Axiom{}       -> pure agdaDefinitionPostulate
+          DataOrRecSig{} -> pure agdaDefinitionPostulate
+          GeneralizableVar{} -> pure agdaDefinitionPostulate  -- TODO: reflect generalizable vars
           AbstractDefn{}-> pure agdaDefinitionPostulate
           Primitive{primClauses = cs} | not $ null cs ->
             agdaDefinitionFunDef !@ quoteList quoteClause cs

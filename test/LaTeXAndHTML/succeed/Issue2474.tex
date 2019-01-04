@@ -3,10 +3,10 @@
 \begin{document}
 
 \begin{code}%
-\>[0]\AgdaSymbol{\{{-}\#}\AgdaSpace{}%
+\>[0]\AgdaSymbol{\{-\#}\AgdaSpace{}%
 \AgdaKeyword{OPTIONS}\AgdaSpace{}%
-\AgdaOption{{-}{-}allow{-}unsolved{-}metas}\AgdaSpace{}%
-\AgdaSymbol{\#{-}\}}\<%
+\AgdaPragma{--allow-unsolved-metas}\AgdaSpace{}%
+\AgdaSymbol{\#-\}}\<%
 \\
 %
 \\[\AgdaEmptyExtraSkip]%
@@ -29,6 +29,6 @@
 \\
 \>[0]\AgdaFunction{A}\AgdaSpace{}%
 \AgdaSymbol{=}\AgdaSpace{}%
-\AgdaPostulate{\AgdaUnsolvedMeta{F}}\<%
+\AgdaUnsolvedMeta{\AgdaPostulate{F}}\<%
 \end{code}
 \end{document}

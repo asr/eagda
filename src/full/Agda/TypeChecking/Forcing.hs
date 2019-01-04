@@ -79,6 +79,7 @@ import Agda.TypeChecking.Irrelevance
 import Agda.TypeChecking.Records
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Substitute
+import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.Pretty hiding ((<>))
 import Agda.TypeChecking.Telescope
 
@@ -109,7 +110,7 @@ computeForcingAnnotations t =
   -- Ulf, 2018-01-28 (#2919): We do need to reduce the target type enough to
   -- get to the actual data type.
   -- Also #2947: The type might reduce to a pi type.
-  TelV tel (El _ a) <- telView t
+  TelV tel (El _ a) <- telViewPath t
   let vs = case a of
         Def _ us -> us
         _        -> __IMPOSSIBLE__
@@ -118,7 +119,7 @@ computeForcingAnnotations t =
       -- #2819: We can only mark an argument as forced if it appears in the
       -- type with a relevance below (i.e. more relevant) than the one of the
       -- constructor argument. Otherwise we can't actually get the value from
-      -- the type. Also the argument shouldn't be irrelevant, since it that
+      -- the type. Also the argument shouldn't be irrelevant, since in that
       -- case it isn't really forced.
       isForced m i = getRelevance m /= Irrelevant &&
                      any (\ (m', j) -> i == j && related m' POLE m) xs
@@ -175,13 +176,17 @@ nextIsForced (f:fs) = (f, fs)
 forcingTranslation :: [NamedArg DeBruijnPattern] -> TCM [NamedArg DeBruijnPattern]
 forcingTranslation ps = do
   (qs, rebind) <- dotForcedPatterns ps
-  reportSDoc "tc.force" 50 $ text "forcingTranslation" <?> vcat
-    [ text "patterns:" <?> pretty ps
-    , text "dotted:  " <?> pretty qs
-    , text "rebind:  " <?> pretty rebind ]
-  rs <- foldM rebindForcedPattern qs rebind
-  when (not $ null rebind) $ reportSDoc "tc.force" 50 $ nest 2 $ text "result:  " <?> pretty rs
-  return rs
+  case rebind of
+    Nothing -> return ps
+    Just rebind -> do
+      reportSDoc "tc.force" 50 $ "forcingTranslation" <?> vcat
+        [ "patterns:" <?> pretty ps
+        , "dotted:  " <?> pretty qs
+        , "rebind:  " <?> pretty rebind ]
+      rs <- foldM rebindForcedPattern qs rebind
+      when (not $ null rebind) $ reportSDoc "tc.force" 50 $ nest 2 $ "result:  " <?> pretty rs
+      -- Repeat translation as long as we're making progress (Issue 3410)
+      forcingTranslation rs
 
 -- | Applies the forcing translation in order to update modalities of forced
 --   arguments in the telescope. This is used before checking a right-hand side
@@ -202,7 +207,7 @@ forceTranslateTelescope delta qs = do
       let mods    = map (first dbPatVarIndex) new
           ms      = reverse [ lookup i mods | i <- [0..size delta - 1] ]
           delta'  = telFromList $ zipWith (maybe id setModality) ms $ telToList delta
-      reportSDoc "tc.force" 60 $ nest 2 $ text "delta' =" <?> prettyTCM delta'
+      reportSDoc "tc.force" 60 $ nest 2 $ "delta' =" <?> prettyTCM delta'
       return delta'
 
 -- | Rebind a forced pattern in a non-forced position. The forced pattern has
@@ -232,8 +237,15 @@ rebindForcedPattern ps toRebind = go $ zip (repeat NotForced) ps
           qps <- go (fqs ++ ps)
           let (qs', ps') = splitAt (length qs) qps
           return $ fmap (ConP c i qs' <$) p : ps'
+        DefP o q qs -> do
+          fs <- defForced <$> getConstInfo q
+          fqs <- return $ zip (fs ++ repeat NotForced) qs
+          qps <- go (fqs ++ ps)
+          let (qs', ps') = splitAt (length qs) qps
+          return $ fmap (DefP o q qs' <$) p : ps'
         LitP{}  -> (p :) <$> go ps
         ProjP{} -> (p :) <$> go ps
+        IApplyP{} -> (p :) <$> go ps
 
     withForced :: ConHead -> [a] -> TCM [(IsForced, a)]
     withForced c qs = do
@@ -271,26 +283,31 @@ rebindForcedPattern ps toRebind = go $ zip (repeat NotForced) ps
 -- | Dot all forced patterns and return a list of patterns that need to be
 --   undotted elsewhere. Patterns that need to be undotted are those that bind
 --   variables or does some actual (non-eta) matching.
-dotForcedPatterns :: [NamedArg DeBruijnPattern] -> TCM ([NamedArg DeBruijnPattern], [DeBruijnPattern])
+dotForcedPatterns :: [NamedArg DeBruijnPattern] -> TCM ([NamedArg DeBruijnPattern], Maybe [DeBruijnPattern])
 dotForcedPatterns ps = runWriterT $ (traverse . traverse . traverse) (forced NotForced) ps
   where
-    forced :: IsForced -> DeBruijnPattern -> WriterT [DeBruijnPattern] TCM DeBruijnPattern
+    forced :: IsForced -> DeBruijnPattern -> WriterT (Maybe [DeBruijnPattern]) TCM DeBruijnPattern
     forced f p =
       case p of
         DotP{}          -> return p
         ProjP{}         -> return p
         _ | f == Forced -> do
           properMatch <- isProperMatch p
-          dotP (patternToTerm p) <$ tell [p | properMatch || length p > 0]
+          dotP (patternToTerm p) <$ tell (Just [p | properMatch || length p > 0])
         VarP{}          -> return p
         LitP{}          -> return p
         ConP c i ps     -> do
           fs <- defForced <$> getConstInfo (conName c)
           ConP c i <$> zipWithM forcedArg (fs ++ repeat NotForced) ps
+        DefP o q ps     -> do
+          fs <- defForced <$> getConstInfo q
+          DefP o q <$> zipWithM forcedArg (fs ++ repeat NotForced) ps
+        IApplyP{}       -> return p
 
     forcedArg f = (traverse . traverse) (forced f)
 
     isProperMatch LitP{}  = return True
+    isProperMatch IApplyP{}  = return False
     isProperMatch VarP{}  = return False
     isProperMatch ProjP{} = return False
     isProperMatch DotP{}  = return False
@@ -298,4 +315,4 @@ dotForcedPatterns ps = runWriterT $ (traverse . traverse . traverse) (forced Not
       ifM (isEtaCon $ conName c)
           (anyM ps (isProperMatch . namedArg))
           (return True)
-
+    isProperMatch DefP{} = return True -- Andrea, TODO check semantics

@@ -115,7 +115,7 @@ importsForPrim =
 xForPrim :: [(String, TCM [a])] -> TCM [a]
 xForPrim table = do
   qs <- HMap.keys <$> curDefs
-  bs <- toList <$> gets stBuiltinThings
+  bs <- toList <$> getsTC stBuiltinThings
   let getName (Builtin (Def q _))    = q
       getName (Builtin (Con q _ _))  = conName q
       getName (Builtin (Lam _ b))    = getName (Builtin $ unAbs b)
@@ -146,6 +146,9 @@ primBody s = maybe unimplemented (fromRight (hsVarUQ . HS.Ident) <$>) $
   , "primLevelZero"   |-> return "()"
   , "primLevelSuc"    |-> return "(\\ _ -> ())"
   , "primLevelMax"    |-> return "(\\ _ _ -> ())"
+
+  -- Sorts
+  , "primSetOmega"    |-> return "()"
 
   -- Natural number functions
   , "primNatPlus"      |-> binNat "(+)"
@@ -225,10 +228,12 @@ primBody s = maybe unimplemented (fromRight (hsVarUQ . HS.Ident) <$>) $
   , "primForce"      |-> return "\\ _ _ _ _ x f -> f $! x"
   , "primForceLemma" |-> return "erased"
 
-  -- Trust me
-  , ("primTrustMe"       , Right <$> do
+  -- Erase
+  , ("primEraseEquality", Right <$> do
        refl <- primRefl
-       closedTerm =<< (closedTermToTreeless $ lam "a" (lam "A" (lam "x" (lam "y" refl)))))
+       let erase = hLam "a" $ hLam "A" $ hLam "x" $ hLam "y" $ nLam "eq" refl
+       closedTerm =<< closedTermToTreeless erase
+    )
   ]
   where
   x |-> s = (x, Left <$> s)
@@ -252,7 +257,8 @@ primBody s = maybe unimplemented (fromRight (hsVarUQ . HS.Ident) <$>) $
   unimplemented | s `List.elem` axiom_prims = return $ rtmError $ "primitive with no body evaluated: " ++ s
                 | otherwise = typeError $ NotImplemented s
 
-  lam x t = Lam (setHiding Hidden defaultArgInfo) (Abs x t)
+  hLam x t = Lam (setHiding Hidden defaultArgInfo) (Abs x t)
+  nLam x t = Lam (setHiding NotHidden defaultArgInfo) (Abs x t)
 
 noCheckCover :: QName -> TCM Bool
 noCheckCover q = (||) <$> isBuiltin q builtinNat <*> isBuiltin q builtinInteger

@@ -23,6 +23,10 @@ import Data.Foldable (foldMap)
 import Data.Monoid
 import Data.Set (Set)
 import qualified Data.Set as Set
+import qualified Data.IntMap as IntMap
+import Data.IntMap (IntMap)
+import qualified Data.IntSet as IntSet
+import Data.IntSet (IntSet)
 import Data.Traversable (traverse)
 
 import qualified Agda.Benchmarking as Bench
@@ -36,11 +40,11 @@ import qualified Agda.TypeChecking.Monad.Benchmark as Bench
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Free hiding (Occurrence(..))
+import Agda.TypeChecking.Free.Reduce
 import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Datatypes
 import Agda.TypeChecking.Records
 import {-# SOURCE #-} Agda.TypeChecking.MetaVars
--- import Agda.TypeChecking.MetaVars
 
 import Agda.Utils.Either
 
@@ -97,7 +101,7 @@ successful).  This way, we do not duplicate work.
 -}
 
 modifyOccursCheckDefs :: (Set QName -> Set QName) -> TCM ()
-modifyOccursCheckDefs f = stOccursCheckDefs %= f
+modifyOccursCheckDefs f = stOccursCheckDefs `modifyTCLens` f
 
 -- | Set the names of definitions to be looked at
 --   to the defs in the current mutual block.
@@ -111,7 +115,7 @@ initOccursCheck mv = modifyOccursCheckDefs . const =<<
    else do
      reportSLn "tc.meta.occurs" 20 $
        "initOccursCheck: we look into the following definitions:"
-     mb <- asks envMutualBlock
+     mb <- asksTC envMutualBlock
      case mb of
        Nothing -> do
          reportSLn "tc.meta.occurs" 20 $ "(none)"
@@ -124,7 +128,7 @@ initOccursCheck mv = modifyOccursCheckDefs . const =<<
 
 -- | Is a def in the list of stuff to be checked?
 defNeedsChecking :: QName -> TCM Bool
-defNeedsChecking d = Set.member d <$> use stOccursCheckDefs
+defNeedsChecking d = Set.member d <$> useTC stOccursCheckDefs
 
 -- | Remove a def from the list of defs to be looked at.
 tallyDef :: QName -> TCM ()
@@ -200,12 +204,12 @@ class Occurs t where
 occursCheck
   :: (Occurs a, InstantiateFull a, PrettyTCM a)
   => MetaId -> Vars -> a -> TCM a
-occursCheck m xs v = disableDestructiveUpdate $ Bench.billTo [ Bench.Typing, Bench.OccursCheck ] $ do
+occursCheck m xs v = Bench.billTo [ Bench.Typing, Bench.OccursCheck ] $ do
   mv <- lookupMeta m
   let ctx = if isIrrelevant (getMetaRelevance mv) then Irrel else StronglyRigid
   initOccursCheck mv
       -- TODO: Can we do this in a better way?
-  let redo m = m -- disableDestructiveUpdate m >> m
+  let redo m = m
   -- First try without normalising the term
   redo (occurs NoUnfold  ctx m xs v) `catchError` \_ -> do
     initOccursCheck mv
@@ -222,13 +226,13 @@ occursCheck m xs v = disableDestructiveUpdate $ Bench.billTo [ Bench.Typing, Ben
           ( typeError . GenericError . show =<<
             fsep [ text ("Cannot instantiate the metavariable " ++ prettyShow m ++ " to")
                  , prettyTCM v
-                 , text "since universe polymorphism is disabled"
+                 , "since universe polymorphism is disabled"
                  ]
           ) {- else -}
           ( typeError . GenericError . show =<<
               fsep [ text ("Cannot instantiate the metavariable " ++ prettyShow m ++ " to solution")
                    , prettyTCM v
-                   , text "since it contains the variable"
+                   , "since it contains the variable"
                    , enterClosure cl $ \_ -> prettyTCM (Var i [])
                    , text $ "which is not in scope of the metavariable or irrelevant in the metavariable but relevant in the solution"
                    ]
@@ -237,7 +241,7 @@ occursCheck m xs v = disableDestructiveUpdate $ Bench.billTo [ Bench.Typing, Ben
           typeError . GenericError . show =<<
             fsep [ text ("Cannot instantiate the metavariable " ++ prettyShow m ++ " to solution")
                  , prettyTCM v
-                 , text "since (part of) the solution was created in an irrelevant context."
+                 , "since (part of) the solution was created in an irrelevant context."
                  ]
         _ -> throwError err
       _ -> throwError err
@@ -262,11 +266,11 @@ instance Occurs Term where
             if (i `allowedVar` xs) then Var i <$> occ (weakly ctx) es else do
               -- if the offending variable is of singleton type,
               -- eta-expand it away
-              reportSDoc "tc.meta.occurs" 35 $ text "offending variable: " <+> prettyTCM (var i)
+              reportSDoc "tc.meta.occurs" 35 $ "offending variable: " <+> prettyTCM (var i)
               t <-  typeOfBV i
-              reportSDoc "tc.meta.occurs" 35 $ nest 2 $ text "of type " <+> prettyTCM t
+              reportSDoc "tc.meta.occurs" 35 $ nest 2 $ "of type " <+> prettyTCM t
               isST <- isSingletonType t
-              reportSDoc "tc.meta.occurs" 35 $ nest 2 $ text "(after singleton test)"
+              reportSDoc "tc.meta.occurs" 35 $ nest 2 $ "(after singleton test)"
               case isST of
                 -- cannot decide, blocked by meta-var
                 Left mid -> patternViolation' 70 $ "Disallowed var " ++ show i ++ " not obviously singleton"
@@ -278,13 +282,14 @@ instance Occurs Term where
           Lam h f     -> Lam h <$> occ ctx f
           Level l     -> Level <$> occ ctx l
           Lit l       -> return v
+          Dummy{}     -> return v
           DontCare v  -> if ctx == Irrel then
                            dontCare <$> occurs red ctx m xs v
                          else
                            abort (strongly ctx) $ MetaIrrelevantSolution m v
           Def d es    -> do
             drel <- relOfConst d
-            unless (not (unusableRelevance drel) || ctx == Irrel) $ do
+            unless (usableRelevance drel || ctx == Irrel) $ do
               reportSDoc "tc.meta.occurs" 35 $ text ("relevance of definition: " ++ show drel)
               abort ctx $ MetaIrrelevantSolution m $ Def d []
             Def d <$> occDef d ctx es
@@ -346,6 +351,7 @@ instance Occurs Term where
       Lam h f    -> metaOccurs m f
       Level l    -> metaOccurs m l
       Lit l      -> return ()
+      Dummy{}    -> return ()
       DontCare v -> metaOccurs m v
       Def d vs   -> metaOccurs m d >> metaOccurs m vs
       Con c _ vs -> metaOccurs m vs
@@ -366,6 +372,7 @@ instance Occurs Defn where
   occurs red ctx m xs def = __IMPOSSIBLE__
 
   metaOccurs m Axiom{}                      = return ()
+  metaOccurs m DataOrRecSig{}               = return ()
   metaOccurs m Function{ funClauses = cls } = metaOccurs m cls
   -- since a datatype is isomorphic to the sum of its constructor types
   -- we check the constructor types
@@ -375,6 +382,7 @@ instance Occurs Defn where
   metaOccurs m Constructor{}                = return ()
   metaOccurs m Primitive{}                  = return ()
   metaOccurs m AbstractDefn{}               = __IMPOSSIBLE__
+  metaOccurs m GeneralizableVar{}           = __IMPOSSIBLE__
 
 instance Occurs Clause where
   occurs red ctx m xs cl = __IMPOSSIBLE__
@@ -434,6 +442,10 @@ instance Occurs Sort where
       MetaS x es -> do
         MetaV x es <- occurs red ctx m xs (MetaV x es)
         return $ MetaS x es
+      DefS x es -> do
+        Def x es <- occurs red ctx m xs (Def x es)
+        return $ DefS x es
+      DummyS{}   -> return s
 
   metaOccurs m s = do
     s <- instantiate s
@@ -445,11 +457,13 @@ instance Occurs Sort where
       SizeUniv   -> return ()
       UnivSort s -> metaOccurs m s
       MetaS x es -> metaOccurs m $ MetaV x es
+      DefS d es  -> metaOccurs m $ Def d es
+      DummyS{}   -> return ()
 
 instance Occurs a => Occurs (Elim' a) where
   occurs red ctx m xs e@(Proj _ f) = do
     frel <- relOfConst f
-    unless (not (unusableRelevance frel) || ctx == Irrel) $ do
+    unless (usableRelevance frel || ctx == Irrel) $ do
       reportSDoc "tc.meta.occurs" 35 $ text ("relevance of projection: " ++ show frel)
       abort ctx $ MetaIrrelevantSolution m $ Def f []
     return e
@@ -515,12 +529,12 @@ prune m' vs xs = do
   caseEitherM (runExceptT $ mapM (hasBadRigid xs) $ map unArg vs)
     (const $ return PrunedNothing) $ \ kills -> do
     reportSDoc "tc.meta.kill" 10 $ vcat
-      [ text "attempting kills"
+      [ "attempting kills"
       , nest 2 $ vcat
-        [ text "m'    =" <+> pretty m'
-        , text "xs    =" <+> prettyList (map (prettyTCM . var) xs)
-        , text "vs    =" <+> prettyList (map prettyTCM vs)
-        , text "kills =" <+> text (show kills)
+        [ "m'    =" <+> pretty m'
+        , "xs    =" <+> prettyList (map (prettyTCM . var) xs)
+        , "vs    =" <+> prettyList (map prettyTCM vs)
+        , "kills =" <+> text (show kills)
         ]
       ]
     killArgs kills m'
@@ -567,6 +581,7 @@ hasBadRigid xs t = do
     Con c _ es | otherwise -> failure
     Lit{}        -> failure -- matchable
     MetaV{}      -> failure -- potentially matchable
+    Dummy{}      -> return False
 
 -- | Check whether a term @Def f es@ is finally stuck.
 --   Currently, we give only a crude approximation.
@@ -585,6 +600,7 @@ isNeutral b f es = liftTCM $ do
       NotBlocked StuckOn{}   _ -> yes
       NotBlocked AbsurdMatch _ -> yes
       _                        -> no
+    GeneralizableVar{} -> __IMPOSSIBLE__
     _          -> no
 
 -- | Check whether any of the variables (given as de Bruijn indices)
@@ -642,6 +658,7 @@ instance FoldRigid Term where
       Level l    -> fold l
       MetaV{}    -> mempty
       DontCare{} -> mempty
+      Dummy{}    -> mempty
     where fold = foldRigid f
 
 instance FoldRigid Type where
@@ -654,9 +671,11 @@ instance FoldRigid Sort where
       Prop l     -> fold l
       Inf        -> mempty
       SizeUniv   -> mempty
-      PiSort s1 s2 -> fold (s1, s2)
+      PiSort s1 s2 -> mempty
       UnivSort s -> fold s
       MetaS{}    -> mempty
+      DefS{}     -> mempty
+      DummyS{}   -> mempty
     where fold = foldRigid f
 
 instance FoldRigid Level where
@@ -717,13 +736,13 @@ killArgs kills _
   | not (or kills) = return NothingToPrune  -- nothing to kill
 killArgs kills m = do
   mv <- lookupMeta m
-  allowAssign <- asks envAssignMetas
+  allowAssign <- asksTC envAssignMetas
   if mvFrozen mv == Frozen || not allowAssign then return PrunedNothing else do
       -- Andreas 2011-04-26, we allow pruning in MetaV and MetaS
       let a = jMetaType $ mvJudgement mv
       TelV tel b <- telView' <$> instantiateFull a
       let args         = zip (telToList tel) (kills ++ repeat False)
-          (kills', a') = killedType args b
+      (kills', a') <- killedType args b
       dbg kills' a a'
       -- If there is any prunable argument, perform the pruning
       if not (any unArg kills') then return PrunedNothing else do
@@ -740,13 +759,13 @@ killArgs kills m = do
     implies True  x = x
     dbg kills' a a' =
       reportSDoc "tc.meta.kill" 10 $ vcat
-        [ text "after kill analysis"
+        [ "after kill analysis"
         , nest 2 $ vcat
-          [ text "metavar =" <+> prettyTCM m
-          , text "kills   =" <+> text (show kills)
-          , text "kills'  =" <+> text (show kills')
-          , text "oldType =" <+> prettyTCM a
-          , text "newType =" <+> prettyTCM a'
+          [ "metavar =" <+> prettyTCM m
+          , "kills   =" <+> text (show kills)
+          , "kills'  =" <+> text (show kills')
+          , "oldType =" <+> prettyTCM a
+          , "newType =" <+> prettyTCM a'
           ]
         ]
 
@@ -755,14 +774,81 @@ killArgs kills m = do
 --   Invariant: @k'i == True@ iff @ki == True@ and pruning the @i@th argument from
 --   type @b@ is possible without creating unbound variables.
 --   @t'@ is type @t@ after pruning all @k'i==True@.
-killedType :: [(Dom (ArgName, Type), Bool)] -> Type -> ([Arg Bool], Type)
-killedType [] b = ([], b)
-killedType ((arg@(Dom {domInfo = info}), kill) : kills) b
-  | dontKill  = (Arg info False : args, mkPi arg b')
-  | otherwise = (Arg info True  : args, strengthen __IMPOSSIBLE__ b')
+killedType :: [(Dom (ArgName, Type), Bool)] -> Type -> TCM ([Arg Bool], Type)
+killedType args b = do
+
+  -- Turn list of bools into an IntSet containing the variables we want to kill
+  -- (indices relative to b).
+  let tokill = IntSet.fromList [ i | ((_, True), i) <- zip (reverse args) [0..] ]
+
+  -- First, check the free variables of b to see if they prevent any kills.
+  (tokill, b) <- reallyNotFreeIn tokill b
+
+  -- Then recurse over the telescope (right-to-left), building up the final type.
+  (killed, b) <- go (reverse $ map fst args) tokill b
+
+  -- Turn the IntSet of killed variables into the list of Arg Bool's to return.
+  let kills = [ Arg (getArgInfo dom) (IntSet.member i killed)
+              | (i, (dom, _)) <- reverse $ zip [0..] $ reverse args ]
+  return (kills, b)
   where
-    (args, b') = killedType kills b
-    dontKill = not kill || 0 `freeIn` b'
+    down = IntSet.map pred
+    up   = IntSet.map succ
+
+    -- go Δ xs B
+    -- Invariants:
+    --   - Δ ⊢ B
+    --   - Δ is represented as a list in right-to-left order
+    --   - xs are deBruijn indices into Δ
+    --   - xs ∩ FV(B) = Ø
+    -- Result: (ys, Δ' → B')
+    --    where Δ' ⊆ Δ  (possibly reduced to remove dependencies, see #3177)
+    --          ys ⊆ xs are the variables that were dropped from Δ
+    --          B' = strengthen ys B
+    go :: [Dom (ArgName, Type)] -> IntSet -> Type -> TCM (IntSet, Type)
+    go [] xs b | IntSet.null xs = return (xs, b)
+               | otherwise      = __IMPOSSIBLE__
+    go (arg : args) xs b  -- go (Δ (x : A)) xs B, (x = deBruijn index 0)
+      | IntSet.member 0 xs = do
+          -- Case x ∈ xs. We know x ∉ FV(B), so we can safely drop x from the
+          -- telescope. Drop x from xs (and shift indices) and recurse with
+          -- `strengthen x B`.
+          let ys = down (IntSet.delete 0 xs)
+          (ys, b) <- go args ys $ strengthen __IMPOSSIBLE__ b
+          -- We need to return a set of killed variables relative to Δ (x : A), so
+          -- shift ys and add x back in.
+          return (IntSet.insert 0 $ up ys, b)
+      | otherwise = do
+          -- Case x ∉ xs. We either can't or don't want to get rid of x. In
+          -- this case we have to check A for potential dependencies preventing
+          -- us from killing variables in xs.
+          let xs'       = down xs -- Shift to make relative to Δ ⊢ A
+              (name, a) = unDom arg
+          (ys, a) <- reallyNotFreeIn xs' a
+          -- Recurse on Δ, ys, and (x : A') → B, where A reduces to A' and ys ⊆ xs'
+          -- not free in A'. We already know ys not free in B.
+          (zs, b) <- go args ys (mkPi ((name, a) <$ arg) b)
+          -- Shift back up to make it relative to Δ (x : A) again.
+          return (up zs, b)
+
+reallyNotFreeIn :: IntSet -> Type -> TCM (IntSet, Type)
+reallyNotFreeIn xs a | IntSet.null xs = return (xs, a)  -- Shortcut
+reallyNotFreeIn xs a = do
+  let fvs      = freeVars a
+      anywhere = allVars fvs
+      rigid    = IntSet.unions [stronglyRigidVars fvs, unguardedVars fvs]
+      nonrigid = IntSet.difference anywhere rigid
+      hasNo    = IntSet.null . IntSet.intersection xs
+  if | hasNo nonrigid ->
+        -- No non-rigid occurrences. We can't do anything about the rigid
+        -- occurrences so drop those and leave `a` untouched.
+        return (IntSet.difference xs rigid, a)
+     | otherwise -> do
+        -- If there are non-rigid occurrences we need to reduce a to see if
+        -- we can get rid of them (#3177).
+        (fvs , a) <- forceNotFree (IntSet.difference xs rigid) a
+        let xs = IntMap.keysSet $ IntMap.filter (== NotFree) fvs
+        return (xs , a)
 
 -- | Instantiate a meta variable with a new one that only takes
 --   the arguments which are not pruneable.
@@ -800,10 +886,10 @@ performKill kills m a = do
   assignTerm m tel u  -- m tel := u
   where
     dbg m' u = reportSDoc "tc.meta.kill" 10 $ vcat
-      [ text "actual killing"
+      [ "actual killing"
       , nest 2 $ vcat
-        [ text "new meta:" <+> pretty m'
-        , text "kills   :" <+> text (show kills)
-        , text "inst    :" <+> pretty m <+> text ":=" <+> prettyTCM u
+        [ "new meta:" <+> pretty m'
+        , "kills   :" <+> text (show kills)
+        , "inst    :" <+> pretty m <+> ":=" <+> prettyTCM u
         ]
       ]

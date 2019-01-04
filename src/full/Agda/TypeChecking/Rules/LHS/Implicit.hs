@@ -41,7 +41,7 @@ implicitP info = Arg (setOrigin Inserted info) $ unnamed $ A.WildP $ PatRange $ 
 insertImplicitPatterns :: ExpandHidden -> [NamedArg A.Pattern] ->
                           Telescope -> TCM [NamedArg A.Pattern]
 insertImplicitPatterns exh ps tel =
-  insertImplicitPatternsT exh ps (telePi tel dummyType)
+  insertImplicitPatternsT exh ps (telePi tel __DUMMY_TYPE__)
 
 -- | Insert trailing SizeLt patterns, if any.
 insertImplicitSizeLtPatterns :: Type -> TCM [NamedArg A.Pattern]
@@ -68,11 +68,11 @@ insertImplicitPatternsT DontExpandLast [] a = insertImplicitSizeLtPatterns a
 insertImplicitPatternsT exh            ps a = do
   TelV tel b <- telViewUpTo' (-1) (not . visible) a
   reportSDoc "tc.lhs.imp" 20 $
-    vcat [ text "insertImplicitPatternsT"
-         , nest 2 $ text "ps  = " <+> do
+    vcat [ "insertImplicitPatternsT"
+         , nest 2 $ "ps  = " <+> do
              brackets $ fsep $ punctuate comma $ map prettyA ps
-         , nest 2 $ text "tel = " <+> prettyTCM tel
-         , nest 2 $ text "b   = " <+> addContext tel (prettyTCM b)
+         , nest 2 $ "tel = " <+> prettyTCM tel
+         , nest 2 $ "b   = " <+> addContext tel (prettyTCM b)
          ]
   case ps of
     [] -> insImp dummy tel
@@ -80,7 +80,7 @@ insertImplicitPatternsT exh            ps a = do
       -- Andreas, 2015-05-11.
       -- If p is a projection pattern, make it visible for the purpose of
       -- calling insImp / insertImplicit, to get correct behavior.
-      let p' = applyWhen (isJust $ A.maybePostfixProjP p) (setHiding NotHidden) p
+      let p' = applyWhen (isJust $ A.maybeProjP p) (setHiding NotHidden) p
       hs <- insImp p' tel
       case hs of
         [] -> do
@@ -95,7 +95,7 @@ insertImplicitPatternsT exh            ps a = do
     dummy = defaultNamedArg (A.VarP __IMPOSSIBLE__)
 
     insImp p EmptyTel = return []
-    insImp p tel = case insertImplicit p $ map (argFromDom . fmap fst) $ telToList tel of
+    insImp p tel = case insertImplicit p $ telToList tel of
       BadImplicits   -> typeError WrongHidingInLHS
       NoSuchName x   -> typeError WrongHidingInLHS
       ImpInsert n    -> return $ map implicitArg n

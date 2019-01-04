@@ -29,7 +29,7 @@ matchCompiled c args = do
   r <- matchCompiledE c $ map (fmap Apply) args
   case r of
     YesReduction simpl v -> return $ YesReduction simpl v
-    NoReduction bes      -> return $ NoReduction $ fmap (map argFromElim) bes
+    NoReduction bes      -> return $ NoReduction $ fmap (map (fromMaybe __IMPOSSIBLE__ . isApplyElim)) bes
 
 -- | @matchCompiledE c es@ takes a function given by case tree @c@ and
 --   and a spine @es@ and tries to apply the function to @es@.
@@ -66,7 +66,7 @@ type Stack = [Frame]
 match' :: Stack -> ReduceM (Reduced (Blocked Elims) Term)
 match' ((c, es, patch) : stack) = do
   let no blocking es = return $ NoReduction $ blocking $ patch $ map ignoreReduced es
-      yes t          = flip YesReduction t <$> asks envSimplification
+      yes t          = flip YesReduction t <$> asksTC envSimplification
 
   do
 
@@ -87,7 +87,7 @@ match' ((c, es, patch) : stack) = do
           m              = length es
           -- at least the first @n@ elims must be @Apply@s, so we can
           -- turn them into a subsitution
-          toSubst        = parallelS . reverse . map (unArg . argFromElim . ignoreReduced)
+          toSubst        = parallelS . reverse . map (unArg . fromMaybe __IMPOSSIBLE__ . isApplyElim . ignoreReduced)
           (es0, es1)     = splitAt n es
           lam x t        = Lam (argInfo x) (Abs (unArg x) t)
 
@@ -96,7 +96,7 @@ match' ((c, es, patch) : stack) = do
         case splitAt n es of
           (_, []) -> no (NotBlocked Underapplied) es
           (es0, MaybeRed _ e@(Apply (Arg _ v0)) : es1) ->
-              let projs = [ MaybeRed NotReduced $ Apply $ defaultArg $ v0 `applyE` [Proj ProjSystem f] | f <- fs ]
+              let projs = [ MaybeRed NotReduced $ Apply $ Arg ai $ relToDontCare ai $ v0 `applyE` [Proj ProjSystem f] | Arg ai f <- fs ]
                   catchAllFrame stack = maybe stack (\c -> (c, es, patch) : stack) ca in
               match' $ (content cc, es0 ++ projs ++ es1, patchEta) : catchAllFrame stack
             where
@@ -130,12 +130,13 @@ match' ((c, es, patch) : stack) = do
                     Just cc -> (cc, es0 ++ es1, patchLit) : stack
                 -- If our argument (or its constructor form) is @Con c ci vs@
                 -- we push @conFrame c vs@ onto the stack.
-                conFrame c ci vs stack =
-                  case Map.lookup (conName c) (conBranches bs) of
+                conFrame c ci vs stack = conFrame' (conName c) (Con c ci) vs stack
+                conFrame' q f vs stack =
+                  case Map.lookup q (conBranches bs) of
                     Nothing -> stack
                     Just cc -> ( content cc
                                , es0 ++ map (MaybeRed NotReduced) vs ++ es1
-                               , patchCon c ci (length vs)
+                               , patchCon f (length vs)
                                ) : stack
                 -- If our argument is @Proj p@, we push @projFrame p@ onto the stack.
                 projFrame p stack =
@@ -148,17 +149,23 @@ match' ((c, es, patch) : stack) = do
                   where (es0, es1) = splitAt n es
                 -- In case we matched constructor @c@ with @m@ arguments,
                 -- contract these @m@ arguments @vs@ to @Con c ci vs@.
-                patchCon c ci m es = patch (es0 ++ [Con c ci vs <$ e] ++ es2)
+--                patchCon c ci m es = patch (es0 ++ [Con c ci vs <$ e] ++ es2)
+                patchCon f m es = patch (es0 ++ [f vs <$ e] ++ es2)
                   where (es0, rest) = splitAt n es
                         (es1, es2)  = splitAt m rest
                         vs          = es1
-            zo <- do
-               mi <- getBuiltinName' builtinIZero
-               mo <- getBuiltinName' builtinIOne
-               return $ Set.fromList $ catMaybes [mi,mo]
+            -- zo <- do
+            --    mi <- getBuiltinName' builtinIZero
+            --    mo <- getBuiltinName' builtinIOne
+            --    return $ Set.fromList $ catMaybes [mi,mo]
 
             fallThrough <- return $ fromMaybe False (fallThrough bs) && isJust (catchAllBranch bs)
 
+            let
+              isCon b =
+                case ignoreBlocking b of
+                 Apply a | c@Con{} <- unArg a -> Just c
+                 _                            -> Nothing
             -- Now do the matching on the @n@ths argument:
             id $
              case eb of
@@ -170,8 +177,11 @@ match' ((c, es, patch) : stack) = do
                       _        -> stack
                 match' $ litFrame l $ cFrame $ catchAllFrame stack
 
+              NotBlocked _ (Apply (Arg info v@(Def q vs))) | Just{} <- Map.lookup q (conBranches bs) -> performedSimplification $ do
+                match' $ conFrame' q (Def q) vs $ catchAllFrame $ stack
+
               -- In case of a constructor, push the conFrame
-              NotBlocked _ (Apply (Arg info (Con c ci vs))) -> performedSimplification $
+              b | Just (Con c ci vs) <- isCon b -> performedSimplification $
                 match' $ conFrame c ci vs $ catchAllFrame $ stack
 
               -- In case of a projection, push the projFrame
@@ -191,7 +201,7 @@ match' ((c, es, patch) : stack) = do
 
 -- If we reach the empty stack, then pattern matching was incomplete
 match' [] = {- new line here since __IMPOSSIBLE__ does not like the ' in match' -}
-  caseMaybeM (asks envAppDef) __IMPOSSIBLE__ $ \ f -> do
+  caseMaybeM (asksTC envAppDef) __IMPOSSIBLE__ $ \ f -> do
     pds <- getPartialDefs
     if f `elem` pds
     then return (NoReduction $ NotBlocked MissingClauses [])

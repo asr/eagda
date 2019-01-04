@@ -125,7 +125,7 @@ instance ExprLike Expr where
      Lam r bs e         -> f $ Lam r       (mapE bs)  $ mapE e
      AbsurdLam{}        -> f $ e0
      ExtendedLam r cs   -> f $ ExtendedLam r          $ mapE cs
-     Fun r a b          -> f $ Fun r       (mapE a)   $ mapE b
+     Fun r a b          -> f $ Fun r     (mapE <$> a) $ mapE b
      Pi tel e           -> f $ Pi          (mapE tel) $ mapE e
      Set{}              -> f $ e0
      Prop{}             -> f $ e0
@@ -150,6 +150,7 @@ instance ExprLike Expr where
      DontCare e         -> f $ DontCare               $ mapE e
      Equal{}            -> f $ e0
      Ellipsis{}         -> f $ e0
+     Generalized e      -> f $ Generalized            $ mapE e
    where mapE e = mapExpr f e
 
 instance ExprLike FieldAssignment where
@@ -174,11 +175,6 @@ instance ExprLike LamBinding where
      DomainFull bs -> DomainFull $ mapE bs
    where mapE e = mapExpr f e
 
-instance ExprLike TypedBindings where
-  mapExpr f e0 = case e0 of
-     TypedBindings r b -> TypedBindings r $ mapE b
-   where mapE e = mapExpr f e
-
 instance ExprLike LHS where
   mapExpr f e0 = case e0 of
      LHS ps res wes -> LHS ps (mapE res) $ mapE wes
@@ -196,7 +192,7 @@ instance ExprLike DoStmt where
 instance ExprLike ModuleApplication where
   mapExpr f e0 = case e0 of
      SectionApp r bs e -> SectionApp r (mapE bs) $ mapE e
-     RecordModuleIFS{} -> e0
+     RecordModuleInstance{} -> e0
    where mapE e = mapExpr f e
 
 instance ExprLike Declaration where
@@ -205,9 +201,11 @@ instance ExprLike Declaration where
      Field i x e               -> Field i x                            $ mapE e
      FunClause lhs rhs wh ca   -> FunClause (mapE lhs) (mapE rhs) (mapE wh) (mapE ca)
      DataSig r ind x bs e      -> DataSig r ind x (mapE bs)            $ mapE e
+     DataDef r ind n bs cs     -> DataDef r ind n (mapE bs)            $ mapE cs
      Data r ind n bs e cs      -> Data r ind n (mapE bs) (mapE e)      $ mapE cs
      RecordSig r ind bs e      -> RecordSig r ind (mapE bs)            $ mapE e
-     Record r n ind eta c tel e ds -> Record r n ind eta c (mapE tel) (mapE e) $ mapE ds
+     RecordDef r n ind eta c tel ds -> RecordDef r n ind eta c (mapE tel) $ mapE ds
+     Record r n ind eta c tel e ds  -> Record r n ind eta c (mapE tel) (mapE e) $ mapE ds
      Infix{}                   -> e0
      Syntax{}                  -> e0
      PatternSyn{}              -> e0
@@ -218,6 +216,7 @@ instance ExprLike Declaration where
      Macro     r ds            -> Macro     r                          $ mapE ds
      Postulate r ds            -> Postulate r                          $ mapE ds
      Primitive r ds            -> Primitive r                          $ mapE ds
+     Generalize r ds           -> Generalize r                         $ mapE ds
      Open{}                    -> e0
      Import{}                  -> e0
      ModuleMacro r n es op dir -> ModuleMacro r n (mapE es) op dir

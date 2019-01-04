@@ -41,13 +41,13 @@ piAbstractTerm :: Term -> Type -> Type -> TCM Type
 piAbstractTerm v a b = do
   fun <- mkPi (defaultDom ("w", a)) <$> abstractType a v b
   reportSDoc "tc.abstract" 50 $
-    sep [ text "piAbstract" <+> sep [ prettyTCM v <+> text ":", nest 2 $ prettyTCM a ]
-        , nest 2 $ text "from" <+> prettyTCM b
-        , nest 2 $ text "-->" <+> prettyTCM fun ]
+    sep [ "piAbstract" <+> sep [ prettyTCM v <+> ":", nest 2 $ prettyTCM a ]
+        , nest 2 $ "from" <+> prettyTCM b
+        , nest 2 $ "-->" <+> prettyTCM fun ]
   reportSDoc "tc.abstract" 70 $
-    sep [ text "piAbstract" <+> sep [ (text . show) v <+> text ":", nest 2 $ (text . show) a ]
-        , nest 2 $ text "from" <+> (text . show) b
-        , nest 2 $ text "-->" <+> (text . show) fun ]
+    sep [ "piAbstract" <+> sep [ (text . show) v <+> ":", nest 2 $ (text . show) a ]
+        , nest 2 $ "from" <+> (text . show) b
+        , nest 2 $ "-->" <+> (text . show) fun ]
   return fun
 
 -- | @piAbstract (v, a) b[v] = (w : a) -> b[w]@
@@ -63,7 +63,8 @@ piAbstract (prf, eqt@(EqualityType _ _ _ (Arg _ a) v _)) b = do
   let prfTy = equalityUnview eqt
       vTy   = El s a
   b <- abstractType prfTy prf b
-  b <- addContext ("w", defaultDom prfTy) $ abstractType (raise 1 vTy) (unArg $ raise 1 v) b
+  b <- addContext ("w" :: String, defaultDom prfTy) $
+         abstractType (raise 1 vTy) (unArg $ raise 1 v) b
   return . funType vTy . funType eqTy' . swap01 $ b
   where
     funType a = mkPi $ defaultDom ("w", a)
@@ -100,17 +101,17 @@ instance IsPrefixOf Term where
 abstractTerm :: Type -> Term -> Type -> Term -> TCM Term
 abstractTerm a u@Con{} b v = do
   reportSDoc "tc.abstract" 50 $
-    sep [ text "Abstracting"
-        , nest 2 $ sep [ prettyTCM u <+> text ":", nest 2 $ prettyTCM a ]
-        , text "over"
-        , nest 2 $ sep [ prettyTCM v <+> text ":", nest 2 $ prettyTCM b ] ]
+    sep [ "Abstracting"
+        , nest 2 $ sep [ prettyTCM u <+> ":", nest 2 $ prettyTCM a ]
+        , "over"
+        , nest 2 $ sep [ prettyTCM v <+> ":", nest 2 $ prettyTCM b ] ]
   reportSDoc "tc.abstract" 70 $
-    sep [ text "Abstracting"
-        , nest 2 $ sep [ (text . show) u <+> text ":", nest 2 $ (text . show) a ]
-        , text "over"
-        , nest 2 $ sep [ (text . show) v <+> text ":", nest 2 $ (text . show) b ] ]
+    sep [ "Abstracting"
+        , nest 2 $ sep [ (text . show) u <+> ":", nest 2 $ (text . show) a ]
+        , "over"
+        , nest 2 $ sep [ (text . show) v <+> ":", nest 2 $ (text . show) b ] ]
 
-  hole <- qualify <$> currentModule <*> freshName_ "hole"
+  hole <- qualify <$> currentModule <*> freshName_ ("hole" :: String)
   noMutualBlock $ addConstant hole $ defaultDefn defaultArgInfo hole a $ Axiom Nothing []
 
   args <- map Apply <$> getContextArgs
@@ -122,14 +123,14 @@ abstractTerm a u@Con{} b v = do
         case isPrefixOf u' v of
           Nothing -> return v
           Just es -> do -- Check that the types match.
-            s <- get
-            do  disableDestructiveUpdate (noConstraints $ equalType a' b)
-                put s
+            s <- getTC
+            do  noConstraints $ equalType a' b
+                putTC s
                 return $ Def hole (raise (m - n) args ++ es)
               `catchError` \ _ -> do
                 reportSDoc "tc.abstract.ill-typed" 50 $
-                  sep [ text "Skipping ill-typed abstraction"
-                      , nest 2 $ sep [ prettyTCM v <+> text ":", nest 2 $ prettyTCM b ] ]
+                  sep [ "Skipping ill-typed abstraction"
+                      , nest 2 $ sep [ prettyTCM v <+> ":", nest 2 $ prettyTCM b ] ]
                 return v
 
   -- #2763: This can fail if the user is with-abstracting incorrectly (for
@@ -139,9 +140,9 @@ abstractTerm a u@Con{} b v = do
   -- the error message.
   res <- catchError_ (checkInternal' (defaultAction { preAction = abstr }) v b) $ \ err -> do
         reportSDoc "tc.abstract.ill-typed" 40 $
-          text "Skipping typed abstraction over ill-typed term" <?> (prettyTCM v <?> (text ":" <+> prettyTCM b))
+          "Skipping typed abstraction over ill-typed term" <?> (prettyTCM v <?> (":" <+> prettyTCM b))
         return v
-  reportSDoc "tc.abstract" 50 $ text "Resulting abstraction" <?> prettyTCM res
+  reportSDoc "tc.abstract" 50 $ "Resulting abstraction" <?> prettyTCM res
   modifySignature $ updateDefinitions $ HMap.delete hole
   return $ absTerm (Def hole args) res
 
@@ -167,6 +168,7 @@ instance AbsTerm Term where
       Sort s      -> Sort $ absT s
       MetaV m vs  -> MetaV m $ absT vs
       DontCare mv -> DontCare $ absT mv
+      Dummy s     -> Dummy s
       where
         absT x = absTerm u x
 
@@ -182,6 +184,8 @@ instance AbsTerm Sort where
     PiSort s1 s2 -> PiSort (absS s1) (absS s2)
     UnivSort s -> UnivSort $ absS s
     MetaS x es -> MetaS x $ absS es
+    DefS d es  -> DefS d $ absS es
+    DummyS{}   -> s
     where absS x = absTerm u x
 
 instance AbsTerm Level where
@@ -193,7 +197,7 @@ instance AbsTerm PlusLevel where
 
 instance AbsTerm LevelAtom where
   absTerm u l = case l of
-    MetaLevel m vs   -> MetaLevel m    $ absTerm u vs
+    MetaLevel m vs   -> UnreducedLevel $ absTerm u (MetaV m vs)
     NeutralLevel r v -> NeutralLevel r $ absTerm u v
     BlockedLevel _ v -> UnreducedLevel $ absTerm u v -- abstracting might remove the blockage
     UnreducedLevel v -> UnreducedLevel $ absTerm u v

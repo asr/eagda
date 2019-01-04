@@ -10,13 +10,13 @@ test : ∀{n} → IsSuc n → Set
 test p = aux p
   where
   aux : ∀{n} → IsSuc n → Set
-  aux isSuc = {!.n!}  -- Split on .n here
+  aux isSuc = {!n!}  -- Split on n here
 
 -- Context:
--- p  : IsSuc .n
--- .n : Nat
--- .n : Nat
+-- p  : IsSuc n
+-- n : Nat  (not in scope)
+-- n₁ : Nat  (not in scope)
 
--- ERROR
--- Ambiguous variable .n
+-- WAS: ERROR
+-- Ambiguous variable n
 -- when checking that the expression ? has type Set

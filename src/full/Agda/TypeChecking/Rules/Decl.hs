@@ -21,6 +21,7 @@ import Data.Maybe
 import Data.Map (Map)
 import qualified Data.Sequence as Seq
 import qualified Data.Set as Set
+import qualified Data.Map as Map
 import Data.Set (Set)
 
 import Agda.Interaction.Options
@@ -28,6 +29,7 @@ import Agda.Interaction.Highlighting.Generate
 
 import qualified Agda.Syntax.Abstract as A
 import Agda.Syntax.Abstract.Views (deepUnscopeDecl, deepUnscopeDecls)
+import qualified Agda.Syntax.Concrete.Name as C
 import Agda.Syntax.Internal
 import qualified Agda.Syntax.Reflected as R
 import qualified Agda.Syntax.Info as Info
@@ -41,9 +43,11 @@ import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Monad.Builtin
 import qualified Agda.TypeChecking.Monad.Benchmark as Bench
 
+import Agda.TypeChecking.CheckInternal
 import Agda.TypeChecking.Constraints
 import Agda.TypeChecking.Conversion
 import Agda.TypeChecking.Errors
+import Agda.TypeChecking.Generalize
 import Agda.TypeChecking.Injectivity
 import Agda.TypeChecking.Irrelevance
 import Agda.TypeChecking.Positivity
@@ -77,6 +81,7 @@ import Agda.Termination.TermCheck
 import Agda.Utils.Except
 import Agda.Utils.Functor
 import Agda.Utils.Function
+import qualified Agda.Utils.HashMap as HMap
 import Agda.Utils.Lens
 import Agda.Utils.Maybe
 import Agda.Utils.Monad
@@ -90,8 +95,8 @@ import Agda.Utils.Impossible
 -- | Cached checkDecl
 checkDeclCached :: A.Declaration -> TCM ()
 checkDeclCached d@A.ScopedDecl{} = checkDecl d
-checkDeclCached d@(A.Section minfo mname tbinds _) = do
-  e <- readFromCachedLog
+checkDeclCached d@(A.Section minfo mname (A.GeneralizeTel _ tbinds) _) = do
+  e <- readFromCachedLog  -- Can ignore the set of generalizable vars (they occur in the telescope)
   reportSLn "cache.decl" 10 $ "checkDeclCached: " ++ show (isJust e)
   case e of
     Just (EnterSection minfo' mname' tbinds', _)
@@ -130,7 +135,7 @@ checkDeclCached d = do
    -- changes to CS inside a RecDef or Mutual ought not happen,
    -- but they do happen, so we discard them.
    ignoreChanges m = do
-     cs <- gets $ stLoadedFileCache . stPersistentState
+     cs <- getsTC $ stLoadedFileCache . stPersistentState
      cleanCachedLog
      _ <- m
      modifyPersistentState $ \st -> st{stLoadedFileCache = cs}
@@ -150,7 +155,7 @@ checkDecls ds = do
 
 checkDecl :: A.Declaration -> TCM ()
 checkDecl d = setCurrentRange d $ do
-    reportSDoc "tc.decl" 10 $ text "checking declaration"
+    reportSDoc "tc.decl" 10 $ "checking declaration"
     debugPrintDecl d
     reportSDoc "tc.decl" 90 $ (text . show) (deepUnscopeDecl d)
     reportSDoc "tc.decl" 10 $ prettyA d  -- Might loop, see e.g. Issue 1597
@@ -167,8 +172,9 @@ checkDecl d = setCurrentRange d $ do
         impossible  m = m $>  __IMPOSSIBLE__
                         -- We're definitely inside a mutual block.
 
-    finalChecks <- case d of
+    (finalChecks, metas) <- metasCreatedBy $ case d of
       A.Axiom{}                -> meta $ checkTypeSignature d
+      A.Generalize s i info x e -> meta $ inConcreteMode $ checkGeneralize s i info x e
       A.Field{}                -> typeError FieldOutsideRecord
       A.Primitive i x e        -> meta $ checkPrimitive i x e
       A.Mutual i ds            -> mutual i ds $ checkMutual i ds
@@ -178,16 +184,16 @@ checkDecl d = setCurrentRange d $ do
       A.Pragma i p             -> none $ checkPragma i p
       A.ScopedDecl scope ds    -> none $ setScope scope >> mapM_ checkDeclCached ds
       A.FunDef i x delayed cs  -> impossible $ check x i $ checkFunDef delayed i x cs
-      A.DataDef i x ps cs      -> impossible $ check x i $ checkDataDef i x ps cs
-      A.RecDef i x ind eta c ps tel cs -> mutual empty [d] $ check x i $ do
-                                    checkRecDef i x ind eta c ps tel cs
+      A.DataDef i x uc ps cs   -> impossible $ check x i $ checkDataDef i x uc ps cs
+      A.RecDef i x uc ind eta c ps tel cs -> mutual empty [d] $ check x i $ do
+                                    checkRecDef i x uc ind eta c ps tel cs
                                     blockId <- mutualBlockOf x
 
                                     -- Andreas, 2016-10-01 testing whether
                                     -- envMutualBlock is set correctly.
                                     -- Apparently not.
                                     verboseS "tc.decl.mutual" 70 $ do
-                                      current <- asks envMutualBlock
+                                      current <- asksTC envMutualBlock
                                       unless (Just blockId == current) $ do
                                         reportSLn "" 0 $ unlines
                                           [ "mutual block id discrepancy for " ++ prettyShow x
@@ -213,7 +219,7 @@ checkDecl d = setCurrentRange d $ do
       A.UnquoteDecl mi i x e   -> checkUnquoteDecl mi i x e
       A.UnquoteDef i x e       -> impossible $ checkUnquoteDef i x e
 
-    whenNothingM (asks envMutualBlock) $ do
+    whenNothingM (asksTC envMutualBlock) $ do
 
       -- Syntax highlighting.
       highlight_ d
@@ -222,25 +228,27 @@ checkDecl d = setCurrentRange d $ do
       whenJust finalChecks $ \ theMutualChecks -> do
         reportSLn "tc.decl" 20 $ "Attempting to solve constraints before freezing."
         wakeupConstraints_   -- solve emptiness and instance constraints
-        checkingWhere <- asks envCheckingWhere
+        checkingWhere <- asksTC envCheckingWhere
         solveSizeConstraints $ if checkingWhere then DontDefaultToInfty else DefaultToInfty
         wakeupConstraints_   -- Size solver might have unblocked some constraints
-        reportSLn "tc.decl" 20 $ "Freezing all metas."
-        _ <- freezeMetas
+        case d of
+            A.Generalize{} -> pure ()
+            _ -> do
+                reportSLn "tc.decl" 20 $ "Freezing all metas."
+                forM_ metas $ \mi -> updateMetaVar mi $ \mv -> mv { mvFrozen = Frozen }
         theMutualChecks
 
     where
 
     -- check record or data type signature
-    checkSig i x ps t = checkTypeSignature $
-      A.Axiom A.NoFunSig i defaultArgInfo Nothing x
-              (A.Pi (Info.ExprRange (fuseRange ps t)) ps t)
+    checkSig i x gtel t = checkTypeSignature' (Just gtel) $
+      A.Axiom A.NoFunSig i defaultArgInfo Nothing x t
 
     check x i m = Bench.billTo [Bench.Definition x] $ do
-      reportSDoc "tc.decl" 5 $ text "Checking" <+> prettyTCM x <> text "."
+      reportSDoc "tc.decl" 5 $ "Checking" <+> prettyTCM x <> "."
       reportSLn "tc.decl.abstract" 25 $ show (Info.defAbstract i)
       r <- abstract (Info.defAbstract i) m
-      reportSDoc "tc.decl" 5 $ text "Checked" <+> prettyTCM x <> text "."
+      reportSDoc "tc.decl" 5 $ "Checked" <+> prettyTCM x <> "."
       return r
 
     isAbstract = fmap Info.defAbstract (A.getDefInfo d) == Just AbstractDef
@@ -264,7 +272,7 @@ mutualChecks mi d ds mid names = do
     checkPositivity_ mi names
   -- Andreas, 2013-02-27: check termination before injectivity,
   -- to avoid making the injectivity checker loop.
-  local (\ e -> e { envMutualBlock = Just mid }) $ checkTermination_ d
+  localTC (\ e -> e { envMutualBlock = Just mid }) $ checkTermination_ d
   revisitRecordPatternTranslation nameList -- Andreas, 2016-11-19 issue #2308
   -- Andreas, 2015-03-26 Issue 1470:
   -- Restricting coinduction to recursive does not solve the
@@ -315,12 +323,12 @@ type FinalChecks = Maybe (TCM ())
 
 checkUnquoteDecl :: Info.MutualInfo -> [Info.DefInfo] -> [QName] -> A.Expr -> TCM FinalChecks
 checkUnquoteDecl mi is xs e = do
-  reportSDoc "tc.unquote.decl" 20 $ text "Checking unquoteDecl" <+> sep (map prettyTCM xs)
+  reportSDoc "tc.unquote.decl" 20 $ "Checking unquoteDecl" <+> sep (map prettyTCM xs)
   Nothing <$ unquoteTop xs e
 
 checkUnquoteDef :: [Info.DefInfo] -> [QName] -> A.Expr -> TCM ()
 checkUnquoteDef _ xs e = do
-  reportSDoc "tc.unquote.decl" 20 $ text "Checking unquoteDef" <+> sep (map prettyTCM xs)
+  reportSDoc "tc.unquote.decl" 20 $ "Checking unquoteDef" <+> sep (map prettyTCM xs)
   () <$ unquoteTop xs e
 
 -- | Run a reflected TCM computatation expected to define a given list of
@@ -350,8 +358,8 @@ instantiateDefinitionType q = do
   t' <- instantiateFull t
   modifySignature $ updateDefinition q $ updateDefType $ const t'
   reportSDoc "tc.decl.inst" 30 $ vcat
-    [ text "  t  = " <+> prettyTCM t
-    , text "  t' = " <+> prettyTCM t'
+    [ "  t  = " <+> prettyTCM t
+    , "  t' = " <+> prettyTCM t'
     ]
 
 -- Andreas, 2014-04-11
@@ -388,14 +396,15 @@ highlight_ d = do
     A.DataSig{}              -> highlight d
     A.Open{}                 -> highlight d
     A.PatternSynDef{}        -> highlight d
+    A.Generalize{}           -> highlight d
     A.UnquoteDecl{}          -> highlight d
     A.UnquoteDef{}           -> highlight d
     A.Section i x tel _      -> highlight (A.Section i x tel [])
       -- Each block in the section has already been highlighted,
       -- all that remains is the module declaration.
     A.RecSig{}               -> highlight d
-    A.RecDef i x ind eta c ps tel cs ->
-      highlight (A.RecDef i x ind eta c [] dummy cs)
+    A.RecDef i x uc ind eta c ps tel cs ->
+      highlight (A.RecDef i x uc ind eta c A.noDataDefParams dummy cs)
       -- The telescope has already been highlighted.
       where
       -- Andreas, 2016-01-22, issue 1790
@@ -417,7 +426,7 @@ checkTermination_ d = Bench.billTo [Bench.Termination] $ do
   case d of
       -- Record module definitions should not be termination-checked twice.
       A.RecDef {} -> return ()
-      _ -> disableDestructiveUpdate $ do
+      _ -> do
         termErrs <- termDecl d
         -- If there are some termination errors, we collect them in
         -- the state.
@@ -442,7 +451,7 @@ checkPositivity_ mi names = Bench.billTo [Bench.Positivity] $ do
 --   for the old coinduction.)
 checkCoinductiveRecords :: [A.Declaration] -> TCM ()
 checkCoinductiveRecords ds = forM_ ds $ \case
-  A.RecDef _ q (Just (Ranged r CoInductive)) _ _ _ _ _ -> setCurrentRange r $ do
+  A.RecDef _ q _ (Just (Ranged r CoInductive)) _ _ _ _ _ -> setCurrentRange r $ do
     unlessM (isRecursiveRecord q) $ typeError $ GenericError $
       "Only recursive records can be coinductive"
   _ -> return ()
@@ -476,7 +485,7 @@ checkInjectivity_ names = Bench.billTo [Bench.Injectivity] $ do
           _ -> reportSLn "tc.inj.check" 20 $
              prettyShow q ++ " is not verified as terminating, thus, not considered for injectivity"
       _ -> do
-        abstr <- asks envAbstractMode
+        abstr <- asksTC envAbstractMode
         reportSLn "tc.inj.check" 20 $
           "we are in " ++ show abstr ++ " and " ++
              prettyShow q ++ " is abstract or not a function, thus, not considered for injectivity"
@@ -514,30 +523,68 @@ whenAbstractFreezeMetasAfter Info.DefInfo{ defAccess, defAbstract} m = do
     (a, ms) <- metasCreatedBy m
     xs <- freezeMetas' $ (`Set.member` ms)
     reportSDoc "tc.decl.ax" 20 $ vcat
-      [ text "Abstract type signature produced new metas: " <+> sep (map prettyTCM $ Set.toList ms)
-      , text "We froze the following ones of these:       " <+> sep (map prettyTCM xs)
+      [ "Abstract type signature produced new metas: " <+> sep (map prettyTCM $ Set.toList ms)
+      , "We froze the following ones of these:       " <+> sep (map prettyTCM xs)
       ]
     return a
+
+checkGeneralize :: Set QName -> Info.DefInfo -> ArgInfo -> QName -> A.Expr -> TCM ()
+checkGeneralize s i info x e = do
+
+    -- Check the signature and collect the created metas.
+    (telNames, tGen) <-
+      generalizeType s $ locallyTC eGeneralizeMetas (const YesGeneralize) $
+        workOnTypes $ isType_ e
+    let n = length telNames
+
+    reportSDoc "tc.decl.gen" 10 $ sep
+      [ "checked type signature of generalizable variable" <+> prettyTCM x <+> ":"
+      , nest 2 $ prettyTCM tGen
+      ]
+
+    addConstant x $ (defaultDefn info x tGen GeneralizableVar)
+                    { defArgGeneralizable = SomeGeneralizableArgs n }
+
 
 -- | Type check an axiom.
 checkAxiom :: A.Axiom -> Info.DefInfo -> ArgInfo ->
               Maybe [Occurrence] -> QName -> A.Expr -> TCM ()
-checkAxiom funSig i info0 mp x e = whenAbstractFreezeMetasAfter i $ do
+checkAxiom = checkAxiom' Nothing
+
+-- | Data and record type signatures need to remember the generalized
+--   parameters for when checking the corresponding definition, so for these we
+--   pass in the parameter telescope separately.
+checkAxiom' :: Maybe A.GeneralizeTelescope -> A.Axiom -> Info.DefInfo -> ArgInfo ->
+               Maybe [Occurrence] -> QName -> A.Expr -> TCM ()
+checkAxiom' gentel funSig i info0 mp x e = whenAbstractFreezeMetasAfter i $ do
   -- Andreas, 2016-07-19 issues #418 #2102:
   -- We freeze metas in type signatures of abstract definitions, to prevent
   -- leakage of implementation details.
 
   -- Andreas, 2012-04-18  if we are in irrelevant context, axioms is irrelevant
   -- even if not declared as such (Issue 610).
-  rel <- max (getRelevance info0) <$> asks envRelevance
+  rel <- max (getRelevance info0) <$> asksTC envRelevance
   let info = setRelevance rel info0
-  -- rel <- ifM ((Irrelevant ==) <$> asks envRelevance) (return Irrelevant) (return rel0)
-  t <- workOnTypes $ isType_ e
+  -- rel <- ifM ((Irrelevant ==) <$> asksTC envRelevance) (return Irrelevant) (return rel0)
+  (genParams, npars, t) <- workOnTypes $ case gentel of
+        Nothing     -> ([], 0,) <$> isType_ e
+        Just gentel ->
+          checkGeneralizeTelescope gentel $ \ genParams ptel -> do
+            t <- workOnTypes $ isType_ e
+            return (genParams, size ptel, abstract ptel t)
+
   reportSDoc "tc.decl.ax" 10 $ sep
     [ text $ "checked type signature"
-    , nest 2 $ prettyTCM rel <> prettyTCM x <+> text ":" <+> prettyTCM t
-    , nest 2 $ text "of sort " <+> prettyTCM (getSort t)
+    , nest 2 $ prettyTCM rel <> prettyTCM x <+> ":" <+> prettyTCM t
+    , nest 2 $ "of sort " <+> prettyTCM (getSort t)
     ]
+
+  when (not $ null genParams) $
+    reportSLn "tc.decl.ax" 40 $ "  generalized params: " ++ show genParams
+
+  -- Jesper, 2018-06-05: should be done AFTER generalizing
+  --whenM (optDoubleCheck <$> pragmaOptions) $ workOnTypes $ do
+  --  checkInternal (unEl t) (sort $ getSort t)
 
   -- Andreas, 2015-03-17 Issue 1428: Do not postulate sizes in parametrized
   -- modules!
@@ -567,9 +614,11 @@ checkAxiom funSig i info0 mp x e = whenAbstractFreezeMetasAfter i $ do
       (defaultDefn info x t $
          case funSig of
            A.FunSig   -> set funMacro (Info.defMacro i == MacroDef) emptyFunction
+           A.NoFunSig | isJust gentel -> DataOrRecSig npars
            A.NoFunSig -> Axiom Nothing [])   -- NB: used also for data and record type sigs
-        { defArgOccurrences = occs
-        , defPolarity       = pols
+        { defArgOccurrences    = occs
+        , defPolarity          = pols
+        , defGeneralizedParams = genParams
         }
 
   -- Add the definition to the instance table, if needed
@@ -579,7 +628,7 @@ checkAxiom funSig i info0 mp x e = whenAbstractFreezeMetasAfter i $ do
   traceCall (IsType_ e) $ do -- need Range for error message
     -- Andreas, 2016-06-21, issue #2054
     -- Do not default size metas to ∞ in local type signatures
-    checkingWhere <- asks envCheckingWhere
+    checkingWhere <- asksTC envCheckingWhere
     solveSizeConstraints $ if checkingWhere then DontDefaultToInfty else DefaultToInfty
 
   -- Andreas, 2011-05-31, that freezing below is probably wrong:
@@ -588,13 +637,23 @@ checkAxiom funSig i info0 mp x e = whenAbstractFreezeMetasAfter i $ do
 -- | Type check a primitive function declaration.
 checkPrimitive :: Info.DefInfo -> QName -> A.Expr -> TCM ()
 checkPrimitive i x e =
-    traceCall (CheckPrimitive (getRange i) (qnameName x) e) $ do  -- TODO!! (qnameName)
+    traceCall (CheckPrimitive (getRange i) x e) $ do
     (name, PrimImpl t' pf) <- lookupPrimitiveFunctionQ x
-    -- Primitive functions on nats are BUILTIN not 'primitive'
+    -- Certain "primitive" functions are BUILTIN rather than
+    -- primitive.
     let builtinPrimitives =
-          [ "primNatPlus", "primNatMinus" , "primNatTimes"
-          , "primNatDivSucAux", "primNatModSucAux"
-          , "primNatEquality", "primNatLess" ]
+          [ "primNatPlus"
+          , "primNatMinus"
+          , "primNatTimes"
+          , "primNatDivSucAux"
+          , "primNatModSucAux"
+          , "primNatEquality"
+          , "primNatLess"
+          , "primLevelZero"
+          , "primLevelSuc"
+          , "primLevelMax"
+          , "primSetOmega"
+          ]
     when (elem name builtinPrimitives) $ typeError $ NoSuchPrimitiveFunction name
     t <- isType_ e
     noConstraints $ equalType t t'
@@ -812,21 +871,24 @@ checkMutual i ds = inMutualBlock $ \ blockId -> do
 
   verboseS "tc.decl.mutual" 20 $ do
     reportSDoc "tc.decl.mutual" 20 $ vcat $
-      (text "Checking mutual block" <+> text (show blockId) <> text ":") :
+      ("Checking mutual block" <+> text (show blockId) <> ":") :
       map (nest 2 . prettyA) ds
 
   insertMutualBlockInfo blockId i
-  local (\e -> e { envTerminationCheck = () <$ Info.mutualTermCheck i }) $
+  localTC (\e -> e { envTerminationCheck = () <$ Info.mutualTermCheck i }) $
     mapM_ checkDecl ds
 
   (blockId, ) . mutualNames <$> lookupMutualBlock blockId
 
 -- | Type check the type signature of an inductive or recursive definition.
 checkTypeSignature :: A.TypeSignature -> TCM ()
-checkTypeSignature (A.ScopedDecl scope ds) = do
+checkTypeSignature = checkTypeSignature' Nothing
+
+checkTypeSignature' :: Maybe A.GeneralizeTelescope -> A.TypeSignature -> TCM ()
+checkTypeSignature' gtel (A.ScopedDecl scope ds) = do
   setScope scope
-  mapM_ checkTypeSignature ds
-checkTypeSignature (A.Axiom funSig i info mp x e) =
+  mapM_ (checkTypeSignature' gtel) ds
+checkTypeSignature' gtel (A.Axiom funSig i info mp x e) =
   Bench.billTo [Bench.Definition x] $
   Bench.billTo [Bench.Typing, Bench.TypeSig] $
     let abstr = case Info.defAccess i of
@@ -836,13 +898,14 @@ checkTypeSignature (A.Axiom funSig i info mp x e) =
             | otherwise -> inConcreteMode
           PublicAccess  -> inConcreteMode
           OnlyQualified -> __IMPOSSIBLE__
-    in abstr $ checkAxiom funSig i info mp x e
-checkTypeSignature _ = __IMPOSSIBLE__   -- type signatures are always axioms
+    in abstr $ checkAxiom' gtel funSig i info mp x e
+checkTypeSignature' _ _ =
+  __IMPOSSIBLE__   -- type signatures are always axioms
 
 
 -- | Type check a module.
 
-checkSection :: Info.ModuleInfo -> ModuleName -> A.Telescope -> [A.Declaration] -> TCM ()
+checkSection :: Info.ModuleInfo -> ModuleName -> A.GeneralizeTelescope -> [A.Declaration] -> TCM ()
 checkSection _ x tel ds = newSection x tel $ mapM_ checkDeclCached ds
 
 
@@ -865,22 +928,22 @@ checkModuleArity m tel args = check tel args
 
     check tel []             = return tel
     check EmptyTel (_:_)     = bad
-    check (ExtendTel (Dom{domInfo = info}) btel) args0@(Arg info' (Named rname _) : args) =
+    check (ExtendTel dom@Dom{domInfo = info} btel) args0@(Arg info' (Named rname _) : args) =
       let name = fmap rangedThing rname
-          y    = absName btel
+          my   = fmap rangedThing $ domName dom
           tel  = absBody btel in
       case (argInfoHiding info, argInfoHiding info', name) of
         (Instance{}, NotHidden, _)        -> check tel args0
         (Instance{}, Hidden, _)           -> check tel args0
         (Instance{}, Instance{}, Nothing) -> check tel args
         (Instance{}, Instance{}, Just x)
-          | x == y                        -> check tel args
+          | Just x == my                  -> check tel args
           | otherwise                     -> check tel args0
         (Hidden, NotHidden, _)            -> check tel args0
         (Hidden, Instance{}, _)           -> check tel args0
         (Hidden, Hidden, Nothing)         -> check tel args
         (Hidden, Hidden, Just x)
-          | x == y                        -> check tel args
+          | Just x == my                  -> check tel args
           | otherwise                     -> check tel args0
         (NotHidden, NotHidden, _)         -> check tel args
         (NotHidden, Hidden, _)            -> bad
@@ -937,13 +1000,13 @@ checkSectionApplication' i m1 (A.SectionApp ptel m2 args) copyInfo = do
     -- Take the module parameters that will be instantiated by @args@.
     let tel'' = telFromList $ take (size tel' - size etaTel) $ telToList tel'
     reportSDoc "tc.mod.apply" 15 $ vcat
-      [ text "applying section" <+> prettyTCM m2
-      , nest 2 $ text "args =" <+> sep (map prettyA args)
-      , nest 2 $ text "ptel =" <+> escapeContext (size ptel) (prettyTCM ptel)
-      , nest 2 $ text "tel  =" <+> prettyTCM tel
-      , nest 2 $ text "tel' =" <+> prettyTCM tel'
-      , nest 2 $ text "tel''=" <+> prettyTCM tel''
-      , nest 2 $ text "eta  =" <+> escapeContext (size ptel) (addContext tel'' $ prettyTCM etaTel)
+      [ "applying section" <+> prettyTCM m2
+      , nest 2 $ "args =" <+> sep (map prettyA args)
+      , nest 2 $ "ptel =" <+> escapeContext (size ptel) (prettyTCM ptel)
+      , nest 2 $ "tel  =" <+> prettyTCM tel
+      , nest 2 $ "tel' =" <+> prettyTCM tel'
+      , nest 2 $ "tel''=" <+> prettyTCM tel''
+      , nest 2 $ "eta  =" <+> escapeContext (size ptel) (addContext tel'' $ prettyTCM etaTel)
       ]
     -- Now, type check arguments.
     ts <- (noConstraints $ checkArguments_ DontExpandLast (getRange i) args tel') >>= \case
@@ -953,17 +1016,17 @@ checkSectionApplication' i m1 (A.SectionApp ptel m2 args) copyInfo = do
     -- Perform the application of the module parameters.
     let aTel = tel' `apply` ts
     reportSDoc "tc.mod.apply" 15 $ vcat
-      [ nest 2 $ text "aTel =" <+> prettyTCM aTel
+      [ nest 2 $ "aTel =" <+> prettyTCM aTel
       ]
     -- Andreas, 2014-04-06, Issue 1094:
     -- Add the section with well-formed telescope.
     addContext (KeepNames aTel) $ do
       reportSDoc "tc.mod.apply" 80 $
-        text "addSection" <+> prettyTCM m1 <+> (getContextTelescope >>= \ tel -> inTopContext (prettyTCM tel))
+        "addSection" <+> prettyTCM m1 <+> (getContextTelescope >>= \ tel -> inTopContext (prettyTCM tel))
       addSection m1
 
     reportSDoc "tc.mod.apply" 20 $ vcat
-      [ sep [ text "applySection", prettyTCM m1, text "=", prettyTCM m2, fsep $ map prettyTCM (vs ++ ts) ]
+      [ sep [ "applySection", prettyTCM m1, "=", prettyTCM m2, fsep $ map prettyTCM (vs ++ ts) ]
       , nest 2 $ pretty copyInfo
       ]
     args <- instantiateFull $ vs ++ ts
@@ -972,7 +1035,7 @@ checkSectionApplication' i m1 (A.SectionApp ptel m2 args) copyInfo = do
     addContext (KeepNames aTel) $
       applySection m1 (ptel `abstract` aTel) m2 (raise n args ++ etaArgs) copyInfo
 
-checkSectionApplication' i m1 (A.RecordModuleIFS x) copyInfo = do
+checkSectionApplication' i m1 (A.RecordModuleInstance x) copyInfo = do
   let name = mnameToQName x
   tel' <- lookupSection x
   vs   <- moduleParamsToApply x
@@ -983,13 +1046,14 @@ checkSectionApplication' i m1 (A.RecordModuleIFS x) copyInfo = do
       telInst = instFinal tel
 
       -- Locate last (rightmost) parameter and make it @Instance@.
+      -- Issue #3463: also name it so it can be given by name.
       instFinal :: Telescope -> Telescope
       -- Telescopes do not have @NoAbs@.
       instFinal (ExtendTel _ NoAbs{}) = __IMPOSSIBLE__
       -- Found last parameter: switch it to @Instance@.
       instFinal (ExtendTel dom (Abs n EmptyTel)) =
                  ExtendTel do' (Abs n EmptyTel)
-        where do' = makeInstance dom
+        where do' = makeInstance dom { domName = Just $ unranged "r" }
       -- Otherwise, keep searchinf for last parameter:
       instFinal (ExtendTel arg (Abs n tel)) =
                  ExtendTel arg (Abs n (instFinal tel))
@@ -997,17 +1061,17 @@ checkSectionApplication' i m1 (A.RecordModuleIFS x) copyInfo = do
       instFinal EmptyTel = __IMPOSSIBLE__
 
   reportSDoc "tc.mod.apply" 20 $ vcat
-    [ sep [ text "applySection", prettyTCM name, text "{{...}}" ]
-    , nest 2 $ text "x       =" <+> prettyTCM x
-    , nest 2 $ text "name    =" <+> prettyTCM name
-    , nest 2 $ text "tel     =" <+> prettyTCM tel
-    , nest 2 $ text "telInst =" <+> prettyTCM telInst
-    , nest 2 $ text "vs      =" <+> sep (map prettyTCM vs)
-    -- , nest 2 $ text "args    =" <+> sep (map prettyTCM args)
+    [ sep [ "applySection", prettyTCM name, "{{...}}" ]
+    , nest 2 $ "x       =" <+> prettyTCM x
+    , nest 2 $ "name    =" <+> prettyTCM name
+    , nest 2 $ "tel     =" <+> prettyTCM tel
+    , nest 2 $ "telInst =" <+> prettyTCM telInst
+    , nest 2 $ "vs      =" <+> sep (map prettyTCM vs)
+    -- , nest 2 $ "args    =" <+> sep (map prettyTCM args)
     ]
   reportSDoc "tc.mod.apply" 60 $ vcat
-    [ nest 2 $ text "vs      =" <+> text (show vs)
-    -- , nest 2 $ text "args    =" <+> text (show args)
+    [ nest 2 $ "vs      =" <+> text (show vs)
+    -- , nest 2 $ "args    =" <+> text (show args)
     ]
   when (tel == EmptyTel) $
     typeError $ GenericError $ prettyShow (qnameToConcrete name) ++ " is not a parameterised section"
@@ -1015,12 +1079,12 @@ checkSectionApplication' i m1 (A.RecordModuleIFS x) copyInfo = do
   addContext telInst $ do
     vs <- moduleParamsToApply x
     reportSDoc "tc.mod.apply" 20 $ vcat
-      [ nest 2 $ text "vs      =" <+> sep (map prettyTCM vs)
-      , nest 2 $ text "args    =" <+> sep (map (parens . prettyTCM) args)
+      [ nest 2 $ "vs      =" <+> sep (map prettyTCM vs)
+      , nest 2 $ "args    =" <+> sep (map (parens . prettyTCM) args)
       ]
     reportSDoc "tc.mod.apply" 60 $ vcat
-      [ nest 2 $ text "vs      =" <+> text (show vs)
-      , nest 2 $ text "args    =" <+> text (show args)
+      [ nest 2 $ "vs      =" <+> text (show vs)
+      , nest 2 $ "args    =" <+> text (show args)
       ]
     addSection m1
     applySection m1 telInst x (vs ++ args) copyInfo
@@ -1055,6 +1119,7 @@ instance ShowHead A.Declaration where
       A.RecSig       {} -> "RecSig"
       A.RecDef       {} -> "RecDef"
       A.PatternSynDef{} -> "PatternSynDef"
+      A.Generalize   {} -> "Generalize"
       A.UnquoteDecl  {} -> "UnquoteDecl"
       A.ScopedDecl   {} -> "ScopedDecl"
       A.UnquoteDef   {} -> "UnquoteDef"
@@ -1067,7 +1132,7 @@ debugPrintDecl d = do
         A.Section info mname tel ds -> do
           reportSLn "tc.decl" 45 $
             "section " ++ prettyShow mname ++ " has "
-              ++ show (length tel) ++ " parameters and "
+              ++ show (length $ A.generalizeTel tel) ++ " parameters and "
               ++ show (length ds) ++ " declarations"
           reportSDoc "tc.decl" 45 $ prettyA $ A.Section info mname tel []
           forM_ ds $ \ d -> do

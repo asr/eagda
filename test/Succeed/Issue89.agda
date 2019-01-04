@@ -1,3 +1,4 @@
+{-# OPTIONS --guardedness #-}
 -- {-# OPTIONS --show-implicit #-}
 
 module Issue89 where
@@ -9,7 +10,7 @@ open import Common.Coinduction renaming (∞ to ∞_)
 
 infixr 5 _≺_
 
-data Stream A : Set where
+data Stream (A : Set) : Set where
   _≺_ : (x : A) (xs : ∞ (Stream A)) -> Stream A
 
 head : forall {A} -> Stream A -> A
@@ -81,4 +82,3 @@ foo x = ≡-refl ≺ ♯ foo x
 --   x != head (′⇒ (P⇒′ (x ∞))) of type .A
 --   when checking that the expression ≡-refl has type
 --   (head (P⇒ (x ∞ ⋎ x ∞)) ≡ head (P⇒ (x ∞)))
-

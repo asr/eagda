@@ -61,7 +61,7 @@ import Agda.TypeChecking.Free
 import Agda.TypeChecking.CheckInternal
 import Agda.TypeChecking.SizedTypes.Solve
 import qualified Agda.TypeChecking.Pretty as TP
-import Agda.TypeChecking.Warnings (runPM)
+import Agda.TypeChecking.Warnings ( runPM, warning )
 
 import Agda.Termination.TermCheck (termMutual)
 
@@ -108,25 +108,25 @@ giveExpr force mii mi e = do
       metaTypeCheck mv (mvJudgement mv)
   where
     metaTypeCheck mv IsSort{}      = __IMPOSSIBLE__
-    metaTypeCheck mv (HasType _ t) = disableDestructiveUpdate $ do
+    metaTypeCheck mv (HasType _ t) = do
       reportSDoc "interaction.give" 20 $
-        TP.text "give: meta type =" TP.<+> prettyTCM t
+        "give: meta type =" TP.<+> prettyTCM t
       -- Here, we must be in the same context where the meta was created.
       -- Thus, we can safely apply its type to the context variables.
       ctx <- getContextArgs
       t' <- t `piApplyM` permute (takeP (length ctx) $ mvPermutation mv) ctx
-      traceCall (CheckExprCall e t') $ do
+      traceCall (CheckExprCall CmpLeq e t') $ do
         reportSDoc "interaction.give" 20 $
-          TP.text "give: instantiated meta type =" TP.<+> prettyTCM t'
+          "give: instantiated meta type =" TP.<+> prettyTCM t'
         v <- checkExpr e t'
         case mvInstantiation mv of
 
-          InstV xs v' -> unlessM ((Irrelevant ==) <$> asks envRelevance) $ do
+          InstV xs v' -> unlessM ((Irrelevant ==) <$> asksTC envRelevance) $ do
             reportSDoc "interaction.give" 20 $ TP.sep
-              [ TP.text "meta was already set to value v' = " TP.<+> prettyTCM v'
-                TP.<+> TP.text " with free variables " TP.<+> return (fsep $ map pretty xs)
-              , TP.text "now comparing it to given value v = " TP.<+> prettyTCM v
-              , TP.text "in context " TP.<+> inTopContext (prettyTCM ctx)
+              [ "meta was already set to value v' = " TP.<+> prettyTCM v'
+                TP.<+> " with free variables " TP.<+> return (fsep $ map pretty xs)
+              , "now comparing it to given value v = " TP.<+> prettyTCM v
+              , "in context " TP.<+> inTopContext (prettyTCM ctx)
               ]
             -- The number of free variables should be at least the size of the context
             -- (Ideally, if we implemented contextual type theory, it should be the same.)
@@ -136,7 +136,7 @@ giveExpr force mii mi e = do
             let (_xs1, xs2) = splitAt (size ctx) xs
             v' <- return $ foldr mkLam v' xs2
             reportSDoc "interaction.give" 20 $ TP.sep
-              [ TP.text "in meta context, v' = " TP.<+> prettyTCM v'
+              [ "in meta context, v' = " TP.<+> prettyTCM v'
               ]
             equalTerm t' v v'  -- Note: v' now lives in context of meta
 
@@ -145,7 +145,7 @@ giveExpr force mii mi e = do
             args <- getContextArgs
             nowSolvingConstraints $ assign DirEq mi args v
 
-        reportSDoc "interaction.give" 20 $ TP.text "give: meta variable updated!"
+        reportSDoc "interaction.give" 20 $ "give: meta variable updated!"
         unless (force == WithForce) $ redoChecks mii
         wakeupConstraints mi
         solveSizeConstraints DontDefaultToInfty
@@ -153,7 +153,7 @@ giveExpr force mii mi e = do
         -- don't double check with cubical, because it gets in the way too often.
         unless (cubical || force == WithForce) $ do
           -- Double check.
-          reportSDoc "interaction.give" 20 $ TP.text "give: double checking"
+          reportSDoc "interaction.give" 20 $ "give: double checking"
           vfull <- instantiateFull v
           checkInternal vfull t'
 
@@ -168,8 +168,8 @@ redoChecks (Just ii) = do
     IPNoClause -> return ()
     IPClause f _ _ -> do
       mb <- mutualBlockOf f
-      terErrs <- local (\ e -> e { envMutualBlock = Just mb }) $ termMutual []
-      unless (null terErrs) $ typeError $ TerminationCheckFailed terErrs
+      terErrs <- localTC (\ e -> e { envMutualBlock = Just mb }) $ termMutual []
+      unless (null terErrs) $ warning $ TerminationIssue terErrs
   -- TODO redo positivity check!
 
 -- | Try to fill hole by expression.
@@ -186,7 +186,7 @@ give force ii mr e = liftTCM $ do
   -- if Range is given, update the range of the interaction meta
   mi  <- lookupInteractionId ii
   whenJust mr $ updateMetaVarRange mi
-  reportSDoc "interaction.give" 10 $ TP.text "giving expression" TP.<+> prettyTCM e
+  reportSDoc "interaction.give" 10 $ "giving expression" TP.<+> prettyTCM e
   reportSDoc "interaction.give" 50 $ TP.text $ show $ deepUnscope e
   -- Try to give mi := e
   do setMetaOccursCheck mi DontRunMetaOccursCheck -- #589, #2710: Allow giving recursive solutions.
@@ -194,7 +194,7 @@ give force ii mr e = liftTCM $ do
     `catchError` \ case
       -- Turn PatternErr into proper error:
       PatternErr -> typeError . GenericDocError =<< do
-        withInteractionId ii $ TP.text "Failed to give" TP.<+> prettyTCM e
+        withInteractionId ii $ "Failed to give" TP.<+> prettyTCM e
       err -> throwError err
   removeInteractionPoint ii
   return e
@@ -216,7 +216,7 @@ refine force ii mr e = do
   let range = fromMaybe (getRange mv) mr
       scope = M.getMetaScope mv
   reportSDoc "interaction.refine" 10 $
-    TP.text "refining with expression" TP.<+> prettyTCM e
+    "refining with expression" TP.<+> prettyTCM e
   reportSDoc "interaction.refine" 50 $
     TP.text $ show $ deepUnscope e
   -- We try to append up to 10 meta variables
@@ -250,10 +250,10 @@ refine force ii mr e = do
                 where isX (A.Var y) | x == y = Sum 1
                       isX _                  = mempty
 
-              lamView (A.Lam _ (DomainFree _ x) e) = Just (x, e)
-              lamView (A.Lam i (DomainFull (TypedBindings r (Arg ai (TBind br (x : xs) a)))) e)
-                | null xs   = Just (dget x, e)
-                | otherwise = Just (dget x, A.Lam i (DomainFull $ TypedBindings r $ Arg ai $ TBind br xs a) e)
+              lamView (A.Lam _ (DomainFree x) e) = Just (namedArg x, e)
+              lamView (A.Lam i (DomainFull (TBind r (x : xs) a)) e)
+                | null xs   = Just (namedArg x, e)
+                | otherwise = Just (namedArg x, A.Lam i (DomainFull $ TBind r xs a) e)
               lamView _ = Nothing
 
               -- reduce beta-redexes where the argument is used at most once
@@ -328,7 +328,7 @@ showComputed :: ComputeMode -> Expr -> TCM Doc
 showComputed UseShowInstance e =
   case e of
     A.Lit (LitString _ s) -> pure (text s)
-    _                     -> (text "Not a string:" $$) <$> prettyATop e
+    _                     -> ("Not a string:" $$) <$> prettyATop e
 showComputed _ e = prettyATop e
 
 -- | Modifier for interactive commands,
@@ -352,7 +352,7 @@ data OutputConstraint a b
       | Assign b a | TypedAssign b a a | PostponedCheckArgs b [a] a a
       | IsEmptyType a
       | SizeLtSat a
-      | FindInScopeOF b a [(a,a)]
+      | FindInstanceOF b a [(a,a)]
       | PTSInstance b b
   deriving (Functor)
 
@@ -382,7 +382,7 @@ outputFormId (OutputForm _ _ o) = out o
       PostponedCheckArgs i _ _ _ -> i
       IsEmptyType _              -> __IMPOSSIBLE__   -- Should never be used on IsEmpty constraints
       SizeLtSat{}                -> __IMPOSSIBLE__
-      FindInScopeOF _ _ _        -> __IMPOSSIBLE__
+      FindInstanceOF _ _ _        -> __IMPOSSIBLE__
       PTSInstance i _            -> i
 
 instance Reify ProblemConstraint (Closure (OutputForm Expr Expr)) where
@@ -424,14 +424,14 @@ instance Reify Constraint (OutputConstraint Expr Expr) where
             e  <- reify t
             return $ Assign m' e
           PostponedTypeCheckingProblem cl _ -> enterClosure cl $ \p -> case p of
-            CheckExpr e a -> do
+            CheckExpr cmp e a -> do
                 a  <- reify a
                 return $ TypedAssign m' e a
-            CheckLambda (Arg ai (xs, mt)) body target -> do
+            CheckLambda cmp (Arg ai (xs, mt)) body target -> do
               domType <- maybe (return underscore) reify mt
               target  <- reify target
-              let bs = TypedBindings noRange $ Arg ai $
-                       TBind noRange (map (fmap A.BindName) xs) domType
+              let mkN (WithHiding h x) = setHiding h $ defaultNamedArg $ A.BindName x
+                  bs = TBind noRange (map mkN xs) domType
                   e  = A.Lam Info.exprNoRange (DomainFull bs) body
               return $ TypedAssign m' e target
             CheckArgs _ _ args t0 t1 _ -> do
@@ -441,13 +441,16 @@ instance Reify Constraint (OutputConstraint Expr Expr) where
             UnquoteTactic tac _ goal -> do
               tac <- A.App defaultAppInfo_ (A.Unquote exprNoRange) . defaultNamedArg <$> reify tac
               OfType tac <$> reify goal
+            DoQuoteTerm cmp v t -> do
+              tm <- A.App defaultAppInfo_ (A.QuoteTerm exprNoRange) . defaultNamedArg <$> reify v
+              OfType tm <$> reify t
           Open{}  -> __IMPOSSIBLE__
-          OpenIFS{}  -> __IMPOSSIBLE__
+          OpenInstance{}  -> __IMPOSSIBLE__
           InstV{} -> __IMPOSSIBLE__
-    reify (FindInScope m _b mcands) = FindInScopeOF
+    reify (FindInstance m _b mcands) = FindInstanceOF
       <$> (reify $ MetaV m [])
       <*> (reify =<< getMetaType m)
-      <*> (forM (fromMaybe [] mcands) $ \ (Candidate tm ty eti _) -> do
+      <*> (forM (fromMaybe [] mcands) $ \ (Candidate tm ty _) -> do
             (,) <$> reify tm <*> reify ty)
     reify (IsEmpty r a) = IsEmptyType <$> reify a
     reify (CheckSizeLtSat a) = SizeLtSat  <$> reify a
@@ -492,7 +495,7 @@ instance (Show a,Show b) => Show (OutputConstraint a b) where
                     | otherwise  = s
     show (IsEmptyType a)        = "Is empty: " ++ show a
     show (SizeLtSat a)          = "Not empty type of sizes: " ++ show a
-    show (FindInScopeOF s t cs) = "Resolve instance argument " ++ showCand (s,t) ++ ".\n  Candidates:\n    [ " ++
+    show (FindInstanceOF s t cs) = "Resolve instance argument " ++ showCand (s,t) ++ ".\n  Candidates:\n    [ " ++
                                     List.intercalate "\n    , " (map showCand cs) ++ " ]"
       where
       showCand (tm,ty) = indent 6 $ show tm ++ " : " ++ show ty
@@ -528,13 +531,13 @@ instance (ToConcrete a c, ToConcrete b d) =>
       PostponedCheckArgs <$> toConcrete m <*> toConcrete args <*> toConcrete t0 <*> toConcrete t1
     toConcrete (IsEmptyType a) = IsEmptyType <$> toConcreteCtx TopCtx a
     toConcrete (SizeLtSat a) = SizeLtSat <$> toConcreteCtx TopCtx a
-    toConcrete (FindInScopeOF s t cs) =
-      FindInScopeOF <$> toConcrete s <*> toConcrete t
-                    <*> mapM (\(tm,ty) -> (,) <$> toConcrete tm <*> toConcrete ty) cs
+    toConcrete (FindInstanceOF s t cs) =
+      FindInstanceOF <$> toConcrete s <*> toConcrete t
+                     <*> mapM (\(tm,ty) -> (,) <$> toConcrete tm <*> toConcrete ty) cs
     toConcrete (PTSInstance a b) = PTSInstance <$> toConcrete a <*> toConcrete b
 
 instance (Pretty a, Pretty b) => Pretty (OutputConstraint' a b) where
-  pretty (OfType' e t) = pretty e <+> text ":" <+> pretty t
+  pretty (OfType' e t) = pretty e <+> ":" <+> pretty t
 
 instance (ToConcrete a c, ToConcrete b d) =>
             ToConcrete (OutputConstraint' a b) (OutputConstraint' c d) where
@@ -581,7 +584,7 @@ getSolvedInteractionPoints all norm = concat <$> do
         case mvInstantiation mv of
           InstV{}                        -> sol (MetaV m $ map Apply args)
           Open{}                         -> unsol
-          OpenIFS{}                      -> unsol
+          OpenInstance{}                 -> unsol
           BlockedConst{}                 -> unsol
           PostponedTypeCheckingProblem{} -> unsol
 
@@ -601,10 +604,10 @@ typeOfMetaMI norm mi =
       reportSDoc "interactive.meta" 10 $ TP.vcat
         [ TP.text $ unwords ["permuting", show i, "with", show $ mvPermutation mv]
         , TP.nest 2 $ TP.vcat
-          [ TP.text "len  =" TP.<+> TP.text (show $ length vs)
-          , TP.text "args =" TP.<+> prettyTCM vs
-          , TP.text "t    =" TP.<+> prettyTCM t
-          , TP.text "x    =" TP.<+> TP.pretty x
+          [ "len  =" TP.<+> TP.text (show $ length vs)
+          , "args =" TP.<+> prettyTCM vs
+          , "t    =" TP.<+> prettyTCM t
+          , "x    =" TP.<+> TP.pretty x
           ]
         ]
       reportSDoc "interactive.meta.scope" 20 $ TP.text $ show $ getMetaScope mv
@@ -635,7 +638,7 @@ typesOfHiddenMetas norm = liftTCM $ do
     case mvInstantiation m of
       M.InstV{} -> False
       M.Open    -> x `notElem` is
-      M.OpenIFS -> x `notElem` is  -- OR: True !?
+      M.OpenInstance -> x `notElem` is  -- OR: True !?
       M.BlockedConst{} -> True
       M.PostponedTypeCheckingProblem{} -> False
 
@@ -656,19 +659,19 @@ metaHelperType norm ii rng s = case words s of
       TelV atel _ <- telView a
       let arity = size atel
           (delta1, delta2, _, a', as', vs') = splitTelForWith tel a (map OtherType as) vs
-      a <- local (\e -> e { envPrintDomainFreePi = True }) $ do
+      a <- localTC (\e -> e { envPrintDomainFreePi = True }) $ do
         reify =<< cleanupType arity args =<< normalForm norm =<< fst <$> withFunctionType delta1 vs' as' delta2 a'
       reportSDoc "interaction.helper" 10 $ TP.vcat
-        [ TP.text "generating helper function"
-        , TP.nest 2 $ TP.text "tel    = " TP.<+> inTopContext (prettyTCM tel)
-        , TP.nest 2 $ TP.text "a      = " TP.<+> prettyTCM a
-        , TP.nest 2 $ TP.text "vs     = " TP.<+> prettyTCM vs
-        , TP.nest 2 $ TP.text "as     = " TP.<+> prettyTCM as
-        , TP.nest 2 $ TP.text "delta1 = " TP.<+> inTopContext (prettyTCM delta1)
-        , TP.nest 2 $ TP.text "delta2 = " TP.<+> inTopContext (addContext delta1 $ prettyTCM delta2)
-        , TP.nest 2 $ TP.text "a'     = " TP.<+> inTopContext (addContext delta1 $ addContext delta2 $ prettyTCM a')
-        , TP.nest 2 $ TP.text "as'    = " TP.<+> inTopContext (addContext delta1 $ prettyTCM as')
-        , TP.nest 2 $ TP.text "vs'    = " TP.<+> inTopContext (addContext delta1 $ prettyTCM vs')
+        [ "generating helper function"
+        , TP.nest 2 $ "tel    = " TP.<+> inTopContext (prettyTCM tel)
+        , TP.nest 2 $ "a      = " TP.<+> prettyTCM a
+        , TP.nest 2 $ "vs     = " TP.<+> prettyTCM vs
+        , TP.nest 2 $ "as     = " TP.<+> prettyTCM as
+        , TP.nest 2 $ "delta1 = " TP.<+> inTopContext (prettyTCM delta1)
+        , TP.nest 2 $ "delta2 = " TP.<+> inTopContext (addContext delta1 $ prettyTCM delta2)
+        , TP.nest 2 $ "a'     = " TP.<+> inTopContext (addContext delta1 $ addContext delta2 $ prettyTCM a')
+        , TP.nest 2 $ "as'    = " TP.<+> inTopContext (addContext delta1 $ prettyTCM as')
+        , TP.nest 2 $ "vs'    = " TP.<+> inTopContext (addContext delta1 $ prettyTCM vs')
         ]
       return (OfType' h a)
   where
@@ -734,6 +737,7 @@ metaHelperType norm ii rng s = case words s of
       I.Sort{}     -> pure v
       I.Level{}    -> pure v
       I.MetaV{}    -> pure v
+      I.Dummy{}    -> pure v
     onNamesElims f = traverse $ traverse $ onNamesTm f
     onNamesArgs f  = traverse $ traverse $ onNamesTm f
     onNamesAbs f   = onNamesAbs' f (stringToArgName <.> f . argNameToString)
@@ -743,9 +747,8 @@ metaHelperType norm ii rng s = case words s of
     unW "w" = return ".w"
     unW s   = return s
 
-    renameVar ('.':s) = pure s
-    renameVar "w"     = betterName
-    renameVar s       = pure s
+    renameVar "w" = betterName
+    renameVar s   = pure s
 
     betterName = do
       arg : args <- get
@@ -768,10 +771,9 @@ contextOfMeta ii norm = do
         mkLet (x, lb) = do
           (tm, !dom) <- getOpen lb
           return $ (,) x <$> dom
-    letVars <- mapM mkLet . Map.toDescList =<< asks envLetBindings
-    gfilter visible . reverse <$> mapM out (letVars ++ localVars)
-  where gfilter p = catMaybes . map p
-        visible (OfType x y) | not (isNoName x) = Just (OfType' x y)
+    letVars <- mapM mkLet . Map.toDescList =<< asksTC envLetBindings
+    mapMaybe visible . reverse <$> mapM out (letVars ++ localVars)
+  where visible (OfType x y) | not (isNoName x) = Just (OfType' x y)
                              | otherwise        = Nothing
         visible _            = __IMPOSSIBLE__
         out (Dom{unDom = (x, t)}) = do
@@ -827,9 +829,9 @@ introTactic pmLambda ii = do
               cubical <- optCubical <$> pragmaOptions
               TelV tel _ <- (if cubical then telViewPath else telView) t
               reportSDoc "interaction.intro" 20 $ TP.sep
-                [ TP.text "introTactic/fallback"
-                , TP.text "tel' = " TP.<+> prettyTCM tel'
-                , TP.text "tel  = " TP.<+> prettyTCM tel
+                [ "introTactic/fallback"
+                , "tel' = " TP.<+> prettyTCM tel'
+                , "tel  = " TP.<+> prettyTCM tel
                 ]
               case (tel', tel) of
                 (EmptyTel, EmptyTel) -> return []
@@ -854,7 +856,7 @@ introTactic pmLambda ii = do
     showTCM v = show <$> prettyTCM v
 
     introFun tel = addContext tel' $ do
-        reportSDoc "interaction.intro" 10 $ do TP.text "introFun" TP.<+> prettyTCM (telFromList tel)
+        reportSDoc "interaction.intro" 10 $ do "introFun" TP.<+> prettyTCM (telFromList tel)
         imp <- showImplicitArguments
         let okHiding0 h = imp || h == NotHidden
             -- if none of the vars were displayed, we would get a parse error
@@ -902,7 +904,7 @@ introTactic pmLambda ii = do
 atTopLevel :: TCM a -> TCM a
 atTopLevel m = inConcreteMode $ do
   let err = typeError $ GenericError "The file has not been loaded yet."
-  caseMaybeM (use stCurrentModule) err $ \ current -> do
+  caseMaybeM (useTC stCurrentModule) err $ \ current -> do
     caseMaybeM (getVisitedModule $ toTopLevelModuleName current) __IMPOSSIBLE__ $ \ mi -> do
       let scope = iInsideScope $ miInterface mi
       tel <- lookupSection current
@@ -934,17 +936,17 @@ atTopLevel m = inConcreteMode $ do
           gamma = fromMaybe __IMPOSSIBLE__ $
                     zipWith' (\ x dom -> (x,) <$> dom) names types
       reportSDoc "interaction.top" 20 $ TP.vcat
-        [ TP.text "BasicOps.atTopLevel"
-        , TP.text "  names = " TP.<+> TP.sep (map prettyA   names)
-        , TP.text "  types = " TP.<+> TP.sep (map prettyTCM types)
+        [ "BasicOps.atTopLevel"
+        , "  names = " TP.<+> TP.sep (map prettyA   names)
+        , "  types = " TP.<+> TP.sep (map prettyTCM types)
         ]
       M.withCurrentModule current $
         withScope_ scope $
           addContext gamma $ do
             -- We're going inside the top-level module, so we have to set the
             -- checkpoint for it and all its submodules to the new checkpoint.
-            cp <- view eCurrentCheckpoint
-            stModuleCheckpoints %= fmap (const cp)
+            cp <- viewTC eCurrentCheckpoint
+            stModuleCheckpoints `modifyTCLens` fmap (const cp)
             m
 
 -- | Parse a name.

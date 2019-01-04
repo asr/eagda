@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 
 {-| This module contains the building blocks used to construct the lexer.
 -}
@@ -31,20 +32,32 @@ import Agda.Utils.Lens
 import Agda.Utils.List
 import Agda.Utils.Tuple
 
+#include "undefined.h"
+import Agda.Utils.Impossible
+
 {--------------------------------------------------------------------------
     Scan functions
  --------------------------------------------------------------------------}
 
 -- | Called at the end of a file. Returns 'TokEOF'.
 returnEOF :: AlexInput -> Parser Token
-returnEOF inp =
-    do  setLastPos $ lexPos inp
-        setPrevToken "<EOF>"
-        return TokEOF
+returnEOF AlexInput{ lexSrcFile, lexPos } = do
+  -- Andreas, 2018-12-30, issue #3480
+  -- The following setLastPos leads to parse error reporting
+  -- far away from the interesting position, in particular
+  -- if there is a long comment before the EOF.
+  -- (Such a long comment is frequent in interactive programming, as
+  -- commenting out until the end of the file is a common habit.)
+  -- -- setLastPos lexPos
+  -- Without it, we get much more useful error locations.
+  setPrevToken "<EOF>"
+  return $ TokEOF $ posToInterval lexSrcFile lexPos lexPos
 
 -- | Set the current input and lex a new token (calls 'lexToken').
 skipTo :: AlexInput -> Parser Token
-skipTo inp = setLexInput inp >> lexToken
+skipTo inp = do
+  setLexInput inp
+  lexToken
 
 {-| Scan the input to find the next token. Calls
 'Agda.Syntax.Parser.Lexer.alexScanUser'. This is the main lexing function
@@ -54,12 +67,12 @@ used by the parser is the continuation version of this function.
 lexToken :: Parser Token
 lexToken =
     do  inp <- getLexInput
-        lss@(ls:_) <- getLexState
+        lss <- getLexState
         flags <- getParseFlags
-        case alexScanUser (lss, flags) (foolAlex inp) ls of
+        case alexScanUser (lss, flags) inp (headWithDefault __IMPOSSIBLE__ lss) of
             AlexEOF                     -> returnEOF inp
-            AlexSkip inp' len           -> skipTo (newInput inp inp' len)
-            AlexToken inp' len action   -> fmap postToken $ action inp (newInput inp inp' len) len
+            AlexSkip inp' len           -> skipTo inp'
+            AlexToken inp' len action   -> fmap postToken $ action inp inp' len
             AlexError i                 -> parseError $ concat
               [ "Lexical error"
               , case headMaybe $ lexInput i of
@@ -93,34 +106,6 @@ postToken (TokId (r, s))
   where
     (prop, n)     = splitAt 4 s
 postToken t = t
-
--- | Use the input string from the previous input (with the appropriate
---   number of characters dropped) instead of the fake input string that
---   was given to Alex (with unicode characters removed).
-newInput :: PreviousInput -> CurrentInput -> TokenLength -> CurrentInput
-newInput inp inp' len =
-    case drop (len - 1) (lexInput inp) of
-        c:s'    -> inp' { lexInput    = s'
-                        , lexPrevChar = c
-                        }
-        []      -> inp' { lexInput = [] }   -- we do get empty tokens moving between states
-
--- | Alex 2 can't handle unicode characters. To solve this we
---   translate all Unicode (non-ASCII) identifiers to @z@, all Unicode
---   operator characters to @+@, and all whitespace characters (except
---   for @\t@ and @\n@) to ' '.
---   Further, non-printable Unicode characters are translated to an
---   arbitrary, harmless ASCII non-printable character, @'\1'@.
---
---   It is important that there aren't any keywords containing @z@, @+@ or @ @.
-
-foolAlex :: AlexInput -> AlexInput
-foolAlex = over lensLexInput $ map $ \ c ->
-  case c of
-    _ | isSpace c && not (c `elem` "\t\n") -> ' '
-    _ | isAscii c                          -> c
-    _ | isPrint c                          -> if isAlpha c then 'z' else '+'
-    _ | otherwise                          -> '\1'
 
 {--------------------------------------------------------------------------
     Lex actions

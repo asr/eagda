@@ -8,8 +8,14 @@ module Agda.Utils.Monad
     )
     where
 
-import Prelude             hiding (concat)
-import Control.Monad       hiding (mapM, forM)
+import Prelude       hiding (concat)
+import Control.Monad hiding (mapM, forM)
+
+#if __GLASGOW_HASKELL__ >= 800
+import qualified Control.Monad.Fail as Fail
+#endif
+
+import Control.Monad.Identity ( Identity )
 import Control.Monad.State
 import Control.Monad.Writer
 import Data.Traversable as Trav hiding (for, sequence)
@@ -26,6 +32,15 @@ import Agda.Utils.List
 
 #include "undefined.h"
 import Agda.Utils.Impossible
+
+---------------------------------------------------------------------------
+
+#if __GLASGOW_HASKELL__ >= 800
+instance Fail.MonadFail Identity where
+  fail = error
+#endif
+
+---------------------------------------------------------------------------
 
 -- | Binary bind.
 (==<<) :: Monad m => (a -> b -> m c) -> (m a, m b) -> m c
@@ -106,6 +121,14 @@ mapM' f = Fold.foldl (\ mb a -> liftM2 mappend mb (f a)) (return mempty)
 -- | Generalized version of @forM_ :: Monad m => [a] -> (a -> m ()) -> m ()@
 forM' :: (Foldable t, Monad m, Monoid b) => t a -> (a -> m b) -> m b
 forM' = flip mapM'
+
+-- Variations of Traversable
+
+mapMM :: (Traversable t, Monad m) => (a -> m b) -> m (t a) -> m (t b)
+mapMM f mxs = Trav.mapM f =<< mxs
+
+forMM :: (Traversable t, Monad m) => m (t a) -> (a -> m b) -> m (t b)
+forMM = flip mapMM
 
 -- Continuation monad -----------------------------------------------------
 

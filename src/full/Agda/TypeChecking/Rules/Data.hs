@@ -6,7 +6,9 @@ module Agda.TypeChecking.Rules.Data where
 import Control.Monad
 
 import Data.List (genericTake)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, catMaybes, isJust)
+import Data.Set (Set)
+import qualified Data.Set as Set
 
 import qualified Agda.Syntax.Abstract as A
 import qualified Agda.Syntax.Concrete.Name as C
@@ -24,6 +26,8 @@ import Agda.TypeChecking.Monad.Builtin -- (primLevel)
 import Agda.TypeChecking.Constraints
 import Agda.TypeChecking.Conversion
 import Agda.TypeChecking.Substitute
+import Agda.TypeChecking.Generalize
+import Agda.TypeChecking.Implicit
 import Agda.TypeChecking.MetaVars
 import Agda.TypeChecking.Names
 import Agda.TypeChecking.Reduce
@@ -54,28 +58,37 @@ import Agda.Utils.Impossible
 
 -- | Type check a datatype definition. Assumes that the type has already been
 --   checked.
-checkDataDef :: Info.DefInfo -> QName -> [A.LamBinding] -> [A.Constructor] -> TCM ()
-checkDataDef i name ps cs =
-    traceCall (CheckDataDef (getRange name) (qnameName name) ps cs) $ do -- TODO!! (qnameName)
+checkDataDef :: Info.DefInfo -> QName -> UniverseCheck -> A.DataDefParams -> [A.Constructor] -> TCM ()
+checkDataDef i name uc (A.DataDefParams gpars ps) cs =
+    traceCall (CheckDataDef (getRange name) name ps cs) $ do
 
         -- Add the datatype module
         addSection (qnameToMName name)
 
         -- Look up the type of the datatype.
-        t <- instantiateFull =<< typeOfConst name
+        def <- instantiateDef =<< getConstInfo name
+        t   <- instantiateFull $ defType def
+        let npars =
+              case theDef def of
+                DataOrRecSig n -> n
+                _              -> __IMPOSSIBLE__
 
         -- Make sure the shape of the type is visible
         let unTelV (TelV tel a) = telePi tel a
         t <- unTelV <$> telView t
 
+        parNames <- getGeneralizedParameters gpars name
+
         -- Top level free vars
         freeVars <- getContextSize
 
         -- The parameters are in scope when checking the constructors.
-        dataDef <- bindParameters ps t $ \tel t0 -> do
+        dataDef <- bindGeneralizedParameters parNames t $ \ gtel t0 ->
+                   bindParameters (npars - length parNames) ps t0 $ \ ptel t0 -> do
 
             -- Parameters are always hidden in constructors
-            let tel' = hideAndRelParams <$> tel
+            let tel  = abstract gtel ptel
+                tel' = hideAndRelParams <$> tel
             -- let tel' = hideTel tel
 
             -- The type we get from bindParameters is Θ -> s where Θ is the type of
@@ -95,21 +108,29 @@ checkDataDef i name ps cs =
               s <- newSortMetaBelowInf
               catchError_ (addContext ixTel $ equalType s0 $ raise nofIxs $ sort s) $ \ err ->
                   if any (`freeIn` s0) [0..nofIxs - 1] then typeError . GenericDocError =<<
-                     fsep [ text "The sort of" <+> prettyTCM name
-                          , text "cannot depend on its indices in the type"
+                     fsep [ "The sort of" <+> prettyTCM name
+                          , "cannot depend on its indices in the type"
                           , prettyTCM t0
                           ]
                   else throwError err
               reduce s
 
+            -- when `--without-K`, all the indices should fit in the
+            -- sort of the datatype (see #3420).
+            let s' = case s of
+                  Prop l -> Type l
+                  _      -> s
+            whenM (optWithoutK <$> pragmaOptions) $ checkIndexSorts s' ixTel
+
             reportSDoc "tc.data.sort" 20 $ vcat
-              [ text "checking datatype" <+> prettyTCM name
+              [ "checking datatype" <+> prettyTCM name
               , nest 2 $ vcat
-                [ text "type (parameters instantiated):   " <+> prettyTCM t0
-                , text "type (full):   " <+> prettyTCM t
-                , text "sort:   " <+> prettyTCM s
-                , text "indices:" <+> text (show nofIxs)
-                , text "params:"  <+> text (show $ deepUnscope ps)
+                [ "type (parameters instantiated):   " <+> prettyTCM t0
+                , "type (full):   " <+> prettyTCM t
+                , "sort:   " <+> prettyTCM s
+                , "indices:" <+> text (show nofIxs)
+                , "gparams:" <+> text (show parNames)
+                , "params: " <+> text (show $ deepUnscope ps)
                 ]
               ]
             let npars = size tel
@@ -124,6 +145,7 @@ checkDataDef i name ps cs =
                   , dataSort       = s
                   , dataAbstr      = Info.defAbstract i
                   , dataMutual     = Nothing
+                  , dataPathCons   = []     -- Path constructors are added later
                   , dataTPTPRole   = Nothing
                   }
 
@@ -133,10 +155,12 @@ checkDataDef i name ps cs =
                 -- polarity and argOcc.s determined by the positivity checker
 
             -- Check the types of the constructors
-            mapM_ (checkConstructor name tel' nofIxs s) cs
+            pathCons <- forM cs $ \ c -> do
+              isPathCons <- checkConstructor name uc tel' nofIxs s c
+              return $ if isPathCons == PathCons then Just (A.axiomName c) else Nothing
 
             -- Return the data definition
-            return dataDef
+            return dataDef{ dataPathCons = catMaybes pathCons }
 
         let s      = dataSort dataDef
             cons   = map A.axiomName cs  -- get constructor names
@@ -164,15 +188,16 @@ forceSort t = reduce (unEl t) >>= \case
 --   Returns the non-linear parameters.
 checkConstructor
   :: QName         -- ^ Name of data type.
+  -> UniverseCheck -- ^ Check universes?
   -> Telescope     -- ^ Parameter telescope.
   -> Nat           -- ^ Number of indices of the data type.
   -> Sort          -- ^ Sort of the data type.
   -> A.Constructor -- ^ Constructor declaration (type signature).
-  -> TCM ()
-checkConstructor d tel nofIxs s (A.ScopedDecl scope [con]) = do
+  -> TCM IsPathCons
+checkConstructor d uc tel nofIxs s (A.ScopedDecl scope [con]) = do
   setScope scope
-  checkConstructor d tel nofIxs s con
-checkConstructor d tel nofIxs s con@(A.Axiom _ i ai Nothing c e) =
+  checkConstructor d uc tel nofIxs s con
+checkConstructor d uc tel nofIxs s con@(A.Axiom _ i ai Nothing c e) =
     traceCall (CheckConstructor d tel s con) $ do
 {- WRONG
       -- Andreas, 2011-04-26: the following happens to the right of ':'
@@ -184,13 +209,9 @@ checkConstructor d tel nofIxs s con@(A.Axiom _ i ai Nothing c e) =
         case getRelevance ai of
           Relevant   -> return ()
           Irrelevant -> typeError $ GenericError $ "Irrelevant constructors are not supported"
-          _ -> __IMPOSSIBLE__
+          NonStrict  -> typeError $ GenericError $ "Shape-irrelevant constructors are not supported"
         -- check that the type of the constructor is well-formed
-        t <- workOnTypes $ isType_ e
-        -- check that the type of the constructor ends in the data type
-        n <- getContextSize
-        debugEndsIn t d n
-        constructs n t d
+        (t, isPathCons) <- checkConstructorType e d
         -- compute which constructor arguments are forced
         forcedArgs <- computeForcingAnnotations t
         -- check that the sort (universe level) of the constructor type
@@ -202,12 +223,12 @@ checkConstructor d tel nofIxs s con@(A.Axiom _ i ai Nothing c e) =
         let s' = case s of
               Prop l -> Type l
               _      -> s
-        arity <- fitsIn forcedArgs t s'
+        arity <- traceCall (CheckConstructorFitsIn c t s') $ fitsIn uc forcedArgs t s'
         -- this may have instantiated some metas in s, so we reduce
         s <- reduce s
         debugAdd c t
 
-        TelV fields _ <- telView t
+        (TelV fields _, boundary) <- telViewUpToPathBoundaryP (-1) t
 
         -- We assume that the current context matches the parameters
         -- of the datatype in an empty context (c.f. getContextSize above).
@@ -217,7 +238,7 @@ checkConstructor d tel nofIxs s con@(A.Axiom _ i ai Nothing c e) =
         let con = ConHead c Inductive [] -- data constructors have no projectable fields and are always inductive
         escapeContext (size tel) $ do
 
-          cnames <- if nofIxs /= 0 || (Info.defAbstract i == AbstractDef) then return Nothing else do
+          cnames <- if nofIxs /= 0 || (Info.defAbstract i == AbstractDef) then return (emptyCompKit, Nothing) else do
             inTopContext $ do
               names <- forM [0 .. size fields - 1] (\ i -> freshAbstractQName'_ (P.prettyShow (A.qnameName c) ++ "-" ++ show i))
 
@@ -226,15 +247,15 @@ checkConstructor d tel nofIxs s con@(A.Axiom _ i ai Nothing c e) =
               dataT <- El s <$> (pure $ Def d $ map Apply $ teleArgs params)
 
               reportSDoc "tc.data.con.comp" 5 $ vcat $
-                [ text "params =" <+> pretty params
-                , text "dataT  =" <+> pretty dataT
-                , text "fields =" <+> pretty fields
-                , text "names  =" <+> pretty names
+                [ "params =" <+> pretty params
+                , "dataT  =" <+> pretty dataT
+                , "fields =" <+> pretty fields
+                , "names  =" <+> pretty names
                 ]
 
               defineProjections d con params names fields dataT
-              comp <- defineCompData d con params names fields dataT
-              return $ fmap (\ x -> (x,names)) comp
+              comp <- defineCompData d con params names fields dataT boundary
+              return $ (comp, Just names)
 
           addConstant c $
             defaultDefn defaultArgInfo c (telePi tel t) $ Constructor
@@ -250,37 +271,57 @@ checkConstructor d tel nofIxs s con@(A.Axiom _ i ai Nothing c e) =
               , conTPTPRole = Nothing
               }
 
-          case cnames of
+          case snd cnames of
             Nothing -> return ()
-            Just (_,names) -> mapM_ makeProjection names
+            Just names -> mapM_ makeProjection names
 
         -- Add the constructor to the instance table, if needed
         when (Info.defInstance i == InstanceDef) $ do
           addNamedInstance c d
 
+        return isPathCons
+
   where
+    -- Issue 3362: we need to do the `constructs` call inside the
+    -- generalization, so unpack the A.Generalize
+    checkConstructorType (A.ScopedExpr s e) d = withScope_ s $ checkConstructorType e d
+    checkConstructorType e d = do
+      let check k e = do
+            t <- workOnTypes $ isType_ e
+            -- check that the type of the constructor ends in the data type
+            n <- getContextSize
+            debugEndsIn t d (n - k)
+            isPathCons <- constructs (n - k) k t d
+            return (t, isPathCons)
+
+      case e of
+        A.Generalized s e -> do
+          (_, t, isPathCons) <- generalizeType' s (check 1 e)
+          return (t, isPathCons)
+        _ -> check 0 e
+
     debugEnter c e =
       reportSDoc "tc.data.con" 5 $ vcat
-        [ text "checking constructor" <+> prettyTCM c <+> text ":" <+> prettyTCM e
+        [ "checking constructor" <+> prettyTCM c <+> ":" <+> prettyTCM e
         ]
     debugEndsIn t d n =
       reportSDoc "tc.data.con" 15 $ vcat
-        [ sep [ text "checking that"
+        [ sep [ "checking that"
               , nest 2 $ prettyTCM t
-              , text "ends in" <+> prettyTCM d
+              , "ends in" <+> prettyTCM d
               ]
-        , nest 2 $ text "nofPars =" <+> text (show n)
+        , nest 2 $ "nofPars =" <+> text (show n)
         ]
     debugFitsIn s =
       reportSDoc "tc.data.con" 15 $ sep
-        [ text "checking that the type fits in"
+        [ "checking that the type fits in"
         , nest 2 $ prettyTCM s
         ]
     debugAdd c t =
       reportSDoc "tc.data.con" 5 $ vcat
-        [ text "adding constructor" <+> prettyTCM c <+> text ":" <+> prettyTCM t
+        [ "adding constructor" <+> prettyTCM c <+> ":" <+> prettyTCM t
         ]
-checkConstructor _ _ _ _ _ = __IMPOSSIBLE__ -- constructors are axioms
+checkConstructor _ _ _ _ _ _ = __IMPOSSIBLE__ -- constructors are axioms
 
 defineCompData :: QName      -- datatype name
                -> ConHead
@@ -288,42 +329,224 @@ defineCompData :: QName      -- datatype name
                -> [QName]    -- projection names
                -> Telescope  -- Γ ⊢ Φ field types
                -> Type       -- Γ ⊢ T target type
-               -> TCM (Maybe QName)
-defineCompData d con params names fsT t = do
-  haveCubicalThings <- do
-    i  <- getBuiltin' builtinInterval
-    iz <- getBuiltin' builtinIZero
-    io <- getBuiltin' builtinIOne
-    imin <- getPrimitiveTerm' "primIMin"
-    imax <- getPrimitiveTerm' "primIMax"
-    ineg <- getPrimitiveTerm' "primINeg"
-    comp <- getPrimitiveTerm' "primComp"
-    por <- getPrimitiveTerm' "primPOr"
-    one <- getBuiltin' builtinItIsOne
-    return $ maybe False (const True) $ sequence [i,iz,io,imin,imax,ineg,comp,por,one]
-  sortsOk <- allM (t : map unDom (flattenTel fsT)) sortOk
-  if not sortsOk || not haveCubicalThings then return Nothing else do
-    (compName, gamma , ty, _ , bodies) <-
-      defineCompForFields (\ t p -> apply (Def p []) [argN t]) d params fsT (map argN names) t
-    let clause = Clause
+               -> Boundary   -- [(i,t_i,b_i)],  Γ.Φ ⊢ [ (i=0) -> t_i; (i=1) -> u_i ] : B_i
+               -> TCM CompKit
+defineCompData d con params names fsT t boundary = do
+  required <- mapM getTerm'
+    [ builtinInterval
+    , builtinIZero
+    , builtinIOne
+    , builtinIMin
+    , builtinIMax
+    , builtinINeg
+    , builtinPOr
+    , builtinItIsOne
+    ]
+  sortsOk <- sortOk t `and2M` allM (map unDom (flattenTel fsT)) sortOkField
+  if not sortsOk || not (all isJust required) then return $ emptyCompKit else do
+    hcomp  <- whenDefined (null boundary) [builtinHComp,builtinTrans] (defineTranspOrHCompD DoHComp  d con params names fsT t boundary)
+    transp <- whenDefined True [builtinTrans]              (defineTranspOrHCompD DoTransp d con params names fsT t boundary)
+    return $ CompKit
+      { nameOfTransp = transp
+      , nameOfHComp  = hcomp
+      }
+  where
+    -- Δ^I, i : I |- sub Δ : Δ
+    sub tel = parallelS [ var n `apply` [Arg defaultArgInfo $ var 0] | n <- [1..size tel] ]
+    withArgInfo tel = zipWith Arg (map domInfo . telToList $ tel)
+    defineTranspOrHCompD cmd d con params names fsT t boundary
+      = do
+      ((theName, gamma , ty, _cl_types , bodies), theSub) <-
+        (case cmd of DoTransp -> defineTranspForFields' (guard (not $ null boundary) >> (Just $ Con con ConOSystem $ teleElims fsT boundary))
+                     ; DoHComp -> defineHCompForFields)
+          (\ t p -> apply (Def p []) [argN t]) d params fsT (map argN names) t
+      iz <- primIZero
+      body <- do
+        case cmd of
+          DoHComp -> return $ Con con ConOSystem (map Apply $ withArgInfo fsT bodies)
+          DoTransp | null boundary -> return $ Con con ConOSystem (map Apply $ withArgInfo fsT bodies)
+                   | otherwise -> do
+            io <- primIOne
+            tIMax <- primIMax
+            tIMin <- primIMin
+            tINeg <- primINeg
+            tPOr  <- fromMaybe __IMPOSSIBLE__ <$> getTerm' builtinPOr
+            tHComp <- primHComp
+            -- Δ = params
+            -- Δ ⊢ Φ = fsT
+            -- (δ : Δ) ⊢ T = R δ
+            -- (δ : Δ) ⊢ con : Φ → R δ  -- no indexing
+            -- boundary = [(i,t_i,u_i)]
+            -- Δ.Φ ⊢ [ (i=0) -> t_i; (i=1) -> u_i ] : B_i
+            -- Δ.Φ | PiPath Φ boundary (R δ) |- teleElims fsT boundary : R δ
+            -- Γ = ((δ : Δ^I), φ, us : Φ[δ 0]) = gamma
+            -- Γ ⊢ ty = R (δ i1)
+            -- (γ : Γ) ⊢ cl_types = (flatten Φ)[n ↦ f_n (transpR γ)]
+            -- Γ ⊢ bodies : Φ[δ i1]
+            -- Γ ⊢ t : ty
+            -- Γ, i : I ⊢ theSub : Δ.Φ
+            let
+
+              -- Δ.Φ ⊢ u = Con con ConOSystem $ teleElims fsT boundary : R δ
+              u = Con con ConOSystem $ teleElims fsT boundary
+              -- Γ ⊢ u
+              the_u = liftS (size fsT) d0 `applySubst` u
+                where
+                  -- δ : Δ^I, φ : F ⊢ [δ 0] : Δ
+                  d0 :: Substitution
+                  d0 = wkS 1 -- Δ^I, φ : F ⊢ Δ
+                             (consS iz IdS `composeS` sub params) -- Δ^I ⊢ Δ
+                                       -- Δ^I , i:I ⊢ sub params : Δ
+              the_phi = raise (size fsT) $ var 0
+              -- Γ ⊢ sigma : Δ.Φ
+              -- sigma = [δ i1,bodies]
+              sigma = reverse bodies ++# d1
+               where
+                -- δ i1
+                d1 :: Substitution
+                d1 = wkS (size gamma - size params) -- Γ ⊢ Δ
+                       (consS io IdS `composeS` sub params) -- Δ^I ⊢ Δ
+                                 -- Δ^I , i:I ⊢ sub params : Δ
+
+              -- Δ.Φ ⊢ [ (i=0) -> t_i; (i=1) -> u_i ] : R δ
+              bs = fullBoundary fsT boundary
+              -- ψ = sigma `applySubst` map (\ i → i ∨ ~ i) . map fst $ boundary
+              -- Γ ⊢ t : R (δ i1)
+              w1' = Con con ConOSystem $ sigma `applySubst` teleElims fsT boundary
+              -- (δ, φ, u0) : Γ ⊢
+              -- w1 = hcomp (\ i → R (δ i1))
+              --            (\ i → [ ψ ↦ α (~ i), φ ↦ u0])
+              --            w1'
+              imax x y = pure tIMax <@> x <@> y
+              ineg r = pure tINeg <@> r
+              lvlOfType = (\ (Type l) -> Level l) . getSort
+              pOr la i j u0 u1 = pure tPOr <#> (lvlOfType <$> la) <@> i <@> j
+                                           <#> (ilam "o" $ \ _ -> unEl <$> la) <@> u0 <@> u1
+              absAp x y = liftM2 absApp x y
+
+              mkFace (r,(u1,u2)) = runNamesT [] $ do
+                -- Γ
+                phi <- open the_phi  -- (δ , φ , us) ⊢ φ
+                -- Γ ⊢ ty = Abs i. R (δ i)
+                ty <- open (Abs "i" $ (liftS 1 (raiseS (size gamma - size params)) `composeS` sub params) `applySubst` t)
+
+                bind "i" $ \ i -> do
+                  -- Γ, i
+                  [r,u1,u2] <- mapM (open . applySubst theSub) [r,u1,u2]
+                  psi <- imax r (ineg r)
+                  let
+                    -- Γ, i ⊢ squeeze u = primTrans (\ j -> ty [i := i ∨ j]) (φ ∨ i) u
+                    squeeze u = cl primTrans
+                                          <#> (lam "j" $ \ j -> lvlOfType <$> ty `absAp` (imax i j))
+                                          <@> (lam "j" $ \ j -> unEl <$> ty `absAp` (imax i j))
+                                          <@> (phi `imax` i)
+                                          <@> u
+                  alpha <- pOr (ty `absAp` i)
+                              (ineg r)
+                              r
+                           (ilam "o" $ \ _ -> squeeze u1) (ilam "o" $ \ _ -> squeeze u2)
+                  return $ (psi, alpha)
+
+            -- Γ ⊢ Abs i. [(ψ_n,α_n : [ψ] → R (δ i))]
+            faces <- mapM mkFace bs
+
+            runNamesT [] $ do
+                -- Γ
+                w1' <- open w1'
+                phi <- open the_phi
+                u   <- open the_u
+                -- R (δ i1)
+                ty <- open ty
+                faces <- mapM (\ x -> liftM2 (,) (open . noabsApp __IMPOSSIBLE__ $ fmap fst x) (open $ fmap snd x)) faces
+                let
+                  thePsi = foldl1 imax (map fst faces)
+                  hcomp ty phi sys a0 = pure tHComp <#> (lvlOfType <$> ty)
+                                                    <#> (unEl <$> ty)
+                                                    <#> phi
+                                                    <@> sys
+                                                    <@> a0
+                let
+                 sys = lam "i" $ \ i -> do
+                  let
+                    recurse [(psi,alpha)] = alpha `absAp` (ineg i)
+                    recurse ((psi,alpha):xs) = pOr ty
+                                                   psi  theOr
+                                                   (alpha `absAp` (ineg i)) (recurse xs)
+                      where
+                        theOr = foldl1 imax (map fst xs)
+                    recurse [] = __IMPOSSIBLE__
+                    sys_alpha = recurse faces
+                  pOr ty
+                                                   thePsi    phi
+                                                   sys_alpha (ilam "o" $ \ _ -> u)
+                hcomp ty (thePsi `imax` phi) sys w1'
+
+
+      let
+
+        -- δ : Δ^I, φ : F ⊢ [δ 0] : Δ
+        d0 :: Substitution
+        d0 = wkS 1 -- Δ^I, φ : F ⊢ Δ
+                       (consS iz IdS `composeS` sub params) -- Δ^I ⊢ Δ
+                                 -- Δ^I , i:I ⊢ sub params : Δ
+
+        -- Δ.Φ ⊢ u = Con con ConOSystem $ teleElims fsT boundary : R δ
+--        u = Con con ConOSystem $ teleElims fsT boundary
+        up = ConP con (ConPatternInfo Nothing False Nothing False) $
+               telePatterns (d0 `applySubst` fsT) (liftS (size fsT) d0 `applySubst` boundary)
+--        gamma' = telFromList $ take (size gamma - 1) $ telToList gamma
+
+        -- (δ , φ , fs : Φ[d0]) ⊢ u[liftS Φ d0]
+        -- (δ , φ, u) : Γ ⊢ body
+        -- Δ ⊢ Φ = fsT
+        -- (δ , φ , fs : Φ[d0]) ⊢ u[liftS Φ d0] `consS` raiseS Φ : Γ
+--        (tel',theta) = (abstract gamma' (d0 `applySubst` fsT), (liftS (size fsT) d0 `applySubst` u) `consS` raiseS (size fsT))
+
+      let
+        clause | null boundary
+           = Clause
             { clauseTel = gamma
             , clauseType = Just . argN $ ty
             , namedClausePats = teleNamedArgs gamma
             , clauseFullRange = noRange
             , clauseLHSRange  = noRange
             , clauseCatchall = False
-            , clauseBody = Just $ Con con ConOSystem (map Apply $ map argN bodies) -- abstract gamma $ Body $ Con con (map argN bodies)
+            , clauseBody = Just $ body
+            , clauseUnreachable = Just False
+            }
+
+               | otherwise
+           = Clause
+            { clauseTel = gamma
+            , clauseType = Just . argN $ ty
+            , namedClausePats = take (size gamma - size fsT) (teleNamedArgs gamma) ++ [argN $ unnamed $ up]
+            , clauseFullRange = noRange
+            , clauseLHSRange  = noRange
+            , clauseCatchall = False
+            , clauseBody = Just $ body
             , clauseUnreachable = Just False
             }
         cs = [clause]
-    addClauses compName cs
-    setCompiledClauses compName =<< inTopContext (compileClauses Nothing cs)
-    setTerminates compName True
-    return $ Just compName
-  where
+      addClauses theName cs
+      setCompiledClauses theName =<< inTopContext (compileClauses Nothing cs)
+      setTerminates theName True
+      return $ Just theName
+
+    whenDefined False _ _ = return Nothing
+    whenDefined True xs m = do
+      xs <- mapM getTerm' xs
+      if all isJust xs then m else return Nothing
+
     sortOk :: Type -> TCM Bool
     sortOk a = reduce (getSort a) >>= \case
       Type{} -> return True
+      _      -> return False
+
+    sortOkField :: Type -> TCM Bool
+    sortOkField a = reduce (getSort a) >>= \case
+      Type{} -> return True
+      -- fields might be elements of the interval
+      Inf    -> return True
       _      -> return False
 
 -- Andrea: TODO handle Irrelevant fields somehow.
@@ -346,7 +569,7 @@ defineProjections dataname con params names fsT t = do
       projType = abstract projTel <$> ty
 
     inTopContext $ do
-      reportSDoc "tc.data.proj" 20 $ sep [ text "proj" <+> prettyTCM (i,ty) , nest 2 $ text . show $  projType ]
+      reportSDoc "tc.data.proj" 20 $ sep [ "proj" <+> prettyTCM (i,ty) , nest 2 $ prettyTCM projType ]
 
     let
       cpi  = ConPatternInfo Nothing False (Just $ argN $ raise (size fsT) t) False
@@ -375,23 +598,36 @@ defineProjections dataname con params names fsT t = do
         (defaultDefn defaultArgInfo projName (unDom projType) fun)
           { defNoCompilation = True }
       inTopContext $ do
-        reportSDoc "tc.data.proj.fun" 20 $ sep [ text "proj" <+> prettyTCM i, nest 2 $ text . show $ fun ]
+        reportSDoc "tc.data.proj.fun" 60 $ sep [ "proj" <+> prettyTCM i, nest 2 $ pretty fun ]
 
 
 freshAbstractQName'_ :: String -> TCM QName
-freshAbstractQName'_ s = freshAbstractQName noFixity' (C.Name noRange [C.Id $ s])
+freshAbstractQName'_ s = freshAbstractQName noFixity' (C.Name noRange C.InScope [C.Id $ s])
 
--- invariant: resulting tel Γ is such that Γ = ... , (φ : I), (u : ...) , (a0 : ...)
---            where u and a0 have types matching the arguments of primComp.
-defineCompForFields
+
+defineTranspForFields
   :: (Term -> QName -> Term) -- ^ how to apply a "projection" to a term
   -> QName       -- ^ some name, e.g. record name
   -> Telescope   -- ^ param types Δ
   -> Telescope   -- ^ fields' types Δ ⊢ Φ
   -> [Arg QName] -- ^ fields' names
   -> Type        -- ^ record type Δ ⊢ T
-  -> TCM (QName, Telescope, Type, [Dom Type], [Term])
-defineCompForFields applyProj name params fsT fns rect = do
+  -> TCM ((QName, Telescope, Type, [Dom Type], [Term]), Substitution)
+defineTranspForFields = defineTranspForFields' Nothing
+
+
+-- invariant: resulting tel Γ is such that Γ = ... , (φ : I), (a0 : ...)
+--            where a0 has type matching the arguments of primTrans.
+defineTranspForFields'
+  :: (Maybe Term)                    -- ^ PathCons, Δ.Φ ⊢ u : R δ
+  -> (Term -> QName -> Term) -- ^ how to apply a "projection" to a term
+  -> QName       -- ^ some name, e.g. record name
+  -> Telescope   -- ^ param types Δ
+  -> Telescope   -- ^ fields' types Δ ⊢ Φ
+  -> [Arg QName] -- ^ fields' names
+  -> Type        -- ^ record type Δ ⊢ T
+  -> TCM ((QName, Telescope, Type, [Dom Type], [Term]), Substitution)
+defineTranspForFields' pathCons applyProj name params fsT fns rect = do
   interval <- elInf primInterval
   let deltaI = expTelescope interval params
   iz <- primIZero
@@ -399,103 +635,130 @@ defineCompForFields applyProj name params fsT fns rect = do
   imin <- getPrimitiveTerm "primIMin"
   imax <- getPrimitiveTerm "primIMax"
   ineg <- getPrimitiveTerm "primINeg"
-  comp <- getPrimitiveTerm "primComp"
+  transp <- getPrimitiveTerm builtinTrans
   por <- getPrimitiveTerm "primPOr"
   one <- primItIsOne
-  reportSDoc "comp.rec" 20 $ text $ show params
-  reportSDoc "comp.rec" 20 $ text $ show deltaI
-  reportSDoc "comp.rec" 10 $ text $ show fsT
-  compName <- freshAbstractQName'_ $ "comp-" ++ P.prettyShow (A.qnameName name)
-  reportSLn "comp.rec" 5 $ ("Generated name: " ++ show compName ++ " " ++ showQNameId compName)
-  compType <- (abstract deltaI <$>) $ runNamesT [] $ do
+  reportSDoc "trans.rec" 20 $ text $ show params
+  reportSDoc "trans.rec" 20 $ text $ show deltaI
+  reportSDoc "trans.rec" 10 $ text $ show fsT
+
+  let thePrefix = "transp-"
+  theName <- freshAbstractQName'_ $ thePrefix ++ P.prettyShow (A.qnameName name)
+
+  reportSLn "trans.rec" 5 $ ("Generated name: " ++ show theName ++ " " ++ showQNameId theName)
+
+  theType <- (abstract deltaI <$>) $ runNamesT [] $ do
               rect' <- open (runNames [] $ bind "i" $ \ x -> let _ = x `asTypeOf` pure (undefined :: Term) in
                                                              pure rect')
               nPi' "phi" (elInf $ cl primInterval) $ \ phi ->
-               (nPi' "i" (elInf $ cl primInterval) $ \ i ->
-                pPi' "o" phi $ \ _ -> absApp <$> rect' <*> i) -->
                (absApp <$> rect' <*> pure iz) --> (absApp <$> rect' <*> pure io)
-  reportSDoc "comp.rec" 20 $ prettyTCM compType
-  reportSDoc "comp.rec" 60 $ text $ "sort = " ++ show (getSort rect')
 
-  noMutualBlock $ addConstant compName $ (defaultDefn defaultArgInfo compName compType
+  reportSDoc "trans.rec" 20 $ prettyTCM theType
+  reportSDoc "trans.rec" 60 $ text $ "sort = " ++ show (getSort rect')
+
+  noMutualBlock $ addConstant theName $ (defaultDefn defaultArgInfo theName theType
     (emptyFunction { funTerminates = Just True }))
     { defNoCompilation = True }
-  --   ⊢ Γ = gamma = (δ : Δ^I) (φ : I) (_ : (i : I) -> Partial φ (R (δ i))) (_ : R (δ i0))
+  -- ⊢ Γ = gamma = (δ : Δ^I) (φ : I) (u0 : R (δ i0))
   -- Γ ⊢     rtype = R (δ i1)
-  TelV gamma rtype <- telView compType
+  TelV gamma rtype <- telView theType
+
 
   let
-      drect_gamma = liftS 1 (raiseS (size gamma - size deltaI)) `applySubst` rect'
+      -- (γ : Γ) ⊢ compR γ : rtype
+      theTerm = Def theName [] `apply` teleArgs gamma
 
-  reportSDoc "comp.rec" 60 $ text $ "sort = " ++ show (getSort drect_gamma)
-
-  let
-      -- Γ, i : I ⊢ Φ
-      fsT' = liftS 1 (raiseS (size gamma - size deltaI)) `applySubst`
-              (sub params `applySubst` fsT) -- Δ^I, i : I ⊢ Φ
-
-      -- Γ ⊢ rect_gamma_lvl : I -> Level
-      -- Γ ⊢ rect_gamma     : (i : I) -> Set (rect_gamma_lvl i)  -- record type
-      (rect_gamma_lvl, rect_gamma) = (lam_i (Level l) , lam_i (unEl drect_gamma))
-        where
-          lam_i = Lam defaultArgInfo . Abs "i"
-          Type l = getSort drect_gamma
-
-      -- Γ ⊢ compR Γ : rtype
-      compTerm = Def compName [] `apply` teleArgs gamma
-
-      -- Γ ⊢ fillR Γ : ..
-      fillTerm = runNames [] $ do
-        params <- mapM open $ take (size deltaI) $ teleArgs gamma
-        [phi,w,w0] <- mapM (open . var) [2,1,0]
-        lvl  <- open rect_gamma_lvl
-        rect <- open rect_gamma
-        -- (δ : Δ^I, φ : I, w : .., w0 : R (δ i0)) ⊢
-        -- fillR Γ = λ i → compR (\ j → δ (i ∧ j)) (φ ∨ ~ i) (\ j → [ φ ↦ w (i ∧ j) , ~ i ↦ w0 ]) w0
-        lam "i" $ \ i -> do
-          args <- mapM (underArg $ \ bA -> lam "j" $ \ j -> bA <@> (pure imin <@> i <@> j)) params
-          psi  <- pure imax <@> phi <@> (pure ineg <@> i)
-          u <- lam "j" (\ j -> pure por <#> (lvl <@> (pure imin <@> i <@> j))
-                                        <@> phi
-                                        <@> (pure ineg <@> i)
-                                        <#> (lam "_" $ \ o -> rect <@> (pure imin <@> i <@> j))
-                                        <@> (w <@> (pure imin <@> i <@> j))
-                                        <@> (lam "_" $ \ o -> w0) -- TODO wait for i = 0
-                       )
-          u0 <- w0
-          pure $ Def compName [] `apply` (args ++ [argN psi, argN u, argN u0])
-        where
-          underArg k m = Arg <$> (argInfo <$> m) <*> (k (unArg <$> m))
-
-      -- Γ ⊢ Φ[n ↦ f_n (compR Γ)]
-      clause_types = parallelS [compTerm `applyProj` (unArg fn)
+      -- (γ : Γ) ⊢ (flatten Φ[δ i1])[n ↦ f_n (compR γ)]
+      clause_types = parallelS [theTerm `applyProj` (unArg fn)
                                | fn <- reverse fns] `applySubst`
-                       flattenTel (singletonS 0 io `applySubst` fsT') -- Γ, Φ ⊢ Φ
+                       flattenTel (singletonS 0 io `applySubst` fsT') -- Γ, Φ[δ i1] ⊢ flatten Φ[δ i1]
 
-      -- Γ, i : I ⊢ Φ[n ↦ f_n (fillR Γ i)]
-      filled_types = parallelS [raise 1 fillTerm `apply` [argN $ var 0] `applyProj` (unArg fn)
-                               | fn <- reverse fns] `applySubst`
-                       flattenTel fsT' -- Γ, i : I, Φ ⊢ Φ
+      -- Γ, i : I ⊢ [δ i] : Δ
+      delta_i = (liftS 1 (raiseS (size gamma - size deltaI)) `composeS` sub params)
 
-      mkBody (fname, filled_ty') = do
+      -- Γ, i : I ⊢ Φ[δ i]
+      fsT' = (liftS 1 (raiseS (size gamma - size deltaI)) `composeS` sub params)  `applySubst`
+               fsT -- Δ ⊢ Φ
+      lam_i = Lam defaultArgInfo . Abs "i"
+
+
+
+      -- (δ , φ , u0) : Γ ⊢ φ : I
+      -- the_phi = var 1
+      -- -- (δ , φ , u0) : Γ ⊢ u0 : R (δ i0)
+      -- the_u0  = var 0
+
+
+      gamma' = telFromList $ take (size gamma - 1) $ telToList gamma
+
+      -- δ : Δ^I, φ : F ⊢ [δ 0] : Δ
+      d0 :: Substitution
+      d0 = wkS 1 -- Δ^I, φ : F ⊢ Δ
+                       (consS iz IdS `composeS` sub params) -- Δ^I ⊢ Δ
+                                 -- Δ^I , i:I ⊢ sub params : Δ
+      -- Ξ , Ξ ⊢ θ : Γ, Ξ ⊢ φ, Ξ ⊢ u : R (δ i0), Ξ ⊢ us
+      (tel,theta,the_phi,the_u0, the_fields) =
+        case pathCons of
+          Just u -> (abstract gamma' (d0 `applySubst` fsT)
+                    , (liftS (size fsT) d0 `applySubst` u) `consS` raiseS (size fsT)
+                    , raise (size fsT) (var 0)
+                    , (liftS (size fsT) d0 `applySubst` u)
+                    , drop (size gamma') $ map unArg $ teleArgs tel)
+          Nothing -> (gamma, IdS, var 1, var 0, map (\ fname -> var 0 `applyProj` unArg fname) fns )
+
+      fsT_tel = (liftS 1 (raiseS (size tel - size deltaI)) `composeS` sub params) `applySubst` fsT
+
+      mkBody (field, filled_ty') = do
         let
-          proj t = (`applyProj` unArg fname) <$> t
-          filled_ty = Lam defaultArgInfo (Abs "i" $ (unEl . unDom) filled_ty')
+          filled_ty = lam_i $ (unEl . unDom) filled_ty'
           -- Γ ⊢ l : I -> Level of filled_ty
-        Type l <- reduce $ getSort $ unDom filled_ty'
-        let lvl = Lam defaultArgInfo (Abs "i" $ Level l)
-        return $ runNames [] $ do
+        sort <- reduce $ getSort $ unDom filled_ty'
+        case sort of
+          Type l -> do
+            let lvl = lam_i $ Level l
+            return $ runNames [] $ do
              lvl <- open lvl
-             [phi,w,w0] <- mapM (open . var) [2,1,0]
-             pure comp <#> lvl <@> pure filled_ty
-                               <@> phi
-                               <@> (lam "i" $ \ i -> lam "o" $ \ o -> proj $ w <@> i <@> o) -- TODO wait for phi = 1
-                               <@> proj w0
+             [phi,field] <- mapM open [the_phi,field]
+             pure transp <#> lvl <@> pure filled_ty
+                                 <@> phi
+                                 <@> field
+          -- interval arg
+          Inf  ->
+            return $ runNames [] $ do
+            [field] <- mapM open [field]
+            field
+          _ -> __IMPOSSIBLE__
 
-  reportSDoc "comp.rec" 60 $ text $ "filled_types sorts:" ++ show (map (getSort . unDom) filled_types)
+  let
+        iMin x y = imin `apply` [argN x, argN y]
+        iMax x y = imax `apply` [argN x, argN y]
+        iNeg x = ineg `apply` [argN x]
+        -- ' Ξ , i : I ⊢ τ = [(\ j → δ (i ∧ j), φ ∨ ~ i, u] : Ξ
+        tau = parallelS $ us ++ (phi `iMax` iNeg (var 0)) : map (\ d -> Lam defaultArgInfo $ Abs "i" $ raise 1 d `apply` [argN $ (iMin (var 0) (var 1))]) ds
+         where
+          -- Ξ, i : I
+          (us, phi:ds) = splitAt (size tel - size gamma') $ reverse (raise 1 (map unArg (teleArgs tel)))
 
-  bodys <- mapM mkBody (zip fns filled_types)
-  return $ (compName, gamma, rtype, clause_types, bodys)
+  let
+    go acc [] = return []
+    go acc ((fname,field_ty) : ps) = do
+      -- Ξ, i : I, Φ[δ i]|_f ⊢ Φ_f = field_ty
+      -- Ξ ⊢ b : field_ty [i := i1][acc]
+      -- Ξ ⊢ parallesS acc : Φ[δ i1]|_f
+      -- Ξ , i : I ⊢ τ = [(\ j → δ (i ∨ j), φ ∨ ~ i, us] : Ξ
+      -- Ξ , i : I ⊢ parallesS (acc[τ]) : Φ[δ i1]|_f
+      -- Ξ, i : I ⊢ field_ty [parallesS (acc[τ])]
+      let
+        filled_ty = parallelS (tau `applySubst` acc) `applySubst` field_ty
+      b <- mkBody (fname,filled_ty)
+      bs <- go (b : acc) ps
+      return $ b : bs
+
+  bodys <- go [] (zip the_fields (map (fmap snd) $ telToList fsT_tel)) -- ∀ f.  Ξ, i : I, Φ[δ i]|_f ⊢ Φ[δ i]_f
+  let
+    -- Ξ, i : I ⊢ ... : Δ.Φ
+    theSubst = reverse (tau `applySubst` bodys) ++# (liftS 1 (raiseS (size tel - size deltaI)) `composeS` sub params)
+  return $ ((theName, tel, theta `applySubst` rtype, clause_types, bodys), theSubst)
   where
     -- record type in 'exponentiated' context
     -- (params : Δ^I), i : I |- T[params i]
@@ -513,6 +776,165 @@ defineCompForFields applyProj name params fsT fns rect = do
         s = sub tel
         ys = map (fmap (abstract t) . applySubst s) xs
 
+-- invariant: resulting tel Γ is such that Γ = (δ : Δ), (φ : I), (u : ...), (a0 : R δ))
+--            where u and a0 have types matching the arguments of primHComp.
+defineHCompForFields
+  :: (Term -> QName -> Term) -- ^ how to apply a "projection" to a term
+  -> QName       -- ^ some name, e.g. record name
+  -> Telescope   -- ^ param types Δ
+  -> Telescope   -- ^ fields' types Δ ⊢ Φ
+  -> [Arg QName] -- ^ fields' names
+  -> Type        -- ^ record type (δ : Δ) ⊢ R[δ]
+  -> TCM ((QName, Telescope, Type, [Dom Type], [Term]),Substitution)
+defineHCompForFields applyProj name params fsT fns rect = do
+  interval <- elInf primInterval
+  let delta = params
+  iz <- primIZero
+  io <- primIOne
+  imin <- getPrimitiveTerm "primIMin"
+  imax <- getPrimitiveTerm "primIMax"
+  tIMax <- getPrimitiveTerm "primIMax"
+  ineg <- getPrimitiveTerm "primINeg"
+  hcomp <- getPrimitiveTerm builtinHComp
+  transp <- getPrimitiveTerm builtinTrans
+  por <- getPrimitiveTerm "primPOr"
+  one <- primItIsOne
+  reportSDoc "comp.rec" 20 $ text $ show params
+  reportSDoc "comp.rec" 20 $ text $ show delta
+  reportSDoc "comp.rec" 10 $ text $ show fsT
+
+  let thePrefix = "hcomp-"
+  theName <- freshAbstractQName'_ $ thePrefix ++ P.prettyShow (A.qnameName name)
+
+  reportSLn "hcomp.rec" 5 $ ("Generated name: " ++ show theName ++ " " ++ showQNameId theName)
+
+  theType <- (abstract delta <$>) $ runNamesT [] $ do
+              rect <- open rect
+              nPi' "phi" (elInf $ cl primInterval) $ \ phi ->
+               (nPi' "i" (elInf $ cl primInterval) $ \ i ->
+                pPi' "o" phi $ \ _ -> rect) -->
+               rect --> rect
+
+  reportSDoc "hcomp.rec" 20 $ prettyTCM theType
+  reportSDoc "hcomp.rec" 60 $ text $ "sort = " ++ show (getSort rect)
+
+  noMutualBlock $ addConstant theName $ (defaultDefn defaultArgInfo theName theType
+    (emptyFunction { funTerminates = Just True }))
+    { defNoCompilation = True }
+  --   ⊢ Γ = gamma = (δ : Δ) (φ : I) (_ : (i : I) -> Partial φ (R δ)) (_ : R δ)
+  -- Γ ⊢     rtype = R δ
+  TelV gamma rtype <- telView theType
+
+  let -- Γ ⊢ R δ
+      drect_gamma = raiseS (size gamma - size delta) `applySubst` rect
+
+  reportSDoc "hcomp.rec" 60 $ text $ "sort = " ++ show (getSort drect_gamma)
+
+  let
+
+      -- (γ : Γ) ⊢ hcompR γ : rtype
+      compTerm = Def theName [] `apply` teleArgs gamma
+
+      -- (δ, φ, u, u0) : Γ ⊢ φ : I
+      the_phi = var 2
+      -- (δ, φ, u, u0) : Γ ⊢ u : (i : I) → [φ] → R (δ i)
+      the_u   = var 1
+      -- (δ, φ, u, u0) : Γ ⊢ u0 : R (δ i0)
+      the_u0  = var 0
+
+      -- ' (δ, φ, u, u0) : Γ ⊢ fillR Γ : (i : I) → rtype[ δ ↦ (\ j → δ (i ∧ j))]
+      fillTerm = runNames [] $ do
+        rect <- open                           $ unEl    drect_gamma
+        lvl  <- open . (\ (Type l) -> Level l) $ getSort drect_gamma
+        params     <- mapM open $ take (size delta) $ teleArgs gamma
+        [phi,w,w0] <- mapM open [the_phi,the_u,the_u0]
+        -- (δ : Δ, φ : I, w : .., w0 : R δ) ⊢
+        -- ' fillR Γ = λ i → hcompR δ (φ ∨ ~ i) (\ j → [ φ ↦ w (i ∧ j) , ~ i ↦ w0 ]) w0
+        --           = hfillR δ φ w w0
+        lam "i" $ \ i -> do
+          args <- sequence params
+          psi  <- pure imax <@> phi <@> (pure ineg <@> i)
+          u <- lam "j" (\ j -> pure por <#> lvl
+                                        <@> phi
+                                        <@> (pure ineg <@> i)
+                                        <#> (lam "_" $ \ o -> rect)
+                                        <@> (w <@> (pure imin <@> i <@> j))
+                                        <@> (lam "_" $ \ o -> w0) -- TODO wait for i = 0
+                       )
+          u0 <- w0
+          pure $ Def theName [] `apply` (args ++ [argN psi, argN u, argN u0])
+        where
+          underArg k m = Arg <$> (argInfo <$> m) <*> (k (unArg <$> m))
+
+      -- (γ : Γ) ⊢ (flatten Φ)[n ↦ f_n (compR γ)]
+      clause_types = parallelS [compTerm `applyProj` (unArg fn)
+                               | fn <- reverse fns] `applySubst`
+                       flattenTel (raiseS (size gamma - size delta) `applySubst` fsT) -- Γ, Φ ⊢ flatten Φ
+      -- Δ ⊢ Φ = fsT
+      -- Γ, i : I ⊢ Φ'
+      fsT' = raiseS ((size gamma - size delta) + 1) `applySubst` fsT
+
+      -- Γ, i : I ⊢ (flatten Φ')[n ↦ f_n (fillR Γ i)]
+      filled_types = parallelS [raise 1 fillTerm `apply` [argN $ var 0] `applyProj` (unArg fn)
+                               | fn <- reverse fns] `applySubst`
+                       flattenTel fsT' -- Γ, i : I, Φ' ⊢ flatten Φ'
+
+
+  comp <- do
+        let
+          imax i j = pure tIMax <@> i <@> j
+        let forward la bA r u = pure transp <#> (lam "i" $ \ i -> la <@> (i `imax` r))
+                                            <@> (lam "i" $ \ i -> bA <@> (i `imax` r))
+                                            <@> r
+                                            <@> u
+        return $ \ la bA phi u u0 ->
+          pure hcomp <#> (la <@> pure io) <#> (bA <@> pure io) <#> phi
+                      <@> (lam "i" $ \ i -> ilam "o" $ \ o ->
+                              forward la bA i (u <@> i <..> o))
+                      <@> forward la bA (pure iz) u0
+  let
+      mkBody (fname, filled_ty') = do
+        let
+          proj t = (`applyProj` unArg fname) <$> t
+          filled_ty = Lam defaultArgInfo (Abs "i" $ (unEl . unDom) filled_ty')
+          -- Γ ⊢ l : I -> Level of filled_ty
+        Type l <- reduce $ getSort $ unDom filled_ty'
+        let lvl = Lam defaultArgInfo (Abs "i" $ Level l)
+        return $ runNames [] $ do
+             lvl <- open lvl
+             [phi,w,w0] <- mapM open [the_phi,the_u,the_u0]
+             filled_ty <- open filled_ty
+
+             comp lvl
+                  filled_ty
+                  phi
+                  (lam "i" $ \ i -> lam "o" $ \ o -> proj $ w <@> i <@> o) -- TODO wait for phi = 1
+                  (proj w0)
+
+  reportSDoc "hcomp.rec" 60 $ text $ "filled_types sorts:" ++ show (map (getSort . unDom) filled_types)
+
+  bodys <- mapM mkBody (zip fns filled_types)
+  return $ ((theName, gamma, rtype, clause_types, bodys),IdS)
+
+
+getGeneralizedParameters :: Set Name -> QName -> TCM [Maybe Name]
+getGeneralizedParameters gpars name | Set.null gpars = return []
+getGeneralizedParameters gpars name = do
+  -- Drop the named parameters that shouldn't be in scope (if the user
+  -- wrote a split data type)
+  let inscope x = x <$ guard (Set.member x gpars)
+  map (>>= inscope) . defGeneralizedParams <$> (instantiateDef =<< getConstInfo name)
+
+-- | Bind the named generalized parameters.
+bindGeneralizedParameters :: [Maybe Name] -> Type -> (Telescope -> Type -> TCM a) -> TCM a
+bindGeneralizedParameters [] t ret = ret EmptyTel t
+bindGeneralizedParameters (name : names) t ret =
+  case unEl t of
+    Pi a b -> ext $ bindGeneralizedParameters names (unAbs b) $ \ tel t -> ret (ExtendTel a (tel <$ b)) t
+      where
+        ext | Just x <- name = addContext (x, a)
+            | otherwise      = addContext (absName b, a)
+    _      -> __IMPOSSIBLE__
 
 -- | Bind the parameters of a datatype.
 --
@@ -524,14 +946,8 @@ defineCompForFields applyProj name params fsT fns rect = do
 --       c : A -> D A
 --   @
 
-bindParameters :: [A.LamBinding] -> Type -> (Telescope -> Type -> TCM a) -> TCM a
-bindParameters = bindParameters' []
-
--- | Auxiliary function for 'bindParameters'.
-bindParameters'
-  :: [Type]         -- ^ @n@ replicas of type if @LamBinding@s are @DomainFree@s
-                    --   that came from a @DomainFull@ of @n@ binders.
-                    --   Should be comsumed whenever a @DomainFree@s are consumed.
+bindParameters
+  :: Int            -- ^ Number of parameters
   -> [A.LamBinding] -- ^ Bindings from definition site.
   -> Type           -- ^ Pi-type of bindings coming from signature site.
   -> (Telescope -> Type -> TCM a)
@@ -539,94 +955,139 @@ bindParameters'
      --   The parameters are part of the context when the continutation is invoked.
   -> TCM a
 
-bindParameters' _ [] a ret = ret EmptyTel a
+bindParameters 0 [] a ret = ret EmptyTel a
 
-bindParameters' ts (A.DomainFull (A.TypedBindings _ (Arg info (A.TBind _ xs e))) : bs) a ret = do
-  unless (null ts) __IMPOSSIBLE__
-  t <- workOnTypes $ isType_ e
-  bindParameters' (t <$ xs) (map (mergeHiding . fmap (A.DomainFree info)) xs ++ bs) a ret
+bindParameters 0 (par : _) _ _ = setCurrentRange par $
+  typeError . GenericDocError =<< do
+    text "Unexpected parameter" <+> prettyA par
 
-bindParameters' _ (A.DomainFull (A.TypedBindings _ (Arg _ A.TLet{})) : _) _ _ =  -- line break!
-  __IMPOSSIBLE__
-
-bindParameters' ts0 ps0@(A.DomainFree info x : ps) t ret = do
+bindParameters npars [] t ret =
   case unEl t of
-    -- Andreas, 2011-04-07 ignore relevance information in binding?!
-    Pi arg@(Dom{domInfo = info', unDom = a}) b -> do
-      if | info == info'                  -> do
-            -- Andreas, 2016-12-30, issue #1886:
-            -- If type for binding is present, check its correctness.
-            ts <- caseList ts0 (return []) $ \ t0 ts -> do
-              equalType t0 a
-              return ts
-            continue ts ps $ A.unBind x
-
-         | visible info, notVisible info' ->
-            continue ts0 ps0 =<< freshName_ (absName b)
-
-         | otherwise                      -> __IMPOSSIBLE__
-             -- Andreas, 2016-12-30 Concrete.Definition excludes this case
-      where
-      continue ts ps x = do
-        addContext (x, arg) $
-          bindParameters' (raise 1 ts) ps (absBody b) $ \ tel s ->
-            ret (ExtendTel arg $ Abs (nameToArgName x) tel) s
+    Pi a b | not (visible a) -> do
+              x <- freshName_ (absName b)
+              bindParameter npars [] x a b ret
+           | otherwise ->
+              typeError . GenericDocError =<<
+                sep [ "Expected binding for parameter"
+                    , text (absName b) <+> text ":" <+> prettyTCM (unDom a) ]
     _ -> __IMPOSSIBLE__
 
+bindParameters npars par@(A.DomainFull (A.TBind _ xs e) : bs) a ret =
+  setCurrentRange par $
+  typeError . GenericDocError =<< do
+    let s | length xs > 1 = "s"
+          | otherwise     = ""
+    text ("Unexpected type signature for parameter" ++ s) <+> sep (map prettyA xs)
+
+bindParameters _ (A.DomainFull A.TLet{} : _) _ _ = __IMPOSSIBLE__
+
+bindParameters _ (par@(A.DomainFree arg) : ps) _ _
+  | getModality arg /= defaultModality = setCurrentRange par $
+     typeError . GenericDocError =<< do
+       text "Unexpected modality/relevance annotation in" <+> prettyA par
+
+bindParameters npars ps0@(par@(A.DomainFree arg) : ps) t ret = do
+  let x          = namedArg arg
+      TelV tel _ = telView' t
+  case insertImplicit arg $ telToList tel of
+    ImpInsert _    -> continue ps0 =<< freshName_ (absName b)
+    BadImplicits   -> setCurrentRange par $
+     typeError . GenericDocError =<< do
+       text "Unexpected parameter" <+> prettyA par
+    NoSuchName x   -> setCurrentRange par $
+      typeError . GenericDocError =<< do
+        text ("No parameter of name " ++ x)
+    NoInsertNeeded -> continue ps $ A.unBind x
+  where
+    Pi dom@(Dom{domInfo = info', unDom = a}) b = unEl t
+    continue ps x = bindParameter npars ps x dom b ret
+
+bindParameter :: Int -> [A.LamBinding] -> Name -> Dom Type -> Abs Type -> (Telescope -> Type -> TCM a) -> TCM a
+bindParameter npars ps x a b ret =
+  addContext (x, a) $
+    bindParameters (npars - 1) ps (absBody b) $ \ tel s ->
+      ret (ExtendTel a $ Abs (nameToArgName x) tel) s
 
 -- | Check that the arguments to a constructor fits inside the sort of the datatype.
---   The first argument is the type of the constructor.
+--   The third argument is the type of the constructor.
 --
 --   As a side effect, return the arity of the constructor.
 
-fitsIn :: [IsForced] -> Type -> Sort -> TCM Int
-fitsIn forceds t s = do
+fitsIn :: UniverseCheck -> [IsForced] -> Type -> Sort -> TCM Int
+fitsIn uc forceds t s = do
   reportSDoc "tc.data.fits" 10 $
-    sep [ text "does" <+> prettyTCM t
-        , text "of sort" <+> prettyTCM (getSort t)
-        , text "fit in" <+> prettyTCM s <+> text "?"
+    sep [ "does" <+> prettyTCM t
+        , "of sort" <+> prettyTCM (getSort t)
+        , "fit in" <+> prettyTCM s <+> "?"
         ]
   -- The code below would be simpler, but doesn't allow datatypes
   -- to be indexed by the universe level.
   -- s' <- instantiateFull (getSort t)
   -- noConstraints $ s' `leqSort` s
-  t <- reduce t
-  case unEl t of
-    Pi dom b -> do
+
+
+  vt <- do
+    t <- pathViewAsPi t
+    return $ case t of
+                  Left (a,b)     -> Just (True ,a,b)
+                  Right (El _ t) | Pi a b <- t
+                                 -> Just (False,a,b)
+                  _              -> Nothing
+  case vt of
+    Just (isPath, dom, b) -> do
       withoutK <- optWithoutK <$> pragmaOptions
       let (forced,forceds') = nextIsForced forceds
       unless (isForced forced && not withoutK) $ do
         sa <- reduce $ getSort dom
-        unless (sa == SizeUniv) $ sa `leqSort` s
+        unless (isPath || uc == NoUniverseCheck || sa == SizeUniv) $ sa `leqSort` s
       addContext (absName b, dom) $ do
-        succ <$> fitsIn forceds' (absBody b) (raise 1 s)
+        succ <$> fitsIn uc forceds' (absBody b) (raise 1 s)
     _ -> do
       getSort t `leqSort` s
       return 0
+
+-- | When --without-K is enabled, we should check that the sorts of
+--   the index types fit into the sort of the datatype.
+checkIndexSorts :: Sort -> Telescope -> TCM ()
+checkIndexSorts s = \case
+  EmptyTel -> return ()
+  ExtendTel a tel' -> do
+    getSort a `leqSort` s
+    underAbstraction a tel' $ checkIndexSorts (raise 1 s)
 
 -- | Return the parameters that share variables with the indices
 -- nonLinearParameters :: Int -> Type -> TCM [Int]
 -- nonLinearParameters nPars t =
 
+data IsPathCons = PathCons | PointCons
+  deriving (Eq,Show)
+
 -- | Check that a type constructs something of the given datatype. The first
---   argument is the number of parameters to the datatype.
+--   argument is the number of parameters to the datatype and the second the
+--   number of additional non-parameters in the context (1 when generalizing, 0
+--   otherwise).
 --
-constructs :: Int -> Type -> QName -> TCM ()
-constructs nofPars t q = constrT 0 t
+constructs :: Int -> Int -> Type -> QName -> TCM IsPathCons
+constructs nofPars nofExtraVars t q = constrT nofExtraVars t
     where
         -- The number n counts the proper (non-parameter) constructor arguments.
-        constrT :: Nat -> Type -> TCM ()
+        constrT :: Nat -> Type -> TCM IsPathCons
         constrT n t = do
             t <- reduce t
+            pathV <- pathViewAsPi'whnf
             case unEl t of
                 Pi _ (NoAbs _ b)  -> constrT n b
                 Pi a b            -> underAbstraction a b $ constrT (n + 1)
                   -- OR: addCxtString (absName b) a $ constrT (n + 1) (absBody b)
+                _ | Left ((a,b),_) <- pathV t -> do -- TODO, do the special casing like for Pi
+                      _ <- underAbstraction a b $ constrT (n + 1)
+                      return PathCons
                 Def d es | d == q -> do
                   let vs = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
                   (pars, ixs) <- normalise $ splitAt nofPars vs
                   -- check that the constructor parameters are the data parameters
                   checkParams n pars
+                  return PointCons
                 MetaV{} -> do
                   def <- getConstInfo q
                   -- Analyse the type of q (name of the data type)
@@ -647,8 +1108,8 @@ constructs nofPars t q = constrT 0 t
 
         checkParams n vs = zipWithM_ sameVar vs ps
             where
-                nvs = size vs
-                ps = genericTake nvs $ downFrom (n + nvs)
+                nvs = length vs
+                ps  = reverse $ take nvs [n..]
 
                 sameVar arg i
                   -- skip irrelevant parameters
@@ -687,11 +1148,13 @@ isCoinductive t = do
       def <- getConstInfo q
       case theDef def of
         Axiom       {} -> return (Just False)
+        DataOrRecSig{} -> return Nothing
         Function    {} -> return Nothing
         Datatype    { dataInduction = CoInductive } -> return (Just True)
         Datatype    { dataInduction = Inductive   } -> return (Just False)
         Record      {  recInduction = Just CoInductive } -> return (Just True)
         Record      {  recInduction = _                } -> return (Just False)
+        GeneralizableVar{} -> __IMPOSSIBLE__
         Constructor {} -> __IMPOSSIBLE__
         Primitive   {} -> __IMPOSSIBLE__
         AbstractDefn{} -> __IMPOSSIBLE__
@@ -704,3 +1167,4 @@ isCoinductive t = do
     Sort  {} -> return (Just False)
     MetaV {} -> return Nothing
     DontCare{} -> __IMPOSSIBLE__
+    Dummy s    -> __IMPOSSIBLE_VERBOSE__ s

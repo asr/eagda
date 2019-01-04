@@ -62,10 +62,10 @@ type NamedArgs  = [NamedArg Term]
 data ConHead = ConHead
   { conName      :: QName     -- ^ The name of the constructor.
   , conInductive :: Induction -- ^ Record constructors can be coinductive.
-  , conFields    :: [QName]   -- ^ The name of the record fields.
-                              --   Empty list for data constructors.
-                              --   'Arg' is not needed here since it
-                              --   is stored in the constructor args.
+  , conFields    :: [Arg QName]   -- ^ The name of the record fields.
+      --   Empty list for data constructors.
+      --   'Arg' is stored since the info in the constructor args
+      --   might not be accurate because of subtyping (issue #2170).
   } deriving (Data, Show)
 
 instance Eq ConHead where
@@ -118,6 +118,11 @@ data Term = Var {-# UNPACK #-} !Int Elims -- ^ @x es@ neutral
             -- ^ Irrelevant stuff in relevant position, but created
             --   in an irrelevant context.  Basically, an internal
             --   version of the irrelevance axiom @.irrAx : .A -> A@.
+          | Dummy String
+            -- ^ A (part of a) term or type which is only used for internal purposes.
+            --   Replaces the @Sort Prop@ hack.
+            --   The @String@ typically describes the location where we create this dummy,
+            --   but can contain other information as well.
   deriving (Data, Show)
 
 type ConInfo = ConOrigin
@@ -159,6 +164,9 @@ appendArgNames = (++)
 nameToArgName :: Name -> ArgName
 nameToArgName = stringToArgName . prettyShow
 
+namedArgName :: NamedArg Name -> ArgName
+namedArgName x = maybe (nameToArgName $ namedArg x) rangedThing $ nameOf $ unArg x
+
 -- | Binder.
 --   'Abs': The bound variable might appear in the body.
 --   'NoAbs' is pseudo-binder, it does not introduce a fresh variable,
@@ -196,6 +204,9 @@ instance LensSort (Type' a) where
 instance LensSort a => LensSort (Dom a) where
   lensSort = traverseF . lensSort
 
+instance LensSort a => LensSort (Arg a) where
+  lensSort = traverseF . lensSort
+
 instance LensSort a => LensSort (Abs a) where
   lensSort = traverseF . lensSort
 
@@ -217,6 +228,12 @@ data Sort
   | PiSort Sort (Abs Sort) -- ^ Sort of the pi type.
   | UnivSort Sort -- ^ Sort of another sort.
   | MetaS {-# UNPACK #-} !MetaId Elims
+  | DefS QName Elims -- ^ A postulated sort.
+  | DummyS String
+    -- ^ A (part of a) term or type which is only used for internal purposes.
+    --   Replaces the abuse of @Prop@ for a dummy sort.
+    --   The @String@ typically describes the location where we create this dummy,
+    --   but can contain other information as well.
   deriving (Data, Show)
 
 -- | A level is a maximum expression of 0..n 'PlusLevel' expressions
@@ -439,6 +456,10 @@ data Pattern' x
     -- ^ E.g. @5@, @"hello"@.
   | ProjP ProjOrigin QName
     -- ^ Projection copattern.  Can only appear by itself.
+  | IApplyP PatOrigin Term Term x
+    -- ^ Path elimination pattern, like @VarP@ but keeps track of endpoints.
+  | DefP PatOrigin QName [NamedArg (Pattern' x)]
+    -- ^ Used for HITs, the QName should be the one from primHComp.
   deriving (Data, Show, Functor, Foldable, Traversable)
 
 type Pattern = Pattern' PatVarName
@@ -530,8 +551,11 @@ instance PatternVars a (Arg (Pattern' a)) where
   patternVars (Arg i (VarP _ x)   ) = [Arg i $ Left x]
   patternVars (Arg i (DotP _ t)   ) = [Arg i $ Right t]
   patternVars (Arg _ (ConP _ _ ps)) = patternVars ps
+  patternVars (Arg _ (DefP _ _ ps)) = patternVars ps
   patternVars (Arg _ (LitP _)     ) = []
   patternVars (Arg _ ProjP{}      ) = []
+  patternVars (Arg i (IApplyP _ _ _ x)) = [Arg i $ Left x]
+
 
 instance PatternVars a (NamedArg (Pattern' a)) where
   patternVars = patternVars . fmap namedThing
@@ -547,6 +571,8 @@ patternOrigin (DotP o _) = Just o
 patternOrigin LitP{}     = Nothing
 patternOrigin (ConP _ ci _) = conPRecord ci
 patternOrigin ProjP{}    = Nothing
+patternOrigin (IApplyP o _ _ _) = Just o
+patternOrigin (DefP o _ _) = Just o
 
 -- | Does the pattern perform a match that could fail?
 properlyMatching :: DeBruijnPattern -> Bool
@@ -558,6 +584,8 @@ properlyMatching LitP{} = True
 properlyMatching (ConP _ ci ps) = isNothing (conPRecord ci) || -- not a record cons
   List.any (properlyMatching . namedArg) ps  -- or one of subpatterns is a proper m
 properlyMatching ProjP{} = True
+properlyMatching IApplyP{} = False
+properlyMatching DefP{}  = True
 
 instance IsProjP (Pattern' a) where
   isProjP (ProjP o d) = Just (o, unambiguous d)
@@ -716,17 +744,41 @@ dontCare v =
     DontCare{} -> v
     _          -> DontCare v
 
--- | A dummy sort.
-dummySort :: Sort
-dummySort = Prop (Max [])
+-- | Aux: A dummy term to constitute a dummy term/level/sort/type.
+dummyTerm' :: String -> Int -> Term
+dummyTerm' file line = Dummy $ file ++ ":" ++ show line
 
--- | A dummy term.
-dummyTerm :: Term
-dummyTerm = Sort dummySort
+-- | Aux: A dummy level to constitute a level/sort.
+dummyLevel' :: String -> Int -> Level
+dummyLevel' file line = unreducedLevel $ dummyTerm' file line
 
--- | A dummy type.
-dummyType :: Type
-dummyType = sort dummySort
+-- | A dummy term created at location.
+--   Note: use macro __DUMMY_TERM__ !
+dummyTerm :: String -> Int -> Term
+dummyTerm file line = dummyTerm' ("dummyTerm: " ++ file) line
+
+-- | A dummy level created at location.
+--   Note: use macro __DUMMY_LEVEL__ !
+dummyLevel :: String -> Int -> Level
+dummyLevel file line = dummyLevel' ("dummyLevel: " ++ file) line
+
+-- | A dummy sort created at location.
+--   Note: use macro __DUMMY_SORT__ !
+dummySort :: String -> Int -> Sort
+dummySort file line = DummyS $ file ++ ":" ++ show line
+
+-- | A dummy type created at location.
+--   Note: use macro __DUMMY_TYPE__ !
+dummyType :: String -> Int -> Type
+dummyType file line = El (DummyS "") $ dummyTerm' ("dummyType: " ++ file) line
+
+-- | Context entries without a type have this dummy type.
+--   Note: use macro __DUMMY_DOM__ !
+dummyDom :: String -> Int -> Dom Type
+dummyDom file line = defaultDom $ dummyType file line
+
+unreducedLevel :: Term -> Level
+unreducedLevel v = Max [ Plus 0 $ UnreducedLevel v ]
 
 -- | Top sort (Set\omega).
 topSort :: Type
@@ -758,26 +810,11 @@ isSort v = case v of
   Sort s -> Just s
   _      -> Nothing
 
-isProp :: LensSort a => a -> Bool
-isProp x = case getSort x of
-             Prop{} -> True
-             _      -> False
-
-isIrrelevantOrProp :: (LensRelevance a, LensSort a) => a -> Bool
-isIrrelevantOrProp x = isIrrelevant x || isProp x
-
 impossibleTerm :: String -> Int -> Term
-impossibleTerm file line = Lit $ LitString noRange $ unlines
+impossibleTerm file line = Dummy $ unlines
   [ "An internal error has occurred. Please report this as a bug."
   , "Location of the error: " ++ file ++ ":" ++ show line
   ]
-
-hackReifyToMeta :: Term
-hackReifyToMeta = DontCare $ Lit $ LitNat noRange (-42)
-
-isHackReifyToMeta :: Term -> Bool
-isHackReifyToMeta (DontCare (Lit (LitNat r (-42)))) = r == noRange
-isHackReifyToMeta _ = False
 
 ---------------------------------------------------------------------------
 -- * Telescopes.
@@ -823,6 +860,10 @@ telToList :: Telescope -> ListTel
 telToList EmptyTel                    = []
 telToList (ExtendTel arg (Abs x tel)) = fmap (x,) arg : telToList tel
 telToList (ExtendTel _    NoAbs{}   ) = __IMPOSSIBLE__
+
+-- | Lens to edit a 'Telescope' as a list.
+listTel :: Lens' ListTel Telescope
+listTel f = fmap telFromList . f . telToList
 
 -- | Drop the types from a telescope.
 class TelToArgs a where
@@ -876,17 +917,6 @@ arity :: Type -> Nat
 arity t = case unEl t of
   Pi  _ b -> 1 + arity (unAbs b)
   _       -> 0
-
--- | Make a name that is not in scope.
-notInScopeName :: ArgName -> ArgName
-notInScopeName = stringToArgName . ("." ++) . argNameToString
-
--- | Remove the dot from a notInScopeName. This is used when printing function
---   types that have abstracted over not-in-scope names.
-unNotInScopeName :: ArgName -> ArgName
-unNotInScopeName = stringToArgName . undot . argNameToString
-  where undot ('.':s) = s
-        undot s       = s
 
 -- | Pick the better name suggestion, i.e., the one that is not just underscore.
 class Suggest a b where
@@ -949,18 +979,13 @@ hasElims v =
     Sort{}     -> Nothing
     Level{}    -> Nothing
     DontCare{} -> Nothing
-
--- | Drop 'Apply' constructor. (Unsafe!)
-argFromElim :: Elim' a -> Arg a
-argFromElim (Apply u) = u
-argFromElim Proj{}    = __IMPOSSIBLE__
-argFromElim (IApply _ _ r) = defaultArg r -- losing information
+    Dummy{}    -> Nothing
 
 -- | Drop 'Apply' constructor. (Safe)
 isApplyElim :: Elim' a -> Maybe (Arg a)
 isApplyElim (Apply u) = Just u
 isApplyElim Proj{}    = Nothing
-isApplyElim (IApply _ _ r)    = Just (defaultArg r)  -- losing information
+isApplyElim (IApply _ _ r) = Just (defaultArg r)
 
 isApplyElim' :: Empty -> Elim' a -> Arg a
 isApplyElim' e = fromMaybe (absurd e) . isApplyElim
@@ -982,13 +1007,9 @@ instance IsProjElim Elim where
   isProjElim Apply{}    = Nothing
   isProjElim IApply{} = Nothing
 
--- | Discard @Proj f@ entries.
-dropProjElims :: IsProjElim e => [e] -> [e]
-dropProjElims = filter (isNothing . isProjElim)
-
 -- | Discards @Proj f@ entries.
 argsFromElims :: Elims -> Args
-argsFromElims = map argFromElim . dropProjElims
+argsFromElims = mapMaybe isApplyElim
 
 -- | Drop 'Proj' constructors. (Safe)
 allProjElims :: Elims -> Maybe [(ProjOrigin, QName)]
@@ -1071,6 +1092,7 @@ instance TermSize Term where
     Pi a b      -> 1 + tsize a + tsize b
     Sort s      -> tsize s
     DontCare mv -> tsize mv
+    Dummy{}     -> 1
 
 instance TermSize Sort where
   tsize s = case s of
@@ -1081,6 +1103,8 @@ instance TermSize Sort where
     PiSort s s' -> 1 + tsize s + tsize s'
     UnivSort s -> 1 + tsize s
     MetaS _ es -> 1 + tsize es
+    DefS _ es  -> 1 + tsize es
+    DummyS{}   -> 1
 
 instance TermSize Level where
   tsize (Max as) = 1 + tsize as
@@ -1122,6 +1146,7 @@ instance KillRange Term where
     Pi a b      -> killRange2 Pi a b
     Sort s      -> killRange1 Sort s
     DontCare mv -> killRange1 DontCare mv
+    Dummy{}     -> v
 
 instance KillRange Level where
   killRange (Max as) = killRange1 Max as
@@ -1148,6 +1173,8 @@ instance KillRange Sort where
     PiSort s1 s2 -> killRange2 PiSort s1 s2
     UnivSort s -> killRange1 UnivSort s
     MetaS x es -> killRange1 (MetaS x) es
+    DefS d es  -> killRange2 DefS d es
+    DummyS{}   -> s
 
 instance KillRange Substitution where
   killRange IdS                  = IdS
@@ -1174,6 +1201,8 @@ instance KillRange a => KillRange (Pattern' a) where
       ConP con info ps -> killRange3 ConP con info ps
       LitP l           -> killRange1 LitP l
       ProjP o q        -> killRange1 (ProjP o) q
+      IApplyP o u t x  -> killRange3 (IApplyP o) u t x
+      DefP o q ps      -> killRange2 (DefP o) q ps
 
 instance KillRange Clause where
   killRange (Clause rl rf tel ps body t catchall unreachable) =
@@ -1211,10 +1240,10 @@ instance Pretty a => Pretty (Substitution' a) where
   prettyPrec p rho = pr p rho
     where
     pr p rho = case rho of
-      IdS              -> text "idS"
-      EmptyS err       -> text "emptyS"
-      t :# rho         -> mparens (p > 2) $ sep [ pr 2 rho P.<> text ",", prettyPrec 3 t ]
-      Strengthen _ rho -> mparens (p > 9) $ text "strS" <+> pr 10 rho
+      IdS              -> "idS"
+      EmptyS err       -> "emptyS"
+      t :# rho         -> mparens (p > 2) $ sep [ pr 2 rho P.<> ",", prettyPrec 3 t ]
+      Strengthen _ rho -> mparens (p > 9) $ "strS" <+> pr 10 rho
       Wk n rho         -> mparens (p > 9) $ text ("wkS " ++ show n) <+> pr 10 rho
       Lift n rho       -> mparens (p > 9) $ text ("liftS " ++ show n) <+> pr 10 rho
 
@@ -1224,21 +1253,22 @@ instance Pretty Term where
       Var x els -> text ("@" ++ show x) `pApp` els
       Lam ai b   ->
         mparens (p > 0) $
-        sep [ text "λ" <+> prettyHiding ai id (text . absName $ b) <+> text "->"
+        sep [ "λ" <+> prettyHiding ai id (text . absName $ b) <+> "->"
             , nest 2 $ pretty (unAbs b) ]
       Lit l                -> pretty l
       Def q els            -> pretty q `pApp` els
       Con c ci vs          -> pretty (conName c) `pApp` vs
       Pi a (NoAbs _ b)     -> mparens (p > 0) $
-        sep [ prettyPrec 1 (unDom a) <+> text "->"
+        sep [ prettyPrec 1 (unDom a) <+> "->"
             , nest 2 $ pretty b ]
       Pi a b               -> mparens (p > 0) $
-        sep [ pDom (domInfo a) (text (absName b) <+> text ":" <+> pretty (unDom a)) <+> text "->"
+        sep [ pDom (domInfo a) (text (absName b) <+> ":" <+> pretty (unDom a)) <+> "->"
             , nest 2 $ pretty (unAbs b) ]
       Sort s      -> prettyPrec p s
       Level l     -> prettyPrec p l
       MetaV x els -> pretty x `pApp` els
       DontCare v  -> prettyPrec p v
+      Dummy s     -> parens $ text s
     where
       pApp d els = mparens (not (null els) && p > 9) $
                    sep [d, nest 2 $ fsep (map (prettyPrec 10) els)]
@@ -1252,16 +1282,16 @@ pDom i =
 
 instance Pretty Clause where
   pretty Clause{clauseTel = tel, namedClausePats = ps, clauseBody = b, clauseType = t} =
-    sep [ pretty tel <+> text "|-"
-        , nest 2 $ sep [ fsep (map (prettyPrec 10) ps) <+> text "="
+    sep [ pretty tel <+> "|-"
+        , nest 2 $ sep [ fsep (map (prettyPrec 10) ps) <+> "="
                        , nest 2 $ pBody b t ] ]
     where
-      pBody Nothing _ = text "(absurd)"
+      pBody Nothing _ = "(absurd)"
       pBody (Just b) Nothing  = pretty b
-      pBody (Just b) (Just t) = sep [ pretty b <+> text ":", nest 2 $ pretty t ]
+      pBody (Just b) (Just t) = sep [ pretty b <+> ":", nest 2 $ pretty t ]
 
 instance Pretty a => Pretty (Tele (Dom a)) where
-  pretty tel = fsep [ pDom a (text x <+> text ":" <+> pretty (unDom a)) | (x, a) <- telToList tel ]
+  pretty tel = fsep [ pDom a (text x <+> ":" <+> pretty (unDom a)) | (x, a) <- telToList tel ]
     where
       telToList EmptyTel = []
       telToList (ExtendTel a tel) = (absName tel, a) : telToList (unAbs tel)
@@ -1271,16 +1301,16 @@ instance Pretty Level where
     case as of
       []  -> prettyPrec p (ClosedLevel 0)
       [a] -> prettyPrec p a
-      _   -> mparens (p > 9) $ List.foldr1 (\a b -> text "lub" <+> a <+> b) $ map (prettyPrec 10) as
+      _   -> mparens (p > 9) $ List.foldr1 (\a b -> "lub" <+> a <+> b) $ map (prettyPrec 10) as
 
 instance Pretty PlusLevel where
   prettyPrec p l =
     case l of
-      ClosedLevel n -> sucs p n $ \_ -> text "lzero"
+      ClosedLevel n -> sucs p n $ \_ -> "lzero"
       Plus n a      -> sucs p n $ \p -> prettyPrec p a
     where
       sucs p 0 d = d p
-      sucs p n d = mparens (p > 9) $ text "lsuc" <+> sucs 10 (n - 1) d
+      sucs p n d = mparens (p > 9) $ "lsuc" <+> sucs 10 (n - 1) d
 
 instance Pretty LevelAtom where
   prettyPrec p a =
@@ -1293,20 +1323,22 @@ instance Pretty LevelAtom where
 instance Pretty Sort where
   prettyPrec p s =
     case s of
-      Type (Max []) -> text "Set"
+      Type (Max []) -> "Set"
       Type (Max [ClosedLevel n]) -> text $ "Set" ++ show n
-      Type l -> mparens (p > 9) $ text "Set" <+> prettyPrec 10 l
-      Prop (Max []) -> text "Prop"
+      Type l -> mparens (p > 9) $ "Set" <+> prettyPrec 10 l
+      Prop (Max []) -> "Prop"
       Prop (Max [ClosedLevel n]) -> text $ "Prop" ++ show n
-      Prop l -> mparens (p > 9) $ text "Prop" <+> prettyPrec 10 l
-      Inf -> text "Setω"
-      SizeUniv -> text "SizeUniv"
+      Prop l -> mparens (p > 9) $ "Prop" <+> prettyPrec 10 l
+      Inf -> "Setω"
+      SizeUniv -> "SizeUniv"
       PiSort s b -> mparens (p > 9) $
-        text "piSort" <+> prettyPrec 10 s
+        "piSort" <+> prettyPrec 10 s
                       <+> parens (sep [ text ("λ " ++ absName b ++ " ->")
                                       , nest 2 $ pretty (unAbs b) ])
-      UnivSort s -> mparens (p > 9) $ text "univSort" <+> prettyPrec 10 s
+      UnivSort s -> mparens (p > 9) $ "univSort" <+> prettyPrec 10 s
       MetaS x es -> prettyPrec p $ MetaV x es
+      DefS d es  -> prettyPrec p $ Def d es
+      DummyS s   -> parens $ text s
 
 instance Pretty Type where
   prettyPrec p (El _ a) = prettyPrec p a
@@ -1321,19 +1353,22 @@ instance Pretty DBPatVar where
 
 instance Pretty a => Pretty (Pattern' a) where
   prettyPrec n (VarP _o x)   = prettyPrec n x
-  prettyPrec _ (DotP _o t)   = text "." P.<> prettyPrec 10 t
+  prettyPrec _ (DotP _o t)   = "." P.<> prettyPrec 10 t
   prettyPrec n (ConP c i nps)= mparens (n > 0 && not (null nps)) $
     pretty (conName c) <+> fsep (map (prettyPrec 10) ps)
+    where ps = map (fmap namedThing) nps
+  prettyPrec n (DefP o q nps)= mparens (n > 0 && not (null nps)) $
+    pretty q <+> fsep (map (prettyPrec 10) ps)
     where ps = map (fmap namedThing) nps
   -- -- Version with printing record type:
   -- prettyPrec _ (ConP c i ps) = (if b then braces else parens) $ prTy $
   --   text (show $ conName c) <+> fsep (map (pretty . namedArg) ps)
   --   where
   --     b = maybe False (== ConOSystem) $ conPRecord i
-  --     prTy d = caseMaybe (conPType i) d $ \ t -> d  <+> text ":" <+> pretty t
+  --     prTy d = caseMaybe (conPType i) d $ \ t -> d  <+> ":" <+> pretty t
   prettyPrec _ (LitP l)      = pretty l
   prettyPrec _ (ProjP _o q)  = text ("." ++ prettyShow q)
-
+  prettyPrec n (IApplyP _o _ _ x) = prettyPrec n x
 -----------------------------------------------------------------------------
 -- * NFData instances
 -----------------------------------------------------------------------------
@@ -1352,6 +1387,7 @@ instance NFData Term where
     Level l    -> rnf l
     MetaV _ es -> rnf es
     DontCare v -> rnf v
+    Dummy _    -> ()
 
 instance NFData Type where
   rnf (El s v) = rnf (s, v)
@@ -1365,6 +1401,8 @@ instance NFData Sort where
     PiSort a b -> rnf (a, unAbs b)
     UnivSort a -> rnf a
     MetaS _ es -> rnf es
+    DefS _ es  -> rnf es
+    DummyS _   -> ()
 
 instance NFData Level where
   rnf (Max as) = rnf as

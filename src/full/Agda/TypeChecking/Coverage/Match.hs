@@ -67,7 +67,7 @@ instance Pretty SplitPatVar where
     (text $ patVarNameToString (splitPatVarName x)) P.<>
     (text $ "@" ++ show (splitPatVarIndex x)) P.<>
     (ifNull (splitExcludedLits x) empty $ \lits ->
-      text "\\{" P.<> prettyList_ lits P.<> text "}")
+      "\\{" P.<> prettyList_ lits P.<> "}")
 
 instance PrettyTCM SplitPatVar where
   prettyTCM = prettyTCM . var . splitPatVarIndex
@@ -79,6 +79,10 @@ toSplitVar x = SplitPatVar (dbPatVarName x) (dbPatVarIndex x) []
 
 fromSplitVar :: SplitPatVar -> DBPatVar
 fromSplitVar x = DBPatVar (splitPatVarName x) (splitPatVarIndex x)
+
+instance DeBruijn SplitPatVar where
+  deBruijnView x = deBruijnView (fromSplitVar x)
+  debruijnNamedVar n i = toSplitVar (debruijnNamedVar n i)
 
 toSplitPatterns :: [NamedArg DeBruijnPattern] -> [NamedArg SplitPattern]
 toSplitPatterns = (fmap . fmap . fmap . fmap) toSplitVar
@@ -113,10 +117,23 @@ instance Subst SplitPattern SplitPattern where
       lookupS rho $ splitPatVarIndex x
     DotP o u     -> DotP o $ applySplitPSubst rho u
     ConP c ci ps -> ConP c ci $ applySubst rho ps
+    DefP o q ps -> DefP o q $ applySubst rho ps
     LitP x       -> p
     ProjP{}      -> p
+    IApplyP o l r x  ->
+      useEndPoints (applySplitPSubst rho l) (applySplitPSubst rho r) $
+      usePatOrigin o $
+      useName (splitPatVarName x) $
+      useExcludedLits (splitExcludedLits x) $
+      lookupS rho $ splitPatVarIndex x
 
     where
+      -- see Subst for DeBruijnPattern
+      useEndPoints :: Term -> Term -> SplitPattern -> SplitPattern
+      useEndPoints l r (VarP o x)        = IApplyP o l r x
+      useEndPoints l r (IApplyP o _ _ x) = IApplyP o l r x
+      useEndPoints l r x                 = __IMPOSSIBLE__
+
       useName :: PatVarName -> SplitPattern -> SplitPattern
       useName n (VarP o x)
         | isUnderscore (splitPatVarName x)
@@ -137,26 +154,42 @@ isTrivialPattern p = case p of
   DotP{}      -> return True
   ConP c i ps -> andM $ (isEtaCon $ conName c)
                       : (map (isTrivialPattern . namedArg) ps)
+  DefP{}      -> return False
   LitP{}      -> return False
   ProjP{}     -> return False
+  IApplyP{}   -> return True
 
 -- | If matching succeeds, we return the instantiation of the clause pattern vector
 --   to obtain the split clause pattern vector.
 type MatchResult = Match [SplitPattern]
 
 -- | If matching is inconclusive (@Block@) we want to know which
---   variables are blocking the match.
+--   variables or projections are blocking the match.
 data Match a
   = Yes a   -- ^ Matches unconditionally.
   | No      -- ^ Definitely does not match.
   | Block
-    { blockedOnResult :: Bool
-      -- ^ True if the clause has a result split
+    { blockedOnResult :: BlockedOnResult
+      -- ^ @BlockedOnProj o@ if the clause has a result split
     , blockedOnVars :: BlockingVars
       -- ^ @BlockingVar i cs ls o@ means variable @i@ is blocked on
       -- constructors @cs@ and literals @ls@.
     }
   deriving (Functor)
+
+data ApplyOrIApply = IsApply | IsIApply
+
+data BlockedOnResult
+  = BlockedOnProj      -- ^ Blocked on unsplit projection
+     { blockedOnResultOverlap :: Bool
+       -- ^ True if there are also matching clauses without an unsplit
+       -- copattern.
+     }
+  | BlockedOnApply     -- ^ Blocked on unintroduced argument
+     { blockedOnResultIApply :: ApplyOrIApply
+       -- ^ True if the unintroduced argument was an IApply pattern
+     }
+  | NotBlockedOnResult
 
 -- | Variable blocking a match.
 data BlockingVar = BlockingVar
@@ -174,21 +207,24 @@ data BlockingVar = BlockingVar
 instance Pretty BlockingVar where
   pretty (BlockingVar i cs ls o) = cat
     [ text ("variable " ++ show i)
-    , if null cs then empty else text " blocked on constructors" <+> pretty cs
-    , if null ls then empty else text " blocked on literals" <+> pretty ls
-    , if o then text " (overlapping)" else empty
+    , if null cs then empty else " blocked on constructors" <+> pretty cs
+    , if null ls then empty else " blocked on literals" <+> pretty ls
+    , if o then " (overlapping)" else empty
     ]
 
 type BlockingVars = [BlockingVar]
 
 blockedOnConstructor :: Nat -> ConHead -> Match a
-blockedOnConstructor i c = Block False [BlockingVar i [c] [] False]
+blockedOnConstructor i c = Block NotBlockedOnResult [BlockingVar i [c] [] False]
 
 blockedOnLiteral :: Nat -> Literal -> Match a
-blockedOnLiteral i l = Block False [BlockingVar i [] [l] False]
+blockedOnLiteral i l = Block NotBlockedOnResult [BlockingVar i [] [l] False]
 
 blockedOnProjection :: Match a
-blockedOnProjection = Block True []
+blockedOnProjection = Block (BlockedOnProj False) []
+
+blockedOnApplication :: ApplyOrIApply -> Match a
+blockedOnApplication b = Block (BlockedOnApply b) []
 
 -- | Lens for 'blockingVarCons'.
 mapBlockingVarCons :: ([ConHead] -> [ConHead]) -> BlockingVar -> BlockingVar
@@ -212,6 +248,27 @@ zipBlockingVars xs ys = map upd xs
       Just (BlockingVar _ cons' lits' o') -> BlockingVar x (cons ++ cons') (lits ++ lits') (o || o')
       Nothing -> BlockingVar x cons lits True
 
+setBlockedOnResultOverlap :: BlockedOnResult -> BlockedOnResult
+setBlockedOnResultOverlap b = case b of
+  BlockedOnProj{}      -> b { blockedOnResultOverlap = True }
+  BlockedOnApply{}     -> b
+  NotBlockedOnResult{} -> b
+
+anyBlockedOnResult :: BlockedOnResult -> BlockedOnResult -> BlockedOnResult
+anyBlockedOnResult b1 b2 = case (b1,b2) of
+  (NotBlockedOnResult , b2                ) -> b2
+  (b1                 , NotBlockedOnResult) -> b1
+  (_                  , _                 ) -> __IMPOSSIBLE__
+
+-- | Left dominant merge of `BlockedOnResult`.
+choiceBlockedOnResult :: BlockedOnResult -> BlockedOnResult -> BlockedOnResult
+choiceBlockedOnResult b1 b2 = case (b1,b2) of
+  (NotBlockedOnResult  , _                 ) -> NotBlockedOnResult
+  (BlockedOnProj _     , NotBlockedOnResult) -> BlockedOnProj True
+  (BlockedOnProj o1    , BlockedOnProj o2  ) -> BlockedOnProj (o1 || o2)
+  (BlockedOnProj o1    , BlockedOnApply{}  ) -> BlockedOnProj True
+  (BlockedOnApply b    , _                 ) -> BlockedOnApply b
+
 -- | @choice m m'@ combines the match results @m@ of a function clause
 --   with the (already combined) match results $m'$ of the later clauses.
 --   It is for skipping clauses that definitely do not match ('No').
@@ -219,8 +276,8 @@ zipBlockingVars xs ys = map upd xs
 --   If one clause unconditionally matches ('Yes') we do not look further.
 choice :: Match a -> Match a -> Match a
 choice (Yes a)      _            = Yes a
-choice (Block r xs) (Block s ys) = Block (r && s) $ zipBlockingVars xs ys
-choice (Block r xs) (Yes _)      = Block r $ overlapping xs
+choice (Block r xs) (Block s ys) = Block (choiceBlockedOnResult r s) $ zipBlockingVars xs ys
+choice (Block r xs) (Yes _)      = Block (setBlockedOnResultOverlap r) $ overlapping xs
 choice m@Block{}    No           = m
 choice No           m            = m
 
@@ -260,31 +317,25 @@ matchPats
   -> MatchResult
      -- ^ Result.
      --   If 'Yes' the instantiation @rs@ such that @ps[rs] == qs@.
+matchPats [] [] = mempty
+matchPats (p:ps) (q:qs) =
+  matchPat (namedArg p) (namedArg q) `mappend` matchPats ps qs
 
-matchPats ps qs = mconcat $ [ projPatternsLeftInSplitClause ] ++
-    zipWith matchPat (map namedArg ps) (map namedArg qs) ++
-    [ projPatternsLeftInMatchedClause ]
-  where
-    -- Patterns left in split clause:
-    qsrest = drop (length ps) qs
-    -- Andreas, 2016-06-03, issue #1986:
-    -- catch-all for copatterns is inconsistent as found by Ulf.
-    -- Thus, if the split clause has copatterns left,
-    -- the current (shorter) clause is not considered covering.
-    projPatternsLeftInSplitClause =
-        case mapMaybe isProjP qsrest of
-            [] -> mempty -- no proj. patterns left
-            _  -> No     -- proj. patterns left
+-- Patterns left in split clause:
+-- Andreas, 2016-06-03, issue #1986:
+-- catch-all for copatterns is inconsistent as found by Ulf.
+-- Thus, if the split clause has copatterns left,
+-- the current (shorter) clause is not considered covering.
+matchPats [] qs@(_:_) = case mapMaybe isProjP qs of
+  [] -> mempty -- no proj. patterns left
+  _  -> No     -- proj. patterns left
 
-    -- Patterns left in candidate clause:
-    psrest = drop (length qs) ps
-    -- If the current clause has additional copatterns in
-    -- comparison to the split clause, we should split on them.
-    projPatternsLeftInMatchedClause =
-        case mapMaybe isProjP psrest of
-            [] -> mempty               -- no proj. patterns left
-            ds -> blockedOnProjection  -- proj. patterns left
-
+-- Patterns left in candidate clause:
+-- If the current clause has additional copatterns in
+-- comparison to the split clause, we should split on them.
+matchPats (p:ps) [] = case isProjP p of
+  Just{}  -> blockedOnProjection
+  Nothing -> blockedOnApplication (case namedArg p of IApplyP{} -> IsIApply; _ -> IsApply)
 
 -- | Combine results of checking whether function clause patterns
 --   covers split clause patterns.
@@ -304,7 +355,7 @@ instance Semigroup a => Semigroup (Match a) where
   Yes _      <> m          = m
   No         <> _          = No
   Block{}    <> No         = No
-  Block r xs <> Block s ys = Block (r || s) (xs ++ ys)
+  Block r xs <> Block s ys = Block (anyBlockedOnResult r s) (xs ++ ys)
   m@Block{}  <> Yes{}      = m
 
 instance (Semigroup a, Monoid a) => Monoid (Match a) where
@@ -345,9 +396,12 @@ matchPat p@(LitP l) q = case q of
   ConP{}   -> No
   DotP{}   -> No
   LitP l'  -> if l == l' then Yes [] else No
+  DefP{}   -> No
   ProjP{}  -> __IMPOSSIBLE__  -- excluded by typing
+  IApplyP{} -> __IMPOSSIBLE__
 matchPat (ProjP _ d) (ProjP _ d') = if d == d' then mempty else No
 matchPat ProjP{} _ = __IMPOSSIBLE__
+matchPat IApplyP{} q = Yes [q]
 matchPat p@(ConP c _ ps) q = case q of
   VarP _ x -> blockedOnConstructor (splitPatVarIndex x) c
   ConP c' i qs
@@ -355,4 +409,16 @@ matchPat p@(ConP c _ ps) q = case q of
     | otherwise -> No
   DotP o t  -> No
   LitP _    -> No
+  DefP{}   -> No
   ProjP{}   -> __IMPOSSIBLE__  -- excluded by typing
+  IApplyP _ _ _ x -> blockedOnConstructor (splitPatVarIndex x) c
+matchPat (DefP o c ps) q = case q of
+  VarP _ x -> __IMPOSSIBLE__ -- blockedOnConstructor (splitPatVarIndex x) c
+  ConP c' i qs -> No
+  DotP o t  -> No
+  LitP _    -> No
+  DefP o c' qs
+    | c == c'   -> matchPats ps qs
+    | otherwise -> No
+  ProjP{}   -> __IMPOSSIBLE__  -- excluded by typing
+  IApplyP _ _ _ x -> __IMPOSSIBLE__ --blockedOnConstructor (splitPatVarIndex x) c

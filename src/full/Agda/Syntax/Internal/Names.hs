@@ -49,6 +49,9 @@ instance (NamesIn a, NamesIn b) => NamesIn (a, b) where
 instance (NamesIn a, NamesIn b, NamesIn c) => NamesIn (a, b, c) where
   namesIn (x, y, z) = namesIn (x, (y, z))
 
+instance NamesIn CompKit where
+  namesIn (CompKit a b) = namesIn (a,b)
+
 -- Andreas, 2017-07-27
 -- In the following clauses, the choice of fields is not obvious
 -- to the reader.  Please comment on the choices.
@@ -63,6 +66,8 @@ instance NamesIn Definition where
 instance NamesIn Defn where
   namesIn def = case def of
     Axiom{} -> Set.empty
+    DataOrRecSig{} -> Set.empty
+    GeneralizableVar{} -> Set.empty
     -- Andreas 2017-07-27, Q: which names can be in @cc@ which are not already in @cl@?
     Function    { funClauses = cl, funCompiled = cc }              -> namesIn (cl, cc)
     Datatype    { dataClause = cl, dataCons = cs, dataSort = s }   -> namesIn (cl, cs, s)
@@ -93,7 +98,9 @@ instance NamesIn (Pattern' a) where
     LitP l        -> namesIn l
     DotP _ v      -> namesIn v
     ConP c _ args -> namesIn (c, args)
+    DefP o q args -> namesIn (q, args)
     ProjP _ f     -> namesIn f
+    IApplyP _ t u _ -> namesIn (t, u)
 
 instance NamesIn a => NamesIn (Type' a) where
   namesIn (El s t) = namesIn (s, t)
@@ -107,6 +114,8 @@ instance NamesIn Sort where
     PiSort a b -> namesIn (a, b)
     UnivSort a -> namesIn a
     MetaS _ es -> namesIn es
+    DefS d es  -> namesIn (d, es)
+    DummyS{}   -> Set.empty
 
 instance NamesIn Term where
   namesIn v = case v of
@@ -120,6 +129,7 @@ instance NamesIn Term where
     Level l      -> namesIn l
     MetaV _ args -> namesIn args
     DontCare v   -> namesIn v
+    Dummy{}      -> Set.empty
 
 instance NamesIn Level where
   namesIn (Max ls) = namesIn ls

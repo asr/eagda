@@ -5,7 +5,8 @@
 module Agda.Interaction.Highlighting.Generate
   ( Level(..)
   , generateAndPrintSyntaxInfo
-  , generateTokenInfo, generateTokenInfoFromString
+  , generateTokenInfo, generateTokenInfoFromSource
+  , generateTokenInfoFromString
   , printSyntaxInfo
   , printErrorInfo, errorHighlighting
   , printUnsolvedInfo
@@ -14,7 +15,7 @@ module Agda.Interaction.Highlighting.Generate
   , warningHighlighting
   , computeUnsolvedMetaWarnings
   , computeUnsolvedConstraints
-  , storeDisambiguatedName
+  , storeDisambiguatedName, disambiguateRecordFields
   ) where
 
 import Prelude hiding (null)
@@ -29,8 +30,10 @@ import Data.Generics.Geniplate
 import qualified Data.Map as Map
 import Data.Maybe
 import Data.List ((\\), isPrefixOf)
+import qualified Data.List as List
 import qualified Data.Foldable as Fold (fold, foldMap, toList)
 import qualified Data.IntMap as IntMap
+import qualified Data.Text.Lazy as T
 import Data.Void
 
 import Agda.Interaction.Response (Response(Resp_HighlightingInfo))
@@ -50,6 +53,7 @@ import Agda.TypeChecking.Warnings (runPM)
 import Agda.Syntax.Abstract (IsProjP(..))
 import qualified Agda.Syntax.Abstract as A
 import Agda.Syntax.Concrete (FieldAssignment'(..))
+import Agda.Syntax.Concrete.Definitions ( DeclarationWarning(..) )
 import qualified Agda.Syntax.Common as Common
 import qualified Agda.Syntax.Concrete.Name as C
 import qualified Agda.Syntax.Concrete as C
@@ -121,8 +125,8 @@ printHighlightingInfo ::
   HighlightingInfo ->
   tcm ()
 printHighlightingInfo remove info = do
-  modToSrc <- use stModuleToSource
-  method   <- view eHighlightingMethod
+  modToSrc <- useTC stModuleToSource
+  method   <- viewTC eHighlightingMethod
   liftTCM $ reportSLn "highlighting" 50 $ unlines
     [ "Printing highlighting info:"
     , show info
@@ -161,7 +165,7 @@ generateAndPrintSyntaxInfo
   -> TCM ()
 generateAndPrintSyntaxInfo decl _ _ | null $ P.getRange decl = return ()
 generateAndPrintSyntaxInfo decl hlLevel updateState = do
-  file <- fromMaybe __IMPOSSIBLE__ <$> asks envCurrentPath
+  file <- fromMaybe __IMPOSSIBLE__ <$> asksTC envCurrentPath
 
   reportSLn "import.iface.create" 15 $
       "Generating syntax info for " ++ filePath file ++ ' ' :
@@ -184,18 +188,18 @@ generateAndPrintSyntaxInfo decl hlLevel updateState = do
       Full{} -> generateConstructorInfo modMap file kinds decl
       _      -> return mempty
 
-    cm <- P.rangeFile <$> view eRange
+    cm <- P.rangeFile <$> viewTC eRange
     reportSLn "highlighting.warning" 60 $ "current path = " ++ show cm
 
     warnInfo <- Fold.foldMap warningHighlighting
-                 . filter ((cm ==) . tcWarningOrigin) <$> use stTCWarnings
+                 . filter ((cm ==) . tcWarningOrigin) <$> useTC stTCWarnings
 
     let (from, to) = case P.rangeToInterval (P.getRange decl) of
           Nothing -> __IMPOSSIBLE__
           Just i  -> ( fromIntegral $ P.posPos $ P.iStart i
                      , fromIntegral $ P.posPos $ P.iEnd i)
     (prevTokens, (curTokens, postTokens)) <-
-      second (splitAtC to) . splitAtC from <$> use stTokens
+      second (splitAtC to) . splitAtC from <$> useTC stTokens
 
     -- theRest needs to be placed before nameInfo here since record
     -- field declarations contain QNames. constructorInfo also needs
@@ -212,8 +216,8 @@ generateAndPrintSyntaxInfo decl hlLevel updateState = do
                      curTokens
 
     when updateState $ do
-      stSyntaxInfo %= mappend syntaxInfo
-      stTokens     .= prevTokens `mappend` postTokens
+      stSyntaxInfo `modifyTCLens` mappend syntaxInfo
+      stTokens     `setTCLens` (prevTokens `mappend` postTokens)
 
     ifTopLevelAndHighlightingLevelIs NonInteractive $
       printHighlightingInfo KeepHighlighting syntaxInfo
@@ -222,12 +226,9 @@ generateAndPrintSyntaxInfo decl hlLevel updateState = do
   names :: [A.AmbiguousQName]
   names =
     (map I.unambiguous $
-     filter (not . extendedLambda) $
+     filter (not . isExtendedLambdaName) $
      universeBi decl) ++
     universeBi decl
-    where
-    extendedLambda :: A.QName -> Bool
-    extendedLambda = (extendedLambdaName `isPrefixOf`) . show . A.nameConcrete . A.qnameName
 
   -- Bound variables, dotted patterns, record fields, module names,
   -- the "as" and "to" symbols.
@@ -260,6 +261,7 @@ generateAndPrintSyntaxInfo decl hlLevel updateState = do
     macro n = nameToFileA modMap file n True $ \isOp ->
                   parserBased { aspect = Just $ Name (Just Macro) isOp }
 
+    field :: [C.Name] -> C.Name -> File
     field m n = nameToFile modMap file m n P.noRange
                            (\isOp -> parserBased { aspect =
                                        Just $ Name (Just Field) isOp })
@@ -283,6 +285,12 @@ generateAndPrintSyntaxInfo decl hlLevel updateState = do
 
     getVarAndField :: A.Expr -> File
     getVarAndField (A.Var x)            = bound $ A.BindName x
+    -- Andreas, 2018-06-09, issue #3120
+    -- The highlighting for record field tags is now created by the type checker in
+    -- function disambiguateRecordFields.
+    -- Andreas, Nisse, 2018-10-26, issue #3322
+    -- Still, we extract the highlighting info here for uses such as QuickLatex.
+    -- The aspects from the disambiguation will be merged in.
     getVarAndField (A.Rec       _ fs)   = mconcat [ field [] x | Left (FieldAssignment x _) <- fs ]
     getVarAndField (A.RecUpdate _ _ fs) = mconcat [ field [] x |      (FieldAssignment x _) <- fs ]
     getVarAndField _                    = mempty
@@ -302,11 +310,11 @@ generateAndPrintSyntaxInfo decl hlLevel updateState = do
     getLet (A.LetDeclaredVariable x) = bound x
 
     getLam :: A.LamBinding -> File
-    getLam (A.DomainFree _ x) = bound x
-    getLam (A.DomainFull {})  = mempty
+    getLam (A.DomainFree x)  = bound $ Common.namedArg x
+    getLam (A.DomainFull {}) = mempty
 
     getTyped :: A.TypedBinding -> File
-    getTyped (A.TBind _ xs _) = mconcat $ map (bound . dget) xs
+    getTyped (A.TBind _ xs _) = mconcat $ map (bound . Common.namedArg) xs
     getTyped A.TLet{}         = mempty
 
     getPatSynArgs :: A.Declaration -> File
@@ -322,6 +330,12 @@ generateAndPrintSyntaxInfo decl hlLevel updateState = do
           singleton (rToR $ P.getRange pi)
                 (parserBased { otherAspects = [DottedPattern] })
     getPattern' (A.PatternSynP _ q _) = patsyn q
+    -- Andreas, 2018-06-09, issue #3120
+    -- The highlighting for record field tags is now created by the type checker in
+    -- function disambiguateRecordFields.
+    -- Andreas, Nisse, 2018-10-26, issue #3322
+    -- Still, we extract the highlighting info here for uses such as QuickLatex.
+    -- The aspects from the disambiguation will be merged in.
     getPattern' (A.RecP _ fs) = mconcat [ field [] x | FieldAssignment x _ <- fs ]
     getPattern' _             = mempty
 
@@ -337,7 +351,7 @@ generateAndPrintSyntaxInfo decl hlLevel updateState = do
     getExpr _                = mempty
 
     getFieldDecl :: A.Declaration -> File
-    getFieldDecl (A.RecDef _ _ _ _ _ _ _ fs) = Fold.foldMap extractField fs
+    getFieldDecl (A.RecDef _ _ _ _ _ _ _ _ fs) = Fold.foldMap extractField fs
       where
       extractField (A.ScopedDecl _ ds) = Fold.foldMap extractField ds
       extractField (A.Field _ x _)     = field (concreteQualifier x)
@@ -350,8 +364,7 @@ generateAndPrintSyntaxInfo decl hlLevel updateState = do
       mconcat $ map (mod isTopLevelModule) xs
       where
       isTopLevelModule =
-        case catMaybes $
-             map (join .
+        case mapMaybe (join .
                   fmap (Strict.toLazy . P.srcFile) .
                   P.rStart .
                   A.nameBindingSite) xs of
@@ -369,13 +382,28 @@ generateAndPrintSyntaxInfo decl hlLevel updateState = do
 -- | Generate and return the syntax highlighting information for the
 -- tokens in the given file.
 
-generateTokenInfo
-  :: AbsolutePath          -- ^ The module to highlight.
-  -> TCM CompressedFile
+generateTokenInfo :: AbsolutePath -> TCM CompressedFile
 generateTokenInfo file =
-  runPM $ tokenHighlighting <$> Pa.parseFile' Pa.tokensParser file
+  generateTokenInfoFromSource file . T.unpack =<<
+    runPM (Pa.readFilePM file)
 
--- | Same as 'generateTokenInfo' but takes a string instead of a filename.
+-- | Generate and return the syntax highlighting information for the
+-- tokens in the given file.
+
+generateTokenInfoFromSource
+  :: AbsolutePath
+     -- ^ The module to highlight.
+  -> String
+     -- ^ The file contents. Note that the file is /not/ read from
+     -- disk.
+  -> TCM CompressedFile
+generateTokenInfoFromSource file input =
+  runPM $ tokenHighlighting <$> fst <$> Pa.parseFile Pa.tokensParser file input
+
+-- | Generate and return the syntax highlighting information for the
+-- tokens in the given string, which is assumed to correspond to the
+-- given range.
+
 generateTokenInfoFromString :: P.Range -> String -> TCM CompressedFile
 generateTokenInfoFromString r _ | r == P.noRange = return mempty
 generateTokenInfoFromString r s = do
@@ -409,12 +437,11 @@ tokenHighlighting = merge . map tokenToCFile
   tokenToCFile (T.TokLiteral (L.LitQName  r _)) = aToF String r
   tokenToCFile (T.TokLiteral (L.LitMeta r _ _)) = aToF String r
   tokenToCFile (T.TokComment (i, _))            = aToF Comment (P.getRange i)
-  tokenToCFile (T.TokTeX (i, _))                = aToF Comment (P.getRange i)
+  tokenToCFile (T.TokTeX (i, _))                = aToF Background (P.getRange i)
+  tokenToCFile (T.TokMarkup (i, _))             = aToF Markup (P.getRange i)
   tokenToCFile (T.TokId {})                     = mempty
   tokenToCFile (T.TokQId {})                    = mempty
-  tokenToCFile (T.TokString (i,s))
-    | "--" `isPrefixOf` s                       = aToF Option (P.getRange i)
-    | otherwise                                 = mempty
+  tokenToCFile (T.TokString (i,s))              = aToF Pragma (P.getRange i)
   tokenToCFile (T.TokDummy {})                  = mempty
   tokenToCFile (T.TokEOF {})                    = mempty
 
@@ -431,9 +458,9 @@ nameKinds :: Level
           -> A.Declaration
           -> TCM NameKinds
 nameKinds hlLevel decl = do
-  imported <- fix <$> use stImports
+  imported <- fix <$> useTC stImports
   local    <- case hlLevel of
-    Full{} -> fix <$> use stSignature
+    Full{} -> fix <$> useTC stSignature
     _      -> return HMap.empty
       -- Traverses the syntax tree and constructs a map from qualified
       -- names to name kinds. TODO: Handle open public.
@@ -457,6 +484,8 @@ nameKinds hlLevel decl = do
 
   defnToKind :: Defn -> NameKind
   defnToKind   M.Axiom{}                           = Postulate
+  defnToKind   M.DataOrRecSig{}                    = Postulate
+  defnToKind   M.GeneralizableVar{}                = Bound    -- TODO: separate kind for generalizable vars
   defnToKind d@M.Function{} | isProperProjection d = Field
                             | otherwise            = Function
   defnToKind   M.Datatype{}                        = Datatype
@@ -483,17 +512,18 @@ nameKinds hlLevel decl = do
   declToKind (A.ScopedDecl {})      = id
   declToKind (A.Open {})            = id
   declToKind (A.PatternSynDef q _ _) = insert q (Constructor Common.Inductive)
+  declToKind (A.Generalize _ _ _ q _)  = insert q Postulate
   declToKind (A.FunDef  _ q _ _)     = insert q Function
   declToKind (A.UnquoteDecl _ _ qs _) = foldr (\ q f -> insert q Function . f) id qs
   declToKind (A.UnquoteDef _ qs _)    = foldr (\ q f -> insert q Function . f) id qs
-  declToKind (A.DataSig _ q _ _)    = insert q Datatype
-  declToKind (A.DataDef _ q _ cs)   = \m ->
+  declToKind (A.DataSig _ q _ _)      = insert q Datatype
+  declToKind (A.DataDef _ q _ _ cs)   = \m ->
                                       insert q Datatype $
                                       foldr (\d -> insert (A.axiomName d)
                                                           (Constructor Common.Inductive))
                                             m cs
-  declToKind (A.RecSig _ q _ _)     = insert q Record
-  declToKind (A.RecDef _ q _ _ c _ _ _) = insert q Record .
+  declToKind (A.RecSig _ q _ _)       = insert q Record
+  declToKind (A.RecDef _ q _ _ _ c _ _ _) = insert q Record .
                                       case c of
                                         Nothing -> id
                                         Just q  -> insert q (Constructor Common.Inductive)
@@ -522,7 +552,7 @@ generateConstructorInfo modMap file kinds decl = do
         end   = fromIntegral $ P.posPos $ P.iEnd   $ last is
 
     -- Get all disambiguated names that fall within the range of decl.
-    m0 <- use stDisambiguatedNames
+    m0 <- useTC stDisambiguatedNames
     let (_, m1) = IntMap.split (pred start) m0
         (m2, _) = IntMap.split end m1
         constrs = IntMap.elems m2
@@ -533,7 +563,7 @@ generateConstructorInfo modMap file kinds decl = do
 
 printSyntaxInfo :: P.Range -> TCM ()
 printSyntaxInfo r = do
-  syntaxInfo <- use stSyntaxInfo
+  syntaxInfo <- useTC stSyntaxInfo
   ifTopLevelAndHighlightingLevelIs NonInteractive $
       printHighlightingInfo KeepHighlighting (selectC r syntaxInfo)
 
@@ -548,12 +578,6 @@ printErrorInfo e =
 --   Does something special for termination errors.
 
 errorHighlighting :: TCErr -> TCM File
-
-errorHighlighting (TypeError s cl@Closure{ clValue = TerminationCheckFailed termErrs }) =
-  -- For termination errors, we keep the previous highlighting,
-  -- just additionally mark the bad calls.
-  return $ terminationErrorHighlighting termErrs
-
 errorHighlighting e = do
 
   -- Erase previous highlighting.
@@ -574,17 +598,22 @@ warningHighlighting :: TCWarning -> File
 warningHighlighting w = case tcWarning w of
   TerminationIssue terrs     -> terminationErrorHighlighting terrs
   NotStrictlyPositive d ocs  -> positivityErrorHighlighting d ocs
-  UnreachableClauses{}       -> unreachableErrorHighlighting $ P.getRange w
+  UnreachableClauses{}       -> deadcodeHighlighting $ P.getRange w
   CoverageIssue{}            -> coverageErrorHighlighting $ P.getRange w
   CoverageNoExactSplit{}     -> catchallHighlighting $ P.getRange w
   UnsolvedConstraints cs     -> constraintsHighlighting cs
   UnsolvedMetaVariables rs   -> metasHighlighting rs
+  AbsurdPatternRequiresNoRHS{} -> deadcodeHighlighting $ P.getRange w
+  ModuleDoesntExport{}         -> deadcodeHighlighting $ P.getRange w
   -- expanded catch-all case to get a warning for new constructors
+  CantGeneralizeOverSorts{}  -> mempty
   UnsolvedInteractionMetas{} -> mempty
   OldBuiltin{}               -> mempty
-  EmptyRewritePragma{}       -> mempty
+  EmptyRewritePragma{}       -> deadcodeHighlighting $ P.getRange w
+  IllformedAsClause{}        -> deadcodeHighlighting $ P.getRange w
   UselessPublic{}            -> mempty
   UselessInline{}            -> mempty
+  InstanceWithExplicitArg{}  -> deadcodeHighlighting $ P.getRange w
   ParseWarning{}             -> mempty
   InversionDepthReached{}    -> mempty
   GenericWarning{}           -> mempty
@@ -593,12 +622,32 @@ warningHighlighting w = case tcWarning w of
   SafeFlagPragma{}           -> mempty
   SafeFlagNonTerminating     -> mempty
   SafeFlagTerminating        -> mempty
-  SafeFlagPrimTrustMe        -> mempty
+  SafeFlagWithoutKFlagPrimEraseEquality -> mempty
+  WithoutKFlagPrimEraseEquality -> mempty
   SafeFlagNoPositivityCheck  -> mempty
   SafeFlagPolarity           -> mempty
+  SafeFlagNoUniverseCheck    -> mempty
   DeprecationWarning{}       -> mempty
-  NicifierIssue{}            -> mempty
   UserWarning{}              -> mempty
+  LibraryWarning{}           -> mempty
+  NicifierIssue w           -> case w of
+    -- we intentionally override the binding of `w` here so that our pattern of
+    -- using `P.getRange w` still yields the most precise range information we
+    -- can get.
+    NotAllowedInMutual{} -> deadcodeHighlighting $ P.getRange w
+    EmptyAbstract{}      -> deadcodeHighlighting $ P.getRange w
+    EmptyInstance{}      -> deadcodeHighlighting $ P.getRange w
+    EmptyMacro{}         -> deadcodeHighlighting $ P.getRange w
+    EmptyMutual{}        -> deadcodeHighlighting $ P.getRange w
+    EmptyPostulate{}     -> deadcodeHighlighting $ P.getRange w
+    EmptyPrivate{}       -> deadcodeHighlighting $ P.getRange w
+    EmptyGeneralize{}    -> deadcodeHighlighting $ P.getRange w
+    UselessAbstract{}    -> deadcodeHighlighting $ P.getRange w
+    UselessInstance{}    -> deadcodeHighlighting $ P.getRange w
+    UselessPrivate{}     -> deadcodeHighlighting $ P.getRange w
+    _ -> mempty -- TODO: explore highlighting opportunities here!
+
+
 
 -- | Generate syntax highlighting for termination errors.
 
@@ -621,9 +670,9 @@ positivityErrorHighlighting q o = several (rToR <$> P.getRange q : rs) m
     rs = case o of Unknown -> []; Known r _ -> [r]
     m  = parserBased { otherAspects = [PositivityProblem] }
 
-unreachableErrorHighlighting :: P.Range -> File
-unreachableErrorHighlighting r = singleton (rToR $ P.continuousPerLine r) m
-  where m = parserBased { otherAspects = [ReachabilityProblem] }
+deadcodeHighlighting :: P.Range -> File
+deadcodeHighlighting r = singleton (rToR $ P.continuousPerLine r) m
+  where m = parserBased { otherAspects = [Deadcode] }
 
 coverageErrorHighlighting :: P.Range -> File
 coverageErrorHighlighting r = singleton (rToR $ P.continuousPerLine r) m
@@ -748,7 +797,7 @@ nameToFile modMap file xs x fr m mR =
     mempty
   where
   aspects    = m $ C.isOperator x
-  fileNames  = catMaybes $ map (fmap P.srcFile . P.rStart . P.getRange) (x : xs)
+  fileNames  = mapMaybe (fmap P.srcFile . P.rStart . P.getRange) (x : xs)
   frFile     = singleton (rToR fr) (aspects { definitionSite = notHere <$> mFilePos })
   rs         = map P.getRange (x : xs)
 
@@ -846,6 +895,15 @@ bindingSite = A.nameBindingSite . A.qnameName
 --   To be used later during syntax highlighting.
 storeDisambiguatedName :: A.QName -> TCM ()
 storeDisambiguatedName q = whenJust (start $ P.getRange q) $ \ i ->
-  stDisambiguatedNames %= IntMap.insert i q
+  stDisambiguatedNames `modifyTCLens` IntMap.insert i q
   where
   start r = fromIntegral . P.posPos <$> P.rStart' r
+
+-- | Store a disambiguation of record field tags for the purpose of highlighting.
+disambiguateRecordFields
+  :: [C.Name]   -- ^ Record field names in a record expression.
+  -> [A.QName]  -- ^ Record field names in the corresponding record type definition
+  -> TCM ()
+disambiguateRecordFields cxs axs = forM_ cxs $ \ cx -> do
+  caseMaybe (List.find ((cx ==) . A.nameConcrete . A.qnameName) axs) (return ()) $ \ ax -> do
+    storeDisambiguatedName ax { A.qnameName = (A.qnameName ax) { A.nameConcrete = cx } }

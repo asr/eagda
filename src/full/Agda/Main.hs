@@ -21,6 +21,7 @@ import Agda.Interaction.Options
 import Agda.Interaction.Options.Help (Help (..))
 import Agda.Interaction.Monad
 import Agda.Interaction.EmacsTop (mimicGHCi)
+import Agda.Interaction.JSONTop (jsonREPL)
 import Agda.Interaction.Imports (MaybeWarnings'(..))
 import qualified Agda.Interaction.Imports as Imp
 import qualified Agda.Interaction.Highlighting.Dot as Dot
@@ -67,7 +68,7 @@ runAgda' backends = runTCMPrettyErrors $ do
   case opts of
     Left  err        -> liftIO $ optionError err
     Right (bs, opts) -> do
-      stBackends .= bs
+      setTCLens stBackends bs
       let enabled (Backend b) = isEnabled b (options b)
           bs' = filter enabled bs
       () <$ runAgdaWithOptions backends generateHTML (interaction bs') progName opts
@@ -78,10 +79,12 @@ defaultInteraction :: CommandLineOptions -> TCM (Maybe Interface) -> TCM ()
 defaultInteraction opts
   | i         = runIM . interactionLoop
   | ghci      = mimicGHCi . (failIfInt =<<)
+  | json      = jsonREPL . (failIfInt =<<)
   | otherwise = (() <$)
   where
     i    = optInteractive     opts
     ghci = optGHCiInteraction opts
+    json = optJSONInteraction opts
 
     failIfInt Nothing  = return ()
     failIfInt (Just _) = __IMPOSSIBLE__
@@ -101,6 +104,7 @@ runAgdaWithOptions backends generateHTML interaction progName opts
       | isNothing (optInputFile opts)
           && not (optInteractive opts)
           && not (optGHCiInteraction opts)
+          && not (optJSONInteraction opts)
                             = Nothing <$ liftIO (printUsage backends GeneralHelp)
       | otherwise           = do
           -- Main function.
@@ -117,7 +121,7 @@ runAgdaWithOptions backends generateHTML interaction progName opts
             Bench.print
 
             -- Print accumulated statistics.
-            printStatistics 1 Nothing =<< use lensAccumStatistics
+            printStatistics 1 Nothing =<< useTC lensAccumStatistics
   where
     checkFile = Just <$> do
       when (optInteractive opts) $ liftIO $ putStr splashScreen
@@ -135,7 +139,7 @@ runAgdaWithOptions backends generateHTML interaction progName opts
                      else Imp.TypeCheck
 
           file    <- getInputFile
-          (i, mw) <- Imp.typeCheckMain file mode
+          (i, mw) <- Imp.typeCheckMain file mode =<< Imp.sourceInfo file
 
           -- An interface is only generated if the mode is
           -- Imp.TypeCheck and there are no warnings.
@@ -143,7 +147,7 @@ runAgdaWithOptions backends generateHTML interaction progName opts
             (Imp.ScopeCheck, _)  -> return Nothing
             (_, NoWarnings)      -> return $ Just i
             (_, SomeWarnings ws) -> do
-              ws' <- applyFlagsToTCWarnings RespectFlags ws
+              ws' <- applyFlagsToTCWarnings ws
               case ws' of
                 []   -> return Nothing
                 cuws -> tcWarningsToError cuws
@@ -160,11 +164,11 @@ runAgdaWithOptions backends generateHTML interaction progName opts
             LaTeX.generateLaTeX i
 
           -- Print accumulated warnings
-          ws <- (snd . classifyWarnings) <$> Imp.getAllWarnings' AllWarnings RespectFlags
+          ws <- (snd . classifyWarnings) <$> Imp.getAllWarnings AllWarnings
           unless (null ws) $ do
             let banner = text $ "\n" ++ delimiter "All done; warnings encountered"
             reportSDoc "warning" 1 $
-              vcat $ punctuate (text "\n") $ banner : (prettyTCM <$> ws)
+              vcat $ punctuate "\n" $ banner : (prettyTCM <$> ws)
 
           return result
 
@@ -201,7 +205,7 @@ optionError err = do
 runTCMPrettyErrors :: TCM () -> IO ()
 runTCMPrettyErrors tcm = do
     r <- runTCMTop $ tcm `catchError` \err -> do
-      s2s <- prettyTCWarnings' =<< Imp.errorWarningsOfTCErr err
+      s2s <- prettyTCWarnings' =<< Imp.getAllWarningsOfTCErr err
       s1  <- prettyError err
       let ss = filter (not . null) $ s2s ++ [s1]
       unless (null s1) (liftIO $ putStr $ unlines ss)

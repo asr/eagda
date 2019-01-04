@@ -21,12 +21,14 @@ import Data.Data (Data)
 import Data.List
 import Data.Function
 import Data.Hashable (Hashable(..))
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Void
 
 import Agda.Syntax.Position
 import Agda.Syntax.Common
 import {-# SOURCE #-} Agda.Syntax.Fixity
-import Agda.Syntax.Concrete.Name (IsNoName(..), NumHoles(..))
+import Agda.Syntax.Concrete.Name (IsNoName(..), NumHoles(..), NameInScope(..), LensInScope(..))
 import qualified Agda.Syntax.Concrete.Name as C
 
 import Agda.Utils.List
@@ -35,7 +37,6 @@ import Agda.Utils.Monad
 import Agda.Utils.NonemptyList
 import Agda.Utils.Pretty
 import Agda.Utils.Size
-import Agda.Utils.Suffix
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -170,7 +171,7 @@ class MkName a where
   mkName_ = mkName noRange
 
 instance MkName String where
-  mkName r i s = Name i (C.Name noRange (C.stringNameParts s)) r noFixity'
+  mkName r i s = Name i (C.Name noRange InScope (C.stringNameParts s)) r noFixity'
 
 
 qnameToList :: QName -> [Name]
@@ -244,16 +245,10 @@ isInModule q m = mnameToList m `isPrefixOf` qnameToList q
 -- | Get the next version of the concrete name. For instance, @nextName "x" = "x₁"@.
 --   The name must not be a 'NoName'.
 nextName :: Name -> Name
-nextName x = x { nameConcrete = C.Name noRange $ nextSuf ps }
-    where
-        C.Name _ ps = nameConcrete x
-        -- NoName cannot appear here
-        nextSuf [C.Id s]         = [C.Id $ nextStr s]
-        nextSuf [C.Id s, C.Hole] = [C.Id $ nextStr s, C.Hole]
-        nextSuf (p : ps)         = p : nextSuf ps
-        nextSuf []               = __IMPOSSIBLE__
-        nextStr s = case suffixView s of
-            (s0, suf) -> addSuffix s0 (nextSuffix suf)
+nextName x = x { nameConcrete = C.nextName (nameConcrete x) }
+
+sameRoot :: Name -> Name -> Bool
+sameRoot = C.sameRoot `on` nameConcrete
 
 ------------------------------------------------------------------------
 -- * Important instances: Eq, Ord, Hashable
@@ -300,6 +295,18 @@ instance NumHoles AmbiguousQName where
   numHoles = numHoles . headAmbQ
 
 ------------------------------------------------------------------------
+-- * LensInScope instances
+------------------------------------------------------------------------
+
+instance LensInScope Name where
+  lensInScope f n@Name{ nameConcrete = x } =
+    (\y -> n { nameConcrete = y }) <$> lensInScope f x
+
+instance LensInScope QName where
+  lensInScope f q@QName{ qnameName = n } =
+    (\n' -> q { qnameName = n' }) <$> lensInScope f n
+
+------------------------------------------------------------------------
 -- * Show instances (only for debug printing!)
 --
 -- | Use 'prettyShow' to print names to the user.
@@ -338,16 +345,16 @@ instance Pretty Name where
   pretty = pretty . nameConcrete
 
 instance Pretty ModuleName where
-  pretty = hcat . punctuate (text ".") . map pretty . mnameToList
+  pretty = hcat . punctuate "." . map pretty . mnameToList
 
 instance Pretty QName where
-  pretty = hcat . punctuate (text ".") . map pretty . qnameToList
+  pretty = hcat . punctuate "." . map pretty . qnameToList
 
 instance Pretty AmbiguousQName where
-  pretty (AmbQ qs) = hcat $ punctuate (text " | ") $ map pretty (toList qs)
+  pretty (AmbQ qs) = hcat $ punctuate " | " $ map pretty (toList qs)
 
 instance Pretty a => Pretty (QNamed a) where
-  pretty (QNamed a b) = pretty a <> text "." <> pretty b
+  pretty (QNamed a b) = pretty a <> "." <> pretty b
 
 ------------------------------------------------------------------------
 -- * Range instances

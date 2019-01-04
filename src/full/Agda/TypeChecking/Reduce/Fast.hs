@@ -111,7 +111,7 @@ data CompactDefn
   = CFun  { cfunCompiled  :: FastCompiledClauses, cfunProjection :: Maybe QName }
   | CCon  { cconSrcCon :: ConHead, cconArity :: Int }
   | CForce   -- ^ primForce
-  | CTrustMe -- ^ primTrustMe
+  | CErase   -- ^ primErase
   | CTyCon   -- ^ Datatype or record type. Need to know this for primForce.
   | CAxiom   -- ^ Axiom or abstract defn
   | CPrimOp Int ([Literal] -> Term) (Maybe FastCompiledClauses)
@@ -120,7 +120,7 @@ data CompactDefn
 
 data BuiltinEnv = BuiltinEnv
   { bZero, bSuc, bTrue, bFalse, bRefl :: Maybe ConHead
-  , bPrimForce, bPrimTrustMe  :: Maybe QName }
+  , bPrimForce, bPrimErase  :: Maybe QName }
 
 -- | Compute a 'CompactDef' from a regular definition.
 compactDef :: BuiltinEnv -> Definition -> RewriteRules -> ReduceM CompactDef
@@ -128,9 +128,9 @@ compactDef bEnv def rewr = do
   cdefn <-
     case theDef def of
       _ | Just (defName def) == bPrimForce bEnv   -> pure CForce
-      _ | Just (defName def) == bPrimTrustMe bEnv ->
+      _ | Just (defName def) == bPrimErase bEnv ->
           case telView' (defType def) of
-            TelV tel _ | size tel == 4 -> pure CTrustMe
+            TelV tel _ | size tel == 5 -> pure CErase
                        | otherwise     -> pure COther
                           -- Non-standard equality. Fall back to slow reduce.
       Constructor{conSrcCon = c, conArity = n} -> pure CCon{cconSrcCon = c, cconArity = n}
@@ -144,7 +144,9 @@ compactDef bEnv def rewr = do
       Datatype{}                     -> pure COther -- TODO
       Record{}                       -> pure COther -- TODO
       Axiom{}                        -> pure CAxiom
+      DataOrRecSig{}                 -> pure CAxiom
       AbstractDefn{}                 -> pure CAxiom
+      GeneralizableVar{}             -> __IMPOSSIBLE__
       Primitive{ primName = name, primCompiled = cc } ->
         case name of
           -- "primShowInteger" -- integers are not literals
@@ -216,7 +218,7 @@ compactDef bEnv def rewr = do
           "primStringEquality"         -> mkPrim 2 $ \ [LitString _ a, LitString _ b] -> bool (b == a)
           "primShowString"             -> mkPrim 1 $ \ a -> string (show $ pretty a)
 
-          -- "primTrustMe"
+          -- "primErase"
           -- "primForce"
           -- "primForceLemma"
           "primQNameEquality"          -> mkPrim 2 $ \ [LitQName _ a, LitQName _ b] -> bool (b == a)
@@ -316,7 +318,7 @@ data FastCompiledClauses
     -- (counting from zero) with @bs@ as the case branches.
     -- If the @n@-th argument is a projection, we have only 'conBranches'
     -- with arity 0.
-  | FEta Int [QName] FastCompiledClauses (Maybe FastCompiledClauses)
+  | FEta Int [Arg QName] FastCompiledClauses (Maybe FastCompiledClauses)
     -- ^ Match on record constructor. Can still have a catch-all though. Just
     --   contains the fields, not the actual constructor.
   | FDone [Arg ArgName] Term
@@ -393,16 +395,16 @@ fastReduce' :: Normalisation -> Term -> ReduceM (Blocked Term)
 fastReduce' norm v = do
   let name (Con c _ _) = c
       name _         = __IMPOSSIBLE__
-  zero    <- fmap name <$> getBuiltin' builtinZero
-  suc     <- fmap name <$> getBuiltin' builtinSuc
-  true    <- fmap name <$> getBuiltin' builtinTrue
-  false   <- fmap name <$> getBuiltin' builtinFalse
-  refl    <- fmap name <$> getBuiltin' builtinRefl
-  force   <- fmap primFunName <$> getPrimitive' "primForce"
-  trustme <- fmap primFunName <$> getPrimitive' "primTrustMe"
+  zero  <- fmap name <$> getBuiltin' builtinZero
+  suc   <- fmap name <$> getBuiltin' builtinSuc
+  true  <- fmap name <$> getBuiltin' builtinTrue
+  false <- fmap name <$> getBuiltin' builtinFalse
+  refl  <- fmap name <$> getBuiltin' builtinRefl
+  force <- fmap primFunName <$> getPrimitive' "primForce"
+  erase <- fmap primFunName <$> getPrimitive' "primErase"
   let bEnv = BuiltinEnv { bZero = zero, bSuc = suc, bTrue = true, bFalse = false, bRefl = refl,
-                          bPrimForce = force, bPrimTrustMe = trustme }
-  allowedReductions <- asks envAllowedReductions
+                          bPrimForce = force, bPrimErase = erase }
+  allowedReductions <- asksTC envAllowedReductions
   rwr <- optRewriting <$> pragmaOptions
   constInfo <- unKleisli $ \f -> do
     info <- getConstInfo f
@@ -526,8 +528,9 @@ extendEnv p (Env xs) = Env (p : xs)
 
 -- | Unsafe.
 lookupEnv_ :: Int -> Env s -> Pointer s
-lookupEnv_ i (Env e) = e !! i
+lookupEnv_ i (Env e) = indexWithDefault __IMPOSSIBLE__ e i
 
+-- Andreas, 2018-11-12, which isn't this just Agda.Utils.List.!!! ?
 lookupEnv :: Int -> Env s -> Maybe (Pointer s)
 lookupEnv i e | i < n     = Just (lookupEnv_ i e)
               | otherwise = Nothing
@@ -615,12 +618,14 @@ data ControlFrame s = CaseK QName ArgInfo (FastCase FastCompiledClauses) (Spine 
                         --   gets stuck. @spine0@ are the level and type arguments and @spine1@
                         --   contains (if not empty) the continuation and any additional
                         --   eliminations.
-                    | TrustMeK QName (Spine s) (Spine s) (Spine s)
-                        -- ^ @TrustMeK f spine0 spine1 spine2 @. Evaluating @primTrustMe@. The first
-                        --   spine contain the level and type arguments. @spine1@ and @spine2@
+                    | EraseK QName (Spine s) (Spine s) (Spine s) (Spine s)
+                        -- ^ @EraseK f spine0 spine1 spine2 spine3@. Evaluating @primErase@. The
+                        --   first contains the level and type arguments. @spine1@ and @spine2@
                         --   contain at most one argument between them. If in @spine1@ it's the
                         --   value closure of the first argument to be compared and if in @spine2@
                         --   it's the unevaluated closure of the second argument.
+                        --   @spine3@ contains the proof of equality we are erasing. It is passed
+                        --   around but never actually inspected.
                     | NatSucK Integer
                         -- ^ @NatSucK n@. Add @n@ to the focus. If the focus computes to a natural
                         --   number literal this returns a new literal, otherwise it constructs @n@
@@ -764,7 +769,7 @@ unusedPointer = Pure (Closure (Value $ notBlocked ())
 --   the term with an attached blocking tag.
 reduceTm :: ReduceEnv -> BuiltinEnv -> (QName -> CompactDef) -> Normalisation -> ReductionFlags -> Term -> Blocked Term
 reduceTm rEnv bEnv !constInfo normalisation ReductionFlags{..} =
-    compileAndRun . traceDoc (text "-- fast reduce --")
+    compileAndRun . traceDoc "-- fast reduce --"
   where
     -- Helpers to get information from the ReduceEnv.
     metaStore      = redSt rEnv ^. stMetaStore
@@ -796,7 +801,7 @@ reduceTm rEnv bEnv !constInfo normalisation ReductionFlags{..} =
                Just s  -> (conNameId s ==) . conNameId
 
     -- If there's a non-standard equality (for instance doubly-indexed) we fall back to slow reduce
-    -- for primTrustMe and "unbind" refl.
+    -- for primErase and "unbind" refl.
     refl = refl0 >>= \ c -> if cconArity (cdefDef $ constInfo $ conName c) == 0
                             then Just c else Nothing
 
@@ -845,9 +850,9 @@ reduceTm rEnv bEnv !constInfo normalisation ReductionFlags{..} =
             CForce | (spine0, Apply v : spine1) <- splitAt 4 spine ->
               evalPointerAM (unArg v) [] (ForceK f spine0 spine1 : ctrl)
             CForce -> runAM done -- partially applied
-            CTrustMe | (spine0, Apply v : spine1) <- splitAt 2 spine ->
-              evalPointerAM (unArg v) [] (TrustMeK f spine0 [] spine1 : ctrl)
-            CTrustMe -> runAM done -- partially applied
+            CErase | (spine0, Apply v : spine1 : spine2) <- splitAt 2 spine ->
+              evalPointerAM (unArg v) [] (EraseK f spine0 [] [spine1] spine2 : ctrl)
+            CErase -> runAM done -- partially applied
             CPrimOp n op cc | length spine == n,                      -- PrimOps can't be over-applied. They don't
                               Just (v : vs) <- allApplyElims spine -> -- return functions or records.
               evalPointerAM (unArg v) [] (PrimOpK f op [] (map unArg vs) cc : ctrl)
@@ -865,10 +870,11 @@ reduceTm rEnv bEnv !constInfo normalisation ReductionFlags{..} =
 
         -- Case: constructor. Perform beta reduction if projected from, otherwise return a value.
         Con c i [] ->
+          evalIApplyAM spine ctrl $
           case splitAt ar spine of
-            (args, Proj _ p : spine') -> evalPointerAM (unArg arg) spine' ctrl
+            (args, Proj _ p : spine') -> evalPointerAM (unArg arg) spine' ctrl  -- Andreas #2170: fit argToDontCare here?!
               where
-                fields    = conFields c
+                fields    = map unArg $ conFields c
                 Just n    = List.elemIndex p fields
                 Apply arg = args !! n
             _ -> rewriteAM (evalTrueValue (Con c' i []) env spine ctrl)
@@ -925,6 +931,7 @@ reduceTm rEnv bEnv !constInfo normalisation ReductionFlags{..} =
         Level{}    -> fallbackAM s
         Sort{}     -> fallbackAM s
         DontCare{} -> fallbackAM s
+        Dummy{}    -> fallbackAM s
 
       where done = Eval (mkValue (notBlocked ()) cl) ctrl
             shiftElims t env0 env es = do
@@ -1028,24 +1035,26 @@ reduceTm rEnv bEnv !constInfo normalisation ReductionFlags{..} =
           Sort{}     -> True
           Level{}    -> True
           DontCare{} -> True
+          Dummy{}    -> False
           MetaV{}    -> False
           Var{}      -> False
           Def q _  -- Type constructors (data/record) are considered canonical for 'primForce'.
             | CTyCon <- cdefDef (constInfo q) -> True
             | otherwise                       -> False
 
-    -- Case: TrustMeK. We evaluate both arguments to values, then do a simple check for the easy
+    -- Case: EraseK. We evaluate both arguments to values, then do a simple check for the easy
     -- cases and otherwise fall back to slow reduce.
-    runAM' (Eval cl2@(Closure Value{} arg2 _ _) (TrustMeK f spine0 [Apply p1] _ : ctrl)) = do
+    runAM' (Eval cl2@(Closure Value{} arg2 _ _) (EraseK f spine0 [Apply p1] _ spine3 : ctrl)) = do
       cl1@(Closure _ arg1 _ sp1) <- derefPointer_ (unArg p1)
       case (arg1, arg2) of
         (Lit l1, Lit l2) | l1 == l2, isJust refl ->
           runAM (evalTrueValue (Con (fromJust refl) ConOSystem []) emptyEnv [] ctrl)
         _ ->
-          fallbackAM (evalClosure (Def f []) emptyEnv (spine0 ++ map (Apply . hide . defaultArg . pureThunk) [cl1, cl2]) ctrl)
-    runAM' (Eval cl1@(Closure Value{} _ _ _) (TrustMeK f spine0 [] [Apply p2] : ctrl)) =
-      evalPointerAM (unArg p2) [] (TrustMeK f spine0 [Apply $ hide $ defaultArg $ pureThunk cl1] [] : ctrl)
-    runAM' (Eval _ (TrustMeK{} : _)) =
+          let spine = spine0 ++ map (Apply . hide . defaultArg . pureThunk) [cl1, cl2] ++ spine3 in
+          fallbackAM (evalClosure (Def f []) emptyEnv spine ctrl)
+    runAM' (Eval cl1@(Closure Value{} _ _ _) (EraseK f spine0 [] [Apply p2] spine3 : ctrl)) =
+      evalPointerAM (unArg p2) [] (EraseK f spine0 [Apply $ hide $ defaultArg $ pureThunk cl1] [] spine3 : ctrl)
+    runAM' (Eval _ (EraseK{} : _)) =
       __IMPOSSIBLE__
 
     -- Case: UpdateThunk. Write the value to the pointers in the UpdateThunk frame.
@@ -1066,8 +1075,8 @@ reduceTm rEnv bEnv !constInfo normalisation ReductionFlags{..} =
     runAM' (Eval cl@(Closure (Value blk) t env spine) ctrl0@(CaseK f i bs spine0 spine1 stack : ctrl)) =
       {-# SCC "runAM.CaseK" #-}
       case blk of
-        Blocked{}    -> stuck -- we might as well check the blocking tag first
-        NotBlocked{} -> case t of
+        Blocked{} | null [()|Con{} <- [t]] -> stuck -- we might as well check the blocking tag first
+        _ -> case t of
           -- Case: suc constructor
           Con c ci [] | isSuc c -> matchSuc $ matchCatchall $ failedMatch f stack ctrl
 
@@ -1079,7 +1088,6 @@ reduceTm rEnv bEnv !constInfo normalisation ReductionFlags{..} =
           Con c ci es -> do
             spine' <- elimsToSpine env es
             runAM (evalValue blk (Con c ci []) emptyEnv (spine' <> spine) ctrl0)
-
           -- Case: natural number literals. Literal natural number patterns are translated to
           -- suc-matches, so there is no need to try matchLit.
           Lit (LitNat _ 0) -> matchLitZero  $ matchCatchall $ failedMatch f stack ctrl
@@ -1087,6 +1095,12 @@ reduceTm rEnv bEnv !constInfo normalisation ReductionFlags{..} =
 
           -- Case: literal
           Lit l -> matchLit l $ matchCatchall $ failedMatch f stack ctrl
+
+          -- Case: hcomp
+          Def q [] | isJust $ lookupCon q bs -> matchCon' q (length spine) $ matchCatchall $ failedMatch f stack ctrl
+          Def q es | isJust $ lookupCon q bs -> do
+            spine' <- elimsToSpine env es
+            runAM (evalValue blk (Def q []) emptyEnv (spine' <> spine) ctrl0)
 
           -- Case: not constructor or literal. In this case we are stuck.
           _ -> stuck
@@ -1120,7 +1134,8 @@ reduceTm rEnv bEnv !constInfo normalisation ReductionFlags{..} =
 
         -- Matching constructor: Switch to the Match state, inserting the constructor arguments in
         -- the spine between spine0 and spine1.
-        matchCon c ci ar = lookupCon (conName c) bs `ifJust` \ cc ->
+        matchCon c ci ar = matchCon' (conName c) ar
+        matchCon' q ar = lookupCon q bs `ifJust` \ cc ->
           runAM (Match f cc (spine0 <> spine <> spine1) catchallStack ctrl)
 
         -- Catch-all: Don't add a CatchAll to the match stack since this _is_ the catch-all.
@@ -1172,7 +1187,7 @@ reduceTm rEnv bEnv !constInfo normalisation ReductionFlags{..} =
             (spine0, Apply e : spine1) -> do                -- rewriting or 'with'.
               -- Replace e by its projections in the spine. And don't forget a
               -- CatchAll frame if there's a catch-all.
-              let projClosure f = Closure Unevaled (Var 0 []) (extendEnv (unArg e) emptyEnv) [Proj ProjSystem f]
+              let projClosure (Arg ai f) = Closure Unevaled (Var 0 []) (extendEnv (unArg e) emptyEnv) [Proj ProjSystem f]
               projs <- mapM (createThunk . projClosure) fs
               let spine' = spine0 <> map (Apply . defaultArg) projs <> spine1
                   stack' = caseMaybe ca stack $ \ cc -> CatchAll cc spine >: stack
@@ -1272,7 +1287,7 @@ reduceTm rEnv bEnv !constInfo normalisation ReductionFlags{..} =
     rewriteAM' :: AM s -> ST s (Blocked Term)
     rewriteAM' s@(Eval (Closure (Value blk) t env spine) ctrl)
       | null rewr = runAM s
-      | otherwise = traceDoc (text "R" <+> pretty s) $ do
+      | otherwise = traceDoc ("R" <+> pretty s) $ do
         v0 <- decodeClosure_ (Closure Unevaled t env [])
         es <- decodeSpine spine
         case runReduce (rewrite blk v0 rewr es) of
@@ -1306,7 +1321,7 @@ reduceTm rEnv bEnv !constInfo normalisation ReductionFlags{..} =
     unfoldDelayed (UpdateThunk{} : ctrl) = unfoldDelayed ctrl
     unfoldDelayed (ApplyK{}      : ctrl) = unfoldDelayed ctrl
     unfoldDelayed (ForceK{}      : ctrl) = unfoldDelayed ctrl
-    unfoldDelayed (TrustMeK{}    : ctrl) = unfoldDelayed ctrl
+    unfoldDelayed (EraseK{}      : ctrl) = unfoldDelayed ctrl
 
     -- When matching is stuck we return the closure from the 'MatchStack' with the appropriate
     -- 'IsValue' set.
@@ -1345,21 +1360,21 @@ instance Pretty a => Pretty (FastCase a) where
     mparens (p > 0) $ vcat (prettyMap cs ++ prettyMap ls ++ prSuc suc ++ prC m)
     where
       prC Nothing = []
-      prC (Just x) = [text "_ ->" <?> pretty x]
+      prC (Just x) = ["_ ->" <?> pretty x]
 
       prSuc Nothing  = []
-      prSuc (Just x) = [text "suc ->" <?> pretty x]
+      prSuc (Just x) = ["suc ->" <?> pretty x]
 
 instance Pretty NameId where
   pretty = text . show
 
 instance Pretty FastCompiledClauses where
-  pretty (FDone xs t) = (text "done" <+> prettyList xs) <?> prettyPrec 10 t
-  pretty FFail        = text "fail"
+  pretty (FDone xs t) = ("done" <+> prettyList xs) <?> prettyPrec 10 t
+  pretty FFail        = "fail"
   pretty (FEta n _ cc ca) =
     text ("eta " ++ show n ++ " of") <?>
-      vcat ([ text "{} ->" <?> pretty cc ] ++
-            [ text "_ ->" <?> pretty cc | Just cc <- [ca] ])
+      vcat ([ "{} ->" <?> pretty cc ] ++
+            [ "_ ->" <?> pretty cc | Just cc <- [ca] ])
   pretty (FCase n bs) | fprojPatterns bs =
     sep [ text $ "project " ++ show n
         , nest 2 $ pretty bs
@@ -1368,7 +1383,7 @@ instance Pretty FastCompiledClauses where
     text ("case " ++ show n ++ " of") <?> pretty bs
 
 instance Pretty a => Pretty (Thunk a) where
-  prettyPrec _ BlackHole  = text "<BLACKHOLE>"
+  prettyPrec _ BlackHole  = "<BLACKHOLE>"
   prettyPrec p (Thunk cl) = prettyPrec p cl
 
 instance Pretty (Pointer s) where
@@ -1376,7 +1391,7 @@ instance Pretty (Pointer s) where
 
 instance Pretty (Closure s) where
   prettyPrec _ (Closure Value{} (Lit (LitString _ unused)) _ _)
-    | unused == unusedPointerString = text "_"
+    | unused == unusedPointerString = "_"
   prettyPrec p (Closure isV t env spine) =
     mparens (p > 9) $ fsep [ text tag
                            , nest 2 $ prettyPrec 10 t
@@ -1388,32 +1403,32 @@ instance Pretty (Closure s) where
 instance Pretty (AM s) where
   prettyPrec p (Eval cl ctrl)  = prettyPrec p cl <?> prettyList ctrl
   prettyPrec p (Match f cc sp stack ctrl) =
-    mparens (p > 9) $ sep [ text "M" <+> pretty f
+    mparens (p > 9) $ sep [ "M" <+> pretty f
                           , nest 2 $ prettyList sp
                           , nest 2 $ prettyPrec 10 cc
                           , nest 2 $ pretty stack
                           , nest 2 $ prettyList ctrl ]
 
 instance Pretty (CatchAllFrame s) where
-  pretty CatchAll{} = text "CatchAll"
+  pretty CatchAll{} = "CatchAll"
 
 instance Pretty (MatchStack s) where
   pretty ([] :> _) = empty
   pretty (ca :> _) = prettyList ca
 
 instance Pretty (ControlFrame s) where
-  prettyPrec p (CaseK f _ _ _ _ mc)     = mparens (p > 9) $ (text "CaseK" <+> pretty (qnameName f)) <?> pretty mc
-  prettyPrec p (ForceK _ spine0 spine1) = mparens (p > 9) $ text "ForceK" <?> prettyList (spine0 <> spine1)
-  prettyPrec p (TrustMeK _ sp0 sp1 sp2) = mparens (p > 9) $ sep [ text "TrustMeK"
-                                                                , nest 2 $ prettyList sp0
-                                                                , nest 2 $ prettyList sp1
-                                                                , nest 2 $ prettyList sp2 ]
+  prettyPrec p (CaseK f _ _ _ _ mc)       = mparens (p > 9) $ ("CaseK" <+> pretty (qnameName f)) <?> pretty mc
+  prettyPrec p (ForceK _ spine0 spine1)   = mparens (p > 9) $ "ForceK" <?> prettyList (spine0 <> spine1)
+  prettyPrec p (EraseK _ sp0 sp1 sp2 sp3) = mparens (p > 9) $ sep [ "EraseK"
+                                                                  , nest 2 $ prettyList sp0
+                                                                  , nest 2 $ prettyList sp1
+                                                                  , nest 2 $ prettyList sp2
+                                                                  , nest 2 $ prettyList sp3 ]
   prettyPrec _ (NatSucK n)              = text ("+" ++ show n)
-  prettyPrec p (PrimOpK f _ vs cls _)   = mparens (p > 9) $ sep [ text "PrimOpK" <+> pretty f
+  prettyPrec p (PrimOpK f _ vs cls _)   = mparens (p > 9) $ sep [ "PrimOpK" <+> pretty f
                                                                 , nest 2 $ prettyList vs
                                                                 , nest 2 $ prettyList cls ]
-  prettyPrec p (UpdateThunk ps)         = mparens (p > 9) $ text "UpdateThunk" <+> text (show (length ps))
-  prettyPrec p (ApplyK spine)           = mparens (p > 9) $ text "ApplyK" <?> prettyList spine
-  prettyPrec p NormaliseK               = text "NormaliseK"
-  prettyPrec p (ArgK cl _)              = mparens (p > 9) $ sep [ text "ArgK" <+> prettyPrec 10 cl ]
-
+  prettyPrec p (UpdateThunk ps)         = mparens (p > 9) $ "UpdateThunk" <+> text (show (length ps))
+  prettyPrec p (ApplyK spine)           = mparens (p > 9) $ "ApplyK" <?> prettyList spine
+  prettyPrec p NormaliseK               = "NormaliseK"
+  prettyPrec p (ArgK cl _)              = mparens (p > 9) $ sep [ "ArgK" <+> prettyPrec 10 cl ]

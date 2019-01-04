@@ -60,7 +60,7 @@ import Agda.Utils.Except
 -- 32-bit machines). Word64 does not have these problems.
 
 currentInterfaceVersion :: Word64
-currentInterfaceVersion = 20180518 * 10 + 0
+currentInterfaceVersion = 20181220 * 10 + 0
 
 -- | Encodes something. To ensure relocatability file paths in
 -- positions are replaced with module names.
@@ -90,7 +90,7 @@ encode a = do
     verboseS "profile.serialize" 10 $ do
       statistics "Integer"  iC
       statistics "String"   sC
-      statistics "ByteString" bC
+      statistics "Text"     bC
       statistics "Double"   dC
       statistics "Node"     nC
       statistics "Shared Term" tC
@@ -144,7 +144,7 @@ encode a = do
 
 decode :: EmbPrj a => L.ByteString -> TCM (Maybe a)
 decode s = do
-  mf   <- use stModuleToSource
+  mf   <- useTC stModuleToSource
   incs <- getIncludeDirs
 
   -- Note that B.runGetState and G.decompress can raise errors if the
@@ -170,11 +170,11 @@ decode s = do
                 <$> liftIO H.new
                 <*> return mf <*> return incs
         (r, st) <- runStateT (runExceptT (value r)) st
-        return (Just (modFile st), r)
+        return (Just $ modFile st, r)
 
   case mf of
     Nothing -> return ()
-    Just mf -> stModuleToSource .= mf
+    Just mf -> stModuleToSource `setTCLens` mf
 
   case r of
     Right x   -> return (Just x)
@@ -183,7 +183,7 @@ decode s = do
       -- Andreas, 2014-06-11 deactivated debug printing
       -- in order to get rid of dependency of Serialize on TCM.Pretty
       -- reportSDoc "import.iface" 5 $
-      --   text "Error when decoding interface file:"
+      --   "Error when decoding interface file:"
       --   $+$ nest 2 (prettyTCM err)
       return Nothing
 

@@ -62,19 +62,21 @@ headSymbol v = do -- ignoreAbstractMode $ do
       case def of
         Datatype{}  -> yes
         Record{}    -> yes
+        DataOrRecSig{} -> yes
         Axiom{}     -> do
           reportSLn "tc.inj.axiom" 50 $ "headSymbol: " ++ prettyShow f ++ " is an Axiom."
           -- Don't treat axioms in the current mutual block
           -- as constructors (they might have definitions we
           -- don't know about yet).
-          caseMaybeM (asks envMutualBlock) yes $ \ mb -> do
+          caseMaybeM (asksTC envMutualBlock) yes $ \ mb -> do
             fs <- mutualNames <$> lookupMutualBlock mb
             if Set.member f fs then no else yes
         Function{}    -> no
         Primitive{}   -> no
+        GeneralizableVar{} -> __IMPOSSIBLE__
         Constructor{} -> __IMPOSSIBLE__
         AbstractDefn{}-> __IMPOSSIBLE__
-    Con c _ _ -> return (Just $ ConsHead $ conName c)
+    Con c _ _ -> Just . ConsHead <$> canonicalName (conName c)
     Sort _  -> return (Just SortHead)
     Pi _ _  -> return (Just PiHead)
     Var i [] -> return (Just $ VarHead i) -- Only naked variables. Otherwise substituting a neutral term is not guaranteed to stay neutral.
@@ -84,6 +86,7 @@ headSymbol v = do -- ignoreAbstractMode $ do
     Level{} -> return Nothing
     MetaV{} -> return Nothing
     DontCare{} -> return Nothing
+    Dummy s -> __IMPOSSIBLE_VERBOSE__ s
 
 -- | Do a full whnf and treat neutral terms as rigid. Used on the arguments to
 --   an injective functions and to the right-hand side.
@@ -103,6 +106,7 @@ headSymbol' v = do
       Level{}    -> return Nothing
       MetaV{}    -> return Nothing
       DontCare{} -> return Nothing
+      Dummy s    -> __IMPOSSIBLE_VERBOSE__ s
 
 -- | Does deBruijn variable i correspond to a top-level argument, and if so
 --   which one (index from the left).
@@ -158,10 +162,10 @@ checkInjectivity f cs = fromMaybe NotInjective <.> runMaybeT $ do
   reportSLn  "tc.inj.check" 20 $ prettyShow f ++ " is potentially injective."
   reportSDoc "tc.inj.check" 30 $ nest 2 $ vcat $
     for (Map.toList hdMap) $ \ (h, uc) ->
-      text (prettyShow h) <+> text "-->" <+>
+      text (prettyShow h) <+> "-->" <+>
       case uc of
         [c] -> prettyTCM $ map namedArg $ namedClausePats c
-        _   -> text "(multiple clauses)"
+        _   -> "(multiple clauses)"
 
   return $ Inverse hdMap
 
@@ -185,6 +189,7 @@ checkOverapplication es = updateHeads overapplied
       def <- getConstInfo q
       return $ case theDef def of
         Axiom{}        -> True
+        DataOrRecSig{} -> True
         AbstractDefn{} -> True
         Function{}     -> False
         Datatype{}     -> True
@@ -192,6 +197,7 @@ checkOverapplication es = updateHeads overapplied
         Constructor{conSrcCon = ConHead{ conFields = fs }}
                        -> null fs   -- Record constructors can be eliminated by projections
         Primitive{}    -> False
+        GeneralizableVar{} -> __IMPOSSIBLE__
 
 
     isOverapplied Clause{ namedClausePats = ps } = length es > length ps
@@ -205,8 +211,7 @@ instantiateVarHeads f es m = runMaybeT $ updateHeads (const . instHead) m
   where
     instHead :: TermHead -> MaybeT TCM TermHead
     instHead h@(VarHead i)
-      | length es > i,
-        Apply arg <- es !! i = MaybeT $ headSymbol' (unArg arg)
+      | Just (Apply arg) <- es !!! i = MaybeT $ headSymbol' (unArg arg)
       | otherwise = empty   -- impossible?
     instHead h = return h
 
@@ -231,13 +236,13 @@ data MaybeAbort = Abort | KeepGoing
 -- | Precondition: The first argument must be blocked and the second must be
 --                 neutral.
 useInjectivity :: CompareDirection -> Type -> Term -> Term -> TCM ()
-useInjectivity dir ty blk neu = locally eInjectivityDepth succ $ do
+useInjectivity dir ty blk neu = locallyTC eInjectivityDepth succ $ do
   inv <- functionInverse blk
   -- Injectivity might cause non-termination for unsatisfiable constraints
   -- (#431, #3067). Look at the number of active problems and the injectivity
   -- depth to detect this.
-  nProblems <- Set.size <$> view eActiveProblems
-  injDepth  <- view eInjectivityDepth
+  nProblems <- Set.size <$> viewTC eActiveProblems
+  injDepth  <- viewTC eInjectivityDepth
   let depth = max nProblems injDepth
   maxDepth  <- maxInversionDepth
   case inv of
@@ -247,7 +252,7 @@ useInjectivity dir ty blk neu = locally eInjectivityDepth succ $ do
       | otherwise -> do
       reportSDoc "tc.inj.use" 30 $ fsep $
         pwords "useInjectivity on" ++
-        [ prettyTCM blk, prettyTCM cmp, prettyTCM neu, text ":", prettyTCM ty ]
+        [ prettyTCM blk, prettyTCM cmp, prettyTCM neu, ":", prettyTCM ty ]
       let canReduceToSelf = Map.member (ConsHead f) hdMap || Map.member UnknownHead hdMap
           allUnique       = all isUnique hdMap
           isUnique [_] = True
@@ -263,11 +268,11 @@ useInjectivity dir ty blk neu = locally eInjectivityDepth succ $ do
                   pwords "at")
             , nest 2 $ fsep $ punctuate comma $ map prettyTCM blkArgs
             , nest 2 $ fsep $ punctuate comma $ map prettyTCM neuArgs
-            , nest 2 $ text "and type" <+> prettyTCM fTy
+            , nest 2 $ "and type" <+> prettyTCM fTy
             ]
           fs  <- getForcedArgs f
           pol <- getPolarity' cmp f
-          reportSDoc "tc.inj.invert.success" 20 $ hsep [text "Successful spine comparison of", prettyTCM f]
+          reportSDoc "tc.inj.invert.success" 20 $ hsep ["Successful spine comparison of", prettyTCM f]
           app (compareElims pol fs fTy (Def f [])) blkArgs neuArgs
 
         -- f us == c vs
@@ -275,8 +280,14 @@ useInjectivity dir ty blk neu = locally eInjectivityDepth succ $ do
         --    us == ps  with fresh metas for the pattern variables of ps.
         --    If there's no such clause we can safely throw an error.
         _ -> headSymbol' neu >>= \ case
-          Nothing -> fallback
-          Just (ConsHead f') | f == f', canReduceToSelf -> fallback
+          Nothing -> do
+            reportSDoc "tc.inj.use" 20 $ fsep $
+              pwords "no head symbol found for" ++ [prettyTCM neu] ++ pwords ", so not inverting"
+            fallback
+          Just (ConsHead f') | f == f', canReduceToSelf -> do
+            reportSDoc "tc.inj.use" 20 $ fsep $
+              pwords "head symbol" ++ [prettyTCM f'] ++ pwords "can reduce to self, so not inverting"
+            fallback
                                     -- We can't invert in this case, since we can't
                                     -- tell the difference between a solution that makes
                                     -- the blocked term neutral and one that makes progress.
@@ -298,9 +309,9 @@ invertFunction _ _ NoInv _ fallback _ _ = fallback
 invertFunction cmp blk (Inv f blkArgs hdMap) hd fallback err success = do
     fTy <- defType <$> getConstInfo f
     reportSDoc "tc.inj.use" 20 $ vcat
-      [ text "inverting injective function" <?> hsep [prettyTCM f, text ":", prettyTCM fTy]
-      , text "for" <?> pretty hd
-      , nest 2 $ text "args =" <+> prettyList (map prettyTCM blkArgs)
+      [ "inverting injective function" <?> hsep [prettyTCM f, ":", prettyTCM fTy]
+      , "for" <?> pretty hd
+      , nest 2 $ "args =" <+> prettyList (map prettyTCM blkArgs)
       ]                         -- Clauses with unknown heads are also possible candidates
     case fromMaybe [] $ Map.lookup hd hdMap <> Map.lookup UnknownHead hdMap of
       [] -> err
@@ -311,21 +322,21 @@ invertFunction cmp blk (Inv f blkArgs hdMap) hd fallback err success = do
           -- These are what dot patterns should be instantiated at
           ms <- map unArg <$> newTelMeta tel
           reportSDoc "tc.inj.invert" 20 $ vcat
-            [ text "meta patterns" <+> prettyList (map prettyTCM ms)
-            , text "  perm =" <+> text (show perm)
-            , text "  tel  =" <+> prettyTCM tel
-            , text "  ps   =" <+> prettyList (map (text . show) ps)
+            [ "meta patterns" <+> prettyList (map prettyTCM ms)
+            , "  perm =" <+> text (show perm)
+            , "  tel  =" <+> prettyTCM tel
+            , "  ps   =" <+> prettyList (map (text . show) ps)
             ]
           -- and this is the order the variables occur in the patterns
           let msAux = permute (invertP __IMPOSSIBLE__ $ compactP perm) ms
           let sub   = parallelS (reverse ms)
           margs <- runReaderT (evalStateT (mapM metaElim ps) msAux) sub
           reportSDoc "tc.inj.invert" 20 $ vcat
-            [ text "inversion"
+            [ "inversion"
             , nest 2 $ vcat
-              [ text "lhs  =" <+> prettyTCM margs
-              , text "rhs  =" <+> prettyTCM blkArgs
-              , text "type =" <+> prettyTCM fTy
+              [ "lhs  =" <+> prettyTCM margs
+              , "rhs  =" <+> prettyTCM blkArgs
+              , "type =" <+> prettyTCM fTy
               ]
             ]
           -- Since we do not care for the value of non-variant metas here,
@@ -342,19 +353,19 @@ invertFunction cmp blk (Inv f blkArgs hdMap) hd fallback err success = do
           r <- runReduceM $ unfoldDefinitionStep False blk f blkArgs
           case r of
             YesReduction _ blk' -> do
-              reportSDoc "tc.inj.invert.success" 20 $ hsep [text "Successful inversion of", prettyTCM f, text "at", pretty hd]
+              reportSDoc "tc.inj.invert.success" 20 $ hsep ["Successful inversion of", prettyTCM f, "at", pretty hd]
               KeepGoing <$ success blk'
             NoReduction{}       -> do
               reportSDoc "tc.inj.invert" 30 $ vcat
-                [ text "aborting inversion;" <+> prettyTCM blk
-                , text "does not reduce"
+                [ "aborting inversion;" <+> prettyTCM blk
+                , "does not reduce"
                 ]
               return Abort
   where
     maybeAbort m = do
       (a, s) <- localTCStateSaving m
       case a of
-        KeepGoing -> put s
+        KeepGoing -> putTC s
         Abort     -> fallback
 
     nextMeta = do
@@ -374,7 +385,9 @@ invertFunction cmp blk (Inv f blkArgs hdMap) hd fallback err success = do
 
     metaPat (DotP _ v)       = dotP v
     metaPat (VarP _ _)       = nextMeta
+    metaPat (IApplyP{})      = nextMeta
     metaPat (ConP c mt args) = Con c (fromConPatternInfo mt) . map Apply <$> metaArgs args
+    metaPat (DefP o q args)  = Def q . map Apply <$> metaArgs args
     metaPat (LitP l)         = return $ Lit l
     metaPat ProjP{}          = __IMPOSSIBLE__
 
@@ -389,4 +402,3 @@ forcePiUsingInjectivity t = reduceB t >>= \ case
     fallback  = return ()
     err       = typeError (ShouldBePi t)
     success _ = return ()
-

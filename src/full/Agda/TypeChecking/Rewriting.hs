@@ -7,13 +7,13 @@
 --
 --   The user specifies a relation symbol by the pragma
 --   @
---       {-# BUILTIN REWRITE rel #-}
+--       {-\# BUILTIN REWRITE rel \#-}
 --   @
 --   where @rel@ should be of type @Δ → (lhs rhs : A) → Set i@.
 --
 --   Then the user can add rewrite rules by the pragma
 --   @
---       {-# REWRITE q #-}
+--       {-\# REWRITE q \#-}
 --   @
 --   where @q@ should be a closed term of type @Γ → rel us lhs rhs@.
 --
@@ -61,10 +61,11 @@ import Agda.Interaction.Options
 import Agda.Syntax.Common
 import Agda.Syntax.Internal as I
 
+import Agda.TypeChecking.Datatypes
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Monad.Builtin
 import Agda.TypeChecking.Monad.Env
-import Agda.TypeChecking.EtaContract
+import Agda.TypeChecking.EtaExpand
 import Agda.TypeChecking.Free
 import Agda.TypeChecking.Free.Lazy
 import Agda.TypeChecking.MetaVars
@@ -106,20 +107,20 @@ verifyBuiltinRewrite :: Term -> Type -> TCM ()
 verifyBuiltinRewrite v t = do
   requireOptionRewriting
   let failure reason = typeError . GenericDocError =<< sep
-       [ prettyTCM v <+> text " does not have the right type for a rewriting relation"
+       [ prettyTCM v <+> " does not have the right type for a rewriting relation"
        , reason
        ]
   caseMaybeM (relView t)
-    (failure $ text "because it should accept at least two arguments") $
+    (failure $ "because it should accept at least two arguments") $
     \ (RelView tel delta a b core) -> do
-    unless (visible a && visible b) $ failure $ text "because its two final arguments are not both visible."
+    unless (visible a && visible b) $ failure $ "because its two final arguments are not both visible."
     case unEl core of
       Sort{}   -> return ()
       Con{}    -> __IMPOSSIBLE__
       Level{}  -> __IMPOSSIBLE__
       Lam{}    -> __IMPOSSIBLE__
       Pi{}     -> __IMPOSSIBLE__
-      _ -> failure $ text "because its type does not end in a sort, but in "
+      _ -> failure $ "because its type does not end in a sort, but in "
              <+> do inTopContext $ addContext tel $ prettyTCM core
 
 -- | Deconstructing a type into @Δ → t → t' → core@.
@@ -160,34 +161,35 @@ addRewriteRule q = do
   -- for a type signature whose body has not been type-checked yet.
   when (isEmptyFunction $ theDef def) $
     typeError . GenericDocError =<< hsep
-      [ text "Rewrite rule from function "
+      [ "Rewrite rule from function "
       , prettyTCM q
-      , text " cannot be added before the function definition"
+      , " cannot be added before the function definition"
       ]
   -- We know that the type of rel is that of a relation.
   relV <- relView =<< do defType <$> getConstInfo rel
   let RelView _tel delta a _a' _core = -- line break for CPP
         fromMaybe __IMPOSSIBLE__ relV
   reportSDoc "rewriting" 30 $ do
-    text "rewrite relation at type " <+> do
-      inTopContext $ prettyTCM (telFromList delta) <+> text " |- " <+> do
+    "rewrite relation at type " <+> do
+      inTopContext $ prettyTCM (telFromList delta) <+> " |- " <+> do
         addContext delta $ prettyTCM a
   -- Get rewrite rule (type of q).
   TelV gamma1 core <- telView $ defType def
-  reportSDoc "rewriting" 30 $ do
-    text "attempting to add rewrite rule of type " <+> do
-      prettyTCM gamma1 <+> text " |- " <+> do
-        addContext gamma1 $ prettyTCM core
+  reportSDoc "rewriting" 30 $ vcat
+    [ "attempting to add rewrite rule of type "
+    , prettyTCM gamma1
+    , " |- " <+> do addContext gamma1 $ prettyTCM core
+    ]
   let failureWrongTarget = typeError . GenericDocError =<< hsep
-        [ prettyTCM q , text " does not target rewrite relation" ]
+        [ prettyTCM q , " does not target rewrite relation" ]
   let failureMetas       = typeError . GenericDocError =<< hsep
-        [ prettyTCM q , text " is not a legal rewrite rule, since it contains unsolved meta variables" ]
+        [ prettyTCM q , " is not a legal rewrite rule, since it contains unsolved meta variables" ]
   let failureNotDefOrCon = typeError . GenericDocError =<< hsep
-        [ prettyTCM q , text " is not a legal rewrite rule, since the left-hand side is neither a defined symbol nor a constructor" ]
+        [ prettyTCM q , " is not a legal rewrite rule, since the left-hand side is neither a defined symbol nor a constructor" ]
   let failureFreeVars xs = typeError . GenericDocError =<< hsep
-        [ prettyTCM q , text " is not a legal rewrite rule, since the following variables are not bound by the left hand side: " , prettyList_ (map (prettyTCM . var) $ IntSet.toList xs) ]
+        [ prettyTCM q , " is not a legal rewrite rule, since the following variables are not bound by the left hand side: " , prettyList_ (map (prettyTCM . var) $ IntSet.toList xs) ]
   let failureIllegalRule = typeError . GenericDocError =<< hsep
-        [ prettyTCM q , text " is not a legal rewrite rule" ]
+        [ prettyTCM q , " is not a legal rewrite rule" ]
 
   -- Check that type of q targets rel.
   case unEl core of
@@ -198,14 +200,15 @@ addRewriteRule q = do
           n  = size vs
           (us, [lhs, rhs]) = splitAt (n - 2) vs
       unless (size delta == size us) __IMPOSSIBLE__
-      b <- instantiateFull $ applySubst (parallelS $ reverse us) a
+      rhs <- instantiateFull rhs
+      b   <- instantiateFull $ applySubst (parallelS $ reverse us) a
 
       gamma0 <- getContextTelescope
       gamma1 <- instantiateFull gamma1
       let gamma = gamma0 `abstract` gamma1
 
       unless (null $ allMetas (telToList gamma1)) $ do
-        reportSDoc "rewriting" 30 $ text "metas in gamma1: " <+> text (show $ allMetas $ telToList gamma1)
+        reportSDoc "rewriting" 30 $ "metas in gamma1: " <+> text (show $ allMetas $ telToList gamma1)
         failureMetas
 
       -- 2017-06-18, Jesper: Unfold inlined definitions on the LHS.
@@ -213,47 +216,51 @@ addRewriteRule q = do
       -- original definition.
       lhs <- modifyAllowedReductions (const [InlineReductions]) $ normalise lhs
 
-      -- Find head symbol f of the lhs and its arguments.
-      (f , hd , es) <- case lhs of
-        Def f es -> return (f , Def f , es)
+      -- Find head symbol f of the lhs, its type and its arguments.
+      (f , hd , t , es) <- case lhs of
+        Def f es -> do
+          t <- defType <$> getConstInfo f
+          return (f , Def f , t , es)
         Con c ci vs -> do
           let hd = Con c ci
-          return (conName c , hd  , vs)
+          ~(Just ((_ , _ , pars) , t)) <- getFullyAppliedConType c $ unDom b
+          addContext gamma1 $ checkParametersAreGeneral c (size gamma1) pars
+          return (conName c , hd , t  , vs)
         _        -> failureNotDefOrCon
 
       ifNotAlreadyAdded f $ do
 
       rew <- addContext gamma1 $ do
         -- Normalize lhs args: we do not want to match redexes.
-        es <- etaContract =<< normalise es
-        checkNoLhsReduction f (hd es)
+        es <- normalise es
 
-        -- Normalize rhs: might be more efficient.
-        rhs <- etaContract =<< normalise rhs
+        checkNoLhsReduction f es
+
         unless (null $ allMetas (es, rhs, b)) $ do
-          reportSDoc "rewriting" 30 $ text "metas in lhs: " <+> text (show $ allMetas es)
-          reportSDoc "rewriting" 30 $ text "metas in rhs: " <+> text (show $ allMetas rhs)
-          reportSDoc "rewriting" 30 $ text "metas in b  : " <+> text (show $ allMetas b)
+          reportSDoc "rewriting" 30 $ "metas in lhs: " <+> text (show $ allMetas es)
+          reportSDoc "rewriting" 30 $ "metas in rhs: " <+> text (show $ allMetas rhs)
+          reportSDoc "rewriting" 30 $ "metas in b  : " <+> text (show $ allMetas b)
           failureMetas
-        ps <- patternFrom Relevant 0 es
+
+        ps <- patternFrom Relevant 0 (t , Def f []) es
         reportSDoc "rewriting" 30 $
-          text "Pattern generated from lhs: " <+> prettyTCM (PDef f ps)
+          "Pattern generated from lhs: " <+> prettyTCM (PDef f ps)
 
         -- check that FV(rhs) ⊆ nlPatVars(lhs)
         let freeVars  = usedArgs (defArgOccurrences def) `IntSet.union` allFreeVars (ps,rhs)
             boundVars = nlPatVars ps
-        reportSDoc "rewriting" 40 $
-          text "variables bound by the pattern: " <+> text (show boundVars)
-        reportSDoc "rewriting" 40 $
-          text "variables free in the rewrite rule: " <+> text (show freeVars)
+        reportSDoc "rewriting" 70 $
+          "variables bound by the pattern: " <+> text (show boundVars)
+        reportSDoc "rewriting" 70 $
+          "variables free in the rewrite rule: " <+> text (show freeVars)
         unlessNull (freeVars IntSet.\\ boundVars) failureFreeVars
 
         return $ RewriteRule q gamma f ps rhs (unDom b)
 
-      reportSDoc "rewriting" 10 $
-        text "considering rewrite rule " <+> prettyTCM rew
-      reportSDoc "rewriting" 60 $
-        text "considering rewrite rule" <+> text (show rew)
+      reportSDoc "rewriting" 10 $ vcat
+        [ "considering rewrite rule " , prettyTCM rew ]
+      reportSDoc "rewriting" 90 $ vcat
+        [ "considering rewrite rule" , text (show rew) ]
 
       -- NO LONGER WORKS:
       -- -- Check whether lhs can be rewritten with itself.
@@ -267,15 +274,24 @@ addRewriteRule q = do
 
     _ -> failureWrongTarget
   where
-    checkNoLhsReduction :: QName -> Term -> TCM ()
-    checkNoLhsReduction f v = do
-      v' <- normalise v
-      unless (v == v') $ do
-        reportSDoc "rewriting" 20 $ text "v  = " <+> text (show v)
-        reportSDoc "rewriting" 20 $ text "v' = " <+> text (show v')
-        typeError . GenericDocError =<< fsep
-          [ prettyTCM q <+> text " is not a legal rewrite rule, since the left-hand side "
-          , prettyTCM v <+> text " reduces to " <+> prettyTCM v' ]
+    checkNoLhsReduction :: QName -> Elims -> TCM ()
+    checkNoLhsReduction f es = do
+      let v = Def f es
+      v' <- reduce v
+      let fail = do
+            reportSDoc "rewriting" 20 $ "v  = " <+> text (show v)
+            reportSDoc "rewriting" 20 $ "v' = " <+> text (show v')
+            typeError . GenericDocError =<< fsep
+              [ prettyTCM q <+> " is not a legal rewrite rule, since the left-hand side "
+              , prettyTCM v <+> " reduces to " <+> prettyTCM v' ]
+      case v' of
+        Def f' es' | f == f' -> do
+          a   <- computeElimHeadType f es es'
+          pol <- getPolarity' CmpEq f
+          ok  <- dontAssignMetas $ tryConversion $
+                   compareElims pol [] a (Def f []) es es'
+          unless ok fail
+        _ -> fail
 
     ifNotAlreadyAdded :: QName -> TCM () -> TCM ()
     ifNotAlreadyAdded f cont = do
@@ -283,7 +299,7 @@ addRewriteRule q = do
       -- check if q is already an added rewrite rule
       if any ((q ==) . rewName) rews then
         genericWarning =<< do
-          text "Rewrite rule " <+> prettyTCM q <+> text " has already been added"
+          "Rewrite rule " <+> prettyTCM q <+> " has already been added"
       else cont
 
     usedArgs :: [Pos.Occurrence] -> IntSet
@@ -294,34 +310,57 @@ addRewriteRule q = do
         used Pos.Unused = False
         used _          = True
 
+    checkParametersAreGeneral :: ConHead -> Int -> Args -> TCM ()
+    checkParametersAreGeneral c k vs = do
+        is <- loop vs
+        unless (fastDistinct is) $ errorNotGeneral
+      where
+        loop []       = return []
+        loop (v : vs) = case unArg v of
+          Var i [] | i < k -> (i :) <$> loop vs
+          _                -> errorNotGeneral
+
+        errorNotGeneral = typeError . GenericDocError =<< vcat
+            [ prettyTCM q <+> text " is not a legal rewrite rule, since the constructor parameters are not fully general:"
+            , nest 2 $ text "Constructor: " <+> prettyTCM c
+            , nest 2 $ text "Parameters: " <+> prettyList (map prettyTCM vs)
+            ]
+
 -- | Append rewrite rules to a definition.
 addRewriteRules :: QName -> RewriteRules -> TCM ()
 addRewriteRules f rews = do
-  reportSDoc "rewriting" 10 $ text "rewrite rule ok, adding it to the definition of " <+> prettyTCM f
+  reportSDoc "rewriting" 10 $ "rewrite rule ok, adding it to the definition of " <+> prettyTCM f
   let matchables = getMatchables rews
-  reportSDoc "rewriting" 30 $ text "matchable symbols: " <+> prettyTCM matchables
+  reportSDoc "rewriting" 30 $ "matchable symbols: " <+> prettyTCM matchables
   modifySignature $ addRewriteRulesFor f rews matchables
 
--- | @rewriteWith t f es rew@
---   tries to rewrite @f es : t@ with @rew@, returning the reduct if successful.
-rewriteWith :: Maybe Type
+-- | @rewriteWith t f es rew@ where @f : t@
+--   tries to rewrite @f es@ with @rew@, returning the reduct if successful.
+rewriteWith :: Type
             -> Term
             -> RewriteRule
             -> Elims
             -> ReduceM (Either (Blocked Term) Term)
-rewriteWith mt v rew@(RewriteRule q gamma _ ps rhs b) es = do
-  traceSDoc "rewriting" 75 (sep
-    [ text "attempting to rewrite term " <+> prettyTCM (v `applyE` es)
-    , text " with rule " <+> prettyTCM rew
+rewriteWith t v rew@(RewriteRule q gamma _ ps rhs b) es = do
+  traceSDoc "rewriting.rewrite" 50 (sep
+    [ "{ attempting to rewrite term " <+> prettyTCM (v `applyE` es)
+    , " having head " <+> prettyTCM v <+> " of type " <+> prettyTCM t
+    , " with rule " <+> prettyTCM rew
     ]) $ do
-  result <- nonLinMatch gamma ps es
+  traceSDoc "rewriting.rewrite" 90 (sep
+    [ "raw: attempting to rewrite term " <+> (text . show) (v `applyE` es)
+    , " having head " <+> (text . show) v <+> " of type " <+> (text . show) t
+    , " with rule " <+> (text . show) rew
+    ]) $ do
+  result <- nonLinMatch gamma (t,v) ps es
   case result of
-    Left block -> return $ Left $ block $> v `applyE` es -- TODO: remember reductions
+    Left block -> traceSDoc "rewriting.rewrite" 50 "}" $
+      return $ Left $ block $> v `applyE` es -- TODO: remember reductions
     Right sub  -> do
       let v' = applySubst sub rhs
-      traceSDoc "rewriting" 70 (sep
-        [ text "rewrote " <+> prettyTCM (v `applyE` es)
-        , text " to " <+> prettyTCM v'
+      traceSDoc "rewriting.rewrite" 50 (sep
+        [ "rewrote " <+> prettyTCM (v `applyE` es)
+        , " to " <+> prettyTCM v' <+> "}"
         ]) $ do
       return $ Right v'
 
@@ -330,22 +369,33 @@ rewriteWith mt v rew@(RewriteRule q gamma _ ps rhs b) es = do
 rewrite :: Blocked_ -> Term -> RewriteRules -> Elims -> ReduceM (Reduced (Blocked Term) Term)
 rewrite block v rules es = do
   rewritingAllowed <- optRewriting <$> pragmaOptions
-  if (rewritingAllowed && not (null rules)) then
-    loop block rules =<< instantiateFull' es
+  if (rewritingAllowed && not (null rules)) then do
+    t <- case v of
+      Def f []   -> defType <$> getConstInfo f
+      Con c _ [] -> typeOfConst $ conName c
+        -- Andreas, 2018-09-08, issue #3211:
+        -- discount module parameters for constructor heads
+      _ -> __IMPOSSIBLE__
+    loop block t rules =<< instantiateFull' es
   else
     return $ NoReduction (block $> v `applyE` es)
   where
-    loop :: Blocked_ -> RewriteRules -> Elims -> ReduceM (Reduced (Blocked Term) Term)
-    loop block [] es = return $ NoReduction $ block $> v `applyE` es
-    loop block (rew:rews) es
+    loop :: Blocked_ -> Type -> RewriteRules -> Elims -> ReduceM (Reduced (Blocked Term) Term)
+    loop block t [] es =
+      traceSDoc "rewriting.rewrite" 20 (sep
+        [ "failed to rewrite " <+> prettyTCM (v `applyE` es)
+        , "blocking tag" <+> text (show block)
+        ]) $ do
+      return $ NoReduction $ block $> v `applyE` es
+    loop block t (rew:rews) es
      | let n = rewArity rew, length es >= n = do
           let (es1, es2) = List.genericSplitAt n es
-          result <- rewriteWith Nothing v rew es1
+          result <- rewriteWith t v rew es1
           case result of
-            Left (Blocked m u)    -> loop (block `mappend` Blocked m ()) rews es
-            Left (NotBlocked _ _) -> loop block rews es
+            Left (Blocked m u)    -> loop (block `mappend` Blocked m ()) t rews es
+            Left (NotBlocked _ _) -> loop block t rews es
             Right w               -> return $ YesReduction YesSimplification $ w `applyE` es2
-     | otherwise = loop (block `mappend` NotBlocked Underapplied ()) rews es
+     | otherwise = loop (block `mappend` NotBlocked Underapplied ()) t rews es
 
 
 ------------------------------------------------------------------------

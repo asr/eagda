@@ -42,6 +42,7 @@ binAppView t = case t of
   Sort _     -> noApp
   MetaV _ _  -> noApp
   DontCare _ -> noApp
+  Dummy{}    -> __IMPOSSIBLE__
   where
     noApp = NoApp t
     app f [] = noApp
@@ -54,43 +55,44 @@ binAppView t = case t of
 -- | Contracts all eta-redexes it sees without reducing.
 {-# SPECIALIZE etaContract :: TermLike a => a -> TCM a #-}
 {-# SPECIALIZE etaContract :: TermLike a => a -> ReduceM a #-}
-etaContract :: (MonadReader TCEnv m, HasConstInfo m, HasOptions m, TermLike a) => a -> m a
+etaContract :: (MonadTCEnv m, HasConstInfo m, HasOptions m, TermLike a) => a -> m a
 etaContract = traverseTermM etaOnce
 
 {-# SPECIALIZE etaOnce :: Term -> TCM Term #-}
 {-# SPECIALIZE etaOnce :: Term -> ReduceM Term #-}
-etaOnce :: (MonadReader TCEnv m, HasConstInfo m, HasOptions m) => Term -> m Term
+etaOnce :: (MonadTCEnv m, HasConstInfo m, HasOptions m) => Term -> m Term
 etaOnce v = case v of
   -- Andreas, 2012-11-18: this call to reportSDoc seems to cost me 2%
   -- performance on the std-lib
-  -- reportSDoc "tc.eta" 70 $ text "eta-contracting" <+> prettyTCM v
+  -- reportSDoc "tc.eta" 70 $ "eta-contracting" <+> prettyTCM v
   Lam i (Abs x b) -> etaLam i x b  -- NoAbs can't be eta'd
 
   -- Andreas, 2012-12-18:  Abstract definitions could contain
   -- abstract records whose constructors are not in scope.
   -- To be able to eta-contract them, we ignore abstract.
-  Con c ci es | Just args <- allApplyElims es -> do
-    etaCon c ci args etaContractRecord
+  Con c ci es -> do
+    etaCon c ci es etaContractRecord
   v -> return v
 
 -- | If record constructor, call eta-contraction function.
-etaCon :: (MonadReader TCEnv m, HasConstInfo m, HasOptions m)
+etaCon :: (MonadTCEnv m, HasConstInfo m, HasOptions m)
   => ConHead  -- ^ Constructor name @c@.
   -> ConInfo  -- ^ Constructor info @ci@.
-  -> Args     -- ^ Constructor arguments @args@.
+  -> Elims     -- ^ Constructor arguments @args@.
   -> (QName -> ConHead -> ConInfo -> Args -> m Term)
               -- ^ Eta-contraction workhorse, gets also name of record type.
   -> m Term   -- ^ Returns @Con c ci args@ or its eta-contraction.
-etaCon c ci args cont = ignoreAbstractMode $ do
-  let fallback = return $ Con c ci $ map Apply args
-  -- reportSDoc "tc.eta" 20 $ text "eta-contracting record" <+> prettyTCM t
+etaCon c ci es cont = ignoreAbstractMode $ do
+  let fallback = return $ Con c ci $ es
+  -- reportSDoc "tc.eta" 20 $ "eta-contracting record" <+> prettyTCM t
   r <- getConstructorData $ conName c -- fails in ConcreteMode if c is abstract
   ifNotM (isEtaRecord r) fallback $ {-else-} do
-    -- reportSDoc "tc.eta" 20 $ text "eta-contracting record" <+> prettyTCM t
+    -- reportSDoc "tc.eta" 20 $ "eta-contracting record" <+> prettyTCM t
+    let Just args = allApplyElims es
     cont r c ci args
 
 -- | Try to contract a lambda-abstraction @Lam i (Abs x b)@.
-etaLam :: (MonadReader TCEnv m, HasConstInfo m, HasOptions m)
+etaLam :: (MonadTCEnv m, HasConstInfo m, HasOptions m)
   => ArgInfo  -- ^ Info @i@ of the 'Lam'.
   -> ArgName  -- ^ Name @x@ of the abstraction.
   -> Term     -- ^ Body ('Term') @b@ of the 'Abs'.

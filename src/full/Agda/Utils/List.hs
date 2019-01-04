@@ -17,11 +17,20 @@ import qualified Agda.Utils.Bag as Bag
 
 import Agda.Utils.Tuple
 
+-- | Append a single element at the end.
+--   Time: O(length); use only on small lists.
+snoc :: [a] -> a -> [a]
+snoc xs x = xs ++ [x]
+
 -- | Case distinction for lists, with list first.
 --   Cf. 'Agda.Utils.Null.ifNull'.
 caseList :: [a] -> b -> (a -> [a] -> b) -> b
-caseList []     n c = n
-caseList (x:xs) n c = c x xs
+caseList xs n c = listCase n c xs
+
+-- | Case distinction for lists, with list first.
+--   Cf. 'Agda.Utils.Null.ifNull'.
+caseListM :: Monad m => m [a] -> m b -> (a -> [a] -> m b) -> m b
+caseListM mxs n c = listCase n c =<< mxs
 
 -- | Case distinction for lists, with list last.
 listCase :: b -> (a -> [a] -> b) -> [a] -> b
@@ -32,12 +41,20 @@ listCase n c (x:xs) = c x xs
 headMaybe :: [a] -> Maybe a
 headMaybe = listToMaybe
 
--- | Head function (safe). Returns a value on empty lists.
+-- | Head function (safe). Returns a default value on empty lists.
 --
 -- > headWithDefault 42 []      = 42
 -- > headWithDefault 42 [1,2,3] = 1
 headWithDefault :: a -> [a] -> a
 headWithDefault def = fromMaybe def . headMaybe
+
+-- | Tail function (safe).
+tailMaybe :: [a] -> Maybe [a]
+tailMaybe = fmap snd . uncons
+
+-- | Tail function (safe).  Returns a default list on empty lists.
+tailWithDefault :: [a] -> [a] -> [a]
+tailWithDefault def = fromMaybe def . tailMaybe
 
 -- | Last element (safe).
 lastMaybe :: [a] -> Maybe a
@@ -68,11 +85,27 @@ initLast (a:as) = Just $ loop a as where
   loop a []      = ([], a)
   loop a (b : bs) = mapFst (a:) $ loop b bs
 
+-- | init, safe.
+initMaybe :: [a] -> Maybe [a]
+initMaybe = fmap fst . initLast
+
 -- | Lookup function (partially safe).
 (!!!) :: [a] -> Int -> Maybe a
 []       !!! _         = Nothing
 (x : _)  !!! 0         = Just x
 (_ : xs) !!! n         = xs !!! (n - 1)
+
+-- | Lookup function with default value for index out of range.
+--   The name is chosen akin to 'Data.List.genericIndex'.
+indexWithDefault :: a -> [a] -> Int -> a
+indexWithDefault a []       _ = a
+indexWithDefault a (x : _)  0 = x
+indexWithDefault a (_ : xs) n = indexWithDefault a xs (n - 1)
+
+-- | Find an element satisfying a predicate and return it with its index.
+--   TODO: more efficient implementation!?
+findWithIndex :: (a -> Bool) -> [a] -> Maybe (a, Int)
+findWithIndex p as = headMaybe $ filter (p . fst) $ zip as [0..]
 
 -- | downFrom n = [n-1,..1,0]
 downFrom :: Integral a => a -> [a]

@@ -40,8 +40,8 @@ import Agda.Utils.Pretty ( prettyShow )
 
 desugarDoNotation :: Range -> [DoStmt] -> ScopeM Expr
 desugarDoNotation r ss = do
-  let qBind = QName $ Name noRange [Hole, Id ">>=", Hole]
-      qThen = QName $ Name noRange [Hole, Id ">>", Hole]
+  let qBind = QName $ Name noRange InScope [Hole, Id ">>=", Hole]
+      qThen = QName $ Name noRange InScope [Hole, Id ">>", Hole]
       isBind DoBind{} = True
       isBind _        = False
       isThen DoThen{} = True
@@ -113,7 +113,7 @@ matchingBind qBind r p e body cs =
 nonMatchingBind :: QName -> Range -> Name -> Expr -> Expr -> Expr
 nonMatchingBind qBind r x e body =
     appOp (setRange r qBind) e $ Lam (getRange (x, body)) [bx] body
-  where bx = DomainFree defaultArgInfo $ mkBoundName_ x
+  where bx = DomainFree $ defaultNamedArg $ mkBoundName_ x
 
 appOp :: QName -> Expr -> Expr -> Expr
 appOp q e1 e2 = app (Ident q) [e1, e2]

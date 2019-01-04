@@ -262,6 +262,7 @@ instance Free Term where
     Level l    -> freeVars' l
     MetaV _ ts -> flexible <$> freeVars' ts
     DontCare mt -> irrelevantly <$> freeVars' mt
+    Dummy{} -> mempty
 
 instance Free Type where
   freeVars' (El s t) =
@@ -280,6 +281,8 @@ instance Free Sort where
       PiSort s1 s2 -> weakly <$> freeVars' (s1, s2)
       UnivSort s -> weakly <$> freeVars' s
       MetaS x es -> flexible <$> freeVars' es
+      DefS _ es  -> weakly <$> freeVars' es
+      DummyS{}   -> mempty
 
 instance Free Level where
   freeVars' (Max as) = freeVars' as

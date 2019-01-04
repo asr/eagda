@@ -80,7 +80,7 @@ compileClauses mt cs = do
       splitTree <- coverageCheck q t cs
 
       reportSDoc "tc.cc.tree" 20 $ vcat
-        [ text "split tree from coverage check "
+        [ "split tree from coverage check "
         , return $ P.pretty splitTree
         ]
 
@@ -92,13 +92,13 @@ compileClauses mt cs = do
       let cls = map unBruijn cs
 
       reportSDoc "tc.cc" 30 $ sep $ do
-        (text "clauses patterns  before compilation") : do
+        "clauses patterns  before compilation" : do
           map (prettyTCM . map unArg . clPats) cls
       reportSDoc "tc.cc" 50 $
-        text "clauses before compilation" <?> pretty cs
+        "clauses before compilation" <?> pretty cs
       let cc = compileWithSplitTree splitTree cls
       reportSDoc "tc.cc" 12 $ sep
-        [ text "compiled clauses (still containing record splits)"
+        [ "compiled clauses (still containing record splits)"
         , nest 2 $ return $ P.pretty cc
         ]
       cc <- translateCompiledClauses cc
@@ -113,7 +113,7 @@ data Cl = Cl
   } deriving (Show)
 
 instance P.Pretty Cl where
-  pretty (Cl ps b) = P.prettyList ps P.<+> P.text "->" P.<+> maybe (P.text "_|_") P.pretty b
+  pretty (Cl ps b) = P.prettyList ps P.<+> "->" P.<+> maybe "_|_" P.pretty b
 
 type Cls = [Cl]
 
@@ -172,8 +172,10 @@ compile cs = case nextSplit cs of
     name (VarP _ x) = x
     name (DotP _ _) = underscore
     name ConP{}  = __IMPOSSIBLE__
+    name DefP{}  = __IMPOSSIBLE__
     name LitP{}  = __IMPOSSIBLE__
     name ProjP{} = __IMPOSSIBLE__
+    name (IApplyP _ _ _ x) = x
 
 -- | Get the index of the next argument we need to split on.
 --   This the number of the first pattern that does a (non-lazy) match in the first clause.
@@ -199,20 +201,24 @@ nextSplit (Cl ps _ : cs) = findSplit nonLazy ps <|> findSplit allAgree ps
 --   And if yes, is it a record pattern?
 properSplit :: Pattern' a -> Maybe Bool
 properSplit (ConP _ cpi _) = Just (Just PatORec == conPRecord cpi)
-properSplit LitP{}  = Just False
-properSplit ProjP{} = Just False
-properSplit VarP{}  = Nothing
-properSplit DotP{}  = Nothing
+properSplit DefP{}    = Just False
+properSplit LitP{}    = Just False
+properSplit ProjP{}   = Just False
+properSplit IApplyP{} = Nothing
+properSplit VarP{}    = Nothing
+properSplit DotP{}    = Nothing
 
 -- | Is this a variable pattern?
 --
 --   Maintain invariant: @isVar = isNothing . properSplit@!
 isVar :: Pattern' a -> Bool
-isVar VarP{}  = True
-isVar DotP{}  = True
-isVar ConP{}  = False
-isVar LitP{}  = False
-isVar ProjP{} = False
+isVar IApplyP{} = True
+isVar VarP{}    = True
+isVar DotP{}    = True
+isVar ConP{}    = False
+isVar DefP{}    = False
+isVar LitP{}    = False
+isVar ProjP{}   = False
 
 -- | @splitOn single n cs@ will force expansion of catch-alls
 --   if @single@.
@@ -224,8 +230,11 @@ splitOn single n cs = mconcat $ map (fmap (:[]) . splitC n) $
 splitC :: Int -> Cl -> Case Cl
 splitC n (Cl ps b) = caseMaybe mp fallback $ \case
   ProjP _ d   -> projCase d $ Cl (ps0 ++ ps1) b
+  IApplyP{}   -> fallback
   ConP c i qs -> (conCase (conName c) (conPFallThrough i) $ WithArity (length qs) $
                    Cl (ps0 ++ map (fmap namedThing) qs ++ ps1) b) { lazyMatch = conPLazy i }
+  DefP o q qs -> (conCase q False $ WithArity (length qs) $
+                   Cl (ps0 ++ map (fmap namedThing) qs ++ ps1) b) { lazyMatch = False }
   LitP l      -> litCase l $ Cl (ps0 ++ ps1) b
   VarP{}      -> fallback
   DotP{}      -> fallback
@@ -314,7 +323,8 @@ expandCatchAlls single n cs =
     exCatchAllNth ps = any (isVar . unArg) $ take 1 $ drop n ps
 
     classify (LitP l)     = Left l
-    classify (ConP c _ _) = Right c
+    classify (ConP c _ _) = Right (Left c)
+    classify (DefP _ q _) = Right (Right q)
     classify _            = __IMPOSSIBLE__
 
     -- All non-catch-all patterns following this one (at position n).
@@ -340,9 +350,17 @@ expandCatchAlls single n cs =
             ci       = fromConPatternInfo mt
             m        = length qs'
             -- replace all direct subpatterns of q by _
+            -- TODO Andrea: might need these to sometimes be IApply?
             conPArgs = map (fmap ($> varP "_")) qs'
             conArgs  = zipWith (\ q' i -> q' $> var i) qs' $ downFrom m
         LitP l -> Cl (ps0 ++ [q $> LitP l] ++ ps1) (substBody n' 0 (Lit l) b)
+        DefP o d qs' -> Cl (ps0 ++ [q $> DefP o d conPArgs] ++ ps1)
+                            (substBody n' m (Def d (map Apply conArgs)) b)
+          where
+            m        = length qs'
+            -- replace all direct subpatterns of q by _
+            conPArgs = map (fmap ($> varP "_")) qs'
+            conArgs  = zipWith (\ q' i -> q' $> var i) qs' $ downFrom m
         _ -> __IMPOSSIBLE__
       where
         -- Andreas, 2016-09-19 issue #2168

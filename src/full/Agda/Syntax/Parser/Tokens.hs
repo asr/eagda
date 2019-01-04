@@ -35,12 +35,14 @@ data Keyword
         | KwUnquote | KwUnquoteDecl | KwUnquoteDef
         | KwSyntax
         | KwPatternSyn | KwTactic | KwCATCHALL
+        | KwVariable
         | KwNO_POSITIVITY_CHECK | KwPOLARITY
+        | KwNO_UNIVERSE_CHECK
     deriving (Eq, Show)
 
 layoutKeywords :: [Keyword]
 layoutKeywords =
-    [ KwLet, KwWhere, KwDo, KwPostulate, KwMutual, KwAbstract, KwPrivate, KwInstance, KwMacro, KwPrimitive, KwField ]
+    [ KwLet, KwWhere, KwDo, KwPostulate, KwMutual, KwAbstract, KwPrivate, KwInstance, KwMacro, KwPrimitive, KwField, KwVariable ]
 
 data Symbol
         = SymDot | SymSemi | SymVirtualSemi | SymBar
@@ -72,10 +74,11 @@ data Token
         | TokSetN (Interval, Integer)
         | TokPropN (Interval, Integer)
         | TokTeX (Interval, String)
+        | TokMarkup (Interval, String)
         | TokComment (Interval, String)
         | TokDummy      -- Dummy token to make Happy not complain
                         -- about overlapping cases.
-        | TokEOF
+        | TokEOF Interval
     deriving (Eq, Show)
 
 instance HasRange Token where
@@ -88,6 +91,7 @@ instance HasRange Token where
   getRange (TokSetN (i, _))    = getRange i
   getRange (TokPropN (i, _))   = getRange i
   getRange (TokTeX (i, _))     = getRange i
+  getRange (TokMarkup (i, _))  = getRange i
   getRange (TokComment (i, _)) = getRange i
   getRange TokDummy            = noRange
-  getRange TokEOF              = noRange
+  getRange (TokEOF i)          = getRange i

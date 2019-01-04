@@ -23,11 +23,15 @@ You can download our extended version of Agda using
 $ git clone https://github.com/asr/eagda.git
 ```
 
+<<<<<<< HEAD
 This will create a directory called `eagda`. Installing our extended
 version is similar to the installation of Agda (see
 [README.md](https://github.com/agda/agda/blob/master/README.md) for
 more information). In our setup, we run the first time the following
 commands:
+=======
+Head to [`HACKING`](https://github.com/agda/agda/blob/master/HACKING.md)
+>>>>>>> upstream/master
 
 ```bash
 $ cd eagda

@@ -41,6 +41,7 @@ appView' e =
     App i e1 e2
       | Dot _ e2' <- unScope $ namedArg e2
       , Just f <- maybeProjTurnPostfix e2'
+      , getHiding e2 == NotHidden -- Jesper, 2018-12-13: postfix projections shouldn't be hidden
                    -> Application f [defaultNamedArg (i, e1)]
     App i e1 arg
       | Application hd es <- appView' e1
@@ -101,7 +102,7 @@ deepUnscopeDecl :: A.Declaration -> [A.Declaration]
 deepUnscopeDecl (A.ScopedDecl _ ds)              = deepUnscopeDecls ds
 deepUnscopeDecl (A.Mutual i ds)                  = [A.Mutual i (deepUnscopeDecls ds)]
 deepUnscopeDecl (A.Section i m tel ds)           = [A.Section i m (deepUnscope tel) (deepUnscopeDecls ds)]
-deepUnscopeDecl (A.RecDef i x ind eta c bs e ds) = [A.RecDef i x ind eta c (deepUnscope bs) (deepUnscope e)
+deepUnscopeDecl (A.RecDef i x uc ind eta c bs e ds) = [A.RecDef i x uc ind eta c (deepUnscope bs) (deepUnscope e)
                                                                            (deepUnscopeDecls ds)]
 deepUnscopeDecl d                                = [deepUnscope d]
 
@@ -143,6 +144,7 @@ instance ExprLike Expr where
       AbsurdLam{}             -> pure e0
       ExtendedLam ei di x cls -> ExtendedLam ei di x <$> recurse cls
       Pi ei tel e             -> Pi ei <$> recurse tel <*> recurse e
+      Generalized  s e        -> Generalized s <$> recurse e
       Fun ei arg e            -> Fun ei <$> recurse arg <*> recurse e
       Set{}                   -> pure e0
       Prop{}                  -> pure e0
@@ -179,6 +181,7 @@ instance ExprLike Expr where
       AbsurdLam{}          -> m
       ExtendedLam _ _ _ cs -> m `mappend` fold cs
       Pi _ tel e           -> m `mappend` fold tel `mappend` fold e
+      Generalized _ e      -> m `mappend` fold e
       Fun _ e e'           -> m `mappend` fold e `mappend` fold e'
       Set{}                -> m
       Prop{}               -> m
@@ -215,6 +218,7 @@ instance ExprLike Expr where
       AbsurdLam{}             -> f e
       ExtendedLam ei di x cls -> f =<< ExtendedLam ei di x <$> trav cls
       Pi ei tel e             -> f =<< Pi ei <$> trav tel <*> trav e
+      Generalized s e         -> f =<< Generalized s <$> trav e
       Fun ei arg e            -> f =<< Fun ei <$> trav arg <*> trav e
       Set{}                   -> f e
       Prop{}                  -> f e
@@ -270,10 +274,15 @@ instance ExprLike LamBinding where
       DomainFree{}  -> pure e
       DomainFull bs -> DomainFull <$> traverseExpr f bs
 
-instance ExprLike TypedBindings where
-  recurseExpr  f (TypedBindings r b) = TypedBindings r <$> recurseExpr f b
-  foldExpr     f (TypedBindings r b) = foldExpr f b
-  traverseExpr f (TypedBindings r b) = TypedBindings r <$> traverseExpr f b
+instance ExprLike GeneralizeTelescope where
+  recurseExpr  f (GeneralizeTel s tel) = GeneralizeTel s <$> recurseExpr f tel
+  foldExpr     f (GeneralizeTel s tel) = foldExpr f tel
+  traverseExpr f (GeneralizeTel s tel) = GeneralizeTel s <$> traverseExpr f tel
+
+instance ExprLike DataDefParams where
+  recurseExpr  f (DataDefParams s tel) = DataDefParams s <$> recurseExpr f tel
+  foldExpr     f (DataDefParams s tel) = foldExpr f tel
+  traverseExpr f (DataDefParams s tel) = DataDefParams s <$> traverseExpr f tel
 
 instance ExprLike TypedBinding where
   recurseExpr f e =
@@ -339,7 +348,7 @@ instance ExprLike ModuleApplication where
   recurseExpr f a =
     case a of
       SectionApp tel m es -> SectionApp <$> rec tel <*> rec m <*> rec es
-      RecordModuleIFS{}   -> pure a
+      RecordModuleInstance{} -> pure a
     where rec e = recurseExpr f e
 
 instance ExprLike Pragma where
@@ -377,6 +386,7 @@ instance ExprLike Declaration where
   recurseExpr f d =
     case d of
       Axiom a d i mp x e        -> Axiom a d i mp x <$> rec e
+      Generalize s i j x e      -> Generalize s i j x <$> rec e
       Field i x e               -> Field i x <$> rec e
       Primitive i x e           -> Primitive i x <$> rec e
       Mutual i ds               -> Mutual i <$> rec ds
@@ -387,9 +397,9 @@ instance ExprLike Declaration where
       Open{}                    -> pure d
       FunDef i f d cs           -> FunDef i f d <$> rec cs
       DataSig i d tel e         -> DataSig i d <$> rec tel <*> rec e
-      DataDef i d bs cs         -> DataDef i d <$> rec bs <*> rec cs
+      DataDef i d uc bs cs      -> DataDef i d uc <$> rec bs <*> rec cs
       RecSig i r tel e          -> RecSig i r <$> rec tel <*> rec e
-      RecDef i r n co c bs e ds -> RecDef i r n co c <$> rec bs <*> rec e <*> rec ds
+      RecDef i r uc n co c bs e ds -> RecDef i r uc n co c <$> rec bs <*> rec e <*> rec ds
       PatternSynDef f xs p      -> PatternSynDef f xs <$> rec p
       UnquoteDecl i is xs e     -> UnquoteDecl i is xs <$> rec e
       UnquoteDef i xs e         -> UnquoteDef i xs <$> rec e

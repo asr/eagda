@@ -1,15 +1,24 @@
 {-# LANGUAGE CPP #-}
 
-module Agda.TypeChecking.Monad.Builtin where
+module Agda.TypeChecking.Monad.Builtin
+  ( module Agda.TypeChecking.Monad.Builtin
+  , module Agda.Syntax.Builtin  -- The names are defined here.
+  ) where
+
+#if __GLASGOW_HASKELL__ >= 800
+import qualified Control.Monad.Fail as Fail
+#endif
 
 import Control.Monad.State
 import Control.Monad.Trans.Maybe
 
 import qualified Data.Map as Map
+import Data.Function ( on )
 
 import Agda.Syntax.Common
 import Agda.Syntax.Position
 import Agda.Syntax.Literal
+import Agda.Syntax.Builtin
 import Agda.Syntax.Internal as I
 import Agda.TypeChecking.Monad.Base
 -- import Agda.TypeChecking.Functions  -- LEADS TO IMPORT CYCLE
@@ -24,7 +33,14 @@ import Agda.Utils.Tuple
 #include "undefined.h"
 import Agda.Utils.Impossible
 
-class (Functor m, Applicative m, Monad m) => HasBuiltins m where
+class ( Functor m
+      , Applicative m
+#if __GLASGOW_HASKELL__ == 710
+      , Monad m
+#else
+      , Fail.MonadFail m
+#endif
+      ) => HasBuiltins m where
   getBuiltinThing :: String -> m (Maybe (Builtin PrimFun))
 
 instance HasBuiltins m => HasBuiltins (MaybeT m) where
@@ -52,24 +68,27 @@ litType l = case l of
     el t = El (mkType 0) t
 
 instance MonadIO m => HasBuiltins (TCMT m) where
-  getBuiltinThing b = liftM2 mplus (Map.lookup b <$> use stLocalBuiltins)
-                      (Map.lookup b <$> use stImportedBuiltins)
+  getBuiltinThing b = liftM2 mplus (Map.lookup b <$> useTC stLocalBuiltins)
+                      (Map.lookup b <$> useTC stImportedBuiltins)
 
 setBuiltinThings :: BuiltinThings PrimFun -> TCM ()
-setBuiltinThings b = stLocalBuiltins .= b
+setBuiltinThings b = stLocalBuiltins `setTCLens` b
 
 bindBuiltinName :: String -> Term -> TCM ()
 bindBuiltinName b x = do
-        builtin <- getBuiltinThing b
-        case builtin of
-            Just (Builtin y) -> typeError $ DuplicateBuiltinBinding b y x
-            Just (Prim _)    -> typeError $ NoSuchBuiltinName b
-            Nothing          -> stLocalBuiltins %= Map.insert b (Builtin x)
+  builtin <- getBuiltinThing b
+  case builtin of
+    Just (Builtin y) -> typeError $ DuplicateBuiltinBinding b y x
+    Just (Prim _)    -> typeError $ NoSuchBuiltinName b
+    Nothing          -> stLocalBuiltins `modifyTCLens` Map.insert b (Builtin x)
 
 bindPrimitive :: String -> PrimFun -> TCM ()
 bindPrimitive b pf = do
-  builtin <- use stLocalBuiltins
-  setBuiltinThings $ Map.insert b (Prim pf) builtin
+  builtin <- getBuiltinThing b
+  case builtin of
+    Just (Builtin _) -> typeError $ NoSuchPrimitiveFunction b
+    Just (Prim x)    -> typeError $ (DuplicatePrimitiveBinding b `on` primFunName) x pf
+    Nothing          -> stLocalBuiltins `modifyTCLens` Map.insert b (Prim pf)
 
 getBuiltin :: String -> TCM Term
 getBuiltin x =
@@ -104,6 +123,14 @@ getTerm' x = mplus <$> getBuiltin' x <*> getPrimitiveTerm' x
 getName' :: HasBuiltins m => String -> m (Maybe QName)
 getName' x = mplus <$> getBuiltinName' x <*> getPrimitiveName' x
 
+-- | @getTerm use name@ looks up @name@ as a primitive or builtin, and
+-- throws an error otherwise.
+-- The @use@ argument describes how the name is used for the sake of
+-- the error message.
+getTerm :: (HasBuiltins m) => String -> String -> m Term
+getTerm use name = flip fromMaybeM (getTerm' name) $
+  return $! (throwImpossible $ ImpMissingDefinitions [name] use)
+
 
 -- | Rewrite a literal to constructor form if possible.
 constructorForm :: Term -> TCM Term
@@ -124,15 +151,17 @@ constructorForm' pZero pSuc v =
 
 primInteger, primIntegerPos, primIntegerNegSuc,
     primFloat, primChar, primString, primUnit, primUnitUnit, primBool, primTrue, primFalse,
+    primSigma,
     primList, primNil, primCons, primIO, primNat, primSuc, primZero,
     primPath, primPathP, primInterval, primIZero, primIOne, primPartial, primPartialP,
     primIMin, primIMax, primINeg,
     primIsOne, primItIsOne, primIsOne1, primIsOne2, primIsOneEmpty,
     primSub, primSubIn, primSubOut,
+    primTrans, primHComp,
     primId, primConId, primIdElim,
-    primIsEquiv, primPathToEquiv, primGlue, prim_glue, prim_unglue,
-    primCompGlue, primFaceForall,
-    primPushOut, primPOInl, primPOInr, primPOPush, primPOhcomp, primPOforward, primPOElim,
+    primEquiv, primEquivFun, primEquivProof, primPathToEquiv,
+    primGlue, prim_glue, prim_unglue,
+    primFaceForall,
     primNatPlus, primNatMinus, primNatTimes, primNatDivSucAux, primNatModSucAux,
     primNatEquality, primNatLess,
     -- Machine words
@@ -142,6 +171,7 @@ primInteger, primIntegerPos, primIntegerNegSuc,
     primEquality, primRefl,
     primRewrite, -- Name of rewrite relation
     primLevel, primLevelZero, primLevelSuc, primLevelMax,
+    primSetOmega,
     primFromNat, primFromNeg, primFromString,
     -- builtins for reflection:
     primQName, primArgInfo, primArgArgInfo, primArg, primArgArg, primAbs, primAbsAbs, primAgdaTerm, primAgdaTermVar,
@@ -180,6 +210,7 @@ primFloat        = getBuiltin builtinFloat
 primChar         = getBuiltin builtinChar
 primString       = getBuiltin builtinString
 primBool         = getBuiltin builtinBool
+primSigma        = getBuiltin builtinSigma
 primUnit         = getBuiltin builtinUnit
 primUnitUnit     = getBuiltin builtinUnitUnit
 primTrue         = getBuiltin builtinTrue
@@ -203,12 +234,15 @@ primPartial      = getPrimitiveTerm "primPartial"
 primPartialP     = getPrimitiveTerm "primPartialP"
 primIsOne        = getBuiltin builtinIsOne
 primItIsOne      = getBuiltin builtinItIsOne
-primIsEquiv      = getBuiltin builtinIsEquiv
+primTrans        = getPrimitiveTerm builtinTrans
+primHComp        = getPrimitiveTerm builtinHComp
+primEquiv        = getBuiltin builtinEquiv
+primEquivFun     = getBuiltin builtinEquivFun
+primEquivProof   = getBuiltin builtinEquivProof
 primPathToEquiv  = getBuiltin builtinPathToEquiv
 primGlue         = getPrimitiveTerm builtinGlue
 prim_glue        = getPrimitiveTerm builtin_glue
 prim_unglue      = getPrimitiveTerm builtin_unglue
-primCompGlue     = getPrimitiveTerm builtinCompGlue
 primFaceForall   = getPrimitiveTerm builtinFaceForall
 primIsOne1       = getBuiltin builtinIsOne1
 primIsOne2       = getBuiltin builtinIsOne2
@@ -216,13 +250,6 @@ primIsOneEmpty   = getBuiltin builtinIsOneEmpty
 primSub          = getBuiltin builtinSub
 primSubIn        = getBuiltin builtinSubIn
 primSubOut       = getPrimitiveTerm builtinSubOut
-primPushOut      = getBuiltin builtinPushOut
-primPOInl        = getBuiltin builtinPOInl
-primPOInr        = getBuiltin builtinPOInr
-primPOPush       = getBuiltin builtinPOPush
-primPOhcomp      = getPrimitiveTerm builtinPOhcomp
-primPOforward    = getPrimitiveTerm builtinPOforward
-primPOElim       = getPrimitiveTerm builtinPOElim
 primNat          = getBuiltin builtinNat
 primSuc          = getBuiltin builtinSuc
 primZero         = getBuiltin builtinZero
@@ -250,6 +277,7 @@ primLevel        = getBuiltin builtinLevel
 primLevelZero    = getBuiltin builtinLevelZero
 primLevelSuc     = getBuiltin builtinLevelSuc
 primLevelMax     = getBuiltin builtinLevelMax
+primSetOmega     = getBuiltin builtinSetOmega
 primFromNat      = getBuiltin builtinFromNat
 primFromNeg      = getBuiltin builtinFromNeg
 primFromString   = getBuiltin builtinFromString
@@ -347,267 +375,6 @@ primAgdaTCMCommit             = getBuiltin builtinAgdaTCMCommit
 primAgdaTCMIsMacro            = getBuiltin builtinAgdaTCMIsMacro
 primAgdaTCMWithNormalisation  = getBuiltin builtinAgdaTCMWithNormalisation
 primAgdaTCMDebugPrint         = getBuiltin builtinAgdaTCMDebugPrint
-
-builtinNat, builtinSuc, builtinZero, builtinNatPlus, builtinNatMinus,
-  builtinNatTimes, builtinNatDivSucAux, builtinNatModSucAux, builtinNatEquals,
-  builtinNatLess, builtinInteger, builtinIntegerPos, builtinIntegerNegSuc,
-  builtinWord64,
-  builtinFloat, builtinChar, builtinString, builtinUnit, builtinUnitUnit,
-  builtinBool, builtinTrue, builtinFalse,
-  builtinList, builtinNil, builtinCons, builtinIO,
-  builtinPath, builtinPathP, builtinInterval, builtinPathAbs, builtinIZero, builtinIOne, builtinPartial, builtinPartialP,
-  builtinIMin, builtinIMax, builtinINeg,
-  builtinIsOne,  builtinItIsOne, builtinIsOne1, builtinIsOne2, builtinIsOneEmpty,
-  builtinSub, builtinSubIn, builtinSubOut,
-  builtinIsEquiv, builtinPathToEquiv, builtinGlue, builtin_glue, builtin_unglue,
-  builtinCompGlue, builtinFaceForall,
-  builtinId, builtinConId, builtinIdElim,
-  builtinPushOut, builtinPOInl, builtinPOInr, builtinPOPush, builtinPOhcomp, builtinPOforward, builtinPOElim,
-  builtinSizeUniv, builtinSize, builtinSizeLt,
-  builtinSizeSuc, builtinSizeInf, builtinSizeMax,
-  builtinInf, builtinSharp, builtinFlat,
-  builtinEquality, builtinRefl, builtinRewrite, builtinLevelMax,
-  builtinLevel, builtinLevelZero, builtinLevelSuc,
-  builtinFromNat, builtinFromNeg, builtinFromString,
-  builtinQName, builtinAgdaSort, builtinAgdaSortSet, builtinAgdaSortLit,
-  builtinAgdaSortUnsupported,
-  builtinHiding, builtinHidden, builtinInstance, builtinVisible,
-  builtinRelevance, builtinRelevant, builtinIrrelevant, builtinArg,
-  builtinAssoc, builtinAssocLeft, builtinAssocRight, builtinAssocNon,
-  builtinPrecedence, builtinPrecRelated, builtinPrecUnrelated,
-  builtinFixity, builtinFixityFixity,
-  builtinArgInfo, builtinArgArgInfo, builtinArgArg,
-  builtinAbs, builtinAbsAbs, builtinAgdaTerm,
-  builtinAgdaTermVar, builtinAgdaTermLam, builtinAgdaTermExtLam,
-  builtinAgdaTermDef, builtinAgdaTermCon, builtinAgdaTermPi,
-  builtinAgdaTermSort, builtinAgdaTermLit, builtinAgdaTermUnsupported, builtinAgdaTermMeta,
-  builtinAgdaErrorPart, builtinAgdaErrorPartString, builtinAgdaErrorPartTerm, builtinAgdaErrorPartName,
-  builtinAgdaLiteral, builtinAgdaLitNat, builtinAgdaLitWord64, builtinAgdaLitFloat,
-  builtinAgdaLitChar, builtinAgdaLitString, builtinAgdaLitQName, builtinAgdaLitMeta,
-  builtinAgdaClause, builtinAgdaClauseClause, builtinAgdaClauseAbsurd, builtinAgdaPattern,
-  builtinAgdaPatVar, builtinAgdaPatCon, builtinAgdaPatDot, builtinAgdaPatLit,
-  builtinAgdaPatProj, builtinAgdaPatAbsurd,
-  builtinAgdaDefinitionFunDef,
-  builtinAgdaDefinitionDataDef, builtinAgdaDefinitionRecordDef,
-  builtinAgdaDefinitionDataConstructor, builtinAgdaDefinitionPostulate,
-  builtinAgdaDefinitionPrimitive, builtinAgdaDefinition,
-  builtinAgdaMeta,
-  builtinAgdaTCM, builtinAgdaTCMReturn, builtinAgdaTCMBind, builtinAgdaTCMUnify,
-  builtinAgdaTCMTypeError, builtinAgdaTCMInferType,
-  builtinAgdaTCMCheckType, builtinAgdaTCMNormalise, builtinAgdaTCMReduce,
-  builtinAgdaTCMCatchError,
-  builtinAgdaTCMGetContext, builtinAgdaTCMExtendContext, builtinAgdaTCMInContext,
-  builtinAgdaTCMFreshName, builtinAgdaTCMDeclareDef, builtinAgdaTCMDeclarePostulate, builtinAgdaTCMDefineFun,
-  builtinAgdaTCMGetType, builtinAgdaTCMGetDefinition,
-  builtinAgdaTCMQuoteTerm, builtinAgdaTCMUnquoteTerm,
-  builtinAgdaTCMBlockOnMeta, builtinAgdaTCMCommit, builtinAgdaTCMIsMacro,
-  builtinAgdaTCMWithNormalisation, builtinAgdaTCMDebugPrint
-  :: String
-
-builtinNat                           = "NATURAL"
-builtinSuc                           = "SUC"
-builtinZero                          = "ZERO"
-builtinNatPlus                       = "NATPLUS"
-builtinNatMinus                      = "NATMINUS"
-builtinNatTimes                      = "NATTIMES"
-builtinNatDivSucAux                  = "NATDIVSUCAUX"
-builtinNatModSucAux                  = "NATMODSUCAUX"
-builtinNatEquals                     = "NATEQUALS"
-builtinNatLess                       = "NATLESS"
-builtinWord64                        = "WORD64"
-builtinInteger                       = "INTEGER"
-builtinIntegerPos                    = "INTEGERPOS"
-builtinIntegerNegSuc                 = "INTEGERNEGSUC"
-builtinFloat                         = "FLOAT"
-builtinChar                          = "CHAR"
-builtinString                        = "STRING"
-builtinUnit                          = "UNIT"
-builtinUnitUnit                      = "UNITUNIT"
-builtinBool                          = "BOOL"
-builtinTrue                          = "TRUE"
-builtinFalse                         = "FALSE"
-builtinList                          = "LIST"
-builtinNil                           = "NIL"
-builtinCons                          = "CONS"
-builtinIO                            = "IO"
-builtinId                            = "ID"
-builtinConId                         = "CONID"
-builtinIdElim                        = "primIdElim"
-builtinPath                          = "PATH"
-builtinPathP                         = "PATHP"
-builtinInterval                      = "INTERVAL"
-builtinIMin                          = "primIMin"
-builtinIMax                          = "primIMax"
-builtinINeg                          = "primINeg"
-builtinPathAbs                       = "PATHABS"
-builtinIZero                         = "IZERO"
-builtinIOne                          = "IONE"
-builtinPartial                       = "PARTIAL"
-builtinPartialP                      = "PARTIALP"
-builtinIsOne                         = "ISONE"
-builtinItIsOne                       = "ITISONE"
-builtinIsEquiv                       = "ISEQUIV"
-builtinPathToEquiv                   = "PATHTOEQUIV"
-builtinGlue                          = "primGlue"
-builtin_glue                         = "prim^glue"
-builtin_unglue                       = "prim^unglue"
-builtinCompGlue                      = "COMPGLUE"
-builtinFaceForall                    = "primFaceForall"
-builtinIsOne1                        = "ISONE1"
-builtinIsOne2                        = "ISONE2"
-builtinIsOneEmpty                    = "ISONEEMPTY"
-builtinSub                           = "SUB"
-builtinSubIn                         = "SUBIN"
-builtinSubOut                        = "primSubOut"
-builtinPushOut                       = "PUSHOUT"
-builtinPOInl                         = "PUSHOUTINL"
-builtinPOInr                         = "PUSHOUTINR"
-builtinPOPush                        = "PUSHOUTPUSH"
-builtinPOhcomp                       = "primPushOutHComp"
-builtinPOforward                     = "primPushOutForward"
-builtinPOElim                        = "primPushOutElim"
-builtinSizeUniv                      = "SIZEUNIV"
-builtinSize                          = "SIZE"
-builtinSizeLt                        = "SIZELT"
-builtinSizeSuc                       = "SIZESUC"
-builtinSizeInf                       = "SIZEINF"
-builtinSizeMax                       = "SIZEMAX"
-builtinInf                           = "INFINITY"
-builtinSharp                         = "SHARP"
-builtinFlat                          = "FLAT"
-builtinEquality                      = "EQUALITY"
-builtinRefl                          = "REFL"
-builtinRewrite                       = "REWRITE"
-builtinLevelMax                      = "LEVELMAX"
-builtinLevel                         = "LEVEL"
-builtinLevelZero                     = "LEVELZERO"
-builtinLevelSuc                      = "LEVELSUC"
-builtinFromNat                       = "FROMNAT"
-builtinFromNeg                       = "FROMNEG"
-builtinFromString                    = "FROMSTRING"
-builtinQName                         = "QNAME"
-builtinAgdaSort                      = "AGDASORT"
-builtinAgdaSortSet                   = "AGDASORTSET"
-builtinAgdaSortLit                   = "AGDASORTLIT"
-builtinAgdaSortUnsupported           = "AGDASORTUNSUPPORTED"
-builtinHiding                        = "HIDING"
-builtinHidden                        = "HIDDEN"
-builtinInstance                      = "INSTANCE"
-builtinVisible                       = "VISIBLE"
-builtinRelevance                     = "RELEVANCE"
-builtinRelevant                      = "RELEVANT"
-builtinIrrelevant                    = "IRRELEVANT"
-builtinAssoc                         = "ASSOC"
-builtinAssocLeft                     = "ASSOCLEFT"
-builtinAssocRight                    = "ASSOCRIGHT"
-builtinAssocNon                      = "ASSOCNON"
-builtinPrecedence                    = "PRECEDENCE"
-builtinPrecRelated                   = "PRECRELATED"
-builtinPrecUnrelated                 = "PRECUNRELATED"
-builtinFixity                        = "FIXITY"
-builtinFixityFixity                  = "FIXITYFIXITY"
-builtinArg                           = "ARG"
-builtinArgInfo                       = "ARGINFO"
-builtinArgArgInfo                    = "ARGARGINFO"
-builtinArgArg                        = "ARGARG"
-builtinAbs                           = "ABS"
-builtinAbsAbs                        = "ABSABS"
-builtinAgdaTerm                      = "AGDATERM"
-builtinAgdaTermVar                   = "AGDATERMVAR"
-builtinAgdaTermLam                   = "AGDATERMLAM"
-builtinAgdaTermExtLam                = "AGDATERMEXTLAM"
-builtinAgdaTermDef                   = "AGDATERMDEF"
-builtinAgdaTermCon                   = "AGDATERMCON"
-builtinAgdaTermPi                    = "AGDATERMPI"
-builtinAgdaTermSort                  = "AGDATERMSORT"
-builtinAgdaTermLit                   = "AGDATERMLIT"
-builtinAgdaTermUnsupported           = "AGDATERMUNSUPPORTED"
-builtinAgdaTermMeta                  = "AGDATERMMETA"
-builtinAgdaErrorPart                 = "AGDAERRORPART"
-builtinAgdaErrorPartString           = "AGDAERRORPARTSTRING"
-builtinAgdaErrorPartTerm             = "AGDAERRORPARTTERM"
-builtinAgdaErrorPartName             = "AGDAERRORPARTNAME"
-builtinAgdaLiteral                   = "AGDALITERAL"
-builtinAgdaLitNat                    = "AGDALITNAT"
-builtinAgdaLitWord64                 = "AGDALITWORD64"
-builtinAgdaLitFloat                  = "AGDALITFLOAT"
-builtinAgdaLitChar                   = "AGDALITCHAR"
-builtinAgdaLitString                 = "AGDALITSTRING"
-builtinAgdaLitQName                  = "AGDALITQNAME"
-builtinAgdaLitMeta                   = "AGDALITMETA"
-builtinAgdaClause                    = "AGDACLAUSE"
-builtinAgdaClauseClause              = "AGDACLAUSECLAUSE"
-builtinAgdaClauseAbsurd              = "AGDACLAUSEABSURD"
-builtinAgdaPattern                   = "AGDAPATTERN"
-builtinAgdaPatVar                    = "AGDAPATVAR"
-builtinAgdaPatCon                    = "AGDAPATCON"
-builtinAgdaPatDot                    = "AGDAPATDOT"
-builtinAgdaPatLit                    = "AGDAPATLIT"
-builtinAgdaPatProj                   = "AGDAPATPROJ"
-builtinAgdaPatAbsurd                 = "AGDAPATABSURD"
-builtinAgdaDefinitionFunDef          = "AGDADEFINITIONFUNDEF"
-builtinAgdaDefinitionDataDef         = "AGDADEFINITIONDATADEF"
-builtinAgdaDefinitionRecordDef       = "AGDADEFINITIONRECORDDEF"
-builtinAgdaDefinitionDataConstructor = "AGDADEFINITIONDATACONSTRUCTOR"
-builtinAgdaDefinitionPostulate       = "AGDADEFINITIONPOSTULATE"
-builtinAgdaDefinitionPrimitive       = "AGDADEFINITIONPRIMITIVE"
-builtinAgdaDefinition                = "AGDADEFINITION"
-builtinAgdaMeta                      = "AGDAMETA"
-builtinAgdaTCM           = "AGDATCM"
-builtinAgdaTCMReturn     = "AGDATCMRETURN"
-builtinAgdaTCMBind       = "AGDATCMBIND"
-builtinAgdaTCMUnify      = "AGDATCMUNIFY"
-builtinAgdaTCMTypeError  = "AGDATCMTYPEERROR"
-builtinAgdaTCMInferType  = "AGDATCMINFERTYPE"
-builtinAgdaTCMCheckType  = "AGDATCMCHECKTYPE"
-builtinAgdaTCMNormalise  = "AGDATCMNORMALISE"
-builtinAgdaTCMReduce     = "AGDATCMREDUCE"
-builtinAgdaTCMCatchError = "AGDATCMCATCHERROR"
-builtinAgdaTCMGetContext = "AGDATCMGETCONTEXT"
-builtinAgdaTCMExtendContext = "AGDATCMEXTENDCONTEXT"
-builtinAgdaTCMInContext     = "AGDATCMINCONTEXT"
-builtinAgdaTCMFreshName     = "AGDATCMFRESHNAME"
-builtinAgdaTCMDeclareDef    = "AGDATCMDECLAREDEF"
-builtinAgdaTCMDeclarePostulate    = "AGDATCMDECLAREPOSTULATE"
-builtinAgdaTCMDefineFun     = "AGDATCMDEFINEFUN"
-builtinAgdaTCMGetType       = "AGDATCMGETTYPE"
-builtinAgdaTCMGetDefinition = "AGDATCMGETDEFINITION"
-builtinAgdaTCMBlockOnMeta   = "AGDATCMBLOCKONMETA"
-builtinAgdaTCMCommit        = "AGDATCMCOMMIT"
-builtinAgdaTCMQuoteTerm     = "AGDATCMQUOTETERM"
-builtinAgdaTCMUnquoteTerm   = "AGDATCMUNQUOTETERM"
-builtinAgdaTCMIsMacro       = "AGDATCMISMACRO"
-builtinAgdaTCMWithNormalisation = "AGDATCMWITHNORMALISATION"
-builtinAgdaTCMDebugPrint = "AGDATCMDEBUGPRINT"
-
--- | Builtins that come without a definition in Agda syntax.
---   These are giving names to Agda internal concepts which
---   cannot be assigned an Agda type.
---
---   An example would be a user-defined name for @Set@.
---
---     {-# BUILTIN TYPE Type #-}
---
---   The type of @Type@ would be @Type : Level → Setω@
---   which is not valid Agda.
-
-builtinsNoDef :: [String]
-builtinsNoDef =
-  [ builtinSizeUniv
-  , builtinSize
-  , builtinSizeLt
-  , builtinSizeSuc
-  , builtinSizeInf
-  , builtinSizeMax
-  , builtinConId
-  , builtinInterval
-  , builtinPartial
-  , builtinPartialP
-  , builtinIsOne
-  , builtinSub
-  , builtinIZero
-  , builtinIOne
-  ]
 
 -- | The coinductive primitives.
 
@@ -802,3 +569,19 @@ equalityUnview :: EqualityView -> Type
 equalityUnview (OtherType t) = t
 equalityUnview (EqualityType s equality l t lhs rhs) =
   El s $ Def equality $ map Apply (l ++ [t, lhs, rhs])
+
+-- | Primitives with typechecking constrants.
+constrainedPrims :: [String]
+constrainedPrims =
+  [ builtinConId
+  , builtinPOr
+  , builtinComp
+  , builtinHComp
+  , builtinTrans
+  , builtin_glue
+  ]
+
+getNameOfConstrained :: HasBuiltins m => String -> m (Maybe QName)
+getNameOfConstrained s = do
+  unless (s `elem` constrainedPrims) __IMPOSSIBLE__
+  getName' s

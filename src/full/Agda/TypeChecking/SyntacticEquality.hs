@@ -18,10 +18,12 @@ import Control.Applicative hiding ((<**>))
 import Control.Arrow ((***))
 import Control.Monad.State hiding (mapM)
 
+import Agda.Interaction.Options (optSyntacticEquality)
+
 import Agda.Syntax.Common
 import Agda.Syntax.Internal
 
-import Agda.TypeChecking.Monad (ReduceM, MonadReduce(..))
+import Agda.TypeChecking.Monad (ReduceM, MonadReduce(..), pragmaOptions)
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Reduce.Monad
 import Agda.TypeChecking.Substitute
@@ -43,7 +45,10 @@ import Agda.Utils.Impossible
 {-# SPECIALIZE checkSyntacticEquality :: Term -> Term -> ReduceM ((Term, Term), Bool) #-}
 {-# SPECIALIZE checkSyntacticEquality :: Type -> Type -> ReduceM ((Type, Type), Bool) #-}
 checkSyntacticEquality :: (SynEq a, MonadReduce m) => a -> a -> m ((a, a), Bool)
-checkSyntacticEquality v v' = liftReduce $ synEq v v' `runStateT` True
+checkSyntacticEquality v v' = liftReduce $ do
+  ifM (optSyntacticEquality <$> pragmaOptions)
+  {-then-} (synEq v v' `runStateT` True)
+  {-else-} (return ((v,v'), False))
 
 -- | Monad for checking syntactic equality
 type SynEqM = StateT Bool ReduceM
@@ -95,6 +100,7 @@ instance SynEq Term where
       (DontCare _, DontCare _  )           -> pure (v, v')
          -- Irrelevant things are syntactically equal. ALT:
          -- DontCare <$$> synEq v v'
+      (Dummy{}   , Dummy{}     )           -> pure (v, v')
       _                                    -> inequal (v, v')
 
 instance SynEq Level where
@@ -132,11 +138,13 @@ instance SynEq Sort where
     case (s, s') of
       (Type l  , Type l'   ) -> Type <$$> synEq l l'
       (PiSort a b, PiSort a' b') -> piSort <$$> synEq a a' <**> synEq' b b'
-      (UnivSort a, UnivSort a') -> univSort <$$> synEq a a'
+      (UnivSort a, UnivSort a') -> UnivSort <$$> synEq a a'
       (SizeUniv, SizeUniv  ) -> pure2 s
       (Prop l  , Prop l'   ) -> Prop <$$> synEq l l'
       (Inf     , Inf       ) -> pure2 s
       (MetaS x es , MetaS x' es') | x == x' -> MetaS x <$$> synEq es es'
+      (DefS  d es , DefS  d' es') | d == d' -> DefS d  <$$> synEq es es'
+      (DummyS{}, DummyS{}) -> pure (s, s')
       _ -> inequal (s, s')
 
 -- | Syntactic equality ignores sorts.
@@ -177,7 +185,9 @@ instance SynEq a => SynEq (Arg a) where
   synEq (Arg ai a) (Arg ai' a') = Arg <$$> synEq ai ai' <**> synEq a a'
 
 instance SynEq a => SynEq (Dom a) where
-  synEq (Dom ai b a) (Dom ai' b' a') = Dom <$$> synEq ai ai' <**> synEq b b' <**> synEq a a'
+  synEq d@(Dom ai b x a) d'@(Dom ai' b' x' a')
+    | x == x'   = Dom <$$> synEq ai ai' <**> synEq b b' <**> pure2 x <**> synEq a a'
+    | otherwise = inequal (d, d')
 
 instance SynEq ArgInfo where
   synEq ai@(ArgInfo h r o _) ai'@(ArgInfo h' r' o' _)

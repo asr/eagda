@@ -21,33 +21,35 @@ import Agda.Utils.Tuple
 #include "undefined.h"
 import Agda.Utils.Impossible
 
--- | @implicitArgs n expand eti t@ generates up to @n@ implicit arguments
+-- | @implicitArgs n expand t@ generates up to @n@ implicit arguments
 --   metas (unbounded if @n<0@), as long as @t@ is a function type
 --   and @expand@ holds on the hiding info of its domain.
---
---   If explicit arguments are to be inserted as well, they are
---   inserted as instance arguments (used for recursive instance search).
 
 implicitArgs :: Int -> (Hiding -> Bool) -> Type -> TCM (Args, Type)
 implicitArgs n expand t = mapFst (map (fmap namedThing)) <$> do
   implicitNamedArgs n (\ h x -> expand h) t
 
--- | @implicitNamedArgs n expand eti t@ generates up to @n@ named implicit arguments
+-- | @implicitNamedArgs n expand t@ generates up to @n@ named implicit arguments
 --   metas (unbounded if @n<0@), as long as @t@ is a function type
 --   and @expand@ holds on the hiding and name info of its domain.
---
---   If explicit arguments are to be inserted as well, they are
---   inserted as instance arguments (used for recursive instance search).
 
 implicitNamedArgs :: Int -> (Hiding -> ArgName -> Bool) -> Type -> TCM (NamedArgs, Type)
 implicitNamedArgs 0 expand t0 = return ([], t0)
 implicitNamedArgs n expand t0 = do
     t0' <- reduce t0
+    reportSDoc "tc.term.args" 30 $ "implicitNamedArgs" <+> prettyTCM t0'
+    reportSDoc "tc.term.args" 80 $ "implicitNamedArgs" <+> text (show t0')
     case unEl t0' of
-      Pi (Dom{domInfo = info, unDom = a}) b | let x = absName b, expand (getHiding info) x -> do
+      Pi Dom{domInfo = info, domName = name, unDom = a} b
+        | let x = maybe "_" rangedThing name, expand (getHiding info) x -> do
           info' <- if hidden info then return info else do
             reportSDoc "tc.term.args.ifs" 15 $
-              text "inserting instance meta for type" <+> prettyTCM a
+              "inserting instance meta for type" <+> prettyTCM a
+            reportSDoc "tc.term.args.ifs" 40 $ nest 2 $ vcat
+              [ "x      = " <+> text (show x)
+              , "hiding = " <+> text (show $ getHiding info)
+              ]
+
             return $ makeInstance info
           (_, v) <- newMetaArg info' x a
           let narg = Arg info (Named (Just $ unranged x) v)
@@ -62,11 +64,11 @@ newMetaArg
   -> Type      -- ^ Type of meta.
   -> TCM (MetaId, Term)  -- ^ The created meta as id and as term.
 newMetaArg info x a = do
-  applyRelevanceToContext (getRelevance info) $
+  applyModalityToContext info $
     newMeta (getHiding info) (argNameToString x) a
   where
     newMeta :: Hiding -> String -> Type -> TCM (MetaId, Term)
-    newMeta Instance{} = newIFSMeta
+    newMeta Instance{} = newInstanceMeta
     newMeta Hidden     = newNamedValueMeta RunMetaOccursCheck
     newMeta NotHidden  = newNamedValueMeta RunMetaOccursCheck
 
@@ -78,11 +80,11 @@ newInteractionMetaArg
   -> Type      -- ^ Type of meta.
   -> TCM (MetaId, Term)  -- ^ The created meta as id and as term.
 newInteractionMetaArg info x a = do
-  applyRelevanceToContext (getRelevance info) $
+  applyModalityToContext info $
     newMeta (getHiding info) (argNameToString x) a
   where
     newMeta :: Hiding -> String -> Type -> TCM (MetaId, Term)
-    newMeta Instance{} = newIFSMeta
+    newMeta Instance{} = newInstanceMeta
     newMeta Hidden     = newNamedValueMeta' RunMetaOccursCheck
     newMeta NotHidden  = newNamedValueMeta' RunMetaOccursCheck
 
@@ -99,14 +101,19 @@ impInsert :: [Hiding] -> ImplicitInsertion
 impInsert [] = NoInsertNeeded
 impInsert hs = ImpInsert hs
 
--- | The list should be non-empty.
-insertImplicit :: NamedArg e -> [Arg ArgName] -> ImplicitInsertion
-insertImplicit _ [] = __IMPOSSIBLE__
-insertImplicit a ts | visible a = impInsert $ nofHidden ts
+insertImplicit :: NamedArg e -> [Dom a] -> ImplicitInsertion
+insertImplicit a doms = insertImplicit' a $ map name doms
+  where
+    name dom = x <$ argFromDom dom
+      where x = maybe "_" rangedThing $ domName dom
+
+insertImplicit' :: NamedArg e -> [Arg ArgName] -> ImplicitInsertion
+insertImplicit' _ [] = BadImplicits
+insertImplicit' a ts | visible a = impInsert $ nofHidden ts
   where
     nofHidden :: [Arg a] -> [Hiding]
     nofHidden = takeWhile notVisible . map getHiding
-insertImplicit a ts =
+insertImplicit' a ts =
   case nameOf (unArg a) of
     Nothing -> maybe BadImplicits impInsert $ upto (getHiding a) $ map getHiding ts
     Just x  -> find [] (rangedThing x) (getHiding a) ts

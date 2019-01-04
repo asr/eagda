@@ -158,11 +158,11 @@ reduceProjectionLike v = do
 --   on (applications of) projection-like functions.
 elimView :: Bool -> Term -> TCM Term
 elimView loneProjToLambda v = do
-  reportSDoc "tc.conv.elim" 30 $ text "elimView of " <+> prettyTCM v
+  reportSDoc "tc.conv.elim" 30 $ "elimView of " <+> prettyTCM v
   reportSLn  "tc.conv.elim" 50 $ "v = " ++ show v
   v <- reduceProjectionLike v
   reportSDoc "tc.conv.elim" 40 $
-    text "elimView (projections reduced) of " <+> prettyTCM v
+    "elimView (projections reduced) of " <+> prettyTCM v
   pv <- projView v
   case pv of
     NoProjection{}        -> return v
@@ -180,6 +180,8 @@ eligibleForProjectionLike d = eligible . theDef <$> getConstInfo d
     Datatype{} -> True
     Record{}   -> True
     Axiom{}    -> True
+    DataOrRecSig{}     -> True
+    GeneralizableVar{} -> False
     Function{}    -> False
     Primitive{}   -> False
     Constructor{} -> __IMPOSSIBLE__
@@ -230,8 +232,8 @@ makeProjection x = -- if True then return () else do
   defn <- getConstInfo x
   let t = defType defn
   reportSDoc "tc.proj.like" 20 $ sep
-    [ text "Checking for projection likeness "
-    , prettyTCM x <+> text " : " <+> prettyTCM t
+    [ "Checking for projection likeness "
+    , prettyTCM x <+> " : " <+> prettyTCM t
     ]
   case theDef defn of
     Function{funClauses = cls}
@@ -255,12 +257,12 @@ makeProjection x = -- if True then return () else do
           {- else -}
           case lastMaybe (filter (checkOccurs cls . snd) ps0) of
             Nothing -> reportSDoc "tc.proj.like" 50 $ nest 2 $ vcat
-              [ text "occurs check failed"
-              , nest 2 $ text "clauses =" <?> vcat (map pretty cls) ]
+              [ "occurs check failed"
+              , nest 2 $ "clauses =" <?> vcat (map pretty cls) ]
             Just (d, n) -> do
               -- Yes, we are projection-like!
               reportSDoc "tc.proj.like" 10 $ sep
-                [ prettyTCM x <+> text " : " <+> prettyTCM t
+                [ prettyTCM x <+> " : " <+> prettyTCM t
                 , text $ " is projection like in argument " ++ show n ++ " for type " ++ show d
                 ]
               __CRASH_WHEN__ "tc.proj.like.crash" 1000
@@ -302,6 +304,8 @@ makeProjection x = -- if True then return () else do
     Function{funMutual = Nothing} ->
       reportSLn "tc.proj.like" 30 $ "  mutuality check has not run yet"
     Axiom{}        -> reportSLn "tc.proj.like" 30 $ "  not a function, but Axiom"
+    DataOrRecSig{} -> reportSLn "tc.proj.like" 30 $ "  not a function, but DataOrRecSig"
+    GeneralizableVar{} -> reportSLn "tc.proj.like" 30 $ "  not a function, but GeneralizableVar"
     AbstractDefn{} -> reportSLn "tc.proj.like" 30 $ "  not a function, but AbstractDefn"
     Constructor{}  -> reportSLn "tc.proj.like" 30 $ "  not a function, but Constructor"
     Datatype{}     -> reportSLn "tc.proj.like" 30 $ "  not a function, but Datatype"
@@ -348,10 +352,12 @@ makeProjection x = -- if True then return () else do
         shallowMatch _             = True
         noMatches = all (noMatch . namedArg)
         noMatch ConP{} = False
+        noMatch DefP{} = False
         noMatch LitP{} = False
         noMatch ProjP{}= False
         noMatch VarP{} = True
         noMatch DotP{} = True
+        noMatch IApplyP{} = True
 
     -- Make sure non of the parameters occurs in the body of the function.
     checkBody m n b = not . getAny $ runFree badVar IgnoreNot b

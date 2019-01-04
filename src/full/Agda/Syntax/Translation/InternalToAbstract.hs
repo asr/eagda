@@ -162,7 +162,7 @@ instance Reify Expr Expr where
 instance Reify MetaId Expr where
     reifyWhen = reifyWhenE
     reify x@(MetaId n) = liftTCM $ do
-      b <- asks envPrintMetasBare
+      b <- asksTC envPrintMetasBare
       mi  <- mvInfo <$> lookupMeta x
       let mi' = Info.MetaInfo
                  { metaRange          = getRange $ miClosRange mi
@@ -171,8 +171,17 @@ instance Reify MetaId Expr where
                  , metaNameSuggestion = if b then "" else miNameSuggestion mi
                  }
           underscore = return $ A.Underscore mi'
-      caseMaybeM (isInteractionMeta x) underscore $ \ ii@InteractionId{} ->
+      -- If we are printing a term that will be pasted into the user
+      -- source, we turn all unsolved (non-interaction) metas into
+      -- interaction points
+      isInteractionMeta x >>= \case
+        Nothing | b -> do
+          ii <- registerInteractionPoint False noRange Nothing
+          connectInteractionPoint ii x
           return $ A.QuestionMark mi' ii
+        Just ii | b -> underscore
+        Nothing     -> underscore
+        Just ii     -> return $ A.QuestionMark mi' ii
 
 -- Does not print with-applications correctly:
 -- instance Reify DisplayTerm Expr where
@@ -232,8 +241,8 @@ reifyDisplayFormP f ps wps = do
         reportSDoc "reify.display" 70 $ do
           doc <- prettyA $ SpineLHS empty f' (ps' ++ wps' ++ wps)
           return $ vcat
-            [ text "rewritten lhs to"
-            , text "  lhs' = " <+> doc
+            [ "rewritten lhs to"
+            , "  lhs' = " <+> doc
             ]
         reifyDisplayFormP f' ps' (wps' ++ wps)
       _ -> do
@@ -337,6 +346,8 @@ reifyDisplayFormP f ps wps = do
         termToPat (DTerm (I.Def _ [])) = return $ unnamed $ A.WildP patNoRange
         termToPat (DDef _ [])          = return $ unnamed $ A.WildP patNoRange
 
+        termToPat (DTerm (I.Lit l))    = return $ unnamed $ A.LitP l
+
         termToPat (DDot v)             = unnamed . A.DotP patNoRange <$> termToExpr v
         termToPat v                    = unnamed . A.DotP patNoRange <$> reify v
 
@@ -364,7 +375,7 @@ reifyDisplayFormP f ps wps = do
               -- even the pattern variables @n < len@ can be
               -- applied to some args @vs@.
               e <- if n < len
-                   then return $ A.patternToExpr $ namedArg $ ps !! n
+                   then return $ A.patternToExpr $ namedArg $ indexWithDefault __IMPOSSIBLE__ ps n
                    else reify (I.var (n - len))
               apps e =<< argsToExpr vs
             _ -> return underscore
@@ -377,9 +388,32 @@ instance Reify Term Expr where
   reifyWhen = reifyWhenE
   reify v = reifyTerm True v
 
+reifyPathPConstAsPath :: QName -> Elims -> TCM (QName, Elims)
+reifyPathPConstAsPath x es@[I.Apply l, I.Apply t, I.Apply lhs, I.Apply rhs] = do
+   reportSLn "reify.def" 100 $ "reifying def path " ++ show (x,es)
+   mpath  <- getBuiltinName' builtinPath
+   mpathp <- getBuiltinName' builtinPathP
+   let fallback = return (x,es)
+   case (,) <$> mpath <*> mpathp of
+     Just (path,pathp) | x == pathp -> do
+       let a = case unArg t of
+                I.Lam _ (NoAbs _ b)    -> Just b
+                I.Lam _ (Abs   _ b)
+                  | not $ 0 `freeIn` b -> Just (strengthen __IMPOSSIBLE__ b)
+                _                      -> Nothing
+       case a of
+         Just a -> return (path, [I.Apply l, I.Apply (setHiding Hidden $ defaultArg a), I.Apply lhs, I.Apply rhs])
+         Nothing -> fallback
+     _ -> fallback
+reifyPathPConstAsPath x es = return (x,es)
+
 reifyTerm :: Bool -> Term -> TCM Expr
-reifyTerm expandAnonDefs0 v = do
-  metasBare <- asks envPrintMetasBare
+reifyTerm expandAnonDefs0 v0 = do
+  -- Jesper 2018-11-02: If 'PrintMetasBare', drop all meta eliminations.
+  metasBare <- asksTC envPrintMetasBare
+  v <- instantiate v0 >>= \case
+    I.MetaV x _ | metasBare -> return $ I.MetaV x []
+    v -> return v
   -- Ulf 2014-07-10: Don't expand anonymous when display forms are disabled
   -- (i.e. when we don't care about nice printing)
   expandAnonDefs <- return expandAnonDefs0 `and2M` displayFormsEnabled
@@ -387,13 +421,19 @@ reifyTerm expandAnonDefs0 v = do
   -- then we print system-generated projections as postfix, else prefix.
   havePfp <- optPostfixProjections <$> pragmaOptions
   let pred = if havePfp then (== ProjPrefix) else (/= ProjPostfix)
-  v <- instantiate v
-  case applyUnless metasBare (unSpine' pred) v of
+  case unSpine' pred v of
+    -- Hack to print generalized field projections with nicer names. Should
+    -- only show up in errors. Check the spined form!
+    _ | I.Var n (I.Proj _ p : es) <- v,
+        Just name <- getGeneralizedFieldName p -> do
+      let fakeName = (qnameName p) { nameConcrete = C.Name noRange C.InScope [C.Id name] } -- TODO: infix names!?
+      elims (A.Var fakeName) =<< reify es
     I.Var n es   -> do
         x  <- liftTCM $ nameOfBV n `catchError` \_ -> freshName_ ("@" ++ show n)
         elims (A.Var x) =<< reify es
     I.Def x es   -> do
       reportSLn "reify.def" 100 $ "reifying def " ++ prettyShow x
+      (x,es) <- reifyPathPConstAsPath x es
       reifyDisplayForm x es $ reifyDef expandAnonDefs x es
     I.Con c ci vs -> do
       let x = conName c
@@ -417,7 +457,7 @@ reifyTerm expandAnonDefs0 v = do
           when (n > np) __IMPOSSIBLE__
           let h = A.Con (unambiguous x)
           if null vs then return h else do
-            es <- reify (fromMaybe __IMPOSSIBLE__ $ allApplyElims vs)
+            es <- reify (map (fromMaybe __IMPOSSIBLE__ . isApplyElim) vs)
             -- Andreas, 2012-04-20: do not reify parameter arguments of constructor
             -- if the first regular constructor argument is hidden
             -- we turn it into a named argument, in order to avoid confusion
@@ -450,7 +490,7 @@ reifyTerm expandAnonDefs0 v = do
 --    I.Lam info b | isAbsurdBody b -> return $ A. AbsurdLam noExprInfo $ getHiding info
     I.Lam info b    -> do
       (x,e) <- reify b
-      return $ A.Lam exprNoRange (DomainFree info $ BindName x) e
+      return $ A.Lam exprNoRange (DomainFree $ unnamedArg info $ BindName x) e
       -- Andreas, 2011-04-07 we do not need relevance information at internal Lambda
     I.Lit l        -> reify l
     I.Level l      -> reify l
@@ -467,22 +507,67 @@ reifyTerm expandAnonDefs0 v = do
             {- then -} (pure $ Arg (domInfo a) underscore)
             {- else -} (reify a)
       where
-        mkPi b (Arg info a) = do
-          -- #2776: Out-of-scope dots are not helpful at this point.
-          (x, b) <- reify b{ absName = unNotInScopeName $ absName b }
-          return $ A.Pi noExprInfo [TypedBindings noRange $ Arg info (TBind noRange [pure $ BindName x] a)] b
+        mkPi b (Arg info a') = do
+          (x, b) <- reify b
+          return $ A.Pi noExprInfo [TBind noRange [Arg info $ Named (domName a) $ BindName x] a'] b
         -- We can omit the domain type if it doesn't have any free variables
         -- and it's mentioned in the target type.
         domainFree a b = do
-          df <- asks envPrintDomainFreePi
+          df <- asksTC envPrintDomainFreePi
           return $ and [df, freeIn 0 b, closed a]
 
     I.Sort s     -> reify s
     I.MetaV x es -> do
-      x' <- reify x
-      ifM (asks envPrintMetasBare) {-then-} (return x') {-else-} $
-        elims x' =<< reify es
+          x' <- reify x
+
+          es' <- reify es
+
+          mv <- lookupMeta x
+          (msub1,meta_tel,msub2) <- do
+            local_chkpt <- viewTC eCurrentCheckpoint
+            (chkpt, tel, msub2) <- enterClosure (getMetaInfo mv) $ \ _ ->
+                               (,,) <$> viewTC eCurrentCheckpoint
+                                    <*> getContextTelescope
+                                    <*> viewTC (eCheckpoints . key local_chkpt)
+            (,,) <$> viewTC (eCheckpoints . key chkpt) <*> pure tel <*> pure msub2
+          let
+              addNames []    es = map (fmap unnamed) es
+              addNames _     [] = []
+              addNames xs     (I.Proj{} : _) = __IMPOSSIBLE__
+              addNames xs     (I.IApply x y r : es) =
+                -- Needs to be I.Apply so it can have an Origin field.
+                addNames xs (I.Apply (defaultArg r) : es)
+              addNames (x:xs) (I.Apply arg : es) =
+                I.Apply (Named (Just x) <$> (setOrigin Substitution arg)) : addNames xs es
+
+              p = mvPermutation mv
+              applyPerm p vs = permute (takeP (size vs) p) vs
+
+              names = map unranged $ p `applyPerm` teleNames meta_tel
+              named_es' = addNames names es'
+
+              dropIdentitySubs sub_local2G sub_tel2G =
+                 let
+                     args_G = applySubst sub_tel2G $ p `applyPerm` (teleArgs meta_tel :: [Arg Term])
+                     es_G = sub_local2G `applySubst` es
+                     sameVar x (I.Apply y) = isJust xv && xv == deBruijnView (unArg y)
+                      where
+                       xv = deBruijnView $ unArg x
+                     sameVar _ _ = False
+                     dropArg = take (size names) $ zipWith sameVar args_G es_G
+                     doDrop (b : xs)  (e : es) = (if b then id else (e :)) $ doDrop xs es
+                     doDrop []        es = es
+                     doDrop _         [] = []
+                 in doDrop dropArg $ named_es'
+
+              simpl_named_es' | Just sub_mtel2local <- msub1 = dropIdentitySubs IdS           sub_mtel2local
+                              | Just sub_local2mtel <- msub2 = dropIdentitySubs sub_local2mtel IdS
+                              | otherwise                    = named_es'
+
+          nelims x' simpl_named_es'
+
     I.DontCare v -> A.DontCare <$> reifyTerm expandAnonDefs v
+    I.Dummy s -> return $ A.Lit $ LitString noRange s
   where
     -- Andreas, 2012-10-20  expand a copy if not in scope
     -- to improve error messages.
@@ -535,7 +620,7 @@ reifyTerm expandAnonDefs0 v = do
                             vars = map (getArgInfo &&& name . namedArg) $ drop (length es) $ init $ namedClausePats cl
                             lam (i, s) = do
                               x <- freshName_ s
-                              return $ A.Lam exprNoRange (A.DomainFree i $ A.BindName x)
+                              return $ A.Lam exprNoRange (A.DomainFree $ unnamedArg i $ A.BindName x)
                         foldr ($) absLam <$> mapM lam vars
                       | otherwise -> elims absLam =<< reify (drop n es)
 
@@ -551,7 +636,7 @@ reifyTerm expandAnonDefs0 v = do
         df <- displayFormsEnabled
 
         -- #3004: give up if we have to print a pattern lambda inside its own body!
-        alreadyPrinting <- view ePrintingPatternLambdas
+        alreadyPrinting <- viewTC ePrintingPatternLambdas
 
         extLam <- case def of
           Function{ funExtLam = Just{}, funProjection = Just{} } -> __IMPOSSIBLE__
@@ -559,7 +644,7 @@ reifyTerm expandAnonDefs0 v = do
           _ -> return Nothing
         case extLam of
           Just (pars, sys) | df, notElem x alreadyPrinting ->
-            locally ePrintingPatternLambdas (x :) $
+            locallyTC ePrintingPatternLambdas (x :) $
             reifyExtLam x pars sys (defClauses defn) es
 
         -- Otherwise (ordinary function call):
@@ -628,7 +713,9 @@ reifyTerm expandAnonDefs0 v = do
              [ "  pad = " ++ show pad
              , "  nes = " ++ show nes
              ]
-           let hd = List.foldl' (A.App defaultAppInfo_) (A.Def x) pad
+           let hd0 | isProperProjection def = A.Proj ProjPrefix $ AmbQ $ singleton x
+                   | otherwise = A.Def x
+           let hd = List.foldl' (A.App defaultAppInfo_) hd0 pad
            nelims hd =<< reify nes
 
     -- Andreas, 2016-07-06 Issue #2047
@@ -654,19 +741,20 @@ reifyTerm expandAnonDefs0 v = do
     reifyExtLam x npars msys cls es = do
       reportSLn "reify.def" 10 $ "reifying extended lambda " ++ prettyShow x
       reportSLn "reify.def" 50 $ render $ nest 2 $ vcat
-        [ text "npars =" <+> pretty npars
-        , text "es    =" <+> fsep (map (prettyPrec 10) es)
-        , text "def   =" <+> vcat (map pretty cls) ]
+        [ "npars =" <+> pretty npars
+        , "es    =" <+> fsep (map (prettyPrec 10) es)
+        , "def   =" <+> vcat (map pretty cls) ]
       -- As extended lambda clauses live in the top level, we add the whole
       -- section telescope to the number of parameters.
-      let (pars, rest) = splitAt npars es
+      let (pares, rest) = splitAt npars es
+      let pars = fromMaybe __IMPOSSIBLE__ $ allApplyElims pares
 
       -- Since we applying the clauses to the parameters,
       -- we do not need to drop their initial "parameter" patterns
       -- (this is taken care of by @apply@).
       cls <- caseMaybe msys
-               (mapM (reify . NamedClause x False . (`applyE` pars)) cls)
-               (reify . QNamed x . (`applyE` pars))
+               (mapM (reify . NamedClause x False . (`apply` pars)) cls)
+               (reify . QNamed x . (`apply` pars))
       let cx    = nameConcrete $ qnameName x
           dInfo = mkDefInfo cx noFixity' PublicAccess ConcreteDef (getRange x)
       elims (A.ExtendedLam exprNoRange dInfo x cls) =<< reify rest
@@ -717,8 +805,8 @@ instance (Ord k, Monoid v) => Monoid (MonoidMap k v) where
 -- | Removes implicit arguments that are not needed, that is, that don't bind
 --   any variables that are actually used and doesn't do pattern matching.
 --   Doesn't strip any arguments that were written explicitly by the user.
-stripImplicits :: A.Patterns -> TCM A.Patterns
-stripImplicits ps = do
+stripImplicits :: A.Patterns -> A.Patterns -> TCM A.Patterns
+stripImplicits params ps = do
   -- if --show-implicit we don't need the names
   ifM showImplicitArguments (return $ map (unnamed . namedThing <$>) ps) $ do
     reportSLn "reify.implicit" 30 $ unlines
@@ -733,7 +821,7 @@ stripImplicits ps = do
     where
       -- Replace variables in dot patterns by an underscore _ if they are hidden
       -- in the pattern. This is slightly nicer than making the implicts explicit.
-      blankDots ps = blank (varsBoundIn ps) ps
+      blankDots ps = blank (varsBoundIn $ params ++ ps) ps
 
       strip ps = stripArgs True ps
         where
@@ -866,6 +954,7 @@ instance BlankVars A.Expr where
     A.ExtendedLam i d f cs -> A.ExtendedLam i d f $ blank bound cs
     A.Pi i tel e           -> let bound' = varsBoundIn tel `Set.union` bound
                               in  uncurry (A.Pi i) $ blank bound' (tel, e)
+    A.Generalized {}       -> __IMPOSSIBLE__
     A.Fun i a b            -> uncurry (A.Fun i) $ blank bound (a, b)
     A.Set _ _              -> e
     A.Prop _ _             -> e
@@ -896,9 +985,6 @@ instance BlankVars A.LamBinding where
   blank bound b@A.DomainFree{} = b
   blank bound (A.DomainFull bs) = A.DomainFull $ blank bound bs
 
-instance BlankVars TypedBindings where
-  blank bound (TypedBindings r bs) = TypedBindings r $ blank bound bs
-
 instance BlankVars TypedBinding where
   blank bound (TBind r n e) = TBind r n $ blank bound e
   blank bound (TLet _ _)    = __IMPOSSIBLE__ -- Since the internal syntax has no let bindings left
@@ -922,8 +1008,8 @@ instance Binder A.LHSCore where
 
 instance Binder A.Pattern where
   varsBoundIn = foldAPattern $ \case
-    A.VarP x            -> singleton $ unBind x
-    A.AsP _ x _         -> empty
+    A.VarP x            -> varsBoundIn x
+    A.AsP _ x _         -> empty    -- Not x because of #2414 (?)
     A.ConP _ _ _        -> empty
     A.ProjP{}           -> empty
     A.DefP _ _ _        -> empty
@@ -937,28 +1023,22 @@ instance Binder A.Pattern where
     A.WithP _ _         -> empty
 
 instance Binder A.LamBinding where
-  varsBoundIn (A.DomainFree _ x) = singleton $ unBind x
-  varsBoundIn (A.DomainFull b)   = varsBoundIn b
-
-instance Binder TypedBindings where
-  varsBoundIn (TypedBindings _ b) = varsBoundIn b
+  varsBoundIn (A.DomainFree x) = varsBoundIn x
+  varsBoundIn (A.DomainFull b) = varsBoundIn b
 
 instance Binder TypedBinding where
   varsBoundIn (TBind _ xs _) = varsBoundIn xs
   varsBoundIn (TLet _ bs)    = varsBoundIn bs
 
+instance Binder BindName where
+  varsBoundIn x = singleton (unBind x)
+
 instance Binder LetBinding where
-  varsBoundIn (LetBind _ _ x _ _) = singleton $ unBind x
+  varsBoundIn (LetBind _ _ x _ _) = varsBoundIn x
   varsBoundIn (LetPatBind _ p _)  = varsBoundIn p
   varsBoundIn LetApply{}          = empty
   varsBoundIn LetOpen{}           = empty
   varsBoundIn LetDeclaredVariable{} = empty
-
-instance Binder (WithHiding Name) where
-  varsBoundIn (WithHiding _ x) = singleton x
-
-instance Binder (WithHiding BindName) where
-  varsBoundIn (WithHiding _ x) = singleton $ unBind x
 
 instance Binder a => Binder (FieldAssignment' a) where
 instance Binder a => Binder (Arg a)              where
@@ -1003,6 +1083,14 @@ reifyPatterns = mapM $ stripNameFromExplicit <.> traverse (traverse reifyPat)
         Just PatOWild   -> return $ A.WildP patNoRange
         Just PatOAbsurd -> return $ A.AbsurdP patNoRange
         _               -> reifyConP c cpi ps
+      I.DefP o f ps  -> case o of
+        PatOWild   -> return $ A.WildP patNoRange
+        PatOAbsurd -> return $ A.AbsurdP patNoRange
+        _ -> A.DefP patNoRange (unambiguous f) <$> reifyPatterns ps
+      I.IApplyP PatODot _ _ x -> reifyDotP $ var $ dbPatVarIndex x
+      I.IApplyP PatOWild _ _ x -> return $ A.WildP patNoRange
+      I.IApplyP PatOAbsurd _ _ x -> return $ A.AbsurdP patNoRange
+      I.IApplyP _ _ _ x -> reifyVarP x
 
     reifyVarP :: MonadTCM tcm => DBPatVar -> tcm A.Pattern
     reifyVarP x = do
@@ -1015,7 +1103,7 @@ reifyPatterns = mapM $ stripNameFromExplicit <.> traverse (traverse reifyPat)
         y    -> if prettyShow (nameConcrete n) == "()" then return $ A.VarP (BindName n) else
           -- Andreas, 2017-09-03, issue #2729
           -- Restore original pattern name.  AbstractToConcrete picks unique names.
-          return $ A.VarP $ BindName n { nameConcrete = C.Name noRange [ C.Id y ] }
+          return $ A.VarP $ BindName n { nameConcrete = C.Name noRange C.InScope [ C.Id y ] }
 
     reifyDotP :: MonadTCM tcm => Term -> tcm A.Pattern
     reifyDotP v = do
@@ -1067,10 +1155,10 @@ instance Reify NamedClause A.Clause where
     -- (e.g. for extended lambdas). We still get here with toDrop = True and
     -- pattern lambdas when doing make-case, so take care to drop the right
     -- number of parameters.
-    lhs <- if not toDrop then return lhs else do
+    (params , lhs) <- if not toDrop then return ([] , lhs) else do
       nfv <- (size <.> lookupSection =<< getDefModule f) `catchError` \_ -> return 0
-      return $ dropParams nfv lhs
-    lhs <- stripImps lhs
+      return $ splitParams nfv lhs
+    lhs <- stripImps params lhs
     reportSLn "reify.clause" 60 $ "reifying NamedClause, lhs = " ++ show lhs
     rhs <- caseMaybe (clauseBody cl) (return AbsurdRHS) $ \ e -> do
        RHS <$> reify e <*> pure Nothing
@@ -1079,9 +1167,11 @@ instance Reify NamedClause A.Clause where
     reportSLn "reify.clause" 60 $ "reified NamedClause, result = " ++ show result
     return result
     where
-      dropParams n (SpineLHS i f ps) = SpineLHS i f $ drop n ps
-      stripImps :: SpineLHS -> TCM SpineLHS
-      stripImps (SpineLHS i f ps) =  SpineLHS i f <$> stripImplicits ps
+      splitParams n (SpineLHS i f ps) =
+        let (params , pats) = splitAt n ps
+        in  (params , SpineLHS i f pats)
+      stripImps :: [NamedArg A.Pattern] -> SpineLHS -> TCM SpineLHS
+      stripImps params (SpineLHS i f ps) =  SpineLHS i f <$> stripImplicits params ps
 
 instance Reify (QNamed System) [A.Clause] where
   reify (QNamed f (System tel sys)) = addContext tel $ do
@@ -1096,7 +1186,7 @@ instance Reify (QNamed System) [A.Clause] where
         reify (phi, d b)
 
       ps <- reifyPatterns $ teleNamedArgs tel
-      ps <- stripImplicits $ ps ++ [defaultNamedArg ep]
+      ps <- stripImplicits [] $ ps ++ [defaultNamedArg ep]
       let
         lhs = SpineLHS (LHSRange noRange) f ps
         result = A.Clause (spineToLhs lhs) [] rhs A.noWhereDecls False
@@ -1121,7 +1211,9 @@ instance Reify Sort Expr where
         I.Prop a -> do
           a <- reify a
           return $ A.App defaultAppInfo_ (A.Prop noExprInfo 0) (defaultNamedArg a)
-        I.Inf       -> A.Var <$> freshName_ ("Setω" :: String)
+        I.Inf       -> do
+          I.Def inf [] <- primSetOmega
+          return $ A.Def inf
         I.SizeUniv  -> do
           I.Def sizeU [] <- primSizeUniv
           return $ A.Def sizeU
@@ -1135,6 +1227,8 @@ instance Reify Sort Expr where
           e <- reify s
           return $ A.App defaultAppInfo_ (A.Var univs) $ defaultNamedArg e
         I.MetaS x es -> reify $ I.MetaV x es
+        I.DefS d es -> reify $ I.Def d es
+        I.DummyS s -> return $ A.Lit $ LitString noRange s
 
 instance Reify Level Expr where
   reifyWhen = reifyWhenE
@@ -1161,9 +1255,10 @@ instance Reify I.Telescope A.Telescope where
   reify EmptyTel = return []
   reify (ExtendTel arg tel) = do
     Arg info e <- reify arg
-    (x,bs)  <- reify tel
-    let r = getRange e
-    return $ TypedBindings r (Arg info (TBind r [pure $ BindName x] e)) : bs
+    (x, bs)  <- reify tel
+    let r    = getRange e
+        name = domName arg
+    return $ TBind r [Arg info $ Named name $ BindName x] e : bs
 
 instance Reify i a => Reify (Dom i) (Arg a) where
     reify (Dom{domInfo = info, unDom = i}) = Arg info <$> reify i

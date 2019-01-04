@@ -61,7 +61,7 @@ mkSucceedTest extraOpts dir inp =
         doRun = do
           flags <- maybe [] (T.unpack . decodeUtf8) <$> readFileMaybe flagFile
           let agdaArgs = [ "-v0", "-i" ++ dir, "-itest/" , inp
-                         , "--no-default-libraries"
+                         , "--no-libraries"
                          , "-vimpossible:10" -- BEWARE: no spaces allowed here
                          , "-vwarning:1"
                          ] ++
@@ -93,11 +93,18 @@ mkSucceedTest extraOpts dir inp =
                 else
                   return $ AgdaWrongDotOutput dot
             ExitSuccess -> do
-              warnExists <- doesFileExist warnFile
-              if warnExists
-              then AgdaSuccessWithWarnings <$> cleanOutput stdOut
-              else return AgdaSuccess
+              cleanedStdOut <- cleanOutput stdOut
+              warnExists    <- doesFileExist warnFile
+              return $
+                if warnExists || hasWarning cleanedStdOut
+                then AgdaSuccessWithWarnings cleanedStdOut
+                else AgdaSuccess
             _ -> return $ AgdaUnexpectedFail res
+
+hasWarning :: T.Text -> Bool
+hasWarning t =
+ "———— All done; warnings encountered ————————————————————————"
+ `T.isInfixOf` t
 
 resDiff :: T.Text -> T.Text -> IO GDiff
 resDiff t1 t2 =

@@ -9,7 +9,6 @@
     just : A → Maybe A
     nothing : Maybe A
 
-  postulate String : Set
   {-# BUILTIN STRING String #-}
 
   data ⊥ : Set where
@@ -214,7 +213,6 @@ Machine words
 
 Agda supports built-in 64-bit machine words, bound with the ``WORD64`` built-in::
 
-  postulate Word64 : Set
   {-# BUILTIN WORD64 Word64 #-}
 
 Machine words can be converted to and from natural numbers using the following primitives::
@@ -285,7 +283,6 @@ Floats
 
 Floating point numbers are bound with the ``FLOAT`` built-in::
 
-  postulate Float : Set
   {-# BUILTIN FLOAT Float #-}
 
 This lets you use :ref:`floating point literals
@@ -430,7 +427,6 @@ Characters
 
 The character type is bound with the ``CHARACTER`` built-in::
 
-  postulate Char : Set
   {-# BUILTIN CHAR Char #-}
 
 Binding the character type lets you use :ref:`character literals
@@ -474,7 +470,6 @@ The string type is bound with the ``STRING`` built-in:
 
 .. code-block:: agda
 
-  postulate String : Set
   {-# BUILTIN STRING String #-}
 
 Binding the string type lets you use :ref:`string literals
@@ -483,11 +478,11 @@ functions are available on strings (given suitable bindings for
 :ref:`Bool <built-in-bool>`, :ref:`Char <built-in-char>` and
 :ref:`List <built-in-list>`)::
 
-  postulate primStringToList   : String → List Char
-  postulate primStringFromList : List Char → String
-  postulate primStringAppend   : String → String → String
-  postulate primStringEquality : String → String → Bool
-  postulate primShowString     : String → String
+  primitive primStringToList   : String → List Char
+  primitive primStringFromList : List Char → String
+  primitive primStringAppend   : String → String → String
+  primitive primStringEquality : String → String → Bool
+  primitive primShowString     : String → String
 
 String literals can be :ref:`overloaded <overloaded-strings>`.
 
@@ -519,7 +514,25 @@ Other variants of the identity type are also accepted as built-in:
   data _≡_ {A : Set} : (x y : A) → Set where
     refl : (x : A) → x ≡ x
 
-The type of ``primTrustMe`` has to match the flavor of identity type.
+The type of ``primEraseEquality`` has to match the flavor of identity type.
+
+.. _primEraseEquality:
+
+.. code-block:: agda
+
+  module Agda.Builtin.Equality.Erase
+
+Binding the built-in equality type also enables the ``primEraseEquality`` primitive::
+
+  primitive
+    primEraseEquality : ∀ {a} {A : Set a} {x y : A} → x ≡ y → x ≡ y
+
+The function takes a proof of an equality between two values ``x`` and ``y`` and stays
+stuck on it until ``x`` and ``y`` actually become definitionally equal. Whenever that
+is the case, ``primEraseEquality e`` reduces to ``refl``.
+
+One use of ``primEraseEquality`` is to replace an equality proof computed using an expensive
+function (e.g. a proof by reflection) by one which is trivially ``refl`` on the diagonal.
 
 .. _primtrustme:
 
@@ -530,13 +543,14 @@ primTrustMe
 
   module Agda.Builtin.TrustMe
 
-Binding the built-in equality type also enables the ``primTrustMe`` primitive::
+From the ``primEraseEquality`` primitive, we can derive a notion of ``primTrustMe``::
 
-  primitive
-    primTrustMe : ∀ {a} {A : Set a} {x y : A} → x ≡ y
+  primTrustMe : ∀ {a} {A : Set a} {x y : A} → x ≡ y
+  primTrustMe {x = x} {y} = primEraseEquality unsafePrimTrustMe
+    where postulate unsafePrimTrustMe : x ≡ y
 
 As can be seen from the type, ``primTrustMe`` must be used with the
-utmost care to avoid inconsistencies.  What makes it different from a
+utmost care to avoid inconsistencies. What makes it different from a
 postulate is that if ``x`` and ``y`` are actually definitionally
 equal, ``primTrustMe`` reduces to ``refl``. One use of ``primTrustMe``
 is to lift the primitive boolean equality on built-in types like
@@ -549,11 +563,6 @@ object::
                  else nothing
 
 With this definition ``eqString "foo" "foo"`` computes to ``just refl``.
-Another use case is to erase computationally expensive equality proofs and
-replace them by ``primTrustMe``::
-
-  eraseEquality : ∀ {a} {A : Set a} {x y : A} → x ≡ y → x ≡ y
-  eraseEquality _ = primTrustMe
 
 Universe levels
 ---------------
@@ -621,10 +630,6 @@ Coinduction
 
 The following built-ins are used for coinductive definitions::
 
-    postulate
-      ∞  : ∀ {a} (A : Set a) → Set a
-      ♯_ : ∀ {a} {A : Set a} → A → ∞ A
-      ♭  : ∀ {a} {A : Set a} → ∞ A → A
     {-# BUILTIN INFINITY ∞  #-}
     {-# BUILTIN SHARP    ♯_ #-}
     {-# BUILTIN FLAT     ♭  #-}
@@ -668,6 +673,8 @@ Reflection
 The reflection machinery has built-in types for representing Agda programs. See
 :doc:`reflection` for a detailed description.
 
+.. _builtin-rewrite:
+
 Rewriting
 ---------
 
@@ -678,8 +685,9 @@ to be confused with the :ref:`rewrite construct <with-rewrite>`) has a built-in
   postulate _↦_ : ∀ {a} {A : Set a} → A → A → Set a
   {-# BUILTIN REWRITE _↦_ #-}
 
-There is no ``Agda.Builtin`` module for the rewrite relation since different
-rewriting experiments typically want different relations.
+This builtin is bound to the :ref:`builtin equality type
+<built-in-equality>` from ``Agda.Builtin.Equality`` in
+``Agda.Builtin.Equality.Rewrite``.
 
 Static values
 -------------

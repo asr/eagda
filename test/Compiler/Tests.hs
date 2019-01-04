@@ -71,6 +71,10 @@ disabledTests =
   , RFInclude "Compiler/JS/simple/Issue2914"    -- GHC backend specific
     -- Fix to 2524 is too unsafe
   , RFInclude "Compiler/.*/simple/Issue2524"
+    -- Segfaulting 2640 behaves differently on travis
+  , RFInclude "Compiler/.*/simple/Erasure-Issue2640"
+    -- Andreas, 2018-10-23, dunno why, but VecReverseErased is broken on travis
+  , RFInclude "Compiler/.*/simple/VecReverseErased"
     -- The following test cases are GHC backend specific.
   , RFInclude "Compiler/JS/simple/Issue2879-.*"
   , RFInclude "Compiler/JS/simple/Issue2909-.*"
@@ -120,7 +124,7 @@ stdlibTests comp = do
       extraArgs = [ "-i" ++ testDir, "-i" ++ "std-lib" </> "src", "-istd-lib" ]
 
   let rtsOptions :: [String]
-      rtsOptions = [ "+RTS", "-H1G", "-M1.5G", "-RTS" ]
+      rtsOptions = [ "+RTS", "-H2G", "-M1.5G", "-RTS" ]
 
   tests' <- forM inps $ \inp -> do
     opts <- readOptions inp
@@ -204,7 +208,7 @@ agdaRunProgGoldenTest1 dir comp extraArgs inp opts cont
           -- compile file
           let cArgs   = cleanUpOptions (extraAgdaArgs cOpts)
               defArgs = ["--ignore-interfaces" | notElem "--no-ignore-interfaces" (extraAgdaArgs cOpts)] ++
-                        ["--no-default-libraries"] ++
+                        ["--no-libraries"] ++
                         ["--compile-dir", compDir, "-v0", "-vwarning:1"] ++ extraArgs' ++ cArgs ++ [inp]
           args <- (++ defArgs) <$> argsForComp comp
           res@(ret, out, err) <- readAgdaProcessWithExitCode args T.empty

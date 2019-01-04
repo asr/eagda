@@ -263,7 +263,7 @@ curModule isMain = do
 
 definition :: Maybe CoinductionKit -> (QName,Definition) -> TCM (Maybe Export)
 definition kit (q,d) = do
-  reportSDoc "compile.js" 10 $ text "compiling def:" <+> prettyTCM q
+  reportSDoc "compile.js" 10 $ "compiling def:" <+> prettyTCM q
   (_,ls) <- global q
   d <- instantiateFull d
 
@@ -275,8 +275,8 @@ checkCompilerPragmas q =
   caseMaybeM (getUniqueCompilerPragma jsBackendName q) (return ()) $ \ (CompilerPragma r s) ->
   setCurrentRange r $ case words s of
     "=" : _ -> return ()
-    _       -> genericDocError $ P.sep [ P.text "Badly formed COMPILE JS pragma. Expected",
-                                         P.text "{-# COMPILE JS <name> = <js> #-}" ]
+    _       -> genericDocError $ P.sep [ "Badly formed COMPILE JS pragma. Expected",
+                                         "{-# COMPILE JS <name> = <js> #-}" ]
 
 defJSDef :: Definition -> Maybe String
 defJSDef def =
@@ -297,20 +297,24 @@ definition' kit q d t ls = do
     Function{} | Just q == (nameOfFlat <$> kit) -> do
       ret $ Lambda 1 $ Apply (Lookup (local 0) flatName) []
 
+    DataOrRecSig{} -> __IMPOSSIBLE__
+
     Axiom{} | Just e <- defJSDef d -> plainJS e
     Axiom{} | otherwise -> ret Undefined
+
+    GeneralizableVar{} -> return Nothing
 
     Function{} | Just e <- defJSDef d -> plainJS e
     Function{} | otherwise -> do
 
-      reportSDoc "compile.js" 5 $ text "compiling fun:" <+> prettyTCM q
+      reportSDoc "compile.js" 5 $ "compiling fun:" <+> prettyTCM q
       caseMaybeM (toTreeless q) (pure Nothing) $ \ treeless -> do
         funBody <- eliminateCaseDefaults =<<
           eliminateLiteralPatterns
           (convertGuards treeless)
-        reportSDoc "compile.js" 30 $ text " compiled treeless fun:" <+> pretty funBody
+        reportSDoc "compile.js" 30 $ " compiled treeless fun:" <+> pretty funBody
         funBody' <- compileTerm funBody
-        reportSDoc "compile.js" 30 $ text " compiled JS fun:" <+> (text . show) funBody'
+        reportSDoc "compile.js" 30 $ " compiled JS fun:" <+> (text . show) funBody'
         return $ Just $ Export ls funBody'
 
     Primitive{primName = p} | p `Set.member` primitives ->

@@ -37,7 +37,7 @@ import Agda.TypeChecking.Pretty as P
 import Agda.Interaction.Options
 import Agda.Interaction.FindFile
 import Agda.Interaction.Highlighting.HTML
-import Agda.Interaction.Imports (getAllWarnings')
+import Agda.Interaction.Imports (getAllWarnings)
 import Agda.TypeChecking.Warnings
 
 import Agda.Utils.FileName
@@ -92,7 +92,7 @@ data Recompile menv mod = Recompile menv | Skip mod
 
 callBackend :: String -> IsMain -> Interface -> TCM ()
 callBackend name iMain i = do
-  backends <- use stBackends
+  backends <- useTC stBackends
   case [ b | b@(Backend b') <- backends, backendName b' == name ] of
     Backend b : _ -> compilerMain b iMain i
     []            -> genericError $
@@ -152,10 +152,11 @@ backendInteraction backends _ check = do
       err flag = genericError $ "Cannot mix --" ++ flag ++ " and backends (" ++ List.intercalate ", " backendNames ++ ")"
   when (optInteractive     opts) $ err "interactive"
   when (optGHCiInteraction opts) $ err "interaction"
+  when (optJSONInteraction opts) $ err "interaction-json"
   mi     <- check
 
   -- reset warnings
-  stTCWarnings .= []
+  stTCWarnings `setTCLens` []
 
   noMain <- optCompileNoMain <$> pragmaOptions
   let isMain | noMain    = NotMain
@@ -165,7 +166,7 @@ backendInteraction backends _ check = do
     Just i  -> sequence_ [ compilerMain backend isMain i | Backend backend <- backends ]
 
   -- print warnings that might have accumulated during compilation
-  ws <- filter (not . isUnsolvedWarning . tcWarning) <$> getAllWarnings' AllWarnings RespectFlags
+  ws <- filter (not . isUnsolvedWarning . tcWarning) <$> getAllWarnings AllWarnings
   unless (null ws) $ reportSDoc "warning" 1 $ P.vcat $ P.prettyTCM <$> ws
 
 

@@ -6,6 +6,11 @@ module Agda.Interaction.Options.Warnings
        , warningSet
        , warn2Error
        , defaultWarningSet
+       , allWarnings
+       , usualWarnings
+       , noWarnings
+       , unsolvedWarnings
+       , errorWarnings
        , defaultWarningMode
        , warningModeUpdate
        , warningSets
@@ -24,10 +29,11 @@ import Data.Traversable ( for )
 import Text.Read ( readMaybe )
 import Data.Set (Set)
 import qualified Data.Set as Set
-import Data.Maybe ( fromMaybe, catMaybes )
+import Data.Maybe ( fromMaybe )
 import Data.List ( stripPrefix, intercalate )
 
 import Agda.Utils.Lens
+import Agda.Utils.Maybe
 
 #include "undefined.h"
 import Agda.Utils.Impossible
@@ -75,55 +81,96 @@ warningModeUpdate str = case str of
 warningSets :: [(String, (Set WarningName, String))]
 warningSets = [ ("all"   , (allWarnings, "All of the existing warnings"))
               , ("warn"  , (usualWarnings, "Default warning level"))
-              , ("ignore", (noWarnings, "Ignore all warnings"))
+              , ("ignore", (errorWarnings, "Ignore all the benign warnings"))
               ]
 
 noWarnings :: Set WarningName
 noWarnings = Set.empty
+
+unsolvedWarnings :: Set WarningName
+unsolvedWarnings = Set.fromList
+                 [ UnsolvedMetaVariables_
+                 , UnsolvedInteractionMetas_
+                 , UnsolvedConstraints_
+                 ]
+
+errorWarnings :: Set WarningName
+errorWarnings = Set.fromList
+  [ CoverageIssue_
+  , GenericNonFatalError_
+  , MissingDefinitions_
+  , NotAllowedInMutual_
+  , NotStrictlyPositive_
+  , OverlappingTokensWarning_
+  , SafeFlagPostulate_
+  , SafeFlagPragma_
+  , SafeFlagNonTerminating_
+  , SafeFlagTerminating_
+  , SafeFlagWithoutKFlagPrimEraseEquality_
+  , SafeFlagNoPositivityCheck_
+  , SafeFlagPolarity_
+  , SafeFlagNoUniverseCheck_
+  , TerminationIssue_
+  , UnsolvedMetaVariables_
+  , UnsolvedInteractionMetas_
+  , UnsolvedConstraints_
+  ]
 
 allWarnings :: Set WarningName
 allWarnings = Set.fromList [minBound..maxBound]
 
 usualWarnings :: Set WarningName
 usualWarnings = allWarnings Set.\\ Set.fromList
-              [ UnknownFixityInMixfixDecl_ ]
+              [ UnknownFixityInMixfixDecl_
+              , CoverageNoExactSplit_
+              ]
 
 -- | The @WarningName@ data enumeration is meant to have a one-to-one correspondance
 -- to existing warnings in the codebase.
 
 data WarningName
   =
-  -- Parser Warning
+  -- Parser Warnings
     OverlappingTokensWarning_
-  -- Nicifer Warning
-  | UnknownNamesInFixityDecl_
-  | UnknownFixityInMixfixDecl_
-  | UnknownNamesInPolarityPragmas_
-  | PolarityPragmasButNotPostulates_
-  | UselessPrivate_
-  | UselessAbstract_
-  | UselessInstance_
-  | EmptyMutual_
+  -- Library Warnings
+  | LibUnknownField_
+  -- Nicifer Warnings
   | EmptyAbstract_
-  | EmptyPrivate_
   | EmptyInstance_
   | EmptyMacro_
+  | EmptyMutual_
   | EmptyPostulate_
+  | EmptyPrivate_
+  | EmptyGeneralize_
+  | InvalidCatchallPragma_
+  | InvalidNoUniverseCheckPragma_
   | InvalidTerminationCheckPragma_
   | InvalidNoPositivityCheckPragma_
-  | InvalidCatchallPragma_
-  -- Scope and Type Checking Warning
+  | MissingDefinitions_
+  | NotAllowedInMutual_
+  | PolarityPragmasButNotPostulates_
+  | PragmaNoTerminationCheck_
+  | UnknownFixityInMixfixDecl_
+  | UnknownNamesInFixityDecl_
+  | UnknownNamesInPolarityPragmas_
+  | UselessAbstract_
+  | UselessInstance_
+  | UselessPrivate_
+  -- Scope and Type Checking Warnings
   | OldBuiltin_
   | EmptyRewritePragma_
+  | IllformedAsClause_
   | UselessPublic_
   | UnreachableClauses_
   | UselessInline_
+  | InstanceWithExplicitArg_
   | GenericWarning_
   | DeprecationWarning_
   | InversionDepthReached_
   | TerminationIssue_
   | CoverageIssue_
   | CoverageNoExactSplit_
+  | ModuleDoesntExport_
   | NotStrictlyPositive_
   | UnsolvedMetaVariables_
   | UnsolvedInteractionMetas_
@@ -133,10 +180,14 @@ data WarningName
   | SafeFlagPragma_
   | SafeFlagNonTerminating_
   | SafeFlagTerminating_
-  | SafeFlagPrimTrustMe_
+  | SafeFlagWithoutKFlagPrimEraseEquality_
   | SafeFlagNoPositivityCheck_
   | SafeFlagPolarity_
+  | SafeFlagNoUniverseCheck_
   | UserWarning_
+  | WithoutKFlagPrimEraseEquality_
+  | CantGeneralizeOverSorts_
+  | AbsurdPatternRequiresNoRHS_
   deriving (Eq, Ord, Show, Read, Enum, Bounded)
 
 -- | The flag corresponding to a warning is precisely the name of the constructor
@@ -169,7 +220,7 @@ usageWarning = intercalate "\n"
            , "-W noName respectively. The flags available are:"
            ]
   , ""
-  , untable $ catMaybes $ flip map [minBound..maxBound] $ \ w ->
+  , untable $ forMaybe [minBound..maxBound] $ \ w ->
     let wnd = warningNameDescription w in
     (warningName2String w, wnd) <$ guard (not $ null wnd)
   ]
@@ -188,28 +239,37 @@ usageWarning = intercalate "\n"
 warningNameDescription :: WarningName -> String
 warningNameDescription w = case w of
   OverlappingTokensWarning_        -> "Multi-line comments spanning one or more literate text blocks."
-  -- Nicifer Warning
-  UnknownNamesInFixityDecl_        -> "Names not declared in the same scope as their syntax or fixity declaration."
-  UnknownFixityInMixfixDecl_       -> "Mixfix names without an associated fixity declaration."
-  UnknownNamesInPolarityPragmas_   -> "Names not declared in the same scope as their polarity pragmas."
-  PolarityPragmasButNotPostulates_ -> "Polarity pragmas for non-postulates."
-  UselessPrivate_                  -> "`private' blocks where they have no effect."
-  UselessAbstract_                 -> "`abstract' blocks where they have no effect."
-  UselessInstance_                 -> "`instance' blocks where they have no effect."
-  EmptyMutual_                     -> "Empty `mutual' blocks."
+  -- Library Warnings
+  LibUnknownField_                 -> "Unknown field in library file"
+  -- Nicifer Warnings
   EmptyAbstract_                   -> "Empty `abstract' blocks."
-  EmptyPrivate_                    -> "Empty `private' blocks."
   EmptyInstance_                   -> "Empty `instance' blocks."
   EmptyMacro_                      -> "Empty `macro' blocks."
+  EmptyMutual_                     -> "Empty `mutual' blocks."
   EmptyPostulate_                  -> "Empty `postulate' blocks."
-  InvalidTerminationCheckPragma_   -> "Termination checking pragmas before non-function or `mutual' blocks."
-  InvalidNoPositivityCheckPragma_  -> "No positivity checking pragmas before non-`data', `record' or `mutual' blocks."
+  EmptyPrivate_                    -> "Empty `private' blocks."
+  EmptyGeneralize_                 -> "Empty `variable' blocks."
   InvalidCatchallPragma_           -> "`CATCHALL' pragmas before a non-function clause."
-  -- Scope and Type Checking Warning
+  InvalidNoPositivityCheckPragma_  -> "No positivity checking pragmas before non-`data', `record' or `mutual' blocks."
+  InvalidNoUniverseCheckPragma_    -> "No universe checking pragmas before non-`data' or `record' declaration."
+  InvalidTerminationCheckPragma_   -> "Termination checking pragmas before non-function or `mutual' blocks."
+  MissingDefinitions_              -> "Declarations not associated to a definition."
+  NotAllowedInMutual_              -> "Declarations not allowed in a mutual block."
+  PolarityPragmasButNotPostulates_ -> "Polarity pragmas for non-postulates."
+  PragmaNoTerminationCheck_        -> "`NO_TERMINATION_CHECK' pragmas are deprecated"
+  UnknownFixityInMixfixDecl_       -> "Mixfix names without an associated fixity declaration."
+  UnknownNamesInFixityDecl_        -> "Names not declared in the same scope as their syntax or fixity declaration."
+  UnknownNamesInPolarityPragmas_   -> "Names not declared in the same scope as their polarity pragmas."
+  UselessAbstract_                 -> "`abstract' blocks where they have no effect."
+  UselessInstance_                 -> "`instance' blocks where they have no effect."
+  UselessPrivate_                  -> "`private' blocks where they have no effect."
+  -- Scope and Type Checking Warnings
   OldBuiltin_                      -> "Deprecated `BUILTIN' pragmas."
   EmptyRewritePragma_              -> "Empty `REWRITE' pragmas."
+  IllformedAsClause_               -> "Illformed `as'-clauses in `import' statements."
   UselessPublic_                   -> "`public' blocks where they have no effect."
   UselessInline_                   -> "`INLINE' pragmas where they have no effect."
+  InstanceWithExplicitArg_         -> "`instance` declarations with explicit arguments are never considered by instance search."
   UnreachableClauses_              -> "Unreachable function clauses."
   GenericWarning_                  -> ""
   DeprecationWarning_              -> "Feature deprecation."
@@ -217,6 +277,7 @@ warningNameDescription w = case w of
   TerminationIssue_                -> "Failed termination checks."
   CoverageIssue_                   -> "Failed coverage checks."
   CoverageNoExactSplit_            -> "Failed exact split checks."
+  ModuleDoesntExport_              -> "Imported name is not actually exported."
   NotStrictlyPositive_             -> "Failed strict positivity checks."
   UnsolvedMetaVariables_           -> "Unsolved meta variables."
   UnsolvedInteractionMetas_        -> "Unsolved interaction meta variables."
@@ -226,7 +287,11 @@ warningNameDescription w = case w of
   SafeFlagPragma_                  -> "Unsafe `OPTIONS' pragmas with the safe flag."
   SafeFlagNonTerminating_          -> "`NON_TERMINATING' pragmas with the safe flag."
   SafeFlagTerminating_             -> "`TERMINATING' pragmas with the safe flag."
-  SafeFlagPrimTrustMe_             -> "`primTrustMe' usages with the safe flag."
+  SafeFlagWithoutKFlagPrimEraseEquality_ -> "`primEraseEquality' usages with the safe and without-K flags."
   SafeFlagNoPositivityCheck_       -> "`NO_POSITIVITY_CHECK' pragmas with the safe flag."
   SafeFlagPolarity_                -> "`POLARITY' pragmas with the safe flag."
+  SafeFlagNoUniverseCheck_         -> "`NO_UNIVERSE_CHECK' pragmas with the safe flag."
   UserWarning_                     -> "User-defined warning added using the 'WARNING_ON_USAGE' pragma."
+  AbsurdPatternRequiresNoRHS_      -> "A clause with an absurd pattern does not need a Right Hand Side."
+  CantGeneralizeOverSorts_         -> "Attempt to generalize over sort metas in 'variable' declaration."
+  WithoutKFlagPrimEraseEquality_   -> "`primEraseEquality' usages with the without-K flags."

@@ -9,6 +9,11 @@ import Prelude hiding (null)
 
 import qualified Control.Concurrent as C
 import qualified Control.Exception as E
+
+#if __GLASGOW_HASKELL__ >= 800
+import qualified Control.Monad.Fail as Fail
+#endif
+
 import Control.Monad.State
 import Control.Monad.Reader
 import Control.Monad.Writer hiding ((<>))
@@ -29,6 +34,9 @@ import qualified Data.Set as Set -- hiding (singleton, null, empty)
 import Data.Semigroup ( Semigroup, (<>), Any(..) )
 import Data.Data (Data, toConstr)
 import Data.Foldable (Foldable)
+import Data.String
+import Data.Text.Lazy (Text)
+import qualified Data.Text.Lazy as T
 import Data.Traversable
 import Data.IORef
 
@@ -68,12 +76,14 @@ import Agda.Interaction.Response
   (InteractionOutputCallback, defaultInteractionOutputCallback, Response(..))
 import Agda.Interaction.Highlighting.Precise
   (CompressedFile, HighlightingInfo)
+import Agda.Interaction.Library
 
 import Agda.Utils.Except
   ( Error(strMsg)
   , ExceptT
   , MonadError(catchError, throwError)
   , runExceptT
+  , mapExceptT
   )
 
 import Agda.Utils.Benchmark (MonadBench(..))
@@ -112,18 +122,31 @@ data TCState = TCSt
 
 class Monad m => ReadTCState m where
   getTCState :: m TCState
+  withTCState :: (TCState -> TCState) -> m a -> m a
 
 instance ReadTCState m => ReadTCState (MaybeT m) where
   getTCState = lift getTCState
+  withTCState = mapMaybeT . withTCState
 
 instance ReadTCState m => ReadTCState (ListT m) where
   getTCState = lift getTCState
+  withTCState f = ListT . withTCState f . runListT
 
 instance ReadTCState m => ReadTCState (ExceptT err m) where
   getTCState = lift getTCState
+  withTCState = mapExceptT . withTCState
+
+instance ReadTCState m => ReadTCState (ReaderT r m) where
+  getTCState = lift getTCState
+  withTCState = mapReaderT . withTCState
 
 instance (Monoid w, ReadTCState m) => ReadTCState (WriterT w m) where
   getTCState = lift getTCState
+  withTCState = mapWriterT . withTCState
+
+instance ReadTCState m => ReadTCState (StateT s m) where
+  getTCState = lift getTCState
+  withTCState = mapStateT . withTCState
 
 instance Show TCState where
   show _ = "TCSt{}"
@@ -144,6 +167,8 @@ data PreScopeState = PreScopeState
     -- ^ Pattern synonyms of the current file.  Serialized.
   , stPrePatternSynImports  :: !A.PatternSynDefns
     -- ^ Imported pattern synonyms.  Must not be serialized!
+  , stPreGeneralizedVars    :: !(Maybe (Set QName))
+    -- ^ Collected generalizable variables; used during scope checking of terms
   , stPrePragmaOptions      :: !PragmaOptions
     -- ^ Options applying to the current file. @OPTIONS@
     -- pragmas only affect this field.
@@ -152,10 +177,13 @@ data PreScopeState = PreScopeState
     -- ^ Display forms added by someone else to imported identifiers
   , stPreImportedInstanceDefs :: !InstanceTable
   , stPreForeignCode        :: !(Map BackendName [ForeignCode])
-    -- ^ @{-# FOREIGN #-}@ code that should be included in the compiled output.
+    -- ^ @{-\# FOREIGN \#-}@ code that should be included in the compiled output.
     -- Does not include code for imported modules.
   , stPreFreshInteractionId :: !InteractionId
-  , stPreUserWarnings       :: !(Map A.QName String)
+  , stPreImportedUserWarnings :: !(Map A.QName String)
+    -- ^ Imported @UserWarning@s, not to be stored in the @Interface@
+  , stPreLocalUserWarnings    :: !(Map A.QName String)
+    -- ^ Locally defined @UserWarning@s, to be stored in the @Interface@
   }
 
 type DisambiguatedNames = IntMap A.QName
@@ -191,6 +219,12 @@ data PostScopeState = PostScopeState
     -- ^ The current module is available after it has been type
     -- checked.
   , stPostInstanceDefs        :: !TempInstanceTable
+  , stPostConcreteNames       :: !(Map Name [C.Name])
+    -- ^ Map keeping track of concrete names assigned to each abstract name
+    --   (can be more than one name in case the first one is shadowed)
+  , stPostShadowingNames      :: !(Map Name [Name])
+    -- ^ Map keeping track of which names could maybe be shadowed by
+    -- another name
   , stPostStatistics          :: !Statistics
     -- ^ Counters to collect various statistics about meta variables etc.
     --   Only for current file.
@@ -204,6 +238,7 @@ data PostScopeState = PostScopeState
   , stPostFreshInt            :: !Int
   , stPostFreshNameId         :: !NameId
   , stPostAreWeCaching        :: !Bool
+  , stPostConsideringInstance :: !Bool
   }
 
 -- | A mutual block of names in the signature.
@@ -262,7 +297,7 @@ type CurrentTypeCheckLog = [(TypeCheckAction, PostScopeState)]
 --
 --   * 'LeaveSection', leaving the main module.
 data TypeCheckAction
-  = EnterSection !Info.ModuleInfo !ModuleName ![A.TypedBindings]
+  = EnterSection !Info.ModuleInfo !ModuleName !A.Telescope
   | LeaveSection !ModuleName
   | Decl !A.Declaration
     -- ^ Never a Section or ScopeDecl
@@ -293,13 +328,15 @@ initPreScopeState = PreScopeState
   , stPreScope                = emptyScopeInfo
   , stPrePatternSyns          = Map.empty
   , stPrePatternSynImports    = Map.empty
+  , stPreGeneralizedVars      = mempty
   , stPrePragmaOptions        = defaultInteractionOptions
   , stPreImportedBuiltins     = Map.empty
   , stPreImportedDisplayForms = HMap.empty
   , stPreImportedInstanceDefs = Map.empty
   , stPreForeignCode          = Map.empty
   , stPreFreshInteractionId   = 0
-  , stPreUserWarnings         = Map.empty
+  , stPreImportedUserWarnings = Map.empty
+  , stPreLocalUserWarnings    = Map.empty
   }
 
 initPostScopeState :: PostScopeState
@@ -317,6 +354,8 @@ initPostScopeState = PostScopeState
   , stPostImportsDisplayForms  = HMap.empty
   , stPostCurrentModule        = Nothing
   , stPostInstanceDefs         = (Map.empty , Set.empty)
+  , stPostConcreteNames        = Map.empty
+  , stPostShadowingNames       = Map.empty
   , stPostStatistics           = Map.empty
   , stPostTCWarnings           = []
   , stPostMutualBlocks         = Map.empty
@@ -328,6 +367,7 @@ initPostScopeState = PostScopeState
   , stPostFreshInt             = 0
   , stPostFreshNameId           = NameId 0 0
   , stPostAreWeCaching         = False
+  , stPostConsideringInstance  = False
   }
 
 initState :: TCState
@@ -380,6 +420,11 @@ stPatternSynImports f s =
   f (stPrePatternSynImports (stPreScopeState s)) <&>
   \x -> s {stPreScopeState = (stPreScopeState s) {stPrePatternSynImports = x}}
 
+stGeneralizedVars :: Lens' (Maybe (Set QName)) TCState
+stGeneralizedVars f s =
+  f (stPreGeneralizedVars (stPreScopeState s)) <&>
+  \x -> s {stPreScopeState = (stPreScopeState s) {stPreGeneralizedVars = x}}
+
 stPragmaOptions :: Lens' PragmaOptions TCState
 stPragmaOptions f s =
   f (stPrePragmaOptions (stPreScopeState s)) <&>
@@ -400,10 +445,21 @@ stFreshInteractionId f s =
   f (stPreFreshInteractionId (stPreScopeState s)) <&>
   \x -> s {stPreScopeState = (stPreScopeState s) {stPreFreshInteractionId = x}}
 
-stUserWarnings :: Lens' (Map A.QName String) TCState
-stUserWarnings f s =
-  f (stPreUserWarnings (stPreScopeState s)) <&>
-  \ x -> s {stPreScopeState = (stPreScopeState s) {stPreUserWarnings = x}}
+stImportedUserWarnings :: Lens' (Map A.QName String) TCState
+stImportedUserWarnings f s =
+  f (stPreImportedUserWarnings (stPreScopeState s)) <&>
+  \ x -> s {stPreScopeState = (stPreScopeState s) {stPreImportedUserWarnings = x}}
+
+stLocalUserWarnings :: Lens' (Map A.QName String) TCState
+stLocalUserWarnings f s =
+  f (stPreLocalUserWarnings (stPreScopeState s)) <&>
+  \ x -> s {stPreScopeState = (stPreScopeState s) {stPreLocalUserWarnings = x}}
+
+getUserWarnings :: MonadTCState m => m (Map A.QName String)
+getUserWarnings = do
+  iuw <- useTC stImportedUserWarnings
+  luw <- useTC stLocalUserWarnings
+  return $ iuw `Map.union` luw
 
 stBackends :: Lens' [Backend] TCState
 stBackends f s =
@@ -490,6 +546,16 @@ stInstanceDefs f s =
   f (stPostInstanceDefs (stPostScopeState s)) <&>
   \x -> s {stPostScopeState = (stPostScopeState s) {stPostInstanceDefs = x}}
 
+stConcreteNames :: Lens' (Map Name [C.Name]) TCState
+stConcreteNames f s =
+  f (stPostConcreteNames (stPostScopeState s)) <&>
+  \x -> s {stPostScopeState = (stPostScopeState s) {stPostConcreteNames = x}}
+
+stShadowingNames :: Lens' (Map Name [Name]) TCState
+stShadowingNames f s =
+  f (stPostShadowingNames (stPostScopeState s)) <&>
+  \x -> s {stPostScopeState = (stPostScopeState s) {stPostShadowingNames = x}}
+
 stStatistics :: Lens' Statistics TCState
 stStatistics f s =
   f (stPostStatistics (stPostScopeState s)) <&>
@@ -541,6 +607,11 @@ stAreWeCaching f s =
   f (stPostAreWeCaching (stPostScopeState s)) <&>
   \x -> s {stPostScopeState = (stPostScopeState s) {stPostAreWeCaching = x}}
 
+stConsideringInstance :: Lens' Bool TCState
+stConsideringInstance f s =
+  f (stPostConsideringInstance (stPostScopeState s)) <&>
+  \x -> s {stPostScopeState = (stPostScopeState s) {stPostConsideringInstance = x}}
+
 stBuiltinThings :: TCState -> BuiltinThings PrimFun
 stBuiltinThings s = (s^.stLocalBuiltins) `Map.union` (s^.stImportedBuiltins)
 
@@ -557,11 +628,11 @@ nextFresh s =
   let !c = s^.freshLens
   in (c, set freshLens (nextFresh' c) s)
 
-fresh :: (HasFresh i, MonadState TCState m) => m i
+fresh :: (HasFresh i, MonadTCState m) => m i
 fresh =
-    do  !s <- get
+    do  !s <- getTC
         let (!c , !s') = nextFresh s
-        put s'
+        putTC s'
         return c
 
 instance HasFresh MetaId where
@@ -614,22 +685,22 @@ instance Pretty CheckpointId where
 instance HasFresh CheckpointId where
   freshLens = stFreshCheckpointId
 
-freshName :: MonadState TCState m => Range -> String -> m Name
+freshName :: MonadTCState m => Range -> String -> m Name
 freshName r s = do
   i <- fresh
   return $ mkName r i s
 
-freshNoName :: MonadState TCState m => Range -> m Name
+freshNoName :: MonadTCState m => Range -> m Name
 freshNoName r =
     do  i <- fresh
         return $ Name i (C.NoName noRange i) r noFixity'
 
-freshNoName_ :: MonadState TCState m => m Name
+freshNoName_ :: MonadTCState m => m Name
 freshNoName_ = freshNoName noRange
 
 -- | Create a fresh name from @a@.
 class FreshName a where
-  freshName_ :: MonadState TCState m => a -> m Name
+  freshName_ :: MonadTCState m => a -> m Name
 
 instance FreshName (Range, String) where
   freshName_ = uncurry freshName
@@ -669,7 +740,7 @@ sourceToModule =
   Map.fromList
      .  List.map (\(m, f) -> (f, m))
      .  Map.toList
-    <$> use stModuleToSource
+    <$> useTC stModuleToSource
 
 -- | Lookup an 'AbsolutePath' in 'sourceToModule'.
 --
@@ -677,7 +748,7 @@ sourceToModule =
 
 lookupModuleFromSource :: AbsolutePath -> TCM (Maybe TopLevelModuleName)
 lookupModuleFromSource f =
-  fmap fst . List.find ((f ==) . snd) . Map.toList <$> use stModuleToSource
+  fmap fst . List.find ((f ==) . snd) . Map.toList <$> useTC stModuleToSource
 
 ---------------------------------------------------------------------------
 -- ** Interface
@@ -703,6 +774,12 @@ data ForeignCode = ForeignCode Range String
 data Interface = Interface
   { iSourceHash      :: Hash
     -- ^ Hash of the source code.
+  , iSource          :: Text
+    -- ^ The source code. The source code is stored so that the HTML
+    -- and LaTeX backends can generate their output without having to
+    -- re-read the (possibly out of date) source code.
+  , iFileType        :: FileType
+    -- ^ Source file type, determined from the file extension
   , iImportedModules :: [(ModuleName, Hash)]
     -- ^ Imported modules and their hashes.
   , iModuleName      :: ModuleName
@@ -734,24 +811,27 @@ data Interface = Interface
   deriving Show
 
 instance Pretty Interface where
-  pretty (Interface sourceH importedM moduleN scope insideS signature display
-                    userwarn builtin foreignCode highlighting pragmaO patternS
-                    warnings) =
-    hang (text "Interface") 2 $ vcat
-      [ text "source hash:"         <+> (pretty . show) sourceH
-      , text "imported modules:"    <+> (pretty . show) importedM
-      , text "module name:"         <+> pretty moduleN
-      , text "scope:"               <+> (pretty . show) scope
-      , text "inside scope:"        <+> (pretty . show) insideS
-      , text "signature:"           <+> (pretty . show) signature
-      , text "display:"             <+> (pretty . show) display
-      , text "user warnings:"       <+> (pretty . show) userwarn
-      , text "builtin:"             <+> (pretty . show) builtin
-      , text "Foreign code:"        <+> (pretty . show) foreignCode
-      , text "highlighting:"        <+> (pretty . show) highlighting
-      , text "pragma options:"      <+> (pretty . show) pragmaO
-      , text "pattern syns:"        <+> (pretty . show) patternS
-      , text "warnings:"            <+> (pretty . show) warnings
+  pretty (Interface
+            sourceH source fileT importedM moduleN scope insideS signature
+            display userwarn builtin foreignCode highlighting pragmaO
+            patternS warnings) =
+    hang "Interface" 2 $ vcat
+      [ "source hash:"         <+> (pretty . show) sourceH
+      , "source:"              $$  nest 2 (text $ T.unpack source)
+      , "file type:"           <+> (pretty . show) fileT
+      , "imported modules:"    <+> (pretty . show) importedM
+      , "module name:"         <+> pretty moduleN
+      , "scope:"               <+> (pretty . show) scope
+      , "inside scope:"        <+> (pretty . show) insideS
+      , "signature:"           <+> (pretty . show) signature
+      , "display:"             <+> (pretty . show) display
+      , "user warnings:"       <+> (pretty . show) userwarn
+      , "builtin:"             <+> (pretty . show) builtin
+      , "Foreign code:"        <+> (pretty . show) foreignCode
+      , "highlighting:"        <+> (pretty . show) highlighting
+      , "pragma options:"      <+> (pretty . show) pragmaO
+      , "pattern syns:"        <+> (pretty . show) patternS
+      , "warnings:"            <+> (pretty . show) warnings
       ]
 
 -- | Combines the source hash and the (full) hashes of the imported modules.
@@ -779,10 +859,10 @@ instance HasRange a => HasRange (Closure a) where
 
 buildClosure :: a -> TCM (Closure a)
 buildClosure x = do
-    env   <- ask
-    sig   <- use stSignature
-    scope <- use stScope
-    cps   <- use stModuleCheckpoints
+    env   <- askTC
+    sig   <- useTC stSignature
+    scope <- useTC stScope
+    cps   <- useTC stModuleCheckpoints
     return $ Closure sig env scope cps x
 
 ---------------------------------------------------------------------------
@@ -818,7 +898,7 @@ data Constraint
     -- ^ The range is the one of the absurd pattern.
   | CheckSizeLtSat Term
     -- ^ Check that the 'Term' is either not a SIZELT or a non-empty SIZELT.
-  | FindInScope MetaId (Maybe MetaId) (Maybe [Candidate])
+  | FindInstance MetaId (Maybe MetaId) (Maybe [Candidate])
     -- ^ the first argument is the instance argument, the second one is the meta
     --   on which the constraint may be blocked on and the third one is the list
     --   of candidates (or Nothing if we haven’t determined the list of
@@ -838,7 +918,7 @@ instance HasRange Constraint where
   getRange (LevelCmp cmp l l') = getRange (l,l')
   getRange (UnBlock x) = getRange x
   getRange (Guarded c pid) = getRange c
-  getRange (FindInScope x cands) = getRange x
+  getRange (FindInstance x cands) = getRange x
 -}
 
 instance Free Constraint where
@@ -855,7 +935,7 @@ instance Free Constraint where
       Guarded c _           -> freeVars' c
       IsEmpty _ t           -> freeVars' t
       CheckSizeLtSat u      -> freeVars' u
-      FindInScope _ _ cs    -> freeVars' cs
+      FindInstance _ _ cs   -> freeVars' cs
       CheckFunDef _ _ _ _   -> mempty
       HasBiggerSort s       -> freeVars' s
       HasPTSRule s1 s2      -> freeVars' (s1 , s2)
@@ -873,7 +953,7 @@ instance TermLike Constraint where
       SortCmp _ s1 s2        -> __IMPOSSIBLE__  -- foldTerm f (s1, s2) -- Not yet implemented
       UnBlock _              -> __IMPOSSIBLE__  -- mempty     -- Not yet implemented
       Guarded c _            -> __IMPOSSIBLE__  -- foldTerm c -- Not yet implemented
-      FindInScope _ _ cs     -> __IMPOSSIBLE__  -- Not yet implemented
+      FindInstance _ _ cs    -> __IMPOSSIBLE__  -- Not yet implemented
       CheckFunDef _ _ _ _    -> __IMPOSSIBLE__  -- Not yet implemented
       HasBiggerSort _        -> __IMPOSSIBLE__  -- Not yet implemented
       HasPTSRule _ _         -> __IMPOSSIBLE__  -- Not yet implemented
@@ -884,8 +964,8 @@ data Comparison = CmpEq | CmpLeq
   deriving (Eq, Data, Show)
 
 instance Pretty Comparison where
-  pretty CmpEq  = text "="
-  pretty CmpLeq = text "=<"
+  pretty CmpEq  = "="
+  pretty CmpLeq = "=<"
 
 -- | An extension of 'Comparison' to @>=@.
 data CompareDirection = DirEq | DirLeq | DirGeq
@@ -942,6 +1022,21 @@ instance Show a => Show (Judgement a) where
     show (HasType a t) = show a ++ " : " ++ show t
     show (IsSort  a t) = show a ++ " :sort " ++ show t
 
+-----------------------------------------------------------------------------
+-- ** Generalizable variables
+-----------------------------------------------------------------------------
+
+data DoGeneralize = YesGeneralize | NoGeneralize
+  deriving (Eq, Ord, Show, Data)
+
+-- | The value of a generalizable variable. This is created to be a
+--   generalizable meta before checking the type to be generalized.
+data GeneralizedValue = GeneralizedValue
+  { genvalCheckpoint :: CheckpointId
+  , genvalTerm       :: Term
+  , genvalType       :: Type
+  } deriving (Show, Data)
+
 ---------------------------------------------------------------------------
 -- ** Meta variables
 ---------------------------------------------------------------------------
@@ -985,7 +1080,7 @@ data Frozen
 data MetaInstantiation
         = InstV [Arg String] Term -- ^ solved by term (abstracted over some free variables)
         | Open               -- ^ unsolved
-        | OpenIFS            -- ^ open, to be instantiated as "implicit from scope"
+        | OpenInstance       -- ^ open, to be instantiated by instance search
         | BlockedConst Term  -- ^ solution blocked by unsolved constraints
         | PostponedTypeCheckingProblem (Closure TypeCheckingProblem) (TCM Bool)
 
@@ -995,9 +1090,9 @@ data CheckedTarget = CheckedTarget (Maybe ProblemId)
                    | NotCheckedTarget
 
 data TypeCheckingProblem
-  = CheckExpr A.Expr Type
+  = CheckExpr Comparison A.Expr Type
   | CheckArgs ExpandHidden Range [NamedArg A.Expr] Type Type (Elims -> Type -> CheckedTarget -> TCM Term)
-  | CheckLambda (Arg ([WithHiding Name], Maybe Type)) A.Expr Type
+  | CheckLambda Comparison (Arg ([WithHiding Name], Maybe Type)) A.Expr Type
     -- ^ @(λ (xs : t₀) → e) : t@
     --   This is not an instance of 'CheckExpr' as the domain type
     --   has already been checked.
@@ -1006,11 +1101,12 @@ data TypeCheckingProblem
     --   we want to postpone @(λ (y : Fin n) → e) : ?@ where @Fin n@
     --   is a 'Type' rather than an 'A.Expr'.
   | UnquoteTactic Term Term Type   -- ^ First argument is computation and the others are hole and goal type
+  | DoQuoteTerm Comparison Term Type -- ^ Quote the given term and check type against `Term`
 
 instance Show MetaInstantiation where
   show (InstV tel t) = "InstV " ++ show tel ++ " (" ++ show t ++ ")"
   show Open      = "Open"
-  show OpenIFS   = "OpenIFS"
+  show OpenInstance = "OpenInstance"
   show (BlockedConst t) = "BlockedConst (" ++ show t ++ ")"
   show (PostponedTypeCheckingProblem{}) = "PostponedTypeCheckingProblem (...)"
 
@@ -1035,6 +1131,8 @@ data MetaInfo = MetaInfo
   , miNameSuggestion  :: MetaNameSuggestion
     -- ^ Used for printing.
     --   @Just x@ if meta-variable comes from omitted argument with name @x@.
+  , miGeneralizable   :: Arg DoGeneralize
+    -- ^ Should this meta be generalized if unsolved? If so, at what ArgInfo?
   }
 
 -- | Name suggestion for meta variable.  Empty string means no suggestion.
@@ -1088,6 +1186,14 @@ getMetaSig m = clSignature $ getMetaInfo m
 
 getMetaRelevance :: MetaVariable -> Relevance
 getMetaRelevance = envRelevance . getMetaEnv
+
+getMetaModality :: MetaVariable -> Modality
+getMetaModality = envModality . getMetaEnv
+
+-- Lenses
+
+metaFrozen :: Lens' Frozen MetaVariable
+metaFrozen f mv = f (mvFrozen mv) <&> \ x -> mv { mvFrozen = x }
 
 ---------------------------------------------------------------------------
 -- ** Interaction meta variables
@@ -1234,13 +1340,13 @@ instance Pretty DisplayTerm where
   prettyPrec p v =
     case v of
       DTerm v          -> prettyPrec p v
-      DDot v           -> text "." P.<> prettyPrec 10 v
+      DDot v           -> "." P.<> prettyPrec 10 v
       DDef f es        -> pretty f `pApp` es
       DCon c _ vs      -> pretty (conName c) `pApp` map Apply vs
       DWithApp h ws es ->
         mparens (p > 0)
           (sep [ pretty h
-              , nest 2 $ fsep [ text "|" <+> pretty w | w <- ws ] ])
+              , nest 2 $ fsep [ "|" <+> pretty w | w <- ws ] ])
         `pApp` es
     where
       pApp d els = mparens (not (null els) && p > 9) $
@@ -1342,6 +1448,13 @@ data Definition = Defn
     --   23,    3
     --   27,    1
 
+  , defArgGeneralizable :: NumGeneralizableArgs
+    -- ^ How many arguments should be generalised.
+  , defGeneralizedParams :: [Maybe Name]
+    -- ^ Gives the name of the (bound variable) parameter for named generalized
+    --   parameters. This is needed to bring it into scope when type checking
+    --   the data/record definition corresponding to a type with generalized
+    --   parameters.
   , defDisplay        :: [LocalDisplayForm]
   , defMutual         :: MutualId
   , defCompiledRep    :: CompiledRepresentation
@@ -1360,6 +1473,13 @@ data Definition = Defn
   }
     deriving (Data, Show)
 
+data NumGeneralizableArgs
+  = NoGeneralizableArgs
+  | SomeGeneralizableArgs Int
+    -- ^ When lambda-lifting new args are generalizable if
+    --   'SomeGeneralizableArgs', also when the number is zero.
+  deriving (Data, Show)
+
 theDefLens :: Lens' Defn Definition
 theDefLens f d = f (theDef d) <&> \ df -> d { theDef = df }
 
@@ -1371,6 +1491,8 @@ defaultDefn info x t def = Defn
   , defType           = t
   , defPolarity       = []
   , defArgOccurrences = []
+  , defArgGeneralizable = NoGeneralizableArgs
+  , defGeneralizedParams = []
   , defDisplay        = defaultDisplayForm x
   , defMutual         = 0
   , defCompiledRep    = noCompiledRep
@@ -1522,6 +1644,15 @@ data FunctionFlag
   | FunMacro   -- ^ Is this function a macro?
   deriving (Data, Eq, Ord, Enum, Show)
 
+data CompKit = CompKit
+  { nameOfHComp :: Maybe QName
+  , nameOfTransp :: Maybe QName
+  }
+  deriving (Data, Eq, Ord, Show)
+
+emptyCompKit :: CompKit
+emptyCompKit = CompKit Nothing Nothing
+
 data Defn = Axiom
             { axTPTPRole  :: Maybe TPTPRole
               -- ^ TPTP axiom or conjecture
@@ -1529,6 +1660,10 @@ data Defn = Axiom
               -- ^ TPTP hints for a TPTP conjecture.
             }
             -- ^ Postulate.
+          | DataOrRecSig
+            { datarecPars :: Int }
+            -- ^ Data or record type signature that doesn't yet have a definition
+          | GeneralizableVar -- ^ Generalizable variable (introduced in `generalize` block)
           | AbstractDefn Defn
             -- ^ Returned by 'getConstInfo' if definition is abstract.
           | Function
@@ -1574,7 +1709,8 @@ data Defn = Axiom
             , dataIxs            :: Nat            -- ^ Number of indices.
             , dataInduction      :: Induction      -- ^ @data@ or @codata@ (legacy).
             , dataClause         :: (Maybe Clause) -- ^ This might be in an instantiated module.
-            , dataCons           :: [QName]        -- ^ Constructor names.
+            , dataCons           :: [QName]
+              -- ^ Constructor names , ordered according to the order of their definition.
             , dataSort           :: Sort
             , dataMutual         :: Maybe [QName]
               -- ^ Mutually recursive functions, @data@s and @record@s.
@@ -1582,6 +1718,7 @@ data Defn = Axiom
               --   Empty if not recursive.
               --   @Nothing@ if not yet computed (by positivity checker).
             , dataAbstr          :: IsAbstract
+            , dataPathCons       :: [QName]        -- ^ Path constructor names (subset of dataCons)
             , dataTPTPRole       :: Maybe TPTPRole  -- ^ TPTP sort?
             }
           | Record
@@ -1614,18 +1751,18 @@ data Defn = Axiom
               --   'Nothing' means that the user did not specify it, which is an error
               --   for recursive records.
             , recAbstr          :: IsAbstract
-            , recComp           :: Maybe QName
+            , recComp           :: CompKit
             }
           | Constructor
-            { conPars     :: Int         -- ^ Number of parameters.
-            , conArity    :: Int         -- ^ Number of arguments (excluding parameters).
-            , conSrcCon   :: ConHead     -- ^ Name of (original) constructor and fields. (This might be in a module instance.)
-            , conData     :: QName       -- ^ Name of datatype or record type.
-            , conAbstr    :: IsAbstract
-            , conInd      :: Induction   -- ^ Inductive or coinductive?
-            , conComp     :: Maybe (QName,[QName]) -- ^ (cubical composition, projections)
-            , conForced   :: [IsForced]  -- ^ Which arguments are forced (i.e. determined by the type of the constructor)?
-            , conErased   :: [Bool]      -- ^ Which arguments are erased at runtime (computed during compilation to treeless)
+            { conPars   :: Int         -- ^ Number of parameters.
+            , conArity  :: Int         -- ^ Number of arguments (excluding parameters).
+            , conSrcCon :: ConHead     -- ^ Name of (original) constructor and fields. (This might be in a module instance.)
+            , conData   :: QName       -- ^ Name of datatype or record type.
+            , conAbstr  :: IsAbstract
+            , conInd    :: Induction   -- ^ Inductive or coinductive?
+            , conComp   :: (CompKit, Maybe [QName]) -- ^ (cubical composition, projections)
+            , conForced :: [IsForced]  -- ^ Which arguments are forced (i.e. determined by the type of the constructor)?
+            , conErased :: [Bool]      -- ^ Which arguments are erased at runtime (computed during compilation to treeless)
             , conTPTPRole :: Maybe TPTPRole  -- ^ TPTP axiom?
             }
           | Primitive
@@ -1644,81 +1781,84 @@ data Defn = Axiom
 
 instance Pretty Definition where
   pretty Defn{..} =
-    text "Defn {" <?> vcat
-      [ text "defArgInfo        =" <?> pshow defArgInfo
-      , text "defName           =" <?> pretty defName
-      , text "defType           =" <?> pretty defType
-      , text "defPolarity       =" <?> pshow defPolarity
-      , text "defArgOccurrences =" <?> pshow defArgOccurrences
-      , text "defDisplay        =" <?> pshow defDisplay -- TODO: pretty DisplayForm
-      , text "defMutual         =" <?> pshow defMutual
-      , text "defCompiledRep    =" <?> pshow defCompiledRep
-      , text "defInstance       =" <?> pshow defInstance
-      , text "defCopy           =" <?> pshow defCopy
-      , text "defMatchable      =" <?> pshow defMatchable
-      , text "defInjective      =" <?> pshow defInjective
-      , text "theDef            =" <?> pretty theDef ] <+> text "}"
+    "Defn {" <?> vcat
+      [ "defArgInfo        =" <?> pshow defArgInfo
+      , "defName           =" <?> pretty defName
+      , "defType           =" <?> pretty defType
+      , "defPolarity       =" <?> pshow defPolarity
+      , "defArgOccurrences =" <?> pshow defArgOccurrences
+      , "defGeneralizedParams =" <?> pshow defGeneralizedParams
+      , "defDisplay        =" <?> pshow defDisplay -- TODO: pretty DisplayForm
+      , "defMutual         =" <?> pshow defMutual
+      , "defCompiledRep    =" <?> pshow defCompiledRep
+      , "defInstance       =" <?> pshow defInstance
+      , "defCopy           =" <?> pshow defCopy
+      , "defMatchable      =" <?> pshow defMatchable
+      , "defInjective      =" <?> pshow defInjective
+      , "theDef            =" <?> pretty theDef ] <+> "}"
 
 instance Pretty Defn where
-  pretty Axiom{..} = text "Axiom {" <?> vcat
-    [ text "axATPRole =" <?> pshow axTPTPRole
-    , text "axHints   =" <?> pshow axTPTPHints
-    ] <?> text "}"
-  pretty (AbstractDefn def) = text "AbstractDefn" <?> parens (pretty def)
+  pretty Axiom{..} = "Axiom {" <?> vcat
+    [ "axATPRole =" <?> pshow axTPTPRole
+    , "axHints   =" <?> pshow axTPTPHints
+    ] <?> "}"
+  pretty (DataOrRecSig n)   = "DataOrRecSig" <+> pretty n
+  pretty GeneralizableVar{} = "GeneralizableVar"
+  pretty (AbstractDefn def) = "AbstractDefn" <?> parens (pretty def)
   pretty Function{..} =
-    text "Function {" <?> vcat
-      [ text "funClauses      =" <?> vcat (map pretty funClauses)
-      , text "funCompiled     =" <?> pshow funCompiled
-      , text "funTreeless     =" <?> pshow funTreeless
-      , text "funInv          =" <?> pshow funInv
-      , text "funMutual       =" <?> pshow funMutual
-      , text "funAbstr        =" <?> pshow funAbstr
-      , text "funDelayed      =" <?> pshow funDelayed
-      , text "funProjection   =" <?> pshow funProjection
-      , text "funFlags        =" <?> pshow funFlags
-      , text "funTerminates   =" <?> pshow funTerminates
-      , text "funWith         =" <?> pshow funWith
-      , text "funCopatternLHS =" <?> pshow funCopatternLHS
-      , text "funATPRole      =" <?> pshow funTPTPRole ] <?> text "}"
+    "Function {" <?> vcat
+      [ "funClauses      =" <?> vcat (map pretty funClauses)
+      , "funCompiled     =" <?> pshow funCompiled
+      , "funTreeless     =" <?> pshow funTreeless
+      , "funInv          =" <?> pshow funInv
+      , "funMutual       =" <?> pshow funMutual
+      , "funAbstr        =" <?> pshow funAbstr
+      , "funDelayed      =" <?> pshow funDelayed
+      , "funProjection   =" <?> pshow funProjection
+      , "funFlags        =" <?> pshow funFlags
+      , "funTerminates   =" <?> pshow funTerminates
+      , "funWith         =" <?> pshow funWith
+      , "funCopatternLHS =" <?> pshow funCopatternLHS
+      , "funATPRole      =" <?> pshow funTPTPRole ] <?> "}"
   pretty Datatype{..} =
-    text "Datatype {" <?> vcat
-      [ text "dataPars       =" <?> pshow dataPars
-      , text "dataIxs        =" <?> pshow dataIxs
-      , text "dataInduction  =" <?> pshow dataInduction
-      , text "dataClause     =" <?> pretty dataClause
-      , text "dataCons       =" <?> pshow dataCons
-      , text "dataSort       =" <?> pretty dataSort
-      , text "dataMutual     =" <?> pshow dataMutual
-      , text "dataAbstr      =" <?> pshow dataAbstr
-      , text "dataATPRole    =" <?> pshow dataTPTPRole ] <?> text "}"
+    "Datatype {" <?> vcat
+      [ "dataPars       =" <?> pshow dataPars
+      , "dataIxs        =" <?> pshow dataIxs
+      , "dataInduction  =" <?> pshow dataInduction
+      , "dataClause     =" <?> pretty dataClause
+      , "dataCons       =" <?> pshow dataCons
+      , "dataSort       =" <?> pretty dataSort
+      , "dataMutual     =" <?> pshow dataMutual
+      , "dataAbstr      =" <?> pshow dataAbstr
+      , "dataATPRole    =" <?> pshow dataTPTPRole ] <?> "}"
   pretty Record{..} =
-    text "Record {" <?> vcat
-      [ text "recPars         =" <?> pshow recPars
-      , text "recClause       =" <?> pretty recClause
-      , text "recConHead      =" <?> pshow recConHead
-      , text "recNamedCon     =" <?> pshow recNamedCon
-      , text "recFields       =" <?> pshow recFields
-      , text "recTel          =" <?> pretty recTel
-      , text "recMutual       =" <?> pshow recMutual
-      , text "recEtaEquality' =" <?> pshow recEtaEquality'
-      , text "recInduction    =" <?> pshow recInduction
-      , text "recAbstr        =" <?> pshow recAbstr ] <?> text "}"
+    "Record {" <?> vcat
+      [ "recPars         =" <?> pshow recPars
+      , "recClause       =" <?> pretty recClause
+      , "recConHead      =" <?> pshow recConHead
+      , "recNamedCon     =" <?> pshow recNamedCon
+      , "recFields       =" <?> pshow recFields
+      , "recTel          =" <?> pretty recTel
+      , "recMutual       =" <?> pshow recMutual
+      , "recEtaEquality' =" <?> pshow recEtaEquality'
+      , "recInduction    =" <?> pshow recInduction
+      , "recAbstr        =" <?> pshow recAbstr ] <?> "}"
   pretty Constructor{..} =
-    text "Constructor {" <?> vcat
-      [ text "conPars    =" <?> pshow conPars
-      , text "conArity   =" <?> pshow conArity
-      , text "conSrcCon  =" <?> pshow conSrcCon
-      , text "conData    =" <?> pshow conData
-      , text "conAbstr   =" <?> pshow conAbstr
-      , text "conInd     =" <?> pshow conInd
-      , text "conErased  =" <?> pshow conErased
-      , text "conATPRole =" <?> pshow conTPTPRole ] <?> text "}"
+    "Constructor {" <?> vcat
+      [ "conPars   =" <?> pshow conPars
+      , "conArity  =" <?> pshow conArity
+      , "conSrcCon =" <?> pshow conSrcCon
+      , "conData   =" <?> pshow conData
+      , "conAbstr  =" <?> pshow conAbstr
+      , "conInd    =" <?> pshow conInd
+      , "conErased =" <?> pshow conErased
+      , "conATPRole =" <?> pshow conTPTPRole ] <?> "}"
   pretty Primitive{..} =
-    text "Primitive {" <?> vcat
-      [ text "primAbstr    =" <?> pshow primAbstr
-      , text "primName     =" <?> pshow primName
-      , text "primClauses  =" <?> pshow primClauses
-      , text "primCompiled =" <?> pshow primCompiled ] <?> text "}"
+    "Primitive {" <?> vcat
+      [ "primAbstr    =" <?> pshow primAbstr
+      , "primName     =" <?> pshow primName
+      , "primClauses  =" <?> pshow primClauses
+      , "primCompiled =" <?> pshow primCompiled ] <?> "}"
 
 
 -- | Is the record type recursive?
@@ -1917,6 +2057,8 @@ defTerminationUnconfirmed _ = False
 defAbstract :: Definition -> IsAbstract
 defAbstract d = case theDef d of
     Axiom{}                   -> ConcreteDef
+    DataOrRecSig{}            -> ConcreteDef
+    GeneralizableVar{}        -> ConcreteDef
     AbstractDefn{}            -> AbstractDef
     Function{funAbstr = a}    -> a
     Datatype{dataAbstr = a}   -> a
@@ -1928,6 +2070,8 @@ defForced :: Definition -> [IsForced]
 defForced d = case theDef d of
     Constructor{conForced = fs} -> fs
     Axiom{}                     -> []
+    DataOrRecSig{}              -> []
+    GeneralizableVar{}          -> []
     AbstractDefn{}              -> []
     Function{}                  -> []
     Datatype{}                  -> []
@@ -1955,11 +2099,11 @@ data TermHead = SortHead
 
 instance Pretty TermHead where
   pretty = \ case
-    SortHead    -> text "SortHead"
-    PiHead      -> text "PiHead"
-    ConsHead q  -> text "ConsHead" <+> pretty q
+    SortHead    -> "SortHead"
+    PiHead      -> "PiHead"
+    ConsHead q  -> "ConsHead" <+> pretty q
     VarHead i   -> text ("VarHead " ++ show i)
-    UnknownHead -> text "UnknownHead"
+    UnknownHead -> "UnknownHead"
 
 ---------------------------------------------------------------------------
 -- ** Mutual blocks
@@ -1982,7 +2126,7 @@ data Call = CheckClause Type A.SpineClause
           | CheckPattern A.Pattern Telescope Type
           | CheckLetBinding A.LetBinding
           | InferExpr A.Expr
-          | CheckExprCall A.Expr Type
+          | CheckExprCall Comparison A.Expr Type
           | CheckDotPattern A.Expr Term
           | CheckPatternShadowing A.SpineClause
           | CheckProjection Range QName Type
@@ -1992,14 +2136,15 @@ data Call = CheckClause Type A.SpineClause
           | InferDef QName
           | CheckArguments Range [NamedArg A.Expr] Type (Maybe Type)
           | CheckTargetType Range Type Type
-          | CheckDataDef Range Name [A.LamBinding] [A.Constructor]
-          | CheckRecDef Range Name [A.LamBinding] [A.Constructor]
+          | CheckDataDef Range QName [A.LamBinding] [A.Constructor]
+          | CheckRecDef Range QName [A.LamBinding] [A.Constructor]
           | CheckConstructor QName Telescope Sort A.Constructor
-          | CheckFunDefCall Range Name [A.Clause]
+          | CheckConstructorFitsIn QName Type Sort
+          | CheckFunDefCall Range QName [A.Clause]
           | CheckPragma Range A.Pragma
-          | CheckPrimitive Range Name A.Expr
+          | CheckPrimitive Range QName A.Expr
           | CheckIsEmpty Range Type
-          | CheckWithFunctionType A.Expr
+          | CheckWithFunctionType Type
           | CheckSectionApplication Range ModuleName A.ModuleApplication
           | CheckNamedWhere ModuleName
           | ScopeCheckExpr C.Expr
@@ -2011,42 +2156,43 @@ data Call = CheckClause Type A.SpineClause
     deriving Data
 
 instance Pretty Call where
-    pretty CheckClause{}             = text "CheckClause"
-    pretty CheckPattern{}            = text "CheckPattern"
-    pretty InferExpr{}               = text "InferExpr"
-    pretty CheckExprCall{}           = text "CheckExprCall"
-    pretty CheckLetBinding{}         = text "CheckLetBinding"
-    pretty CheckProjection{}         = text "CheckProjection"
-    pretty IsTypeCall{}              = text "IsTypeCall"
-    pretty IsType_{}                 = text "IsType_"
-    pretty InferVar{}                = text "InferVar"
-    pretty InferDef{}                = text "InferDef"
-    pretty CheckArguments{}          = text "CheckArguments"
-    pretty CheckTargetType{}         = text "CheckTargetType"
-    pretty CheckDataDef{}            = text "CheckDataDef"
-    pretty CheckRecDef{}             = text "CheckRecDef"
-    pretty CheckConstructor{}        = text "CheckConstructor"
-    pretty CheckFunDefCall{}         = text "CheckFunDefCall"
-    pretty CheckPragma{}             = text "CheckPragma"
-    pretty CheckPrimitive{}          = text "CheckPrimitive"
-    pretty CheckWithFunctionType{}   = text "CheckWithFunctionType"
-    pretty CheckNamedWhere{}         = text "CheckNamedWhere"
-    pretty ScopeCheckExpr{}          = text "ScopeCheckExpr"
-    pretty ScopeCheckDeclaration{}   = text "ScopeCheckDeclaration"
-    pretty ScopeCheckLHS{}           = text "ScopeCheckLHS"
-    pretty CheckDotPattern{}         = text "CheckDotPattern"
-    pretty CheckPatternShadowing{}   = text "CheckPatternShadowing"
-    pretty SetRange{}                = text "SetRange"
-    pretty CheckSectionApplication{} = text "CheckSectionApplication"
-    pretty CheckIsEmpty{}            = text "CheckIsEmpty"
-    pretty NoHighlighting{}          = text "NoHighlighting"
-    pretty ModuleContents{}          = text "ModuleContents"
+    pretty CheckClause{}             = "CheckClause"
+    pretty CheckPattern{}            = "CheckPattern"
+    pretty InferExpr{}               = "InferExpr"
+    pretty CheckExprCall{}           = "CheckExprCall"
+    pretty CheckLetBinding{}         = "CheckLetBinding"
+    pretty CheckProjection{}         = "CheckProjection"
+    pretty IsTypeCall{}              = "IsTypeCall"
+    pretty IsType_{}                 = "IsType_"
+    pretty InferVar{}                = "InferVar"
+    pretty InferDef{}                = "InferDef"
+    pretty CheckArguments{}          = "CheckArguments"
+    pretty CheckTargetType{}         = "CheckTargetType"
+    pretty CheckDataDef{}            = "CheckDataDef"
+    pretty CheckRecDef{}             = "CheckRecDef"
+    pretty CheckConstructor{}        = "CheckConstructor"
+    pretty CheckConstructorFitsIn{}  = "CheckConstructorFitsIn"
+    pretty CheckFunDefCall{}         = "CheckFunDefCall"
+    pretty CheckPragma{}             = "CheckPragma"
+    pretty CheckPrimitive{}          = "CheckPrimitive"
+    pretty CheckWithFunctionType{}   = "CheckWithFunctionType"
+    pretty CheckNamedWhere{}         = "CheckNamedWhere"
+    pretty ScopeCheckExpr{}          = "ScopeCheckExpr"
+    pretty ScopeCheckDeclaration{}   = "ScopeCheckDeclaration"
+    pretty ScopeCheckLHS{}           = "ScopeCheckLHS"
+    pretty CheckDotPattern{}         = "CheckDotPattern"
+    pretty CheckPatternShadowing{}   = "CheckPatternShadowing"
+    pretty SetRange{}                = "SetRange"
+    pretty CheckSectionApplication{} = "CheckSectionApplication"
+    pretty CheckIsEmpty{}            = "CheckIsEmpty"
+    pretty NoHighlighting{}          = "NoHighlighting"
+    pretty ModuleContents{}          = "ModuleContents"
 
 instance HasRange Call where
     getRange (CheckClause _ c)               = getRange c
     getRange (CheckPattern p _ _)            = getRange p
     getRange (InferExpr e)                   = getRange e
-    getRange (CheckExprCall e _)             = getRange e
+    getRange (CheckExprCall _ e _)           = getRange e
     getRange (CheckLetBinding b)             = getRange b
     getRange (CheckProjection r _ _)         = r
     getRange (IsTypeCall e s)                = getRange e
@@ -2058,6 +2204,7 @@ instance HasRange Call where
     getRange (CheckDataDef i _ _ _)          = getRange i
     getRange (CheckRecDef i _ _ _)           = getRange i
     getRange (CheckConstructor _ _ _ c)      = getRange c
+    getRange (CheckConstructorFitsIn c _ _)  = getRange c
     getRange (CheckFunDefCall i _ _)         = getRange i
     getRange (CheckPragma r _)               = r
     getRange (CheckPrimitive i _ _)          = getRange i
@@ -2148,7 +2295,7 @@ data HighlightingMethod
 ifTopLevelAndHighlightingLevelIsOr ::
   MonadTCM tcm => HighlightingLevel -> Bool -> tcm () -> tcm ()
 ifTopLevelAndHighlightingLevelIsOr l b m = do
-  e <- ask
+  e <- askTC
   when (envModuleNestingLevel e == 0 &&
         (envHighlightingLevel e >= l || b))
        m
@@ -2193,10 +2340,17 @@ data TCEnv =
                 --   or the body of a non-abstract definition this is true.
                 --   To prevent information about abstract things leaking
                 --   outside the module.
-          , envRelevance           :: Relevance
-                -- ^ Are we checking an irrelevant argument? (=@Irrelevant@)
+          , envModality            :: Modality
+                -- ^ 'Relevance' component:
+                -- Are we checking an irrelevant argument? (=@Irrelevant@)
                 -- Then top-level irrelevant declarations are enabled.
-                -- Other value: @Relevant@, then only relevant decls. are avail.
+                -- Other value: @Relevant@, then only relevant decls. are available.
+                --
+                -- 'Quantity' component:
+                -- Are we checking a runtime-irrelevant thing? (='Quantity0')
+                -- Then runtime-irrelevant things are usable.
+                -- Other value: @Quantity1@, runtime relevant.
+                -- @Quantityω@ is not allowed here, see Bob Atkey, LiCS 2018.
           , envDisplayFormsEnabled :: Bool
                 -- ^ Sometimes we want to disable display forms.
           , envRange :: Range
@@ -2220,12 +2374,6 @@ data TCEnv =
                 --   dependency graph, of the shortest path from the
                 --   top-level module; it depends on in which order
                 --   Agda chooses to chase dependencies.
-          , envAllowDestructiveUpdate :: Bool
-                -- ^ When True, allows destructively shared updating terms
-                --   during evaluation or unification. This is disabled when
-                --   doing speculative checking, like solve instance metas, or
-                --   when updating might break abstraction, as is the case when
-                --   checking abstract definitions.
           , envExpandLast :: ExpandHidden
                 -- ^ When type-checking an alias f=e, we do not want
                 -- to insert hidden arguments in the end, because
@@ -2274,6 +2422,10 @@ data TCEnv =
           , envCheckpoints :: Map CheckpointId Substitution
                 -- ^ Keeps the substitution from each previous checkpoint to
                 --   the current context.
+          , envGeneralizeMetas :: DoGeneralize
+                -- ^ Should new metas generalized over.
+          , envGeneralizedVars :: Map QName GeneralizedValue
+                -- ^ Values for used generalizable variables.
           }
     deriving Data
 
@@ -2300,8 +2452,8 @@ initEnv = TCEnv { envContext             = []
   -- The initial mode should be 'ConcreteMode', ensuring you
   -- can only look into abstract things in an abstract
   -- definition (which sets 'AbstractMode').
-                , envRelevance           = Relevant
-                , envDisplayFormsEnabled = True
+                , envModality               = Modality Relevant Quantity1
+                , envDisplayFormsEnabled    = True
                 , envRange                  = noRange
                 , envHighlightingRange      = noRange
                 , envClause                 = IPNoClause
@@ -2309,7 +2461,6 @@ initEnv = TCEnv { envContext             = []
                 , envHighlightingLevel      = None
                 , envHighlightingMethod     = Indirect
                 , envModuleNestingLevel     = -1
-                , envAllowDestructiveUpdate = True
                 , envExpandLast             = ExpandLast
                 , envAppDef                 = Nothing
                 , envSimplification         = NoSimplification
@@ -2326,10 +2477,13 @@ initEnv = TCEnv { envContext             = []
                 , envCallByNeed             = True
                 , envCurrentCheckpoint      = 0
                 , envCheckpoints            = Map.singleton 0 IdS
+                , envGeneralizeMetas        = NoGeneralize
+                , envGeneralizedVars        = Map.empty
                 }
 
-disableDestructiveUpdate :: TCM a -> TCM a
-disableDestructiveUpdate = local $ \e -> e { envAllowDestructiveUpdate = False }
+-- | Project 'Relevance' component of 'TCEnv'.
+envRelevance :: TCEnv -> Relevance
+envRelevance = modRelevance . envModality
 
 data UnquoteFlags = UnquoteFlags
   { _unquoteNormalise :: Bool }
@@ -2390,8 +2544,14 @@ eActiveProblems f e = f (envActiveProblems e) <&> \ x -> e { envActiveProblems =
 eAbstractMode :: Lens' AbstractMode TCEnv
 eAbstractMode f e = f (envAbstractMode e) <&> \ x -> e { envAbstractMode = x }
 
+eModality :: Lens' Modality TCEnv
+eModality f e = f (envModality e) <&> \ x -> e { envModality = x }
+
 eRelevance :: Lens' Relevance TCEnv
-eRelevance f e = f (envRelevance e) <&> \ x -> e { envRelevance = x }
+eRelevance = eModality . lModRelevance
+
+eQuantity :: Lens' Quantity TCEnv
+eQuantity = eModality . lModQuantity
 
 eDisplayFormsEnabled :: Lens' Bool TCEnv
 eDisplayFormsEnabled f e = f (envDisplayFormsEnabled e) <&> \ x -> e { envDisplayFormsEnabled = x }
@@ -2413,9 +2573,6 @@ eHighlightingMethod f e = f (envHighlightingMethod e) <&> \ x -> e { envHighligh
 
 eModuleNestingLevel :: Lens' Int TCEnv
 eModuleNestingLevel f e = f (envModuleNestingLevel e) <&> \ x -> e { envModuleNestingLevel = x }
-
-eAllowDestructiveUpdate :: Lens' Bool TCEnv
-eAllowDestructiveUpdate f e = f (envAllowDestructiveUpdate e) <&> \ x -> e { envAllowDestructiveUpdate = x }
 
 eExpandLast :: Lens' ExpandHidden TCEnv
 eExpandLast f e = f (envExpandLast e) <&> \ x -> e { envExpandLast = x }
@@ -2462,6 +2619,12 @@ eCurrentCheckpoint f e = f (envCurrentCheckpoint e) <&> \ x -> e { envCurrentChe
 eCheckpoints :: Lens' (Map CheckpointId Substitution) TCEnv
 eCheckpoints f e = f (envCheckpoints e) <&> \ x -> e { envCheckpoints = x }
 
+eGeneralizeMetas :: Lens' DoGeneralize TCEnv
+eGeneralizeMetas f e = f (envGeneralizeMetas e) <&> \ x -> e { envGeneralizeMetas = x }
+
+eGeneralizedVars :: Lens' (Map QName GeneralizedValue) TCEnv
+eGeneralizedVars f e = f (envGeneralizedVars e) <&> \ x -> e { envGeneralizedVars = x }
+
 ---------------------------------------------------------------------------
 -- ** Context
 ---------------------------------------------------------------------------
@@ -2504,23 +2667,17 @@ data ExpandHidden
   | DontExpandLast  -- ^ Do not append implicit arguments.
   deriving (Eq, Data)
 
-data ExplicitToInstance
-  = ExplicitToInstance    -- ^ Explicit arguments are considered as instance arguments
-  | ExplicitStayExplicit
-    deriving (Eq, Show, Data)
-
 -- | A candidate solution for an instance meta is a term with its type.
 --   It may be the case that the candidate is not fully applied yet or
 --   of the wrong type, hence the need for the type.
 data Candidate  = Candidate { candidateTerm :: Term
                             , candidateType :: Type
-                            , candidateEti  :: ExplicitToInstance
                             , candidateOverlappable :: Bool
                             }
   deriving (Show, Data)
 
 instance Free Candidate where
-  freeVars' (Candidate t u _ _) = freeVars' (t, u)
+  freeVars' (Candidate t u _) = freeVars' (t, u)
 
 ---------------------------------------------------------------------------
 -- * Type checking warnings (aka non-fatal errors)
@@ -2541,17 +2698,25 @@ data Warning
   | UnsolvedInteractionMetas [Range]  -- ^ Do not use directly with 'warning'
   | UnsolvedConstraints      Constraints
     -- ^ Do not use directly with 'warning'
+  | CantGeneralizeOverSorts [MetaId]
+  | AbsurdPatternRequiresNoRHS [NamedArg DeBruijnPattern]
   | OldBuiltin               String String
     -- ^ In `OldBuiltin old new`, the BUILTIN old has been replaced by new
   | EmptyRewritePragma
-    -- ^ If the user wrote just @{-# REWRITE #-}@.
+    -- ^ If the user wrote just @{-\# REWRITE \#-}@.
+  | IllformedAsClause
+    -- ^ If the user wrote something other than an unqualified name
+    --   in the @as@ clause of an @import@ statement.
   | UselessPublic
     -- ^ If the user opens a module public before the module header.
     --   (See issue #2377.)
   | UselessInline            QName
-  -- Generic warnings for one-off things
+  | InstanceWithExplicitArg  QName
+  -- ^ An instance was declared with an implicit argument, which means it
+  --   will never actually be considered by instance search.
   | InversionDepthReached    QName
   -- ^ The --inversion-max-depth was reached.
+  -- Generic warnings for one-off things
   | GenericWarning           Doc
     -- ^ Harmless generic warning (not an error)
   | GenericNonFatalError     Doc
@@ -2561,46 +2726,62 @@ data Warning
   | SafeFlagPragma [String]
   | SafeFlagNonTerminating
   | SafeFlagTerminating
-  | SafeFlagPrimTrustMe
+  | SafeFlagWithoutKFlagPrimEraseEquality
+  | WithoutKFlagPrimEraseEquality
   | SafeFlagNoPositivityCheck
   | SafeFlagPolarity
+  | SafeFlagNoUniverseCheck
   | ParseWarning             ParseWarning
+  | LibraryWarning           LibWarning
   | DeprecationWarning String String String
     -- ^ `DeprecationWarning old new version`:
     --   `old` is deprecated, use `new` instead. This will be an error in Agda `version`.
   | UserWarning String
     -- ^ User-defined warning (e.g. to mention that a name is deprecated)
+  | ModuleDoesntExport C.QName [C.ImportedName]
+    -- ^ Some imported names are not actually exported by the source module
   deriving (Show , Data)
 
 
 warningName :: Warning -> WarningName
 warningName w = case w of
-  NicifierIssue dw           -> declarationWarningName dw
-  ParseWarning pw            -> parseWarningName pw
-  OldBuiltin{}               -> OldBuiltin_
-  EmptyRewritePragma         -> EmptyRewritePragma_
-  UselessPublic              -> UselessPublic_
-  UnreachableClauses{}       -> UnreachableClauses_
-  UselessInline{}            -> UselessInline_
-  GenericWarning{}           -> GenericWarning_
-  DeprecationWarning{}       -> DeprecationWarning_
-  InversionDepthReached{}    -> InversionDepthReached_
-  TerminationIssue{}         -> TerminationIssue_
-  CoverageIssue{}            -> CoverageIssue_
-  CoverageNoExactSplit{}     -> CoverageNoExactSplit_
-  NotStrictlyPositive{}      -> NotStrictlyPositive_
-  UnsolvedMetaVariables{}    -> UnsolvedMetaVariables_
-  UnsolvedInteractionMetas{} -> UnsolvedInteractionMetas_
-  UnsolvedConstraints{}      -> UnsolvedConstraints_
-  GenericNonFatalError{}     -> GenericNonFatalError_
-  SafeFlagPostulate{}        -> SafeFlagPostulate_
-  SafeFlagPragma{}           -> SafeFlagPragma_
-  SafeFlagNonTerminating     -> SafeFlagNonTerminating_
-  SafeFlagTerminating        -> SafeFlagTerminating_
-  SafeFlagPrimTrustMe        -> SafeFlagPrimTrustMe_
-  SafeFlagNoPositivityCheck  -> SafeFlagNoPositivityCheck_
-  SafeFlagPolarity           -> SafeFlagPolarity_
-  UserWarning{}              -> UserWarning_
+  -- special cases
+  NicifierIssue dw             -> declarationWarningName dw
+  ParseWarning pw              -> parseWarningName pw
+  LibraryWarning lw            -> libraryWarningName lw
+  -- typechecking errors
+  CantGeneralizeOverSorts{}    -> CantGeneralizeOverSorts_
+  AbsurdPatternRequiresNoRHS{} -> AbsurdPatternRequiresNoRHS_
+  CoverageIssue{}              -> CoverageIssue_
+  CoverageNoExactSplit{}       -> CoverageNoExactSplit_
+  DeprecationWarning{}         -> DeprecationWarning_
+  EmptyRewritePragma           -> EmptyRewritePragma_
+  IllformedAsClause            -> IllformedAsClause_
+  InstanceWithExplicitArg{}    -> InstanceWithExplicitArg_
+  GenericNonFatalError{}       -> GenericNonFatalError_
+  GenericWarning{}             -> GenericWarning_
+  InversionDepthReached{}      -> InversionDepthReached_
+  ModuleDoesntExport{}         -> ModuleDoesntExport_
+  NotStrictlyPositive{}        -> NotStrictlyPositive_
+  OldBuiltin{}                 -> OldBuiltin_
+  SafeFlagNoPositivityCheck    -> SafeFlagNoPositivityCheck_
+  SafeFlagNonTerminating       -> SafeFlagNonTerminating_
+  SafeFlagNoUniverseCheck      -> SafeFlagNoUniverseCheck_
+  SafeFlagPolarity             -> SafeFlagPolarity_
+  SafeFlagPostulate{}          -> SafeFlagPostulate_
+  SafeFlagPragma{}             -> SafeFlagPragma_
+  SafeFlagWithoutKFlagPrimEraseEquality -> SafeFlagWithoutKFlagPrimEraseEquality_
+  WithoutKFlagPrimEraseEquality -> WithoutKFlagPrimEraseEquality_
+  SafeFlagTerminating          -> SafeFlagTerminating_
+  TerminationIssue{}           -> TerminationIssue_
+  UnreachableClauses{}         -> UnreachableClauses_
+  UnsolvedInteractionMetas{}   -> UnsolvedInteractionMetas_
+  UnsolvedConstraints{}        -> UnsolvedConstraints_
+  UnsolvedMetaVariables{}      -> UnsolvedMetaVariables_
+  UselessInline{}              -> UselessInline_
+  UselessPublic                -> UselessPublic_
+  UserWarning{}                -> UserWarning_
+
 
 data TCWarning
   = TCWarning
@@ -2633,7 +2814,7 @@ equalHeadConstructors = (==) `on` toConstr
 getPartialDefs :: ReadTCState tcm => tcm [QName]
 getPartialDefs = do
   tcst <- getTCState
-  return $ catMaybes . fmap (extractQName . tcWarning)
+  return $ mapMaybe (extractQName . tcWarning)
          $ tcst ^. stTCWarnings where
 
     extractQName :: Warning -> Maybe QName
@@ -2692,6 +2873,7 @@ data TerminationError = TerminationError
 data SplitError
   = NotADatatype        (Closure Type)  -- ^ Neither data type nor record.
   | IrrelevantDatatype  (Closure Type)  -- ^ Data type, but in irrelevant position.
+  | ErasedDatatype      (Closure Type)  -- ^ Data type, but in erased position.
   | CoinductiveDatatype (Closure Type)  -- ^ Split on codata not allowed.
   -- UNUSED, but keep!
   -- -- | NoRecordConstructor Type  -- ^ record type, but no constructor
@@ -2702,6 +2884,12 @@ data SplitError
     , cantSplitGivenIdx :: Args         -- ^ Expected indices (from checking pattern).
     , cantSplitFailures :: [UnificationFailure] -- ^ Reason(s) why unification got stuck.
     }
+  | CosplitCatchall
+      -- ^ Copattern split with a catchall
+  | CosplitNoTarget
+      -- ^ We do not know the target type of the clause.
+  | CosplitNoRecordType (Closure Type)
+      -- ^ Target type is not a record type.
   | GenericSplitError String
   deriving (Show)
 
@@ -2730,7 +2918,6 @@ data TypeError
         | NotImplemented String
         | NotSupported String
         | CompilationError String
-        | TerminationCheckFailed [TerminationError]
         | PropMustBeSingleton
         | DataMustEndInSort Term
 {- UNUSED
@@ -2751,8 +2938,6 @@ data TypeError
         | CantResolveOverloadedConstructorsTargetingSameDatatype QName [QName]
           -- ^ Datatype, constructors.
         | DoesNotConstructAnElementOf QName Type -- ^ constructor, type
-        | DifferentArities
-            -- ^ Varying number of arguments for a function.
         | WrongHidingInLHS
             -- ^ The left hand side of a function definition has a hidden argument
             --   where a non-hidden was expected.
@@ -2764,6 +2949,8 @@ data TypeError
             -- ^ A function is applied to a hidden named argument it does not have.
         | WrongIrrelevanceInLambda
             -- ^ Wrong user-given relevance annotation in lambda.
+        | WrongQuantityInLambda
+            -- ^ Wrong user-given quantity annotation in lambda.
         | WrongInstanceDeclaration
             -- ^ A term is declared as an instance but it’s not allowed
         | HidingMismatch Hiding Hiding
@@ -2786,7 +2973,6 @@ data TypeError
         | ShouldBeRecordPattern DeBruijnPattern
         | NotAProjectionPattern (NamedArg A.Pattern)
         | NotAProperTerm
-        | SetOmegaNotValidType
         | InvalidTypeSort Sort
             -- ^ This sort is not a type expression.
         | InvalidType Term
@@ -2795,9 +2981,11 @@ data TypeError
             -- ^ This term, a function type constructor, lives in
             --   @SizeUniv@, which is not allowed.
         | SplitOnIrrelevant (Dom Type)
+        -- UNUSED: -- | SplitOnErased (Dom Type)
         | SplitOnNonVariable Term Type
         | DefinitionIsIrrelevant QName
         | VariableIsIrrelevant Name
+        | VariableIsErased Name
 --        | UnequalLevel Comparison Term Term  -- UNUSED
         | UnequalTerms Comparison Term Term Type
         | UnequalTypes Comparison Type Type
@@ -2821,11 +3009,11 @@ data TypeError
         | DuplicateBuiltinBinding String Term Term
         | NoBindingForBuiltin String
         | NoSuchPrimitiveFunction String
+        | DuplicatePrimitiveBinding String QName QName
         | ShadowedModule C.Name [A.ModuleName]
         | BuiltinInParameterisedModule String
         | IllegalLetInTelescope C.TypedBinding
         | NoRHSRequiresAbsurdPattern [NamedArg A.Pattern]
-        | AbsurdPatternRequiresNoRHS [NamedArg A.Pattern]
         | TooFewFields QName [C.Name]
         | TooManyFields QName [C.Name]
         | DuplicateFields [C.Name]
@@ -2835,6 +3023,8 @@ data TypeError
         | WithClausePatternMismatch A.Pattern (NamedArg DeBruijnPattern)
         | FieldOutsideRecord
         | ModuleArityMismatch A.ModuleName Telescope [NamedArg A.Expr]
+        | GeneralizeCyclicDependency
+        | GeneralizeUnsolvedMeta
     -- Coverage errors
 -- UNUSED:        | IncompletePatternMatching Term [Elim] -- can only happen if coverage checking is switched off
         | SplitError SplitError
@@ -2866,16 +3056,17 @@ data TypeError
         | NoSuchModule C.QName
         | AmbiguousName C.QName (NonemptyList A.QName)
         | AmbiguousModule C.QName (NonemptyList A.ModuleName)
-        | UninstantiatedModule C.QName
         | ClashingDefinition C.QName A.QName
         | ClashingModule A.ModuleName A.ModuleName
         | ClashingImport C.Name A.QName
         | ClashingModuleImport C.Name A.ModuleName
-        | PatternShadowsConstructor A.Name A.QName
-        | ModuleDoesntExport C.QName [C.ImportedName]
+        | PatternShadowsConstructor C.Name A.QName
         | DuplicateImports C.QName [C.ImportedName]
         | InvalidPattern C.Pattern
         | RepeatedVariablesInPattern [C.Name]
+        | GeneralizeNotSupportedHere A.QName
+        | MultipleFixityDecls [(C.Name, [Fixity'])]
+        | MultiplePolarityPragmas [C.Name]
     -- Concrete to Abstract errors
         | NotAModuleExpr C.Expr
             -- ^ The expr was used in the right hand side of an implicit module
@@ -2901,18 +3092,20 @@ data TypeError
         | AmbiguousParseForPatternSynonym C.Pattern [C.Pattern]
 -}
     -- Usage errors
-    -- Implicit From Scope errors
-        | IFSNoCandidateInScope Type
+    -- Instance search errors
+        | InstanceNoCandidate Type [(Term, TCErr)]
     -- Reflection errors
         | UnquoteFailed UnquoteError
         | DeBruijnIndexOutOfScope Nat Telescope [Name]
     -- Language option errors
         | NeedOptionCopatterns
         | NeedOptionRewriting
+        | NeedOptionProp
     -- Failure associated to warnings
         | NonFatalErrors [TCWarning]
     -- Instance search errors
         | InstanceSearchDepthExhausted Term Type Int
+        | TriedToCopyConstrainedPrim QName
           deriving Show
 
 -- | Distinguish error message when parsing lhs or pattern synonym, resp.
@@ -2964,11 +3157,11 @@ class (Functor m, Applicative m, Monad m) => HasOptions m where
   commandLineOptions :: m CommandLineOptions
 
 instance MonadIO m => HasOptions (TCMT m) where
-  pragmaOptions = use stPragmaOptions
+  pragmaOptions = useTC stPragmaOptions
 
   commandLineOptions = do
-    p  <- use stPragmaOptions
-    cl <- stPersistentOptions . stPersistentState <$> get
+    p  <- useTC stPragmaOptions
+    cl <- stPersistentOptions . stPersistentState <$> getTC
     return $ cl { optPragmaOptions = p }
 
 instance HasOptions m => HasOptions (ExceptT e m) where
@@ -3051,25 +3244,32 @@ instance Monad ReduceM where
   return = pure
   (>>=) = bindReduce
   (>>) = (*>)
+#if __GLASGOW_HASKELL__ >= 800
+  fail = Fail.fail
+
+instance Fail.MonadFail ReduceM where
+  fail = error
+#endif
 
 instance ReadTCState ReduceM where
   getTCState = ReduceM redSt
+  withTCState f = onReduceEnv $ mapRedSt f
 
 runReduceM :: ReduceM a -> TCM a
 runReduceM m = do
-  e <- ask
-  s <- get
+  e <- askTC
+  s <- getTC
   return $! unReduceM m (ReduceEnv e s)
 
 runReduceF :: (a -> ReduceM b) -> TCM (a -> b)
 runReduceF f = do
-  e <- ask
-  s <- get
+  e <- askTC
+  s <- getTC
   return $ \x -> unReduceM (f x) (ReduceEnv e s)
 
-instance MonadReader TCEnv ReduceM where
-  ask   = ReduceM redEnv
-  local = onReduceEnv . mapRedEnv
+instance MonadTCEnv ReduceM where
+  askTC   = ReduceM redEnv
+  localTC = onReduceEnv . mapRedEnv
 
 useR :: (ReadTCState m) => Lens' a TCState -> m a
 useR l = (^.l) <$> getTCState
@@ -3088,7 +3288,7 @@ instance HasOptions ReduceM where
     return $ cl{ optPragmaOptions = p }
 
 class ( Applicative m
-      , MonadReader TCEnv m
+      , MonadTCEnv m
       , ReadTCState m
       , HasOptions m
       ) => MonadReduce m where
@@ -3103,39 +3303,183 @@ instance MonadReduce m => MonadReduce (ListT m) where
 instance MonadReduce m => MonadReduce (ExceptT err m) where
   liftReduce = lift . liftReduce
 
+instance MonadReduce m => MonadReduce (ReaderT r m) where
+  liftReduce = lift . liftReduce
+
 instance (Monoid w, MonadReduce m) => MonadReduce (WriterT w m) where
+  liftReduce = lift . liftReduce
+
+instance MonadReduce m => MonadReduce (StateT w m) where
   liftReduce = lift . liftReduce
 
 instance MonadReduce ReduceM where
   liftReduce = id
 
 ---------------------------------------------------------------------------
+-- * Monad with read-only 'TCEnv'
+---------------------------------------------------------------------------
+
+-- | @MonadTCEnv@ made into its own dedicated service class.
+--   This allows us to use 'MonadReader' for 'ReaderT' extensions of @TCM@.
+class Monad m => MonadTCEnv m where
+  askTC   :: m TCEnv
+  localTC :: (TCEnv -> TCEnv) -> m a -> m a
+
+instance MonadTCEnv m => MonadTCEnv (MaybeT m) where
+  askTC   = lift askTC
+  localTC = mapMaybeT . localTC
+
+instance MonadTCEnv m => MonadTCEnv (ListT m) where
+  askTC   = lift askTC
+  localTC = mapListT . localTC
+
+instance MonadTCEnv m => MonadTCEnv (ExceptT err m) where
+  askTC   = lift askTC
+  localTC = mapExceptT . localTC
+
+instance MonadTCEnv m => MonadTCEnv (ReaderT r m) where
+  askTC   = lift askTC
+  localTC = mapReaderT . localTC
+
+instance (Monoid w, MonadTCEnv m) => MonadTCEnv (WriterT w m) where
+  askTC   = lift askTC
+  localTC = mapWriterT . localTC
+
+instance MonadTCEnv m => MonadTCEnv (StateT s m) where
+  askTC   = lift askTC
+  localTC = mapStateT . localTC
+
+asksTC :: MonadTCEnv m => (TCEnv -> a) -> m a
+asksTC f = f <$> askTC
+
+viewTC :: MonadTCEnv m => Lens' a TCEnv -> m a
+viewTC l = asksTC (^. l)
+
+-- | Modify the lens-indicated part of the @TCEnv@ in a subcomputation.
+locallyTC :: MonadTCEnv m => Lens' a TCEnv -> (a -> a) -> m b -> m b
+locallyTC l = localTC . over l
+
+---------------------------------------------------------------------------
+-- * Monad with mutable 'TCState'
+---------------------------------------------------------------------------
+
+-- | @MonadTCState@ made into its own dedicated service class.
+--   This allows us to use 'MonadState' for 'StateT' extensions of @TCM@.
+class Monad m => MonadTCState m where
+  getTC :: m TCState
+  putTC :: TCState -> m ()
+  modifyTC :: (TCState -> TCState) -> m ()
+
+  {-# MINIMAL getTC, (putTC | modifyTC) #-}
+  putTC      = modifyTC . const
+  modifyTC f = putTC . f =<< getTC
+
+instance MonadTCState m => MonadTCState (MaybeT m) where
+  getTC    = lift getTC
+  putTC    = lift . putTC
+  modifyTC = lift . modifyTC
+
+instance MonadTCState m => MonadTCState (ListT m) where
+  getTC    = lift getTC
+  putTC    = lift . putTC
+  modifyTC = lift . modifyTC
+
+instance MonadTCState m => MonadTCState (ExceptT err m) where
+  getTC    = lift getTC
+  putTC    = lift . putTC
+  modifyTC = lift . modifyTC
+
+instance MonadTCState m => MonadTCState (ReaderT r m) where
+  getTC    = lift getTC
+  putTC    = lift . putTC
+  modifyTC = lift . modifyTC
+
+instance (Monoid w, MonadTCState m) => MonadTCState (WriterT w m) where
+  getTC    = lift getTC
+  putTC    = lift . putTC
+  modifyTC = lift . modifyTC
+
+instance MonadTCState m => MonadTCState (StateT s m) where
+  getTC    = lift getTC
+  putTC    = lift . putTC
+  modifyTC = lift . modifyTC
+
+-- ** @TCState@ accessors (no lenses)
+
+getsTC :: MonadTCState m => (TCState -> a) -> m a
+getsTC f = f <$> getTC
+
+-- | A variant of 'modifyTC' in which the computation is strict in the
+-- new state.
+modifyTC' :: MonadTCState m => (TCState -> TCState) -> m ()
+modifyTC' f = do
+  s' <- getTC
+  putTC $! f s'
+
+-- SEE TC.Monad.State
+-- -- | Restore the 'TCState' after computation.
+-- localTCState :: MonadTCState m => m a -> m a
+-- localTCState = bracket_ getTC putTC
+
+-- ** @TCState@ accessors via lenses
+
+useTC :: MonadTCState m => Lens' a TCState -> m a
+useTC l = do
+  !x <- getsTC (^. l)
+  return x
+
+infix 4 `setTCLens`
+
+-- | Overwrite the part of the 'TCState' focused on by the lens.
+setTCLens :: MonadTCState m => Lens' a TCState -> a -> m ()
+setTCLens l = modifyTC . set l
+
+-- | Modify the part of the 'TCState' focused on by the lens.
+modifyTCLens :: MonadTCState m => Lens' a TCState -> (a -> a) -> m ()
+modifyTCLens l = modifyTC . over l
+
+-- | Modify a part of the state monadically.
+modifyTCLensM :: MonadTCState m => Lens' a TCState -> (a -> m a) -> m ()
+modifyTCLensM l f = putTC =<< l f =<< getTC
+
+-- | Modify the lens-indicated part of the 'TCState' locally.
+locallyTCState :: MonadTCState m => Lens' a TCState -> (a -> a) -> m b -> m b
+locallyTCState l f k = do
+  old <- useTC l
+  modifyTCLens l f
+  x <- k
+  setTCLens l old
+  return x
+
+
+---------------------------------------------------------------------------
 -- * Type checking monad transformer
 ---------------------------------------------------------------------------
 
+-- | The type checking monad transformer.
+-- Adds readonly 'TCEnv' and mutable 'TCState'.
 newtype TCMT m a = TCM { unTCM :: IORef TCState -> TCEnv -> m a }
 
--- TODO: make dedicated MonadTCEnv and MonadTCState service classes
+instance MonadIO m => MonadTCEnv (TCMT m) where
+  askTC             = TCM $ \ _ e -> return e
+  localTC f (TCM m) = TCM $ \ s e -> m s (f e)
 
-instance MonadIO m => MonadReader TCEnv (TCMT m) where
-  ask = TCM $ \s e -> return e
-  local f (TCM m) = TCM $ \s e -> m s (f e)
-
-instance MonadIO m => MonadState TCState (TCMT m) where
-  get   = TCM $ \s _ -> liftIO (readIORef s)
-  put s = TCM $ \r _ -> liftIO (writeIORef r s)
+instance MonadIO m => MonadTCState (TCMT m) where
+  getTC   = TCM $ \ r _e -> liftIO (readIORef r)
+  putTC s = TCM $ \ r _e -> liftIO (writeIORef r s)
 
 type TCM = TCMT IO
 
 class ( Applicative tcm, MonadIO tcm
-      , MonadReader TCEnv tcm
-      , MonadState TCState tcm
+      , MonadTCEnv tcm
+      , MonadTCState tcm
       , HasOptions tcm
       ) => MonadTCM tcm where
     liftTCM :: TCM a -> tcm a
 
 instance MonadIO m => ReadTCState (TCMT m) where
-  getTCState = get
+  getTCState = getTC
+  withTCState f m = __IMPOSSIBLE__ -- should probably not be used
 
 instance MonadError TCErr (TCMT IO) where
   throwError = liftIO . E.throwIO
@@ -3154,6 +3498,9 @@ instance MonadError TCErr (TCMT IO) where
 
 instance MonadIO m => MonadReduce (TCMT m) where
   liftReduce = liftTCM . runReduceM
+
+instance (IsString a, MonadIO m) => IsString (TCMT m a) where
+  fromString s = return (fromString s)
 
 -- | Interaction monad.
 
@@ -3207,15 +3554,11 @@ instance MonadTCM tcm => MonadTCM (ExceptT err tcm) where
 instance (Monoid w, MonadTCM tcm) => MonadTCM (WriterT w tcm) where
   liftTCM = lift . liftTCM
 
-{- The following is not possible since MonadTCM needs to be a
--- MonadState TCState and a MonadReader TCEnv
-
 instance (MonadTCM tcm) => MonadTCM (StateT s tcm) where
   liftTCM = lift . liftTCM
 
 instance (MonadTCM tcm) => MonadTCM (ReaderT r tcm) where
   liftTCM = lift . liftTCM
--}
 
 instance MonadTrans TCMT where
     lift m = TCM $ \_ _ -> m
@@ -3225,7 +3568,14 @@ instance MonadIO m => Monad (TCMT m) where
     return = pure
     (>>=)  = bindTCMT
     (>>)   = (*>)
+#if __GLASGOW_HASKELL__ == 710
     fail   = internalError
+#else
+    fail   = Fail.fail
+
+instance MonadIO m => Fail.MonadFail (TCMT m) where
+  fail = internalError
+#endif
 
 -- One goal of the definitions and pragmas below is to inline the
 -- monad operations as much as possible. This doesn't seem to have a
@@ -3314,7 +3664,7 @@ typeError err = liftTCM $ throwError =<< typeError_ err
 
 {-# SPECIALIZE typeError_ :: TypeError -> TCM TCErr #-}
 typeError_ :: MonadTCM tcm => TypeError -> tcm TCErr
-typeError_ err = liftTCM $ TypeError <$> get <*> buildClosure err
+typeError_ err = liftTCM $ TypeError <$> getTC <*> buildClosure err
 
 -- | Running the type checking monad (most general form).
 {-# SPECIALIZE runTCM :: TCEnv -> TCState -> TCM a -> IO (a, TCState) #-}
@@ -3342,9 +3692,9 @@ runSafeTCM m st = runTCM initEnv st m `E.catch` (\ (e :: TCErr) -> __IMPOSSIBLE_
 -- runSafeTCM m st = either__IMPOSSIBLE__ return <$> do
 --     -- Errors must be impossible.
 --     runTCM $ do
---         put st
+--         putTC st
 --         a <- m
---         st <- get
+--         st <- getTC
 --         return (a, st)
 
 -- | Runs the given computation in a separate thread, with /a copy/ of
@@ -3362,14 +3712,18 @@ runSafeTCM m st = runTCM initEnv st m `E.catch` (\ (e :: TCErr) -> __IMPOSSIBLE_
 
 forkTCM :: TCM a -> TCM ()
 forkTCM m = do
-  s <- get
-  e <- ask
+  s <- getTC
+  e <- askTC
   liftIO $ void $ C.forkIO $ void $ runTCM e s m
 
 
 -- | Base name for extended lambda patterns
 extendedLambdaName :: String
 extendedLambdaName = ".extendedlambda"
+
+-- | Check whether we have an definition from an extended lambda.
+isExtendedLambdaName :: A.QName -> Bool
+isExtendedLambdaName = (extendedLambdaName `List.isPrefixOf`) . prettyShow . nameConcrete . qnameName
 
 -- | Name of absurdLambda definitions.
 absurdLambdaName :: String
@@ -3378,6 +3732,17 @@ absurdLambdaName = ".absurdlambda"
 -- | Check whether we have an definition from an absurd lambda.
 isAbsurdLambdaName :: QName -> Bool
 isAbsurdLambdaName = (absurdLambdaName ==) . prettyShow . qnameName
+
+-- | Base name for generalized variable projections
+generalizedFieldName :: String
+generalizedFieldName = ".generalizedField-"
+
+-- | Check whether we have a generalized variable field
+getGeneralizedFieldName :: A.QName -> Maybe String
+getGeneralizedFieldName q
+  | List.isPrefixOf generalizedFieldName strName = Just (drop (length generalizedFieldName) strName)
+  | otherwise                                    = Nothing
+  where strName = prettyShow $ nameConcrete $ qnameName q
 
 ---------------------------------------------------------------------------
 -- * KillRange instances
@@ -3399,9 +3764,12 @@ instance KillRange Section where
   killRange (Section tel) = killRange1 Section tel
 
 instance KillRange Definition where
-  killRange (Defn ai name t pols occs displ mut compiled inst copy ma nc inj def) =
-    killRange12 Defn ai name t pols occs displ mut compiled inst copy ma nc inj def
+  killRange (Defn ai name t pols occs gens gpars displ mut compiled inst copy ma nc inj def) =
+    killRange16 Defn ai name t pols occs gens gpars displ mut compiled inst copy ma nc inj def
     -- TODO clarify: Keep the range in the defName field?
+
+instance KillRange NumGeneralizableArgs where
+  killRange = id
 
 instance KillRange NLPat where
   killRange (PVar x y) = killRange2 PVar x y
@@ -3435,17 +3803,22 @@ instance KillRange ExtLamInfo where
 instance KillRange FunctionFlag where
   killRange = id
 
+instance KillRange CompKit where
+  killRange = id
+
 instance KillRange Defn where
   killRange def =
     case def of
       Axiom role hints -> killRange2 Axiom role hints
+      DataOrRecSig n -> DataOrRecSig n
+      GeneralizableVar -> GeneralizableVar
       AbstractDefn{} -> __IMPOSSIBLE__ -- only returned by 'getConstInfo'!
       Function cls comp tt inv mut isAbs delayed proj flags term extlam with copat role ->
         killRange14 Function cls comp tt inv mut isAbs delayed proj flags term extlam with copat role
-      Datatype a b c d e f g h i      -> killRange9 Datatype a b c d e f g h i
-      Record a b c d e f g h i j k    -> killRange11 Record a b c d e f g h i j k
-      Constructor a b c d e f g h i j -> killRange10 Constructor a b c d e f g h i j
-      Primitive a b c d e             -> killRange4 Primitive a b c d e
+      Datatype a b c d e f g h i j     -> killRange10 Datatype a b c d e f g h i j
+      Record a b c d e f g h i j k     -> killRange11 Record a b c d e f g h i j k
+      Constructor a b c d e f g h i j  -> killRange10 Constructor a b c d e f g h i j
+      Primitive a b c d e              -> killRange5 Primitive a b c d e
 
 instance KillRange MutualId where
   killRange = id
@@ -3477,6 +3850,9 @@ instance KillRange Polarity where
   killRange = id
 
 instance KillRange IsForced where
+  killRange = id
+
+instance KillRange DoGeneralize where
   killRange = id
 
 instance KillRange DisplayTerm where

@@ -36,11 +36,6 @@ data Int : Set where
   pos : Nat → Int
   negsuc : Nat → Int
 
-postulate
-  String : Set
-  Float  : Set
-  Char   : Set
-
 {-# BUILTIN INTEGER Int    #-}
 {-# BUILTIN INTEGERPOS pos #-}
 {-# BUILTIN INTEGERNEGSUC negsuc #-}
@@ -54,8 +49,6 @@ data List (A : Set) : Set where
   _::_ : A -> List A -> List A
 
 {-# BUILTIN LIST List   #-}
-{-# BUILTIN NIL  nil    #-}
-{-# BUILTIN CONS  _::_   #-}
 
 primitive
 

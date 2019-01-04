@@ -34,7 +34,8 @@ import Agda.TypeChecking.Irrelevance
 import Agda.TypeChecking.CompiledClause (hasProjectionPatterns)
 import Agda.TypeChecking.CompiledClause.Compile
 
-import Agda.TypeChecking.Rules.Data ( bindParameters, fitsIn, forceSort, defineCompData, defineCompForFields )
+import Agda.TypeChecking.Rules.Data ( getGeneralizedParameters, bindGeneralizedParameters, bindParameters, fitsIn, forceSort,
+                                      defineCompData, defineTranspForFields, defineHCompForFields )
 import Agda.TypeChecking.Rules.Term ( isType_ )
 import {-# SOURCE #-} Agda.TypeChecking.Rules.Decl (checkDecl)
 
@@ -67,34 +68,46 @@ import Agda.Utils.Impossible
 checkRecDef
   :: Info.DefInfo              -- ^ Position and other info.
   -> QName                     -- ^ Record type identifier.
+  -> UniverseCheck             -- ^ Check universes?
   -> Maybe (Ranged Induction)  -- ^ Optional: (co)inductive declaration.
   -> Maybe HasEta              -- ^ Optional: user specified eta/no-eta
   -> Maybe QName               -- ^ Optional: constructor name.
-  -> [A.LamBinding]            -- ^ Record parameters.
+  -> A.DataDefParams           -- ^ Record parameters.
   -> A.Expr                    -- ^ Approximate type of constructor (@fields@ -> Set).
                                --   Does not include record parameters.
   -> [A.Field]                 -- ^ Field signatures.
   -> TCM ()
-checkRecDef i name ind eta con ps contel fields =
-  traceCall (CheckRecDef (getRange name) (qnameName name) ps fields) $ do
+checkRecDef i name uc ind eta con (A.DataDefParams gpars ps) contel fields =
+  traceCall (CheckRecDef (getRange name) name ps fields) $ do
     reportSDoc "tc.rec" 10 $ vcat
-      [ text "checking record def" <+> prettyTCM name
-      , nest 2 $ text "ps ="     <+> prettyList (map prettyAs ps)
-      , nest 2 $ text "contel =" <+> prettyA contel
-      , nest 2 $ text "fields =" <+> prettyA (map Constr fields)
+      [ "checking record def" <+> prettyTCM name
+      , nest 2 $ "ps ="     <+> prettyList (map prettyA ps)
+      , nest 2 $ "contel =" <+> prettyA contel
+      , nest 2 $ "fields =" <+> prettyA (map Constr fields)
       ]
     -- get type of record
-    t <- instantiateFull =<< typeOfConst name
-    bindParameters ps t $ \tel t0 -> do
+    def <- instantiateDef =<< getConstInfo name
+    t   <- instantiateFull $ defType def
+    let npars =
+          case theDef def of
+            DataOrRecSig n -> n
+            _              -> __IMPOSSIBLE__
+
+    parNames <- getGeneralizedParameters gpars name
+
+    bindGeneralizedParameters parNames t $ \ gtel t0 ->
+     bindParameters (npars - length parNames) ps t0 $ \ ptel t0 -> do
+
+      let tel = abstract gtel ptel
 
       -- Generate type of constructor from field telescope @contel@,
       -- which is the approximate constructor type (target missing).
 
       -- Check and evaluate field types.
-      reportSDoc "tc.rec" 15 $ text "checking fields"
+      reportSDoc "tc.rec" 15 $ "checking fields"
       contype <- workOnTypes $ instantiateFull =<< isType_ contel
       reportSDoc "tc.rec" 20 $ vcat
-        [ text "contype = " <+> prettyTCM contype ]
+        [ "contype = " <+> prettyTCM contype ]
 
       -- compute the field telescope (does not include record parameters)
       let TelV ftel _ = telView' contype
@@ -114,7 +127,7 @@ checkRecDef i name ind eta con ps contel fields =
 
       reportSDoc "tc.rec" 20 $ do
         gamma <- getContextTelescope  -- the record params (incl. module params)
-        text "gamma = " <+> inTopContext (prettyTCM gamma)
+        "gamma = " <+> inTopContext (prettyTCM gamma)
 
       -- record type (name applied to parameters)
       rect <- El s . Def name . map Apply <$> getContextArgs
@@ -134,7 +147,7 @@ checkRecDef i name ind eta con ps contel fields =
           return (False, c, i)
 
       -- Add record type to signature.
-      reportSDoc "tc.rec" 15 $ text "adding record type to signature"
+      reportSDoc "tc.rec" 15 $ "adding record type to signature"
 
       etaenabled <- etaEnabled
 
@@ -154,7 +167,7 @@ checkRecDef i name ind eta con ps contel fields =
           -- We should turn it off until it is proven to be safe.
           haveEta      = maybe (Inferred NoEta) Specified eta
           -- haveEta      = maybe (Inferred $ conInduction == Inductive && etaenabled) Specified eta
-          con = ConHead conName conInduction $ map unArg fs
+          con = ConHead conName conInduction fs
 
           -- A record is irrelevant if all of its fields are.
           -- In this case, the associated module parameter will be irrelevant.
@@ -169,11 +182,11 @@ checkRecDef i name ind eta con ps contel fields =
       -- Disallow coinductive records with eta-equality
       when (conInduction == CoInductive && theEtaEquality haveEta == YesEta) $ do
         typeError . GenericDocError =<< do
-          sep [ text "Agda doesn't like coinductive records with eta-equality."
-              , text "If you must, use pragma"
-              , text "{-# ETA" <+> prettyTCM name <+> text "#-}"
+          sep [ "Agda doesn't like coinductive records with eta-equality."
+              , "If you must, use pragma"
+              , "{-# ETA" <+> prettyTCM name <+> "#-}"
               ]
-      reportSDoc "tc.rec" 30 $ text "record constructor is " <+> prettyTCM con
+      reportSDoc "tc.rec" 30 $ "record constructor is " <+> prettyTCM con
 
       -- Add the record definition.
 
@@ -201,7 +214,7 @@ checkRecDef i name ind eta con ps contel fields =
                   -- in case the record turns out to be recursive.
               -- Determined by positivity checker:
               , recMutual         = Nothing
-              , recComp           = Nothing -- filled in later
+              , recComp           = emptyCompKit -- filled in later
               }
 
         -- Add record constructor to signature
@@ -214,7 +227,7 @@ checkRecDef i name ind eta con ps contel fields =
               , conData   = name
               , conAbstr  = Info.defAbstract conInfo
               , conInd    = conInduction
-              , conComp   = Nothing -- filled in later
+              , conComp   = (emptyCompKit, Nothing) -- filled in later
               , conForced = []
               , conErased = []
               , conTPTPRole = Nothing
@@ -225,7 +238,7 @@ checkRecDef i name ind eta con ps contel fields =
         addNamedInstance conName name
 
       -- Check that the fields fit inside the sort
-      _ <- fitsIn [] contype s
+      _ <- fitsIn uc [] contype s
 
       {- Andreas, 2011-04-27 WRONG because field types are checked again
          and then non-stricts should not yet be irrelevant
@@ -236,19 +249,19 @@ checkRecDef i name ind eta con ps contel fields =
 
 {- Andreas, 2013-09-13 DEBUGGING the debug printout
       reportSDoc "tc.rec" 80 $ sep
-        [ text "current module record telescope"
+        [ "current module record telescope"
         , nest 2 $ (prettyTCM =<< getContextTelescope)
         ]
       reportSDoc "tc.rec" 80 $ sep
-        [ text "current module record telescope"
+        [ "current module record telescope"
         , nest 2 $ (text . show =<< getContextTelescope)
         ]
       reportSDoc "tc.rec" 80 $ sep
-        [ text "current module record telescope"
+        [ "current module record telescope"
         , nest 2 $ (inTopContext . prettyTCM =<< getContextTelescope)
         ]
       reportSDoc "tc.rec" 80 $ sep
-        [ text "current module record telescope"
+        [ "current module record telescope"
         , nest 2 $ do
            tel <- getContextTelescope
            text (show tel) $+$ do
@@ -257,12 +270,13 @@ checkRecDef i name ind eta con ps contel fields =
                telA <- reify tel
                text (show telA) $+$ do
                ctx <- getContextTelescope
-               text "should be empty:" <+> prettyTCM ctx
+               "should be empty:" <+> prettyTCM ctx
         ]
 -}
 
       let info = setRelevance recordRelevance defaultArgInfo
-          addRecordVar = addContext ("", setArgInfo info $ defaultDom rect)
+          addRecordVar =
+            addContext ("" :: String, setArgInfo info $ defaultDom rect)
           -- the record variable has the empty name by intention, see issue 208
 
       let m = qnameToMName name  -- Name of record module.
@@ -276,14 +290,14 @@ checkRecDef i name ind eta con ps contel fields =
         -- Add the record section.
 
         reportSDoc "tc.rec.def" 10 $ sep
-          [ text "record section:"
+          [ "record section:"
           , nest 2 $ sep
             [ prettyTCM m <+> (inTopContext . prettyTCM =<< getContextTelescope)
             , fsep $ punctuate comma $ map (return . P.pretty . getName) fields
             ]
           ]
         reportSDoc "tc.rec.def" 15 $ nest 2 $ vcat
-          [ text "field tel =" <+> escapeContext 1 (prettyTCM ftel)
+          [ "field tel =" <+> escapeContext 1 (prettyTCM ftel)
           ]
         addSection m
 
@@ -324,15 +338,16 @@ addCompositionForRecord name con tel fs ftel rect = do
   compWays <- do
     cxt <- getContextTelescope
     escapeContext (size cxt) $
-      if null fs then Left . fmap (,[]) <$> defineCompData name con (abstract cxt tel) [] ftel rect
+      if null fs then Left . (,Just []) <$> defineCompData name con (abstract cxt tel) [] ftel rect []
                  else Right <$>
                       ifM (return (any (== Irrelevant) $ map getRelevance fs) `and2M` do not . optIrrelevantProjections <$> pragmaOptions)
-                          (return Nothing) (defineCompR    name     (abstract cxt tel) ftel fs rect)
+                          (return emptyCompKit)
+                          (defineCompKitR name (abstract cxt tel) ftel fs rect)
   case compWays of
-    Right x -> do
+    Right kit -> do
       modifySignature $ updateDefinition name $ updateTheDef $ \ d ->
         case d of
-          r@Record{} -> r { recComp = x }
+          r@Record{} -> r { recComp = kit }
           _          -> __IMPOSSIBLE__
     Left y -> do
       modifySignature $ updateDefinition (conName con) $ updateTheDef $ \ d ->
@@ -340,65 +355,96 @@ addCompositionForRecord name con tel fs ftel rect = do
           r@Constructor{} -> r { conComp = y }
           _          -> __IMPOSSIBLE__
 
-defineCompR name params fsT fns rect = do
-  i  <- getBuiltin' builtinInterval
-  iz <- getBuiltin' builtinIZero
-  io <- getBuiltin' builtinIOne
-  imin <- getPrimitiveTerm' "primIMin"
-  imax <- getPrimitiveTerm' "primIMax"
-  ineg <- getPrimitiveTerm' "primINeg"
-  comp <- getPrimitiveTerm' "primComp"
-  por <- getPrimitiveTerm' "primPOr"
-  one <- getBuiltin' builtinItIsOne
+defineCompKitR ::
+    QName          -- ^ some name, e.g. record name
+  -> Telescope   -- ^ param types Δ
+  -> Telescope   -- ^ fields' types Δ ⊢ Φ
+  -> [Arg QName] -- ^ fields' names
+  -> Type        -- ^ record type Δ ⊢ T
+  -> TCM CompKit
+defineCompKitR name params fsT fns rect = do
+  required <- mapM getTerm'
+        [ builtinInterval
+        , builtinIZero
+        , builtinIOne
+        , builtinIMin
+        , builtinIMax
+        , builtinINeg
+        , builtinPOr
+        , builtinItIsOne
+        ]
   reportSDoc "tc.rec.cxt" 30 $ prettyTCM params
   reportSDoc "tc.rec.cxt" 30 $ prettyTCM fsT
   reportSDoc "tc.rec.cxt" 30 $ text $ show rect
   sortsOk <- allM (rect : map unDom (flattenTel fsT)) sortOk
-  if sortsOk && all isJust [i,iz,io,imin,imax,ineg,comp,por,one]
-    then defineCompR' name params fsT fns rect
-    else return Nothing
+  if not $ sortsOk && all isJust required then return $ emptyCompKit else do
+    transp <- whenDefined [builtinTrans]              (defineTranspOrHCompR DoTransp name params fsT fns rect)
+    hcomp  <- whenDefined [builtinTrans,builtinHComp] (defineTranspOrHCompR DoHComp name params fsT fns rect)
+    return $ CompKit
+      { nameOfTransp = transp
+      , nameOfHComp  = hcomp
+      }
   where
+    whenDefined xs m = do
+      xs <- mapM getTerm' xs
+      if all isJust xs then m else return Nothing
     sortOk :: Type -> TCM Bool
     sortOk a = reduce (getSort a) >>= \case
       Type{} -> return True
       _      -> return False
 
-defineCompR , defineCompR' ::
-  QName          -- ^ some name, e.g. record name
+
+defineTranspOrHCompR ::
+  TranspOrHComp
+  -> QName       -- ^ some name, e.g. record name
   -> Telescope   -- ^ param types Δ
   -> Telescope   -- ^ fields' types Δ ⊢ Φ
   -> [Arg QName] -- ^ fields' names
   -> Type        -- ^ record type Δ ⊢ T
   -> TCM (Maybe QName)
-defineCompR' name params fsT fns rect = do
-  io <- primIOne
-  Just ioname <- getBuiltinName' builtinIOne
-  one <- primItIsOne
-  tInterval <- elInf primInterval
-  (compName, gamma, rtype, clause_types, bodies) <-
-    defineCompForFields (\ t fn -> t `applyE` [Proj ProjSystem fn]) name params fsT fns rect
+defineTranspOrHCompR cmd name params fsT fns rect = do
+  (theName, gamma, rtype, clause_types, bodies) <- fst <$>
+    (case cmd of DoTransp -> defineTranspForFields; DoHComp -> defineHCompForFields)
+       (\ t fn -> t `applyE` [Proj ProjSystem fn]) name params fsT fns rect
+
+  -- phi = 1 clause
   c' <- do
+           io <- primIOne
+           Just io_name <- getBuiltinName' builtinIOne
+           one <- primItIsOne
+           tInterval <- elInf primInterval
            let
-              -- CompRArgs = phi : I, u : ..; a0 : ..
-              -- Γ = Δ^I , CompRArgs
-              -- pats = ... | phi = i1
-              -- body = u i1 itIsOne
-              ix = 2
-              h = ConHead ioname Inductive []
-              p = ConP h (noConPatternInfo { conPType = Just (Arg defaultArgInfo tInterval)
-                                           , conPFallThrough = True })
+              (ix,rhs) =
+                case cmd of
+                  -- TranspRArgs = phi : I, a0 : ..
+                  -- Γ = Δ^I , CompRArgs
+                  -- pats = ... | phi = i1
+                  -- body = a0
+                  DoTransp -> (1,Var 0 [])
+                  -- HCompRArgs = phi : I, u : .., a0 : ..
+                  -- Γ = Δ, CompRArgs
+                  -- pats = ... | phi = i1
+                  -- body = u i1 itIsOne
+                  DoHComp  -> (2,Var 1 [] `apply` [argN io, setRelevance Irrelevant $ argN one])
+
+              p = ConP (ConHead io_name Inductive [])
+                       (noConPatternInfo { conPType = Just (Arg defaultArgInfo tInterval)
+                                         , conPFallThrough = True })
                          []
 
+              -- gamma, rtype
+
+              s = singletonS ix p
+
               pats :: [NamedArg DeBruijnPattern]
-              pats = singletonS ix p `applySubst` teleNamedArgs gamma
+              pats = s `applySubst` teleNamedArgs gamma
 
               t :: Type
-              t = singletonS ix io `applySubst` rtype
+              t = s `applyPatSubst` rtype
 
               gamma' :: Telescope
-              gamma' = unflattenTel (ns0 ++ ns1) $ s `applySubst` (g0 ++ g1)
+              gamma' = unflattenTel (ns0 ++ ns1) $ s `applyPatSubst` (g0 ++ g1)
                where
-                s = singletonS ix io
                 (g0,_:g1) = splitAt (size gamma - 1 - ix) $ flattenTel gamma
                 (ns0,_:ns1) = splitAt (size gamma - 1 - ix) $ teleNames gamma
 
@@ -408,10 +454,10 @@ defineCompR' name params fsT fns rect = do
                          , clauseFullRange = noRange
                          , clauseLHSRange  = noRange
                          , clauseCatchall  = False
-                         , clauseBody      = Just $ Var 1 [] `apply` [argN io, argN one]
+                         , clauseBody      = Just $ rhs
                          , clauseUnreachable = Just False
                          }
-           reportSDoc "comp.rec.face" 17 $ text $ show c
+           reportSDoc "trans.rec.face" 17 $ text $ show c
            return c
   cs <- flip mapM (zip3 fns clause_types bodies) $ \ (fname, clause_ty, body) -> do
           let
@@ -422,19 +468,19 @@ defineCompR' name params fsT fns rect = do
                          , clauseFullRange = noRange
                          , clauseLHSRange  = noRange
                          , clauseCatchall  = False
-                         , clauseBody      = Just body -- abstract gamma $ Body $ body
+                         , clauseBody      = Just body
                          , clauseUnreachable = Just False
                          }
-          reportSDoc "comp.rec" 17 $ text $ show c
---          reportSDoc "comp.rec" 10 $ text $ show (clauseType c)
-          reportSDoc "comp.rec" 15 $ prettyTCM $ abstract gamma (unDom clause_ty)
---          reportSDoc "comp.rec" 10 $ prettyTCM (clauseBody c)
+          reportSDoc "trans.rec" 17 $ text $ show c
+          reportSDoc "trans.rec" 16 $ text "type =" <+> text (show (clauseType c))
+          reportSDoc "trans.rec" 15 $ prettyTCM $ abstract gamma (unDom clause_ty)
+          reportSDoc "trans.rec" 10 $ text "body =" <+> prettyTCM (abstract gamma body)
           return c
-  addClauses compName $ c' : cs
-  reportSDoc "comp.rec" 15 $ text $ "compiling clauses for " ++ show compName
-  setCompiledClauses compName =<< inTopContext (compileClauses Nothing cs)
-  reportSDoc "comp.rec" 15 $ text $ "compiled"
-  return $ Just compName
+  addClauses theName $ c' : cs
+  reportSDoc "trans.rec" 15 $ text $ "compiling clauses for " ++ show theName
+  setCompiledClauses theName =<< inTopContext (compileClauses Nothing cs)
+  reportSDoc "trans.rec" 15 $ text $ "compiled"
+  return $ Just theName
 
 
 {-| @checkRecordProjections m r q tel ftel fs@.
@@ -473,14 +519,14 @@ checkRecordProjections m r hasNamedCon con tel ftel fs = do
       -- because then meta variables are created again.
       -- Instead, we take the field type t from the field telescope.
       reportSDoc "tc.rec.proj" 5 $ sep
-        [ text "checking projection" <+> prettyTCM x
+        [ "checking projection" <+> prettyTCM x
         , nest 2 $ vcat
-          [ text "top   =" <+> (inTopContext . prettyTCM =<< getContextTelescope)
-          , text "tel   =" <+> (inTopContext . prettyTCM $ tel)
-          , text "ftel1 =" <+> prettyTCM ftel1
-          , text "t     =" <+> prettyTCM t
-          , text "ftel2 =" <+> addContext ftel1 (underAbstraction_ ftel2 prettyTCM)
-          , text "abstr =" <+> (text . show) (Info.defAbstract info)
+          [ "top   =" <+> (inTopContext . prettyTCM =<< getContextTelescope)
+          , "tel   =" <+> (inTopContext . prettyTCM $ tel)
+          , "ftel1 =" <+> prettyTCM ftel1
+          , "t     =" <+> prettyTCM t
+          , "ftel2 =" <+> addContext ftel1 (underAbstraction_ ftel2 prettyTCM)
+          , "abstr =" <+> (text . show) (Info.defAbstract info)
           ]
         ]
 
@@ -512,16 +558,19 @@ checkRecordProjections m r hasNamedCon con tel ftel fs = do
                                  $ Abs (nameToArgName $ qnameName projname) EmptyTel)
                                 (ftel2 `absApp` projcall ProjSystem) fs
 
-      reportSDoc "tc.rec.proj" 25 $ nest 2 $ text "finalt=" <+> do
+      reportSDoc "tc.rec.proj" 25 $ nest 2 $ "finalt=" <+> do
         inTopContext $ prettyTCM finalt
 
-      -- Andreas, 2012-02-20 do not add irrelevant projections if
-      -- disabled by --no-irrelevant-projections
-      ifM (return (rel == Irrelevant) `and2M` do not . optIrrelevantProjections <$> pragmaOptions) recurse $ do
-
+      -- -- Andreas, 2012-02-20 do not add irrelevant projections if
+      -- -- disabled by --no-irrelevant-projections
+      -- ifM (return (rel == Irrelevant) `and2M` do not . optIrrelevantProjections <$> pragmaOptions) recurse $ do
+      -- Andreas, 2018-06-09 issue #2170
+      -- Always create irrelevant projections (because the scope checker accepts irrelevant fields).
+      -- If --no-irrelevant-projections, then their use should be disallowed by the type checker for expressions.
+      do
         reportSDoc "tc.rec.proj" 10 $ sep
-          [ text "adding projection"
-          , nest 2 $ prettyTCM projname <+> text ":" <+> inTopContext (prettyTCM finalt)
+          [ "adding projection"
+          , nest 2 $ prettyTCM projname <+> ":" <+> inTopContext (prettyTCM finalt)
           ]
 
         -- The body should be
@@ -551,7 +600,9 @@ checkRecordProjections m r hasNamedCon con tel ftel fs = do
                                     , conPType   = Just $ argFromDom $ fmap snd rt
                                     , conPLazy   = True }
             conp   = defaultArg $ ConP con cpi $
-                     [ Arg ai' $ unnamed $ varP "x" | Dom{domInfo = ai'} <- telToList ftel ]
+                     [ Arg ai' $ unnamed $ varP ("x" :: String)
+                     | Dom{domInfo = ai'} <- telToList ftel
+                     ]
             body   = Just $ bodyMod $ var (size ftel2)
             cltel  = ftel
             clause = Clause { clauseLHSRange  = getRange info
@@ -576,16 +627,16 @@ checkRecordProjections m r hasNamedCon con tel ftel fs = do
               }
 
         reportSDoc "tc.rec.proj" 80 $ sep
-          [ text "adding projection"
+          [ "adding projection"
           , nest 2 $ prettyTCM projname <+> text (show clause)
           ]
         reportSDoc "tc.rec.proj" 70 $ sep
-          [ text "adding projection"
-          , nest 2 $ prettyTCM projname <+> text (show (clausePats clause)) <+> text "=" <+>
-                       inTopContext (addContext ftel (maybe (text "_|_") prettyTCM (clauseBody clause)))
+          [ "adding projection"
+          , nest 2 $ prettyTCM projname <+> text (show (clausePats clause)) <+> "=" <+>
+                       inTopContext (addContext ftel (maybe "_|_" prettyTCM (clauseBody clause)))
           ]
         reportSDoc "tc.rec.proj" 10 $ sep
-          [ text "adding projection"
+          [ "adding projection"
           , nest 2 $ prettyTCM (QNamed projname clause)
           ]
 
@@ -596,7 +647,7 @@ checkRecordProjections m r hasNamedCon con tel ftel fs = do
         cc <- compileClauses Nothing [clause]
 
         reportSDoc "tc.cc" 60 $ do
-          sep [ text "compiled clauses of " <+> prettyTCM projname
+          sep [ "compiled clauses of " <+> prettyTCM projname
               , nest 2 $ text (show cc)
               ]
 
@@ -614,7 +665,7 @@ checkRecordProjections m r hasNamedCon con tel ftel fs = do
               { defArgOccurrences = [StrictPos] }
           computePolarity [projname]
           when (Info.defInstance info == InstanceDef) $
-            addTypedInstance projname finalt
+            addTypedInstance' (size tel) projname finalt
 
         recurse
 

@@ -1,7 +1,7 @@
 .. _team:
 
-The Agda Team
-*************
+The Agda Team and License
+*************************
 
 Authors:
 
@@ -27,12 +27,18 @@ Contributors (alphabetically sorted):
 * Patrik Jansson
 * Alan Jeffrey
 * Wolfram Kahl
+* John Leo
 * Fredrik Lindblad
 * Francesco Mazzoli
 * Stefan Monnier
 * Darin Morrison
 * Guilhem Moulin
 * Nicolas Pouillard
+* Benjamin Price
 * Andrés Sicard-Ramírez
 * Andrea Vezzosi
+* Tesla Ice Zhang
 * and many more
+
+The Agda license is `here
+<https://github.com/agda/agda/blob/master/LICENSE>`_.

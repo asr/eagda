@@ -295,6 +295,11 @@ If `agda2-highlight-face-groups' is nil."
   "The face used for postulates."
   :group 'agda2-highlight-faces)
 
+(defface agda2-highlight-pragma-face
+  '((t nil))
+  "The face used for (some text in) pragmas."
+  :group 'agda2-highlight-faces)
+
 (defface agda2-highlight-primitive-face
   '((t (:foreground "medium blue")))
   "The face used for primitive functions."
@@ -345,9 +350,9 @@ If `agda2-highlight-face-groups' is nil."
   "The face used for positivity problems."
   :group 'agda2-highlight-faces)
 
-(defface agda2-highlight-reachability-problem-face
+(defface agda2-highlight-deadcode-face
   '((t (:background "dark gray")))
-  "The face used for reachability problems."
+  "The face used for dead code (unreachable clauses, etc.)."
   :group 'agda2-highlight-faces)
 
 (defface agda2-highlight-coverage-problem-face
@@ -369,6 +374,8 @@ If `agda2-highlight-face-groups' is nil."
 (defvar agda2-highlight-faces
   '((keyword                . agda2-highlight-keyword-face)
     (comment                . font-lock-comment-face)
+    (background             . font-lock-comment-face)
+    (markup                 . font-lock-comment-face)
     (string                 . agda2-highlight-string-face)
     (number                 . agda2-highlight-number-face)
     (symbol                 . agda2-highlight-symbol-face)
@@ -381,6 +388,7 @@ If `agda2-highlight-face-groups' is nil."
     (function               . agda2-highlight-function-face)
     (module                 . agda2-highlight-module-face)
     (postulate              . agda2-highlight-postulate-face)
+    (pragma                 . agda2-highlight-pragma-face)
     (primitive              . agda2-highlight-primitive-face)
     (macro                  . agda2-highlight-macro-face)
     (record                 . agda2-highlight-record-face)
@@ -390,7 +398,7 @@ If `agda2-highlight-face-groups' is nil."
     (unsolvedmeta           . agda2-highlight-unsolved-meta-face)
     (unsolvedconstraint     . agda2-highlight-unsolved-constraint-face)
     (terminationproblem     . agda2-highlight-termination-problem-face)
-    (reachabilityproblem    . agda2-highlight-reachability-problem-face)
+    (deadcode               . agda2-highlight-deadcode-face)
     (coverageproblem        . agda2-highlight-coverage-problem-face)
     (positivityproblem      . agda2-highlight-positivity-problem-face)
     (incompletepattern      . agda2-highlight-incomplete-pattern-face)
@@ -414,6 +422,8 @@ The aspects currently recognised are the following:
 `number'                 Numbers.
 `operator'               Operators.
 `postulate'              Postulates.
+`pragma'                 Text occurring in pragmas that does not have
+                           a more specific (syntactic) aspect.
 `primitive'              Primitive functions.
 `primitivetype'          Primitive types (like Set and Prop).
 `macro'                  Macros.
@@ -422,13 +432,16 @@ The aspects currently recognised are the following:
 `symbol'                 Symbols like forall, =, ->, etc.
 `terminationproblem'     Termination problems.
 `positivityproblem'      Positivity problems.
-`reachabilityproblem'    Reachability problems.
+`deadcode'               Deadcode (like unreachable clauses or RHS)
 `coverageproblem'        Coverage problems.
 `catchallclause'         Clause not holding definitionally.
 `typechecks'             Code which is being type-checked.
 `unsolvedconstraint'     Unsolved constraints, not connected to meta
                            variables.
 `unsolvedmeta'           Unsolved meta variables.
+`background'             Non-Agda code contents in literate mode.
+`markup'                 Delimiters to separate the Agda code blocks
+                           from other contents
 `comment'                Comments.")
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -443,6 +456,7 @@ The aspects currently recognised are the following:
 
 (defun agda2-highlight-setup nil
   "Set up the `annotation' library for use with `agda2-mode'."
+  (agda2-highlight-set-faces 'agda2-highlight-face-groups agda2-highlight-face-groups)
   (setq annotation-bindings agda2-highlight-faces))
 
 (defun agda2-highlight-apply (remove &rest cmds)

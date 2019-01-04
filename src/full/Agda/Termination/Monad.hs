@@ -13,6 +13,11 @@ module Agda.Termination.Monad where
 import Prelude hiding (null)
 
 import Control.Applicative hiding (empty)
+
+#if __GLASGOW_HASKELL__ >= 800
+import qualified Control.Monad.Fail as Fail
+#endif
+
 import Control.Monad.Reader
 import Control.Monad.State
 
@@ -81,9 +86,6 @@ data TerEnv = TerEnv
 
   { terUseDotPatterns :: Bool
     -- ^ Are we mining dot patterns to find evindence of structal descent?
-  , terGuardingTypeConstructors :: Bool
-    -- ^ Do we assume that record and data type constructors
-    --   preserve guardedness?
   , terInlineWithFunctions :: Bool
     -- ^ Do we inline with functions to enhance termination checking of with?
   , terSizeSuc :: Maybe QName
@@ -156,7 +158,6 @@ data TerEnv = TerEnv
 defaultTerEnv :: TerEnv
 defaultTerEnv = TerEnv
   { terUseDotPatterns           = False -- must be False initially!
-  , terGuardingTypeConstructors = False
   , terInlineWithFunctions      = True
   , terSizeSuc                  = Nothing
   , terSharp                    = Nothing
@@ -189,7 +190,24 @@ class (Functor m, Monad m) => MonadTer m where
 -- | Termination monad.
 
 newtype TerM a = TerM { terM :: ReaderT TerEnv TCM a }
-  deriving (Functor, Applicative, Monad, MonadBench Phase, HasOptions, MonadDebug)
+  deriving ( Functor
+           , Applicative
+           , Monad
+#if __GLASGOW_HASKELL__ >= 800
+           , Fail.MonadFail
+#endif
+           , MonadError TCErr
+           , MonadBench Phase
+           , HasOptions
+           , MonadDebug
+           , HasConstInfo
+           , MonadIO
+           , MonadTCEnv
+           , MonadTCState
+           , MonadTCM
+           , ReadTCState
+           , MonadReduce
+           )
 
 instance MonadTer TerM where
   terAsk     = TerM $ ask
@@ -214,16 +232,12 @@ runTerDefault cont = do
   -- The name of sharp (if available).
   sharp <- fmap nameOfSharp <$> coinductionKit
 
-  guardingTypeConstructors <-
-    optGuardingTypeConstructors <$> pragmaOptions
-
   -- Andreas, 2014-08-28
   -- We do not inline with functions if --without-K.
   inlineWithFunctions <- not . optWithoutK <$> pragmaOptions
 
   let tenv = defaultTerEnv
-        { terGuardingTypeConstructors = guardingTypeConstructors
-        , terInlineWithFunctions      = inlineWithFunctions
+        { terInlineWithFunctions      = inlineWithFunctions
         , terSizeSuc                  = suc
         , terSharp                    = sharp
         , terCutOff                   = cutoff
@@ -231,30 +245,12 @@ runTerDefault cont = do
 
   runTer tenv cont
 
--- * Termination monad is a 'MonadTCM'.
+-- -- * Termination monad is a 'MonadTCM'.
 
-instance MonadReader TCEnv TerM where
-  ask       = TerM $ lift $ ask
-  local f m = TerM $ ReaderT $ local f . runReaderT (terM m)
-
-instance MonadState TCState TerM where
-  get     = TerM $ lift $ get
-  put     = TerM . lift . put
-
-instance MonadIO TerM where
-  liftIO = TerM . liftIO
-
-instance MonadTCM TerM where
-  liftTCM = TerM . lift
-
-instance MonadError TCErr TerM where
-  throwError = liftTCM . throwError
-  catchError m handler = TerM $ ReaderT $ \ tenv -> do
-    runTer tenv m `catchError` (\ err -> runTer tenv $ handler err)
-
-instance HasConstInfo TerM where
-  getConstInfo       = liftTCM . getConstInfo
-  getRewriteRulesFor = liftTCM . getRewriteRulesFor
+-- instance MonadError TCErr TerM where
+--   throwError = liftTCM . throwError
+--   catchError m handler = TerM $ ReaderT $ \ tenv -> do
+--     runTer tenv m `catchError` (\ err -> runTer tenv $ handler err)
 
 instance Semigroup m => Semigroup (TerM m) where
   (<>) = liftA2 (<>)
@@ -265,9 +261,6 @@ instance (Semigroup m, Monoid m) => Monoid (TerM m) where
   mconcat = mconcat <.> sequence
 
 -- * Modifiers and accessors for the termination environment in the monad.
-
-terGetGuardingTypeConstructors :: TerM Bool
-terGetGuardingTypeConstructors = terAsks terGuardingTypeConstructors
 
 terGetInlineWithFunctions :: TerM Bool
 terGetInlineWithFunctions = terAsks terInlineWithFunctions
@@ -353,10 +346,6 @@ terSetGuarded = terModifyGuarded . const
 terUnguarded :: TerM a -> TerM a
 terUnguarded = terSetGuarded unknown
 
--- | Should the codomain part of a function type preserve guardedness?
-terPiGuarded :: TerM a -> TerM a
-terPiGuarded m = ifM terGetGuardingTypeConstructors m $ terUnguarded m
-
 -- | Lens for '_terSizeDepth'.
 
 terSizeDepth :: Lens' Int TerEnv
@@ -389,8 +378,8 @@ withUsableVars :: UsableSizeVars a => a -> TerM b -> TerM b
 withUsableVars pats m = do
   vars <- usableSizeVars pats
   reportSLn "term.size" 70 $ "usableSizeVars = " ++ show vars
-  reportSDoc "term.size" 20 $ if null vars then text "no usuable size vars" else
-    text "the size variables amoung these variables are usable: " <+>
+  reportSDoc "term.size" 20 $ if null vars then "no usuable size vars" else
+    "the size variables amoung these variables are usable: " <+>
       sep (map (prettyTCM . var) $ VarSet.toList vars)
   terSetUsableVars vars $ m
 
@@ -419,7 +408,7 @@ isProjectionButNotCoinductive :: MonadTCM tcm => QName -> tcm Bool
 isProjectionButNotCoinductive qn = liftTCM $ do
   b <- isProjectionButNotCoinductive' qn
   reportSDoc "term.proj" 60 $ do
-    text "identifier" <+> prettyTCM qn <+> do
+    "identifier" <+> prettyTCM qn <+> do
       text $
         if b then "is an inductive projection"
           else "is either not a projection or coinductive"
@@ -473,17 +462,17 @@ isCoinductiveProjection mustBeRecursive q = liftTCM $ do
                 -- A (2017-01-13): Yes, since we also normalize during positivity check?
                 -- See issue #1899.
                 reportSDoc "term.guardedness" 40 $ inTopContext $ sep
-                  [ text "looking for recursive occurrences of"
+                  [ "looking for recursive occurrences of"
                   , sep (map prettyTCM mut)
-                  , text "in"
+                  , "in"
                   , addContext pars $ prettyTCM (telFromList tel')
-                  , text "and"
+                  , "and"
                   , addContext tel $ prettyTCM core
                   ]
                 when (null mut) __IMPOSSIBLE__
                 names <- anyDefs mut =<< normalise (map (snd . unDom) tel', core)
                 reportSDoc "term.guardedness" 40 $
-                  text "found" <+> if null names then text "none" else sep (map prettyTCM names)
+                  "found" <+> if null names then "none" else sep (map prettyTCM names)
                 return $ not $ null names
       _ -> do
         reportSLn "term.guardedness" 40 $ prettyShow q ++ " is not a proper projection"
@@ -541,6 +530,8 @@ instance UsableSizeVars DeBruijnPattern where
     LitP{}     -> none
     DotP{}     -> none
     ProjP{}    -> none
+    IApplyP{}  -> none
+    DefP{} -> none
     where none _ = return mempty
 
 instance UsableSizeVars [DeBruijnPattern] where
@@ -558,6 +549,8 @@ instance UsableSizeVars (Masked DeBruijnPattern) where
     LitP{}     -> none
     DotP{}     -> none
     ProjP{}    -> none
+    IApplyP{}  -> none
+    DefP{}     -> none
     where none _ = return mempty
 
 instance UsableSizeVars MaskedDeBruijnPatterns where
@@ -611,7 +604,7 @@ instance Pretty CallPath where
     P.hsep (map (\ ci -> arrow P.<+> P.pretty ci) cis) P.<+> arrow
     where
       cis   = init cis0
-      arrow = P.text "-->"
+      arrow = "-->"
 
 -- * Size depth estimation
 

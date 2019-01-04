@@ -10,11 +10,14 @@
 
 module Agda.TypeChecking.CheckInternal
   ( checkType
+  , checkType'
+  , checkSort
   , checkInternal
   , checkInternal'
   , Action(..), defaultAction, eraseUnusedAction
   , infer
   , inferSort
+  , shouldBeSort
   ) where
 
 import Control.Arrow ((&&&), (***), first, second)
@@ -68,7 +71,7 @@ checkType t = void $ checkType' t
 checkType' :: Type -> TCM Sort
 checkType' t = do
   reportSDoc "tc.check.internal" 20 $ sep
-    [ text "checking internal type "
+    [ "checking internal type "
     , prettyTCM t
     ]
   v <- elimView True $ unEl t -- bring projection-like funs in post-fix form
@@ -97,6 +100,7 @@ checkType' t = do
     v@Lit{}    -> typeError $ InvalidType v
     v@Level{}  -> typeError $ InvalidType v
     DontCare v -> checkType' $ t $> v
+    Dummy s    -> __IMPOSSIBLE_VERBOSE__ s
 
 checkTypeSpine :: Type -> Term -> Elims -> TCM Sort
 checkTypeSpine a self es = shouldBeSort =<< do snd <$> inferSpine a self es
@@ -146,8 +150,8 @@ checkInternal v t = void $ checkInternal' defaultAction v t
 checkInternal' :: Action -> Term -> Type -> TCM Term
 checkInternal' action v t = do
   reportSDoc "tc.check.internal" 20 $ sep
-    [ text "checking internal "
-    , nest 2 $ sep [ prettyTCM v <+> text ":"
+    [ "checking internal "
+    , nest 2 $ sep [ prettyTCM v <+> ":"
                    , nest 2 $ prettyTCM t ] ]
   -- Bring projection-like funs in post-fix form,
   -- even lone ones (True).
@@ -196,6 +200,7 @@ checkInternal' action v t = do
       l <- checkLevel action l
       Level l <$ ((`subtype` t) =<< levelType)
     DontCare v -> DontCare <$> checkInternal' action v t
+    Dummy s -> __IMPOSSIBLE_VERBOSE__ s
 
 -- | Make sure a constructor is fully applied
 --   and infer the type of the constructor.
@@ -234,10 +239,10 @@ checkSpine
   -> TCM Term  -- ^ The application after modification by the @Action@.
 checkSpine action a self es t = do
   reportSDoc "tc.check.internal" 20 $ sep
-    [ text "checking spine "
-    , nest 2 $ sep [ parens (sep [ prettyTCM self <+> text ":"
+    [ "checking spine "
+    , nest 2 $ sep [ parens (sep [ prettyTCM self <+> ":"
                                  , nest 2 $ prettyTCM a ])
-                   , nest 4 $ prettyTCM es <+> text ":"
+                   , nest 4 $ prettyTCM es <+> ":"
                    , nest 2 $ prettyTCM t ] ]
   ((v, v'), t') <- inferSpine' action a self self es
   t' <- reduce t'
@@ -319,11 +324,11 @@ inferSpine' :: Action -> Type -> Term -> Term -> Elims -> TCM ((Term, Term), Typ
 inferSpine' action t self self' [] = return ((self, self'), t)
 inferSpine' action t self self' (e : es) = do
   reportSDoc "tc.infer.internal" 30 $ sep
-    [ text "inferSpine': "
-    , text "type t = " <+> prettyTCM t
-    , text "self  = " <+> prettyTCM self
-    , text "self' = " <+> prettyTCM self'
-    , text "eliminated by e = " <+> prettyTCM e
+    [ "inferSpine': "
+    , "type t = " <+> prettyTCM t
+    , "self  = " <+> prettyTCM self
+    , "self' = " <+> prettyTCM self'
+    , "eliminated by e = " <+> prettyTCM e
     ]
   case e of
     IApply x y r -> do
@@ -395,7 +400,18 @@ checkSort action s =
       case v of
         Sort s     -> return s
         MetaV x es -> return $ MetaS x es
+        Def d es   -> return $ DefS d es
         _          -> __IMPOSSIBLE__
+    DefS d es -> do
+      a <- defType <$> getConstInfo d
+      let self = Sort $ DefS d []
+      ((_,v),_) <- inferSpine' action a self self es
+      case v of
+        Sort s     -> return s
+        MetaV x es -> return $ MetaS x es
+        Def d es   -> return $ DefS d es
+        _          -> __IMPOSSIBLE__
+    DummyS s -> __IMPOSSIBLE_VERBOSE__ s
 
 -- | Check if level is well-formed.
 checkLevel :: Action -> Level -> TCM Level
@@ -422,7 +438,6 @@ subtype t1 t2 = do
   ifIsSort t1 (\ s1 -> (s1 `leqSort`) =<< shouldBeSort t2) $ do
     -- Andreas, 2017-03-09, issue #2493
     -- Only check subtyping, do not solve any metas!
-    -- TODO: NEED? disableDestructiveUpdate
     dontAssignMetas $ leqType t1 t2
 
 -- | Compute the sort of a type.
@@ -448,15 +463,15 @@ inferSort t = case t of
     Lam{}      -> __IMPOSSIBLE__
     Level{}    -> __IMPOSSIBLE__
     DontCare{} -> __IMPOSSIBLE__
+    Dummy s    -> __IMPOSSIBLE_VERBOSE__ s
 
 -- | @eliminate t self es@ eliminates value @self@ of type @t@ by spine @es@
 --   and returns the remaining value and its type.
 eliminate :: Term -> Type -> Elims -> TCM (Term, Type)
 eliminate self t [] = return (self, t)
 eliminate self t (e : es) = case e of
-    Apply (Arg _ v) -> do
-      (_, b) <- shouldBePi t
-      eliminate (self `apply1` v) (b `absApp` v) es
+    Apply (Arg _ v) -> ifNotPiType t __IMPOSSIBLE__ {-else-} $ \ _ b ->
+      eliminate (self `applyE` [e]) (b `absApp` v) es
     IApply _ _ v -> do
       (_, b) <- shouldBePath t
       eliminate (self `applyE` [e]) (b `absApp` v) es

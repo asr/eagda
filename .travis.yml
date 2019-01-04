@@ -30,12 +30,22 @@ cache:
 
 matrix:
   include:
-    - env: TEST=MAIN GHC_VER=8.4.3 BUILD=CABAL CABAL_VER=2.2
+    - env: TEST=MAIN GHC_VER=8.6.3 BUILD=CABAL CABAL_VER=2.4
+      addons:
+        apt:
+          packages:
+            - cabal-install-2.4
+            - ghc-8.6.3
+            - texlive-binaries
+          sources:
+            - hvr-ghc
+
+    - env: TEST=MAIN GHC_VER=8.4.4 BUILD=CABAL CABAL_VER=2.2
       addons:
         apt:
           packages:
             - cabal-install-2.2
-            - ghc-8.4.3
+            - ghc-8.4.4
             - texlive-binaries
           sources:
             - hvr-ghc
@@ -70,11 +80,19 @@ matrix:
           sources:
             - hvr-ghc
 
-    - env: TEST=STACKAGE GHC_VER=8.4.3 BUILD=STACK ARGS="--stack-yaml stack-8.4.3.yaml --system-ghc"
+    - env: TEST=STACKAGE GHC_VER=8.6.3 BUILD=STACK ARGS="--stack-yaml stack-8.6.3.yaml --system-ghc"
       addons:
         apt:
           packages:
-            - ghc-8.4.3
+            - ghc-8.6.3
+          sources:
+            - hvr-ghc
+
+    - env: TEST=STACKAGE GHC_VER=8.4.4 BUILD=STACK ARGS="--stack-yaml stack-8.4.4.yaml --system-ghc"
+      addons:
+        apt:
+          packages:
+            - ghc-8.4.4
           sources:
             - hvr-ghc
 
@@ -104,12 +122,12 @@ matrix:
 
     # Since `stack haddock` compiles Agda but `cabal haddock` does
     # not, this test is faster using `BUILD=CABAL` [Issue #2188].
-    - env: TEST=HADDOCK GHC_VER=8.4.3 BUILD=CABAL CABAL_VER=2.2
+    - env: TEST=HADDOCK GHC_VER=8.6.3 BUILD=CABAL CABAL_VER=2.4
       addons:
         apt:
           packages:
-            - cabal-install-2.2
-            - ghc-8.4.3
+            - cabal-install-2.4
+            - ghc-8.6.3
           sources:
             - hvr-ghc
 
@@ -124,8 +142,6 @@ matrix:
 
   # Builds are loooong, we want to send an email as fast as possible.
   fast_finish: true
-  # allow_failures:
-  # - env: TEST=MAIN GHC_VER=8.2.2 BUILD=CABAL CABAL_VER=2.0
 
 ##############################################################################
 before_install:
@@ -158,9 +174,6 @@ install:
   # a `sed` script (from https://github.com/hvr/multi-ghc-travis) for
   # commenting out `jobs: $ncpus` in the Cabal configuration file.
 
-  # The version installed of cpphs should match the lower version
-  # required in Agda.cabal [Issue #2315].
-
   - if [[ $BUILD = "CABAL" ]]; then
        echo "*** Cabal version ***" &&
        cabal --version &&
@@ -176,14 +189,12 @@ install:
        cat $HOME/.cabal/config &&
        export PATH=$HOME/.cabal/bin:$PATH &&
        travis_retry cabal update &&
-       travis_retry cabal fetch alex happy cpphs-1.20.8 &&
-       cabal install -v0 alex happy cpphs-1.20.8 &&
+       travis_retry cabal fetch alex happy &&
+       cabal install -v0 alex happy &&
        echo "*** Alex version ***" &&
        alex --version &&
        echo "*** Happy version ***" &&
-       happy --version &&
-       echo "*** cpphs version ***" &&
-       cpphs --version ;
+       happy --version ;
     fi
 
   - if [[ $BUILD = "STACK" ]]; then
@@ -295,7 +306,7 @@ install:
 ##############################################################################
 # We test on Stackage the default and non-default Agda flags.
 
-# Default flags: `cpphs` instead of `cpp`, `debug` off and
+# Default flags: `cpp` instead of `cpphs`, `debug` off and
 # `enable-cluster-counting` off.
 
 # Issues related to the flags: `cpp` instead of `cpphs` [Issue #1647]
@@ -305,7 +316,8 @@ install:
 
   - if [[ $TEST = "STACKAGE" ]]; then
        stack build $ARGS --no-terminal &&
-       stack build $ARGS --no-terminal --flag Agda:-cpphs --flag Agda:debug --flag Agda:enable-cluster-counting;
+       stack clean $ARGS &&
+       stack build $ARGS --no-terminal --flag Agda:cpphs --flag Agda:debug --flag Agda:enable-cluster-counting;
     fi
 
 ##############################################################################
@@ -365,11 +377,8 @@ script:
        make BUILD_DIR=$BUILD_DIR benchmark-without-logs;
     fi
 
-# 2016-04-15: The option `AGDA_TESTS_OPTIONS="-j${PARALLEL_TESTS}"` doesn't work
-# with the `compiler-test`.
-
   - if [[ $TEST = "MAIN" ]]; then
-       make AGDA_TESTS_OPTIONS="--hide-successes" BUILD_DIR=$BUILD_DIR compiler-test;
+       make AGDA_TESTS_OPTIONS="-j${PARALLEL_TESTS} --hide-successes" BUILD_DIR=$BUILD_DIR compiler-test;
     fi
 
   - if [[ $TEST = "MAIN" ]]; then
@@ -390,7 +399,7 @@ script:
     fi
 
   - if [[ $TEST = "MAIN" ]]; then
-       make testing-emacs-mode;
+       make BUILD_DIR=$BUILD_DIR testing-emacs-mode;
     fi
 
   - if [[ $TEST = "MAIN" ]]; then
@@ -421,6 +430,7 @@ script:
 branches:
   only:
     - master
+    - future
     - maint-2.4
     - stable-2.5
     - release-2.5.1
