@@ -1,6 +1,7 @@
-{-# LANGUAGE CPP #-}
 
 module Agda.TypeChecking.Datatypes where
+
+import Control.Monad.Except
 
 import Data.Maybe (fromMaybe)
 import qualified Data.List as List
@@ -19,7 +20,6 @@ import Agda.Utils.Functor
 import Agda.Utils.Pretty ( prettyShow )
 import Agda.Utils.Size
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 ---------------------------------------------------------------------------
@@ -28,7 +28,12 @@ import Agda.Utils.Impossible
 
 -- | Get true constructor with record fields.
 getConHead :: (HasConstInfo m) => QName -> m (Either SigError ConHead)
-getConHead c = mapRight (conSrcCon . theDef) <$> getConstInfo' c
+getConHead c = runExceptT $ do
+  def <- ExceptT $ getConstInfo' c
+  case theDef def of
+    Constructor { conSrcCon = c' } -> return c'
+    Record     { recConHead = c' } -> return c'
+    _ -> throwError $ SigUnknown $ prettyShow c ++ " is not a constructor"
 
 -- | Get true constructor with fields, expanding literals to constructors
 --   if possible.

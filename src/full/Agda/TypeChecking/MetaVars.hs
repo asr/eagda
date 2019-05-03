@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE NondecreasingIndentation #-}
 {-# LANGUAGE GADTs #-}
 
@@ -62,7 +61,6 @@ import Agda.Utils.Permutation
 import Agda.Utils.Pretty ( prettyShow, render )
 import qualified Agda.Utils.VarSet as Set
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- | Find position of a value in a list.
@@ -124,7 +122,7 @@ assignTerm' x tel v = do
     wakeupConstraints x
     reportSLn "tc.meta.assign" 20 $ "completed assignment of " ++ prettyShow x
   where
-    ins x i = Map.adjust (\ mv -> mv { mvInstantiation = i }) x
+    ins x i = IntMap.adjust (\ mv -> mv { mvInstantiation = i }) $ metaId x
 
 -- * Creating meta variables.
 
@@ -141,7 +139,7 @@ newSortMeta =
   ifM hasUniversePolymorphism (newSortMetaCtx =<< getContextArgs)
   -- else (no universe polymorphism)
   $ do i   <- createMetaInfo
-       x   <- newMeta i normalMetaPriority (idP 0) $ IsSort () __DUMMY_TYPE__
+       x   <- newMeta Instantiable i normalMetaPriority (idP 0) $ IsSort () __DUMMY_TYPE__
        return $ MetaS x []
 
 -- | Create a sort meta that may be instantiated with 'Inf' (Setω).
@@ -150,7 +148,7 @@ newSortMetaCtx vs = do
     i   <- createMetaInfo
     tel <- getContextTelescope
     let t = telePi_ tel __DUMMY_TYPE__
-    x   <- newMeta i normalMetaPriority (idP 0) $ IsSort () t
+    x   <- newMeta Instantiable i normalMetaPriority (idP $ size tel) $ IsSort () t
     reportSDoc "tc.meta.new" 50 $
       "new sort meta" <+> prettyTCM x <+> ":" <+> prettyTCM t
     return $ MetaS x $ map Apply vs
@@ -184,7 +182,7 @@ newInstanceMetaCtx s t vs = do
   let i = i0 { miNameSuggestion = s }
   TelV tel _ <- telView t
   let perm = idP (size tel)
-  x <- newMeta' OpenInstance i normalMetaPriority perm (HasType () t)
+  x <- newMeta' OpenInstance Instantiable i normalMetaPriority perm (HasType () t)
   reportSDoc "tc.meta.new" 50 $ fsep
     [ nest 2 $ pretty x <+> ":" <+> prettyTCM t
     ]
@@ -215,25 +213,25 @@ newValueMeta :: RunMetaOccursCheck -> Type -> TCM (MetaId, Term)
 newValueMeta b t = do
   vs  <- getContextArgs
   tel <- getContextTelescope
-  newValueMetaCtx b t tel (idP $ size tel) vs
+  newValueMetaCtx Instantiable b t tel (idP $ size tel) vs
 
-newValueMetaCtx :: RunMetaOccursCheck -> Type -> Telescope -> Permutation -> Args -> TCM (MetaId, Term)
-newValueMetaCtx b t tel perm ctx =
-  mapSndM instantiateFull =<< newValueMetaCtx' b t tel perm ctx
+newValueMetaCtx :: Frozen -> RunMetaOccursCheck -> Type -> Telescope -> Permutation -> Args -> TCM (MetaId, Term)
+newValueMetaCtx frozen b t tel perm ctx =
+  mapSndM instantiateFull =<< newValueMetaCtx' frozen b t tel perm ctx
 
 -- | Create a new value meta without η-expanding.
 newValueMeta' :: RunMetaOccursCheck -> Type -> TCM (MetaId, Term)
 newValueMeta' b t = do
   vs  <- getContextArgs
   tel <- getContextTelescope
-  newValueMetaCtx' b t tel (idP $ size tel) vs
+  newValueMetaCtx' Instantiable b t tel (idP $ size tel) vs
 
 -- | Create a new value meta with specific dependencies.
-newValueMetaCtx' :: RunMetaOccursCheck -> Type -> Telescope -> Permutation -> Args -> TCM (MetaId, Term)
-newValueMetaCtx' b a tel perm vs = do
+newValueMetaCtx' :: Frozen -> RunMetaOccursCheck -> Type -> Telescope -> Permutation -> Args -> TCM (MetaId, Term)
+newValueMetaCtx' frozen b a tel perm vs = do
   i <- createMetaInfo' b
   let t     = telePi_ tel a
-  x <- newMeta i normalMetaPriority perm (HasType () t)
+  x <- newMeta frozen i normalMetaPriority perm (HasType () t)
   reportSDoc "tc.meta.new" 50 $ fsep
     [ "new meta:"
     , nest 2 $ prettyTCM vs <+> "|-"
@@ -260,13 +258,13 @@ newArgsMeta' :: Condition -> Type -> TCM Args
 newArgsMeta' condition t = do
   args <- getContextArgs
   tel  <- getContextTelescope
-  newArgsMetaCtx' condition t tel (idP $ size tel) args
+  newArgsMetaCtx' Instantiable condition t tel (idP $ size tel) args
 
 newArgsMetaCtx :: Type -> Telescope -> Permutation -> Args -> TCM Args
-newArgsMetaCtx = newArgsMetaCtx' trueCondition
+newArgsMetaCtx = newArgsMetaCtx' Instantiable trueCondition
 
-newArgsMetaCtx' :: Condition -> Type -> Telescope -> Permutation -> Args -> TCM Args
-newArgsMetaCtx' condition (El s tm) tel perm ctx = do
+newArgsMetaCtx' :: Frozen -> Condition -> Type -> Telescope -> Permutation -> Args -> TCM Args
+newArgsMetaCtx' frozen condition (El s tm) tel perm ctx = do
   tm <- reduce tm
   case tm of
     Pi dom@(Dom{domInfo = info, unDom = a}) codom | condition dom codom -> do
@@ -276,9 +274,9 @@ newArgsMetaCtx' condition (El s tm) tel perm ctx = do
           tel' = telFromList . map (mod `inverseApplyModality`) . telToList $ tel
           ctx' = (map . mapModality) (mod `inverseComposeModality`) ctx
       (m, u) <- applyModalityToContext info $
-                 newValueMetaCtx RunMetaOccursCheck a tel' perm ctx'
+                 newValueMetaCtx frozen RunMetaOccursCheck a tel' perm ctx'
       setMetaArgInfo m (getArgInfo dom)
-      args <- newArgsMetaCtx' condition (codom `absApp` u) tel perm ctx
+      args <- newArgsMetaCtx' frozen condition (codom `absApp` u) tel perm ctx
       return $ Arg info u : args
     _  -> return []
 
@@ -288,12 +286,17 @@ newRecordMeta :: QName -> Args -> TCM Term
 newRecordMeta r pars = do
   args <- getContextArgs
   tel  <- getContextTelescope
-  newRecordMetaCtx r pars tel (idP $ size tel) args
+  newRecordMetaCtx Instantiable r pars tel (idP $ size tel) args
 
-newRecordMetaCtx :: QName -> Args -> Telescope -> Permutation -> Args -> TCM Term
-newRecordMetaCtx r pars tel perm ctx = do
+newRecordMetaCtx
+  :: Frozen  -- ^ Should the meta be created frozen?
+  -> QName   -- ^ Name of record type
+  -> Args    -- ^ Parameters of record type.
+  -> Telescope -> Permutation -> Args -> TCM Term
+newRecordMetaCtx frozen r pars tel perm ctx = do
   ftel   <- flip apply pars <$> getRecordFieldTypes r
-  fields <- newArgsMetaCtx (telePi_ ftel __DUMMY_TYPE__) tel perm ctx
+  fields <- newArgsMetaCtx' frozen trueCondition
+              (telePi_ ftel __DUMMY_TYPE__) tel perm ctx
   con    <- getRecordConstructor r
   return $ Con con ConOSystem (map Apply fields)
 
@@ -330,7 +333,7 @@ blockTermOnProblem t v pid =
     es  <- map Apply <$> getContextArgs
     tel <- getContextTelescope
     x   <- newMeta' (BlockedConst $ abstract tel v)
-                    i lowMetaPriority (idP $ size tel)
+                    Instantiable i lowMetaPriority (idP $ size tel)
                     (HasType () $ telePi_ tel t)
                     -- we don't instantiate blocked terms
     inTopContext $ addConstraint (Guarded (UnBlock x) pid)
@@ -370,8 +373,8 @@ postponeTypeCheckingProblem_ p = do
   where
     unblock (CheckExpr _ _ t)         = unblockedTester t
     unblock (CheckArgs _ _ _ t _ _)   = unblockedTester t  -- The type of the head of the application.
+    unblock (CheckProjAppToKnownPrincipalArg _ _ _ _ _ _ _ _ t) = unblockedTester t -- The type of the principal argument
     unblock (CheckLambda _ _ _ t)     = unblockedTester t
-    unblock (UnquoteTactic _ _ _)     = __IMPOSSIBLE__     -- unquote problems must be supply their own tester
     unblock (DoQuoteTerm _ _ _)       = __IMPOSSIBLE__     -- also quoteTerm problems
 
 -- | Create a postponed type checking problem @e : t@ that waits for conditon
@@ -383,9 +386,9 @@ postponeTypeCheckingProblem p unblock = do
   i   <- createMetaInfo' DontRunMetaOccursCheck
   tel <- getContextTelescope
   cl  <- buildClosure p
-  t   <- problemType p
+  let t = problemType p
   m   <- newMeta' (PostponedTypeCheckingProblem cl unblock)
-                  i normalMetaPriority (idP (size tel))
+                  Instantiable i normalMetaPriority (idP (size tel))
          $ HasType () $ telePi_ tel t
 
   -- Create the meta that we actually return
@@ -404,12 +407,12 @@ postponeTypeCheckingProblem p unblock = do
   return v
 
 -- | Type of the term that is produced by solving the 'TypeCheckingProblem'.
-problemType :: TypeCheckingProblem -> TCM Type
-problemType (CheckExpr _ _ t         ) = return t
-problemType (CheckArgs _ _ _ _ t _ )   = return t  -- The target type of the application.
-problemType (CheckLambda _ _ _ t     ) = return t
-problemType (UnquoteTactic tac hole t) = return t
-problemType (DoQuoteTerm _ _ t)        = return t
+problemType :: TypeCheckingProblem -> Type
+problemType (CheckExpr _ _ t         ) = t
+problemType (CheckArgs _ _ _ _ t _ )   = t  -- The target type of the application.
+problemType (CheckProjAppToKnownPrincipalArg _ _ _ _ _ t _ _ _) = t -- The target type of the application
+problemType (CheckLambda _ _ _ t     ) = t
+problemType (DoQuoteTerm _ _ t)        = t
 
 -- | Eta expand metavariables listening on the current meta.
 etaExpandListeners :: MetaId -> TCM ()
@@ -466,7 +469,21 @@ etaExpandMeta kinds m = whenM (asksTC envAssignMetas `and2M` isEtaExpandable kin
     case mvJudgement meta of
       IsSort{} -> dontExpand
       HasType _ a -> do
+
+        reportSDoc "tc.meta.eta" 40 $ sep
+          [ text "considering eta-expansion at type "
+          , prettyTCM a
+          , text " raw: "
+          , pretty a
+          ]
+
         TelV tel b <- telView a
+        reportSDoc "tc.meta.eta" 40 $ sep
+          [ text "considering eta-expansion at type"
+          , addContext tel (prettyTCM b)
+          , text "under telescope"
+          , prettyTCM tel
+          ]
 
         -- Eta expanding metas with a domFinite will just make sure
         -- they go unsolved: conversion will compare them at the
@@ -485,7 +502,10 @@ etaExpandMeta kinds m = whenM (asksTC envAssignMetas `and2M` isEtaExpandable kin
             ifM (isEtaRecord r) {- then -} (do
               let ps = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
               let expand = do
-                    u <- withMetaInfo' meta $ newRecordMetaCtx r ps tel (idP $ size tel) $ teleArgs tel
+                    u <- withMetaInfo' meta $
+                      newRecordMetaCtx (mvFrozen meta) r ps tel (idP $ size tel) $ teleArgs tel
+                    -- Andreas, 2019-03-18, AIM XXIX, issue #3597
+                    -- When meta is frozen instantiate it with in-turn frozen metas.
                     inTopContext $ do
                       verboseS "tc.meta.eta" 15 $ do
                         du <- prettyTCM u
@@ -601,7 +621,9 @@ assign dir x args v = do
     patternViolation
 
   -- We never get blocked terms here anymore. TODO: we actually do. why?
-  whenM (isBlockedTerm x) patternViolation
+  whenM (isBlockedTerm x) $ do
+    reportSLn "tc.meta.assign" 25 $ "aborting: meta is a blocked term!"
+    patternViolation
 
   -- Andreas, 2010-10-15 I want to see whether rhs is blocked
   reportSLn "tc.meta.assign" 50 $ "MetaVars.assign: I want to see whether rhs is blocked"
@@ -979,7 +1001,7 @@ subtypingForSizeLt dir   x mvar t args v cont = do
           TelV tel _ <- telView t
           let size = sizeType_ qSize
               t'   = telePi tel size
-          y <- newMeta (mvInfo mvar) (mvPriority mvar) (mvPermutation mvar)
+          y <- newMeta Instantiable (mvInfo mvar) (mvPriority mvar) (mvPermutation mvar)
                        (HasType __IMPOSSIBLE__ t')
           -- Note: no eta-expansion of new meta possible/necessary.
           -- Add the size constraint @y args `dir` u@.
@@ -1273,7 +1295,7 @@ openMetasToPostulates = do
   m <- asksTC envCurrentModule
 
   -- Go through all open metas.
-  ms <- Map.assocs <$> useTC stMetaStore
+  ms <- IntMap.assocs <$> useTC stMetaStore
   forM_ ms $ \ (x, mv) -> do
     when (isOpenMeta $ mvInstantiation mv) $ do
       let t = jMetaType $ mvJudgement mv
@@ -1281,14 +1303,14 @@ openMetasToPostulates = do
       -- Create a name for the new postulate.
       let r = clValue $ miClosRange $ mvInfo mv
       -- s <- render <$> prettyTCM x -- Using _ is a bad idea, as it prints as prefix op
-      let s = "unsolved#meta." ++ show (metaId x)
+      let s = "unsolved#meta." ++ show x
       n <- freshName r s
       let q = A.QName m n
 
       -- Debug.
       reportSDoc "meta.postulate" 20 $ vcat
         [ text ("Turning " ++ if isSortMeta_ mv then "sort" else "value" ++ " meta ")
-            <+> prettyTCM x <+> " into postulate."
+            <+> prettyTCM (MetaId x) <+> " into postulate."
         , nest 2 $ vcat
           [ "Name: " <+> prettyTCM q
           , "Type: " <+> prettyTCM t
@@ -1300,5 +1322,5 @@ openMetasToPostulates = do
 
       -- Solve the meta.
       let inst = InstV [] $ Def q []
-      stMetaStore `modifyTCLens` Map.adjust (\ mv0 -> mv0 { mvInstantiation = inst }) x
+      updateMetaVar (MetaId x) $ \ mv0 -> mv0 { mvInstantiation = inst }
       return ()

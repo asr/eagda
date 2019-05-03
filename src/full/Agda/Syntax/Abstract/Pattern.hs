@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP                       #-}
 {-# LANGUAGE TypeFamilies              #-}
 {-# LANGUAGE UndecidableInstances      #-}
 
@@ -35,7 +34,6 @@ import Agda.Utils.Functor
 import Agda.Utils.List
 import Agda.Utils.Null
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- * Generic traversals
@@ -298,9 +296,7 @@ instance IsWithP (Pattern' e) where
 
 -- | Split patterns into (patterns, trailing with-patterns).
 splitOffTrailingWithPatterns :: A.Patterns -> (A.Patterns, A.Patterns)
-splitOffTrailingWithPatterns ps = (reverse rps, reverse rwps)
-  where
-  (rwps, rps) = span (isJust . isWithP) $ reverse ps
+splitOffTrailingWithPatterns = spanEnd (isJust . isWithP)
 
 -- | Get the tail of with-patterns of a pattern spine.
 trailingWithPatterns :: Patterns -> Patterns

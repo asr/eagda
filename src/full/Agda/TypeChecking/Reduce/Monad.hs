@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP              #-}
 
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
@@ -19,6 +18,7 @@ import Control.Arrow ((***), first, second)
 import Control.Applicative hiding (empty)
 import Control.Monad.Reader
 
+import qualified Data.IntMap as IntMap
 import qualified Data.Map as Map
 import Data.Maybe
 import Data.Monoid
@@ -31,26 +31,25 @@ import Agda.Syntax.Position
 import Agda.Syntax.Internal
 import Agda.TypeChecking.Monad hiding
   ( enterClosure, underAbstraction_, underAbstraction, addCtx,
-    isInstantiatedMeta, verboseS, typeOfConst, lookupMeta )
+    isInstantiatedMeta, verboseS, typeOfConst, lookupMeta, lookupMeta' )
 import Agda.TypeChecking.Monad.Builtin hiding ( constructorForm )
 import Agda.TypeChecking.Substitute
 import Agda.Interaction.Options
 
 import qualified Agda.Utils.HashMap as HMap
+import Agda.Utils.Functor
 import Agda.Utils.Lens
 import Agda.Utils.Monad
 import Agda.Utils.Null
 import Agda.Utils.Pretty
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 instance HasBuiltins ReduceM where
   getBuiltinThing b = liftM2 mplus (Map.lookup b <$> useR stLocalBuiltins)
                                    (Map.lookup b <$> useR stImportedBuiltins)
 
-constructorForm :: (HasBuiltins m, MonadReduce m)
-                => Term -> m Term
+constructorForm :: HasBuiltins m => Term -> m Term
 constructorForm v = do
   mz <- getBuiltin' builtinZero
   ms <- getBuiltin' builtinSuc
@@ -103,8 +102,11 @@ underAbstraction t a f =
 underAbstraction_ :: (MonadReduce m, Subst t a) => Abs a -> (a -> m b) -> m b
 underAbstraction_ = underAbstraction __DUMMY_DOM__
 
+lookupMeta' :: MetaId -> ReduceM (Maybe MetaVariable)
+lookupMeta' (MetaId i) = IntMap.lookup i <$> useR stMetaStore
+
 lookupMeta :: MetaId -> ReduceM MetaVariable
-lookupMeta i = fromMaybe __IMPOSSIBLE__ . Map.lookup i <$> useR stMetaStore
+lookupMeta = fromMaybe __IMPOSSIBLE__ <.> lookupMeta'
 
 isInstantiatedMeta :: MetaId -> ReduceM Bool
 isInstantiatedMeta i = do

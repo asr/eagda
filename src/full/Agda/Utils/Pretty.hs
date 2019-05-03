@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 
 {-| Pretty printing functions.
 -}
@@ -9,12 +8,13 @@ module Agda.Utils.Pretty
 
 import Data.Int ( Int32 )
 import Data.Data (Data(..))
+import qualified Data.Map as Map
 
+import qualified Text.PrettyPrint as P
 import Text.PrettyPrint hiding (TextDetails(Str), empty)
 
 import Agda.Utils.NonemptyList
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- * Pretty class
@@ -53,6 +53,9 @@ instance Pretty Char where
 
 instance Pretty Doc where
   pretty = id
+
+instance Pretty () where
+  pretty _ = P.empty
 
 instance Pretty a => Pretty (Maybe a) where
   prettyPrec p Nothing  = "Nothing"

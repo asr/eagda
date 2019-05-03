@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 
 {-| Definitions for fixity, precedence levels, and declared syntax.
@@ -29,7 +28,6 @@ import Agda.Utils.Lens
 import Agda.Utils.List
 import Agda.Utils.Pretty
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- * Notation coupled with 'Fixity'
@@ -93,7 +91,7 @@ useDefaultFixity n
 --   @M.for x ∈ xs return e@, or @x ℕ.+ y@.
 notationNames :: NewNotation -> [QName]
 notationNames (NewNotation q _ _ parts _) =
-  zipWith ($) (reQualify : repeat QName) [Name noRange InScope [Id x] | IdPart x <- parts ]
+  zipWith ($) (reQualify : repeat QName) [Name noRange InScope [Id $ rangedThing x] | IdPart x <- parts ]
   where
     -- The qualification of @q@.
     modules     = init (qnameParts q)
@@ -105,17 +103,17 @@ notationNames (NewNotation q _ _ parts _) =
 --   'Hole's become 'NormalHole's, 'Id's become 'IdParts'.
 --   If 'Name' has no 'Hole's, it returns 'noNotation'.
 syntaxOf :: Name -> Notation
-syntaxOf (NoName _ _)   = noNotation
-syntaxOf (Name _ _ [_]) = noNotation
-syntaxOf (Name _ _ xs)  = mkSyn 0 xs
+syntaxOf (NoName _ _)    = noNotation
+syntaxOf (Name _ _ [_])  = noNotation
+syntaxOf (Name _ _ xs)   = mkSyn 0 xs
   where
     -- Turn a concrete name into a Notation,
     -- numbering the holes from left to right.
     -- Result will have no 'BindingHole's.
     mkSyn :: Int -> [NamePart] -> Notation
     mkSyn n []          = []
-    mkSyn n (Hole : xs) = NormalHole (defaultNamedArg n) : mkSyn (1 + n) xs
-    mkSyn n (Id x : xs) = IdPart x : mkSyn n xs
+    mkSyn n (Hole : xs) = NormalHole noRange (defaultNamedArg $ unranged n) : mkSyn (1 + n) xs
+    mkSyn n (Id x : xs) = IdPart (unranged x) : mkSyn n xs
 
 noFixity' :: Fixity'
 noFixity' = Fixity' noFixity noNotation noRange

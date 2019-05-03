@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP                    #-}
 {-# LANGUAGE TemplateHaskell        #-}
 {-# LANGUAGE UndecidableInstances   #-}
 
@@ -21,7 +20,6 @@ import Agda.TypeChecking.Substitute
 
 import qualified Agda.Utils.VarSet as Set
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 import Internal.Helpers hiding ( Args )
@@ -155,6 +153,7 @@ makeConfiguration ds cs ps vs = TermConf
                         , nameConcrete    = C.Name noRange C.InScope [C.Id s]
                         , nameBindingSite = noRange
                         , nameFixity      = noFixity'
+                        , nameIsRecordName = False
                         }
                       }
 

@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 
 module Agda.TypeChecking.Monad.Context where
 
@@ -32,7 +31,6 @@ import Agda.Utils.Pretty
 import Agda.Utils.Size
 
 import Agda.Utils.Impossible
-#include "undefined.h"
 
 -- * Modifying the context
 
@@ -116,8 +114,11 @@ updateContext sub f = modifyContext f . checkpoint sub
 
 -- | Get the substitution from the context at a given checkpoint to the current context.
 checkpointSubstitution :: MonadTCEnv tcm => CheckpointId -> tcm Substitution
-checkpointSubstitution chkpt =
-  caseMaybeM (viewTC (eCheckpoints . key chkpt)) __IMPOSSIBLE__ return
+checkpointSubstitution = maybe __IMPOSSIBLE__ return <=< checkpointSubstitution'
+
+-- | Get the substitution from the context at a given checkpoint to the current context.
+checkpointSubstitution' :: MonadTCEnv tcm => CheckpointId -> tcm (Maybe Substitution)
+checkpointSubstitution' chkpt = viewTC (eCheckpoints . key chkpt)
 
 -- | Get substitution @Γ ⊢ ρ : Γm@ where @Γ@ is the current context
 --   and @Γm@ is the module parameter telescope of module @m@.
@@ -159,6 +160,11 @@ addCtx x a ret = do
 
     -- register the fact that x possibly shadows the name y
     tellShadowing x y = modifyTCLens stShadowingNames $ Map.adjust (x:) y
+
+addRecordNameContext :: (MonadDebug m, MonadTCM m) => Dom Type -> m b -> m b
+addRecordNameContext dom ret = do
+  x <- setNotInScope <$> freshRecordName
+  addCtx x dom ret
 
 -- | Various specializations of @addCtx@.
 {-# SPECIALIZE addContext :: b -> TCM a -> TCM a #-}
@@ -360,4 +366,4 @@ getVarInfo x =
                 case Map.lookup x def of
                     Just vt -> getOpen vt
                     _       -> fail $ "unbound variable " ++ prettyShow (nameConcrete x) ++
-                                " (id: " ++ show (nameId x) ++ ")"
+                                " (id: " ++ prettyShow (nameId x) ++ ")"

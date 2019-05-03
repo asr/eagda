@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP                   #-}
 {-# LANGUAGE DeriveDataTypeable    #-}
 {-# LANGUAGE TemplateHaskell       #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -55,7 +54,6 @@ import Agda.Utils.Lens
 import Agda.Utils.NonemptyList
 import Agda.Utils.Pretty
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- | A name in a binding position: we also compare the nameConcrete
@@ -240,13 +238,6 @@ data Pragma
     --   but declare a name for an Agda concept.
   | RewritePragma QName
   | CompilePragma String QName String
-  | CompiledPragma QName String
-  | CompiledExportPragma QName String
-  | CompiledTypePragma QName String
-  | CompiledDataPragma QName String [String]
-  | CompiledJSPragma QName String
-  | CompiledUHCPragma QName String
-  | CompiledDataUHCPragma QName String [String]
   | StaticPragma QName
   | EtaPragma QName
     -- ^ For coinductive records, use pragma instead of regular
@@ -342,7 +333,7 @@ noDataDefParams = DataDefParams Set.empty []
 data ProblemEq = ProblemEq
   { problemInPat :: Pattern
   , problemInst  :: I.Term
-  , problemType  :: Dom I.Type
+  , problemType  :: I.Dom I.Type
   } deriving (Data, Show)
 
 -- These are not relevant for caching purposes
@@ -491,6 +482,9 @@ type Pattern  = Pattern' Expr
 type Patterns = [NamedArg Pattern]
 
 instance IsProjP (Pattern' e) where
+  -- Andreas, 2018-06-19, issue #3130
+  -- Do not interpret things like .(p) as projection pattern any more.
+  -- maybePostfixProjP (DotP _ e)    = isProjP e <&> \ (_o, d) -> (ProjPostfix, d)
   isProjP (ProjP _ o d) = Just (o, d)
   isProjP _ = Nothing
 
@@ -498,25 +492,6 @@ instance IsProjP Expr where
   isProjP (Proj o ds)      = Just (o, ds)
   isProjP (ScopedExpr _ e) = isProjP e
   isProjP _ = Nothing
-
-class MaybeProjP a where
-  maybeProjP :: a -> Maybe (ProjOrigin, AmbiguousQName)
-
-instance IsProjP e => MaybeProjP (Pattern' e) where
-  -- Andreas, 2018-06-19, issue #3130
-  -- Do not interpret things like .(p) as projection pattern any more.
-  -- maybePostfixProjP (DotP _ e)    = isProjP e <&> \ (_o, d) -> (ProjPostfix, d)
-  maybeProjP (ProjP _ o d) = Just (o, d)
-  maybeProjP _ = Nothing
-
-instance MaybeProjP a => MaybeProjP (Arg a) where
-  maybeProjP p = case maybeProjP $ unArg p of
-    Just (ProjPostfix , f)
-     | getHiding p /= NotHidden -> Nothing
-    x -> x
-
-instance MaybeProjP a => MaybeProjP (Named n a) where
-  maybeProjP = maybeProjP . namedThing
 
 {--------------------------------------------------------------------------
     Things we parse but are not part of the Agda file syntax
@@ -873,8 +848,10 @@ instanceUniverseBiT' [] [t| (Declaration, Pattern' Void)  |]
 instanceUniverseBiT' [] [t| (Declaration, Declaration)    |]
 instanceUniverseBiT' [] [t| (Declaration, ModuleName)     |]
 instanceUniverseBiT' [] [t| (Declaration, ModuleInfo)     |]
-instanceUniverseBiT' [] [t| (Declaration, RString)        |]
-  -- RString is not quite what you want but we put names on lots of things...
+instanceUniverseBiT' [] [t| (Declaration, NamedArg LHSCore)  |]
+instanceUniverseBiT' [] [t| (Declaration, NamedArg BindName) |]
+instanceUniverseBiT' [] [t| (Declaration, NamedArg Expr)     |]
+instanceUniverseBiT' [] [t| (Declaration, NamedArg Pattern)  |]
 
 ------------------------------------------------------------------------
 -- Queries

@@ -1,5 +1,4 @@
 {-# LANGUAGE BangPatterns          #-}
-{-# LANGUAGE CPP                   #-}
 {-# LANGUAGE UndecidableInstances  #-}
 {-# LANGUAGE NondecreasingIndentation #-}
 
@@ -15,6 +14,7 @@ import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Identity
 
+import qualified Data.IntMap as IntMap
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified Data.List as List
@@ -52,9 +52,10 @@ import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.With
 import Agda.TypeChecking.Coverage
+import Agda.TypeChecking.Coverage.Match ( SplitPattern )
 import Agda.TypeChecking.Records
 import Agda.TypeChecking.Irrelevance (wakeIrrelevantVars)
-import Agda.TypeChecking.Pretty (prettyTCM)
+import Agda.TypeChecking.Pretty ( PrettyTCM, prettyTCM )
 import Agda.TypeChecking.Primitive
 import Agda.TypeChecking.Names
 import Agda.TypeChecking.Free
@@ -76,7 +77,6 @@ import Agda.Utils.Pretty
 import Agda.Utils.Permutation
 import Agda.Utils.Size
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- | Parses an expression.
@@ -354,6 +354,7 @@ data OutputConstraint a b
       | SizeLtSat a
       | FindInstanceOF b a [(a,a)]
       | PTSInstance b b
+      | PostponedCheckFunDef QName a
   deriving (Functor)
 
 -- | A subset of 'OutputConstraint'.
@@ -384,6 +385,7 @@ outputFormId (OutputForm _ _ o) = out o
       SizeLtSat{}                -> __IMPOSSIBLE__
       FindInstanceOF _ _ _        -> __IMPOSSIBLE__
       PTSInstance i _            -> i
+      PostponedCheckFunDef{}     -> __IMPOSSIBLE__
 
 instance Reify ProblemConstraint (Closure (OutputForm Expr Expr)) where
   reify (PConstr pids cl) = enterClosure cl $ \c -> buildClosure =<< (OutputForm (getRange c) (Set.toList pids) <$> reify c)
@@ -416,6 +418,9 @@ instance Reify Constraint (OutputConstraint Expr Expr) where
     reify (Guarded c pid) = do
         o  <- reify c
         return $ Guard o pid
+    reify (UnquoteTactic _ tac _ goal) = do
+        tac <- A.App defaultAppInfo_ (A.Unquote exprNoRange) . defaultNamedArg <$> reify tac
+        OfType tac <$> reify goal
     reify (UnBlock m) = do
         mi <- mvInstantiation <$> lookupMeta m
         m' <- reify (MetaV m [])
@@ -438,9 +443,7 @@ instance Reify Constraint (OutputConstraint Expr Expr) where
               t0 <- reify t0
               t1 <- reify t1
               return $ PostponedCheckArgs m' (map (namedThing . unArg) args) t0 t1
-            UnquoteTactic tac _ goal -> do
-              tac <- A.App defaultAppInfo_ (A.Unquote exprNoRange) . defaultNamedArg <$> reify tac
-              OfType tac <$> reify goal
+            CheckProjAppToKnownPrincipalArg cmp e _ _ _ t _ _ _ -> TypedAssign m' e <$> reify t
             DoQuoteTerm cmp v t -> do
               tm <- A.App defaultAppInfo_ (A.QuoteTerm exprNoRange) . defaultNamedArg <$> reify v
               OfType tm <$> reify t
@@ -454,53 +457,54 @@ instance Reify Constraint (OutputConstraint Expr Expr) where
             (,) <$> reify tm <*> reify ty)
     reify (IsEmpty r a) = IsEmptyType <$> reify a
     reify (CheckSizeLtSat a) = SizeLtSat  <$> reify a
-    reify (CheckFunDef d i q cs) = __IMPOSSIBLE__
+    reify (CheckFunDef d i q cs) = do
+      a <- reify =<< defType <$> getConstInfo q
+      return $ PostponedCheckFunDef q a
     reify (HasBiggerSort a) = OfType <$> reify a <*> reify (UnivSort a)
     reify (HasPTSRule a b) = do
       (a,(x,b)) <- reify (a,b)
       return $ PTSInstance a b
 
--- ASR TODO (28 December 2014): This function will be unnecessary when
--- using a Pretty instance for OutputConstraint instead of the Show
--- instance.
-showComparison :: Comparison -> String
-showComparison cmp = " " ++ prettyShow cmp ++ " "
-
-instance (Show a,Show b) => Show (OutputForm a b) where
-  show o =
-    case o of
-      OutputForm r []   c -> show c ++ range r
-      OutputForm r pids c -> show pids ++ " " ++ show c ++ range r
+instance (Pretty a, Pretty b) => Pretty (OutputForm a b) where
+  pretty (OutputForm r pids c)
+    | null pids = sep [pretty c, prange r]
+    | otherwise = sep [pretty pids, nest 2 $ sep [pretty c, prange r]]
     where
-      range r | null s    = ""
-              | otherwise = " [ at " ++ s ++ " ]"
-        where s = show r
+      prange r | null s = empty
+               | otherwise = text $ " [ at " ++ s ++ " ]"
+        where s = prettyShow r
 
-instance (Show a,Show b) => Show (OutputConstraint a b) where
-    show (OfType e t)           = show e ++ " : " ++ show t
-    show (JustType e)           = "Type " ++ show e
-    show (JustSort e)           = "Sort " ++ show e
-    show (CmpInType cmp t e e') = show e ++ showComparison cmp ++ show e' ++ " : " ++ show t
-    show (CmpElim cmp t e e')   = show e ++ " == " ++ show e' ++ " : " ++ show t
-    show (CmpTypes  cmp t t')   = show t ++ showComparison cmp ++ show t'
-    show (CmpLevels cmp t t')   = show t ++ showComparison cmp ++ show t'
-    show (CmpTeles  cmp t t')   = show t ++ showComparison cmp ++ show t'
-    show (CmpSorts cmp s s')    = show s ++ showComparison cmp ++ show s'
-    show (Guard o pid)          = show o ++ " [blocked by problem " ++ prettyShow pid ++ "]"
-    show (Assign m e)           = show m ++ " := " ++ show e
-    show (TypedAssign m e a)    = show m ++ " := " ++ show e ++ " :? " ++ show a
-    show (PostponedCheckArgs m es t0 t1) = show m ++ " := (_ : " ++ show t0 ++ ") " ++ unwords (map (paren . show) es)
-                                                  ++ " : " ++ show t1
-      where paren s | elem ' ' s = "(" ++ s ++ ")"
-                    | otherwise  = s
-    show (IsEmptyType a)        = "Is empty: " ++ show a
-    show (SizeLtSat a)          = "Not empty type of sizes: " ++ show a
-    show (FindInstanceOF s t cs) = "Resolve instance argument " ++ showCand (s,t) ++ ".\n  Candidates:\n    [ " ++
-                                    List.intercalate "\n    , " (map showCand cs) ++ " ]"
-      where
-      showCand (tm,ty) = indent 6 $ show tm ++ " : " ++ show ty
-      indent n s = List.intercalate ("\n" ++ replicate n ' ') $ lines s
-    show (PTSInstance a b)      = "PTS instance for " ++ show (a,b)
+instance (Pretty a, Pretty b) => Pretty (OutputConstraint a b) where
+  pretty oc =
+    case oc of
+      OfType e t           -> pretty e .: t
+      JustType e           -> "Type" <+> pretty e
+      JustSort e           -> "Sort" <+> pretty e
+      CmpInType cmp t e e' -> pcmp cmp e e' .: t
+      CmpElim cmp t e e'   -> pcmp cmp e e' .: t
+      CmpTypes  cmp t t'   -> pcmp cmp t t'
+      CmpLevels cmp t t'   -> pcmp cmp t t'
+      CmpTeles  cmp t t'   -> pcmp cmp t t'
+      CmpSorts cmp s s'    -> pcmp cmp s s'
+      Guard o pid          -> pretty o <?> brackets ("blocked by problem" <+> pretty pid)
+      Assign m e           -> bin (pretty m) ":=" (pretty e)
+      TypedAssign m e a    -> bin (pretty m) ":=" $ bin (pretty e) ":?" (pretty a)
+      PostponedCheckArgs m es t0 t1 ->
+        bin (pretty m) ":=" $ (parens ("_" .: t0) <+> fsep (map (paren . pretty) es)) .: t1
+        where paren d = mparens (any (`elem` [' ', '\n']) $ show d) d
+      IsEmptyType a        -> "Is empty:" <+> pretty a
+      SizeLtSat a          -> "Not empty type of sizes:" <+> pretty a
+      FindInstanceOF s t cs -> vcat
+        [ "Resolve instance argument" <?> (pretty s .: t)
+        , nest 2 $ "Candidate:"
+        , nest 4 $ vcat [ pretty v .: t | (v, t) <- cs ] ]
+      PTSInstance a b      -> "PTS instance for" <+> pretty (a, b)
+      PostponedCheckFunDef q a -> "Check definition of" <+> pretty q <+> ":" <+> pretty a
+    where
+      bin a op b = sep [a, nest 2 $ op <+> b]
+      pcmp cmp a b = bin (pretty a) (pretty cmp) (pretty b)
+      val .: ty = bin val ":" (pretty ty)
+
 
 instance (ToConcrete a c, ToConcrete b d) =>
          ToConcrete (OutputForm a b) (OutputForm c d) where
@@ -535,6 +539,7 @@ instance (ToConcrete a c, ToConcrete b d) =>
       FindInstanceOF <$> toConcrete s <*> toConcrete t
                      <*> mapM (\(tm,ty) -> (,) <$> toConcrete tm <*> toConcrete ty) cs
     toConcrete (PTSInstance a b) = PTSInstance <$> toConcrete a <*> toConcrete b
+    toConcrete (PostponedCheckFunDef q a) = PostponedCheckFunDef q <$> toConcrete a
 
 instance (Pretty a, Pretty b) => Pretty (OutputConstraint' a b) where
   pretty (OfType' e t) = pretty e <+> ":" <+> pretty t
@@ -544,8 +549,11 @@ instance (ToConcrete a c, ToConcrete b d) =>
   toConcrete (OfType' e t) = OfType' <$> toConcrete e <*> toConcreteCtx TopCtx t
 
 getConstraints :: TCM [OutputForm C.Expr C.Expr]
-getConstraints = liftTCM $ do
-    cs <- M.getAllConstraints
+getConstraints = getConstraints' $ const True
+
+getConstraints' :: (ProblemConstraint -> Bool) -> TCM [OutputForm C.Expr C.Expr]
+getConstraints' f = liftTCM $ do
+    cs <- filter f <$> M.getAllConstraints
     cs <- forM cs $ \c -> do
             cl <- reify c
             enterClosure cl abstractToConcrete_
@@ -598,8 +606,12 @@ typeOfMetaMI norm mi =
                    TCM (OutputConstraint Expr NamedMeta)
     rewriteJudg mv (HasType i t) = do
       ms <- getMetaNameSuggestion i
-      t <- normalForm norm t
+      -- Andreas, 2019-03-17, issue #3638:
+      -- Need to put meta type into correct context _before_ normalizing,
+      -- otherwise rewrite rules in parametrized modules will not fire.
       vs <- getContextArgs
+      t <- t `piApplyM` permute (takeP (size vs) $ mvPermutation mv) vs
+      t <- normalForm norm t
       let x = NamedMeta ms i
       reportSDoc "interactive.meta" 10 $ TP.vcat
         [ TP.text $ unwords ["permuting", show i, "with", show $ mvPermutation mv]
@@ -612,7 +624,7 @@ typeOfMetaMI norm mi =
         ]
       reportSDoc "interactive.meta.scope" 20 $ TP.text $ show $ getMetaScope mv
       -- Andreas, 2016-01-19, issue #1783: need piApplyM instead of just piApply
-      OfType x <$> do reify =<< t `piApplyM` permute (takeP (size vs) $ mvPermutation mv) vs
+      OfType x <$> reify t
     rewriteJudg mv (IsSort i t) = do
       ms <- getMetaNameSuggestion i
       return $ JustSort $ NamedMeta ms i
@@ -631,8 +643,8 @@ typesOfVisibleMetas norm =
 typesOfHiddenMetas :: Rewrite -> TCM [OutputConstraint Expr NamedMeta]
 typesOfHiddenMetas norm = liftTCM $ do
   is    <- getInteractionMetas
-  store <- Map.filterWithKey (openAndImplicit is) <$> getMetaStore
-  mapM (typeOfMetaMI norm) $ Map.keys store
+  store <- IntMap.filterWithKey (openAndImplicit is . MetaId) <$> getMetaStore
+  mapM (typeOfMetaMI norm . MetaId) $ IntMap.keys store
   where
   openAndImplicit is x m =
     case mvInstantiation m of
@@ -809,11 +821,12 @@ withMetaId m ret = do
   mv <- lookupMeta m
   withMetaInfo' mv ret
 
--- The intro tactic
-
+-- | The intro tactic.
+--
 -- Returns the terms (as strings) that can be
 -- used to refine the goal. Uses the coverage checker
 -- to find out which constructors are possible.
+--
 introTactic :: Bool -> InteractionId -> TCM [String]
 introTactic pmLambda ii = do
   mi <- lookupInteractionId ii
@@ -850,11 +863,14 @@ introTactic pmLambda ii = do
      `catchError` \_ -> return []
     _ -> __IMPOSSIBLE__
   where
+    conName :: [NamedArg SplitPattern] -> [I.ConHead]
     conName [p] = [ c | I.ConP c _ _ <- [namedArg p] ]
     conName _   = __IMPOSSIBLE__
 
-    showTCM v = show <$> prettyTCM v
+    showTCM :: PrettyTCM a => a -> TCM String
+    showTCM v = render <$> prettyTCM v
 
+    introFun :: ListTel -> TCM [String]
     introFun tel = addContext tel' $ do
         reportSDoc "interaction.intro" 10 $ do "introFun" TP.<+> prettyTCM (telFromList tel)
         imp <- showImplicitArguments
@@ -879,6 +895,7 @@ introTactic pmLambda ii = do
         makeName ("_", t) = ("x", t)
         makeName (x, t)   = (x, t)
 
+    introData :: I.Type -> TCM [String]
     introData t = do
       let tel  = telFromList [defaultDom ("_", t)]
           pat  = [defaultArg $ unnamed $ debruijnNamedVar "c" 0]
@@ -896,6 +913,10 @@ introTactic pmLambda ii = do
       let e = C.Rec noRange $ for fs $ \ f ->
             Left $ C.FieldAssignment f $ C.QuestionMark noRange Nothing
       return [ prettyShow e ]
+      -- Andreas, 2019-02-25, remark:
+      -- prettyShow is ok here since we are just printing something like
+      -- record { f1 = ? ; ... ; fn = ?}
+      -- which does not involve any qualified names, and the fi are C.Name.
 
 -- | Runs the given computation as if in an anonymous goal at the end
 --   of the top-level module.
@@ -976,8 +997,10 @@ moduleContents
      -- ^ The range of the next argument.
   -> String
      -- ^ The module name.
-  -> TCM ([C.Name], [(C.Name, Type)])
-     -- ^ Module names, names paired up with corresponding types.
+  -> TCM ([C.Name], I.Telescope, [(C.Name, Type)])
+     -- ^ Module names,
+     --   context extension needed to print types,
+     --   names paired up with corresponding types.
 
 moduleContents norm rng s = traceCall ModuleContents $ do
   e <- parseExpr rng s
@@ -996,19 +1019,31 @@ moduleContents norm rng s = traceCall ModuleContents $ do
 getRecordContents
   :: Rewrite  -- ^ Amount of normalization in types.
   -> C.Expr   -- ^ Expression presumably of record type.
-  -> TCM ([C.Name], [(C.Name, Type)])
-              -- ^ Module names, names paired up with corresponding types.
+  -> TCM ([C.Name], I.Telescope, [(C.Name, Type)])
+              -- ^ Module names,
+              --   context extension,
+              --   names paired up with corresponding types.
 getRecordContents norm ce = do
   e <- toAbstract ce
   (_, t) <- inferExpr e
   let notRecordType = typeError $ ShouldBeRecordType t
   (q, vs, defn) <- fromMaybeM notRecordType $ isRecordType t
   case defn of
-    Record{ recFields = fs, recTel = tel } -> do
+    Record{ recFields = fs, recTel = rtel } -> do
       let xs   = map (nameConcrete . qnameName . unArg) fs
-          doms = telToList $ apply tel vs
-      ts <- mapM (normalForm norm) $ map (snd . unDom) doms
-      return ([], zip xs ts)
+          tel  = apply rtel vs
+          doms = flattenTel tel
+      -- Andreas, 2019-04-10, issue #3687: use flattenTel
+      -- to bring types into correct scope.
+      reportSDoc "interaction.contents.record" 20 $ TP.vcat
+        [ "getRecordContents"
+        , "  cxt  = " TP.<+> (prettyTCM =<< getContextTelescope)
+        , "  tel  = " TP.<+> prettyTCM tel
+        , "  doms = " TP.<+> prettyTCM doms
+        , "  doms'= " TP.<+> (addContext tel $ prettyTCM doms)
+        ]
+      ts <- mapM (normalForm norm . unDom) doms
+      return ([], tel, zip xs ts)
     _ -> __IMPOSSIBLE__
 
 -- | Returns the contents of the given module.
@@ -1016,8 +1051,10 @@ getRecordContents norm ce = do
 getModuleContents
   :: Rewrite  -- ^ Amount of normalization in types.
   -> C.QName  -- ^ Module name.
-  -> TCM ([C.Name], [(C.Name, Type)])
-              -- ^ Module names, names paired up with corresponding types.
+  -> TCM ([C.Name], I.Telescope, [(C.Name, Type)])
+              -- ^ Module names,
+              --   context extension,
+              --   names paired up with corresponding types.
 getModuleContents norm m = do
   modScope <- getNamedScope . amodName =<< resolveModule m
   let modules :: ThingsInScope AbstractModule
@@ -1029,7 +1066,7 @@ getModuleContents norm m = do
     d <- getConstInfo $ anameName n
     t <- normalForm norm =<< (defType <$> instantiateDef d)
     return (x, t)
-  return (Map.keys modules, types)
+  return (Map.keys modules, EmptyTel, types)
 
 
 whyInScope :: String -> TCM (Maybe LocalVar, [AbstractName], [AbstractModule])

@@ -30,12 +30,12 @@ cache:
 
 matrix:
   include:
-    - env: TEST=MAIN GHC_VER=8.6.3 BUILD=CABAL CABAL_VER=2.4
+    - env: TEST=MAIN GHC_VER=8.6.5 BUILD=CABAL CABAL_VER=2.4
       addons:
         apt:
           packages:
             - cabal-install-2.4
-            - ghc-8.6.3
+            - ghc-8.6.5
             - texlive-binaries
           sources:
             - hvr-ghc
@@ -70,21 +70,11 @@ matrix:
           sources:
             - hvr-ghc
 
-    - env: TEST=MAIN GHC_VER=7.10.3 BUILD=CABAL CABAL_VER=1.22
+    - env: TEST=STACKAGE GHC_VER=8.6.5 BUILD=STACK ARGS="--stack-yaml stack-8.6.5.yaml --system-ghc"
       addons:
         apt:
           packages:
-            - cabal-install-1.22
-            - ghc-7.10.3
-            - texlive-binaries
-          sources:
-            - hvr-ghc
-
-    - env: TEST=STACKAGE GHC_VER=8.6.3 BUILD=STACK ARGS="--stack-yaml stack-8.6.3.yaml --system-ghc"
-      addons:
-        apt:
-          packages:
-            - ghc-8.6.3
+            - ghc-8.6.5
           sources:
             - hvr-ghc
 
@@ -112,22 +102,14 @@ matrix:
           sources:
             - hvr-ghc
 
-    - env: TEST=STACKAGE GHC_VER=7.10.3 BUILD=STACK ARGS="--stack-yaml stack-7.10.3.yaml --system-ghc"
-      addons:
-        apt:
-          packages:
-            - ghc-7.10.3
-          sources:
-            - hvr-ghc
-
     # Since `stack haddock` compiles Agda but `cabal haddock` does
     # not, this test is faster using `BUILD=CABAL` [Issue #2188].
-    - env: TEST=HADDOCK GHC_VER=8.6.3 BUILD=CABAL CABAL_VER=2.4
+    - env: TEST=HADDOCK GHC_VER=8.6.5 BUILD=CABAL CABAL_VER=2.4
       addons:
         apt:
           packages:
             - cabal-install-2.4
-            - ghc-8.6.3
+            - ghc-8.6.5
           sources:
             - hvr-ghc
 
@@ -136,9 +118,9 @@ matrix:
       python: "3.4"
 
   allow_failures:
-    - env: TEST=USER_MANUAL BUILD=NOTHING
-      language: python
-      python: "3.4"
+    # - env: TEST=USER_MANUAL BUILD=NOTHING
+    #   language: python
+    #   python: "3.4"
 
   # Builds are loooong, we want to send an email as fast as possible.
   fast_finish: true
@@ -252,7 +234,7 @@ install:
 # `$HOME/.local/bin`.
 
   - if [[ $TEST = "USER_MANUAL" ]]; then
-       pip install -r doc/user-manual/requirements.txt &&
+       pip3 install -r doc/user-manual/requirements.txt &&
        export PATH=$HOME/.local/bin:$PATH &&
        echo "*** sphinx-build version ***" &&
        sphinx-build --version ;
@@ -270,13 +252,11 @@ install:
        tar xzf /tmp/texlive.tar.gz -C ~ &&
        export PATH=$HOME/texlive/bin/x86_64-linux:$PATH &&
        tlmgr update --self &&
-       tlmgr install anyfontsize capt-of cmap dejavu dvipng fncychap latexmk needspace &&
+       tlmgr install anyfontsize bbm capt-of cmap dvipng fncychap keystroke latexmk needspace &&
        echo "*** pdfLaTeX version ***" &&
        pdflatex --version &&
        echo "*** Latexmk version ***" &&
-       latexmk --version &&
-       echo "*** XeLaTeX version ***" &&
-       xelatex --version ;
+       latexmk --version ;
     fi
 
 ##############################################################################
@@ -315,9 +295,9 @@ install:
 # N.B. that these tests are not include in the Makefile tests.
 
   - if [[ $TEST = "STACKAGE" ]]; then
-       stack build $ARGS --no-terminal &&
+       travis_wait stack build $ARGS --no-terminal &&
        stack clean $ARGS &&
-       stack build $ARGS --no-terminal --flag Agda:cpphs --flag Agda:debug --flag Agda:enable-cluster-counting;
+       travis_wait stack build $ARGS --no-terminal --flag Agda:cpphs --flag Agda:debug --flag Agda:enable-cluster-counting;
     fi
 
 ##############################################################################
@@ -416,10 +396,11 @@ script:
 ##############################################################################
 # Making the user manual
 
+# Not running `make user-manual-linkcheck`.
+
   - if [[ $TEST = "USER_MANUAL" ]]; then
        make user-manual-html &&
-       make user-manual-pdf &&
-       make user-manual-linkcheck ;
+       make user-manual-pdf ;
     fi
 
 ##############################################################################

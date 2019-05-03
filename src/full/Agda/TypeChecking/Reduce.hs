@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP                      #-}
 {-# LANGUAGE NondecreasingIndentation #-}
 {-# LANGUAGE UndecidableInstances     #-}
 
@@ -11,6 +10,7 @@ import qualified Data.List as List
 import Data.List ((\\))
 import Data.Maybe
 import Data.Map (Map)
+import Data.Monoid
 import Data.Traversable
 import Data.Hashable
 
@@ -49,7 +49,6 @@ import Agda.Utils.HashMap (HashMap)
 import Agda.Utils.Size
 import Agda.Utils.Tuple
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 instantiate :: (Instantiate a, MonadReduce m) => a -> m a
@@ -80,7 +79,7 @@ isFullyInstantiatedMeta :: MetaId -> TCM Bool
 isFullyInstantiatedMeta m = do
   mv <- TCM.lookupMeta m
   case mvInstantiation mv of
-    InstV _tel v -> null . allMetas <$> instantiateFull v
+    InstV _tel v -> noMetas <$> instantiateFull v
     _ -> return False
 
 -- | Instantiate something.
@@ -213,6 +212,7 @@ instance Instantiate Constraint where
   instantiate' c@CheckFunDef{}      = return c
   instantiate' (HasBiggerSort a)    = HasBiggerSort <$> instantiate' a
   instantiate' (HasPTSRule a b)     = uncurry HasPTSRule <$> instantiate' (a,b)
+  instantiate' (UnquoteTactic m t h g) = UnquoteTactic m <$> instantiate' t <*> instantiate' h <*> instantiate' g
 
 instance Instantiate e => Instantiate (Map k e) where
     instantiate' = traverse instantiate'
@@ -268,26 +268,23 @@ instance Reduce Type where
     reduceB' (El s t) = fmap (El s) <$> reduceB' t
 
 instance Reduce Sort where
-    reduce' s = {-# SCC "reduce'<Sort>" #-}
-      ifNotM hasUniversePolymorphism (red s) $ {- else -} red =<< instantiateFull' s
-      where
-        red s = do
-          s <- instantiate' s
-          case s of
-            PiSort s1 s2 -> do
-              (s1,s2) <- reduce' (s1,s2)
-              maybe (return $ PiSort s1 s2) reduce' $ piSort' s1 s2
-            UnivSort s' -> do
-              s' <- reduce' s'
-              ui <- univInf
-              caseMaybe (univSort' ui s') (return $ UnivSort s') reduce'
-            Prop s'    -> Prop <$> reduce' s'
-            Type s'    -> Type <$> reduce' s'
-            Inf        -> return Inf
-            SizeUniv   -> return SizeUniv
-            MetaS x es -> return s
-            DefS d es  -> return s -- postulated sorts do not reduce
-            DummyS{}   -> return s
+    reduce' s = do
+      s <- instantiate' s
+      case s of
+        PiSort s1 s2 -> do
+          (s1,s2) <- reduce' (s1,s2)
+          maybe (return $ PiSort s1 s2) reduce' $ piSort' s1 s2
+        UnivSort s' -> do
+          s' <- reduce' s'
+          ui <- univInf
+          caseMaybe (univSort' ui s') (return $ UnivSort s') reduce'
+        Prop s'    -> Prop <$> reduce' s'
+        Type s'    -> Type <$> reduce' s'
+        Inf        -> return Inf
+        SizeUniv   -> return SizeUniv
+        MetaS x es -> return s
+        DefS d es  -> return s -- postulated sorts do not reduce
+        DummyS{}   -> return s
 
 instance Reduce Elim where
   reduce' (Apply v) = Apply <$> reduce' v
@@ -361,16 +358,21 @@ instance (Reduce a, Reduce b,Reduce c) => Reduce (a,b,c) where
 reduceIApply :: ReduceM (Blocked Term) -> [Elim] -> ReduceM (Blocked Term)
 reduceIApply = reduceIApply' reduceB'
 
+blockedOrMeta :: Blocked Term -> Blocked ()
+blockedOrMeta r =
+  case r of
+    Blocked m _              -> Blocked m ()
+    NotBlocked _ (MetaV m _) -> Blocked m ()
+    NotBlocked i _           -> NotBlocked i ()
+
 reduceIApply' :: (Term -> ReduceM (Blocked Term)) -> ReduceM (Blocked Term) -> [Elim] -> ReduceM (Blocked Term)
 reduceIApply' reduceB' d (IApply x y r : es) = do
   view <- intervalView'
   r <- reduceB' r
   -- We need to propagate the blocking information so that e.g.
   -- we postpone "someNeutralPath ?0 = a" rather than fail.
-  let blockedInfo = case r of
-        Blocked m _              -> Blocked m ()
-        NotBlocked _ (MetaV m _) -> Blocked m ()
-        NotBlocked i _           -> NotBlocked i ()
+  let blockedInfo = blockedOrMeta r
+
   case view (ignoreBlocking r) of
    IZero -> reduceB' (applyE x es)
    IOne  -> reduceB' (applyE y es)
@@ -749,6 +751,7 @@ instance Reduce Constraint where
   reduce' c@CheckFunDef{}       = return c
   reduce' (HasBiggerSort a)     = HasBiggerSort <$> reduce' a
   reduce' (HasPTSRule a b)      = uncurry HasPTSRule <$> reduce' (a,b)
+  reduce' (UnquoteTactic m t h g) = UnquoteTactic m <$> reduce' t <*> reduce' h <*> reduce' g
 
 instance Reduce e => Reduce (Map k e) where
     reduce' = traverse reduce'
@@ -906,6 +909,7 @@ instance Simplify Constraint where
   simplify' c@CheckFunDef{}       = return c
   simplify' (HasBiggerSort a)     = HasBiggerSort <$> simplify' a
   simplify' (HasPTSRule a b)      = uncurry HasPTSRule <$> simplify' (a,b)
+  simplify' (UnquoteTactic m t h g) = UnquoteTactic m <$> simplify' t <*> simplify' h <*> simplify' g
 
 instance Simplify Bool where
   simplify' = return
@@ -1062,6 +1066,7 @@ instance Normalise Constraint where
   normalise' c@CheckFunDef{}       = return c
   normalise' (HasBiggerSort a)     = HasBiggerSort <$> normalise' a
   normalise' (HasPTSRule a b)      = uncurry HasPTSRule <$> normalise' (a,b)
+  normalise' (UnquoteTactic m t h g) = UnquoteTactic m <$> normalise' t <*> normalise' h <*> normalise' g
 
 instance Normalise Bool where
   normalise' = return
@@ -1267,6 +1272,7 @@ instance InstantiateFull Constraint where
     c@CheckFunDef{}     -> return c
     HasBiggerSort a     -> HasBiggerSort <$> instantiateFull' a
     HasPTSRule a b      -> uncurry HasPTSRule <$> instantiateFull' (a,b)
+    UnquoteTactic m t g h -> UnquoteTactic m <$> instantiateFull' t <*> instantiateFull' g <*> instantiateFull' h
 
 instance (InstantiateFull a) => InstantiateFull (Elim' a) where
   instantiateFull' (Apply v) = Apply <$> instantiateFull' v
@@ -1403,16 +1409,18 @@ instance InstantiateFull Clause where
 
 instance InstantiateFull Interface where
     instantiateFull' (Interface h s ft ms mod scope inside
-                               sig display userwarn b foreignCode
-                               highlighting pragmas patsyns warnings) =
+                               sig display userwarn importwarn b foreignCode
+                               highlighting pragmas usedOpts patsyns warnings) =
         Interface h s ft ms mod scope inside
             <$> instantiateFull' sig
             <*> instantiateFull' display
             <*> return userwarn
+            <*> return importwarn
             <*> instantiateFull' b
             <*> return foreignCode
             <*> return highlighting
             <*> return pragmas
+            <*> return usedOpts
             <*> return patsyns
             <*> return warnings
 

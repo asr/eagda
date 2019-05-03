@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP          #-}
 {-# LANGUAGE TypeFamilies #-}
 
 -- | Tools to manipulate patterns in abstract syntax
@@ -25,7 +24,6 @@ import Agda.TypeChecking.Monad.Builtin
 
 import Agda.Utils.Functor
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- | Expand literal integer pattern into suc/zero constructor patterns.
@@ -41,7 +39,7 @@ expandLitPattern p = case asView p of
       let zero  = A.ConP cinfo (unambiguous $ setRange r $ conName z) []
           suc p = A.ConP cinfo (unambiguous $ setRange r $ conName s) [defaultNamedArg p]
           info  = A.PatRange r
-          cinfo = A.ConPatInfo ConOCon info False
+          cinfo = A.ConPatInfo ConOCon info ConPatEager
           p'    = foldr ($) zero $ List.genericReplicate n suc
       return $ foldr (A.AsP info) p' (map A.BindName xs)
   _ -> return p

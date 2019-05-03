@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP            #-}
 
 module Agda.Compiler.JS.Compiler where
 
@@ -72,8 +71,7 @@ import Agda.Interaction.Options
 
 import Paths_Agda
 
-#include "undefined.h"
-import Agda.Utils.Impossible ( Impossible(Impossible), throwImpossible )
+import Agda.Utils.Impossible (__IMPOSSIBLE__)
 
 --------------------------------------------------
 -- Entry point into the compiler
@@ -151,8 +149,8 @@ jsPostModule _ _ isMain _ defs = do
       IsMain  -> Just $ Apply (Lookup Self $ MemberId "main") [Lambda 1 emp]
       NotMain -> Nothing
 
-jsCompileDef :: JSOptions -> JSModuleEnv -> Definition -> TCM (Maybe Export)
-jsCompileDef _ kit def = definition kit (defName def, def)
+jsCompileDef :: JSOptions -> JSModuleEnv -> IsMain -> Definition -> TCM (Maybe Export)
+jsCompileDef _ kit _isMain def = definition kit (defName def, def)
 
 --------------------------------------------------
 -- Naming
@@ -308,7 +306,7 @@ definition' kit q d t ls = do
     Function{} | otherwise -> do
 
       reportSDoc "compile.js" 5 $ "compiling fun:" <+> prettyTCM q
-      caseMaybeM (toTreeless q) (pure Nothing) $ \ treeless -> do
+      caseMaybeM (toTreeless T.EagerEvaluation q) (pure Nothing) $ \ treeless -> do
         funBody <- eliminateCaseDefaults =<<
           eliminateLiteralPatterns
           (convertGuards treeless)

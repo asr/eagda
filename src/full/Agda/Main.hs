@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 
 {-| Agda main module.
 -}
@@ -51,7 +50,6 @@ import Agda.Utils.Except ( MonadError(catchError, throwError) )
 import Agda.Utils.Impossible
 import Agda.Utils.Lens
 
-#include "undefined.h"
 
 builtinBackends :: [Backend]
 builtinBackends = [ ghcBackend, jsBackend ]
@@ -64,7 +62,7 @@ runAgda' :: [Backend] -> IO ()
 runAgda' backends = runTCMPrettyErrors $ do
   progName <- liftIO getProgName
   argv     <- liftIO getArgs
-  opts     <- liftIO $ runOptM $ parseBackendOptions backends argv
+  opts     <- liftIO $ runOptM $ parseBackendOptions backends argv defaultOptions
   case opts of
     Left  err        -> liftIO $ optionError err
     Right (bs, opts) -> do

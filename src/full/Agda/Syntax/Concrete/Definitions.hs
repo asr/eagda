@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP                #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE GADTs              #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
@@ -93,7 +92,6 @@ import Agda.Utils.Three
 import Agda.Utils.Tuple
 import Agda.Utils.Update
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 {--------------------------------------------------------------------------
@@ -202,6 +200,7 @@ data DeclarationWarning
   | EmptyPostulate Range  -- ^ Empty @postulate@ block.
   | EmptyPrivate Range    -- ^ Empty @private@   block.
   | EmptyGeneralize Range -- ^ Empty @variable@  block.
+  | EmptyPrimitive Range  -- ^ Empty @primitive@ block.
   | InvalidCatchallPragma Range
       -- ^ A {-\# CATCHALL \#-} pragma
       --   that does not precede a function clause.
@@ -220,6 +219,8 @@ data DeclarationWarning
   | PragmaNoTerminationCheck Range
   -- ^ Pragma @{-\# NO_TERMINATION_CHECK \#-}@ has been replaced
   --   by @{-\# TERMINATING \#-}@ and @{-\# NON_TERMINATING \#-}@.
+  | PragmaCompiled Range
+  -- ^ @COMPILE@ pragmas are not allowed in safe mode
   | UnknownFixityInMixfixDecl [Name]
   | UnknownNamesInFixityDecl [Name]
   | UnknownNamesInPolarityPragmas [Name]
@@ -237,6 +238,7 @@ declarationWarningName dw = case dw of
   EmptyPrivate{}                    -> EmptyPrivate_
   EmptyPostulate{}                  -> EmptyPostulate_
   EmptyGeneralize{}                 -> EmptyGeneralize_
+  EmptyPrimitive{}                  -> EmptyPrimitive_
   InvalidCatchallPragma{}           -> InvalidCatchallPragma_
   InvalidNoPositivityCheckPragma{}  -> InvalidNoPositivityCheckPragma_
   InvalidNoUniverseCheckPragma{}    -> InvalidNoUniverseCheckPragma_
@@ -245,6 +247,7 @@ declarationWarningName dw = case dw of
   NotAllowedInMutual{}              -> NotAllowedInMutual_
   PolarityPragmasButNotPostulates{} -> PolarityPragmasButNotPostulates_
   PragmaNoTerminationCheck{}        -> PragmaNoTerminationCheck_
+  PragmaCompiled{}                  -> PragmaCompiled_
   UnknownFixityInMixfixDecl{}       -> UnknownFixityInMixfixDecl_
   UnknownNamesInFixityDecl{}        -> UnknownNamesInFixityDecl_
   UnknownNamesInPolarityPragmas{}   -> UnknownNamesInPolarityPragmas_
@@ -293,11 +296,13 @@ instance HasRange DeclarationWarning where
   getRange (EmptyMacro r)                       = r
   getRange (EmptyPostulate r)                   = r
   getRange (EmptyGeneralize r)                  = r
+  getRange (EmptyPrimitive r)                   = r
   getRange (InvalidTerminationCheckPragma r)    = r
   getRange (InvalidNoPositivityCheckPragma r)   = r
   getRange (InvalidCatchallPragma r)            = r
   getRange (InvalidNoUniverseCheckPragma r)     = r
   getRange (PragmaNoTerminationCheck r)         = r
+  getRange (PragmaCompiled r)                   = r
 
 instance HasRange NiceDeclaration where
   getRange (Axiom r _ _ _ _ _ _)           = r
@@ -405,13 +410,14 @@ instance Pretty DeclarationWarning where
     pwords "Using abstract here has no effect. Abstract applies to only definitions like data definitions, record type definitions and function clauses."
   pretty (UselessInstance _)      = fsep $
     pwords "Using instance here has no effect. Instance applies only to declarations that introduce new identifiers into the module, like type signatures and axioms."
-  pretty (EmptyMutual    _) = fsep $ pwords "Empty mutual block."
-  pretty (EmptyAbstract  _) = fsep $ pwords "Empty abstract block."
-  pretty (EmptyPrivate   _) = fsep $ pwords "Empty private block."
-  pretty (EmptyInstance  _) = fsep $ pwords "Empty instance block."
-  pretty (EmptyMacro     _) = fsep $ pwords "Empty macro block."
-  pretty (EmptyPostulate _) = fsep $ pwords "Empty postulate block."
-  pretty (EmptyGeneralize _)= fsep $ pwords "Empty variable block."
+  pretty (EmptyMutual    _)  = fsep $ pwords "Empty mutual block."
+  pretty (EmptyAbstract  _)  = fsep $ pwords "Empty abstract block."
+  pretty (EmptyPrivate   _)  = fsep $ pwords "Empty private block."
+  pretty (EmptyInstance  _)  = fsep $ pwords "Empty instance block."
+  pretty (EmptyMacro     _)  = fsep $ pwords "Empty macro block."
+  pretty (EmptyPostulate _)  = fsep $ pwords "Empty postulate block."
+  pretty (EmptyGeneralize _) = fsep $ pwords "Empty variable block."
+  pretty (EmptyPrimitive _)  = fsep $ pwords "Empty primitive block."
   pretty (InvalidTerminationCheckPragma _) = fsep $
     pwords "Termination checking pragmas can only precede a function definition or a mutual block (that contains a function definition)."
   pretty (InvalidNoPositivityCheckPragma _) = fsep $
@@ -422,6 +428,8 @@ instance Pretty DeclarationWarning where
     pwords "NO_UNIVERSE_CHECKING pragmas can only precede a data/record definition."
   pretty (PragmaNoTerminationCheck _) = fsep $
     pwords "Pragma {-# NO_TERMINATION_CHECK #-} has been removed.  To skip the termination check, label your definitions either as {-# TERMINATING #-} or {-# NON_TERMINATING #-}."
+  pretty (PragmaCompiled _) = fsep $
+    pwords "COMPILE pragma not allowed in safe mode."
 
 declName :: NiceDeclaration -> String
 declName Axiom{}             = "Postulates"
@@ -983,6 +991,7 @@ niceDeclarations fixs ds = do
         Postulate _ ds' ->
           (,ds) <$> niceAxioms PostulateBlock ds'
 
+        Primitive r []  -> justWarning $ EmptyPrimitive r
         Primitive _ ds' -> (,ds) <$> (map toPrim <$> niceAxioms PrimitiveBlock ds')
 
         Module r x tel ds' -> return $
@@ -1058,6 +1067,10 @@ niceDeclarations fixs ds = do
       else do
         niceWarning $ InvalidNoUniverseCheckPragma r
         nice1 ds
+
+    nicePragma p@CompilePragma{} ds = do
+      niceWarning $ PragmaCompiled (getRange p)
+      return ([NicePragma (getRange p) p], ds)
 
     nicePragma (PolarityPragma{}) ds = return ([], ds)
 
@@ -1359,7 +1372,7 @@ niceDeclarations fixs ds = do
             FunSig{}            -> top
             FunDef{}            -> bottom
             NiceDataDef{}       -> bottom
-            NiceRecDef{}            -> bottom
+            NiceRecDef{}        -> bottom
             -- Andreas, 2018-05-11, issue #3052, allow pat.syn.s in mutual blocks
             -- Andreas, 2018-10-29: We shift pattern synonyms to the bottom
             -- since they might refer to constructors defined in a data types
@@ -1382,29 +1395,16 @@ niceDeclarations fixs ds = do
 
               -- Compiler pragmas are not needed for type checking, thus,
               -- can go to the bottom.
-
-              -- Deprecated compiler pragmas:
-              CompiledDataPragma{}      -> bottom
-              CompiledTypePragma{}      -> bottom
-              CompiledPragma{}          -> bottom
-              CompiledExportPragma{}    -> bottom
-              CompiledJSPragma{}        -> bottom
-              CompiledUHCPragma{}       -> bottom
-              CompiledDataUHCPragma{}   -> bottom
-              HaskellCodePragma{}       -> bottom
-
-              -- New compiler pragmas:
               ForeignPragma{}           -> bottom
               CompilePragma{}           -> bottom
+
               StaticPragma{}            -> bottom
               InlinePragma{}            -> bottom
-              ImportPragma{}            -> bottom
-              ImportUHCPragma{}         -> bottom
-              -- End compiler pragmas
 
               ImpossiblePragma{}        -> top     -- error thrown in scope checker
               EtaPragma{}               -> bottom  -- needs record definition
               WarningOnUsage{}          -> top
+              WarningOnImport{}         -> top
               InjectivePragma{}         -> top     -- only needs name, not definition
               DisplayPragma{}           -> top     -- only for printing
 

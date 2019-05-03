@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 
 module Agda.Utils.Monad
     ( module Agda.Utils.Monad
@@ -11,9 +10,7 @@ module Agda.Utils.Monad
 import Prelude       hiding (concat)
 import Control.Monad hiding (mapM, forM)
 
-#if __GLASGOW_HASKELL__ >= 800
 import qualified Control.Monad.Fail as Fail
-#endif
 
 import Control.Monad.Identity ( Identity )
 import Control.Monad.State
@@ -29,16 +26,14 @@ import Agda.Utils.Except
   )
 
 import Agda.Utils.List
+import Agda.Utils.Null (ifNotNullM)
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 ---------------------------------------------------------------------------
 
-#if __GLASGOW_HASKELL__ >= 800
 instance Fail.MonadFail Identity where
   fail = error
-#endif
 
 ---------------------------------------------------------------------------
 
@@ -157,6 +152,13 @@ forMaybeM = flip mapMaybeM
 dropWhileM :: Monad m => (a -> m Bool) -> [a] -> m [a]
 dropWhileM p []       = return []
 dropWhileM p (x : xs) = ifM (p x) (dropWhileM p xs) (return (x : xs))
+
+-- | A monadic version of @'dropWhileEnd' :: (a -> Bool) -> [a] -> m [a]@.
+--   Effects happen starting at the end of the list until @p@ becomes false.
+dropWhileEndM :: Monad m => (a -> m Bool) -> [a] -> m [a]
+dropWhileEndM p []       = return []
+dropWhileEndM p (x : xs) = ifNotNullM (dropWhileEndM p xs) (return . (x:)) $ {-else-}
+  ifM (p x) (return []) (return [x])
 
 -- | A ``monadic'' version of @'partition' :: (a -> Bool) -> [a] -> ([a],[a])
 partitionM :: (Functor m, Applicative m) => (a -> m Bool) -> [a] -> m ([a],[a])

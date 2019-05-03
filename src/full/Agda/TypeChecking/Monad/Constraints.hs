@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 
 module Agda.TypeChecking.Monad.Constraints where
 
@@ -21,7 +20,6 @@ import Agda.Utils.List
 import Agda.Utils.Monad
 import Agda.Utils.Except
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- | Add all constraints belonging to the given problem to the current problem(s).
@@ -172,6 +170,7 @@ addConstraintTo bucket c = do
     isBlocking CheckFunDef{} = True
     isBlocking HasBiggerSort{} = False
     isBlocking HasPTSRule{}  = False
+    isBlocking UnquoteTactic{} = True
 
 -- | Add already awake constraints
 addAwakeConstraints :: Constraints -> TCM ()

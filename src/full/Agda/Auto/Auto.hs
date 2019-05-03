@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 
 module Agda.Auto.Auto
       (auto
@@ -57,9 +56,9 @@ import Agda.Utils.Impossible
 import Agda.Utils.Lens
 import Agda.Utils.Maybe
 import Agda.Utils.Null
+import Agda.Utils.Pretty ( prettyShow )
 import Agda.Utils.Tuple
 
-#include "undefined.h"
 
 insertAbsurdPattern :: String -> String
 insertAbsurdPattern [] = []
@@ -237,7 +236,7 @@ auto ii rng argstr = liftTCM $ do
                     mv <- lookupMeta mi
                     withMetaInfo (getMetaInfo mv) $ do
                       (mi,) <$> abstractToConcrete_ e
-                  let ss = dropWhile (== ' ') . dropWhile (/= ' ') . show
+                  let ss = dropWhile (== ' ') . dropWhile (/= ' ') . prettyShow
                       disp [(_, cexpr)] = ss cexpr
                       disp cexprs = concat $ map (\ (mi, cexpr) -> ss cexpr ++ " ") cexprs
                   ticks <- liftIO $ readIORef ticks
@@ -294,10 +293,10 @@ auto ii rng argstr = liftTCM $ do
                   withMetaInfo (getMetaInfo mv) $ do
                     e' <- abstractToConcrete_ e
                     return (mi, e')
-              let disp [(_, cexpr)] = show cexpr
+              let disp [(_, cexpr)] = prettyShow cexpr
                   disp cexprs = concat $ for cexprs $ \ (mi, cexpr) ->
                     maybe (show mi) show (lookup mi riis)
-                      ++ " := " ++ show cexpr ++ " "
+                      ++ " := " ++ prettyShow cexpr ++ " "
               ticks <- liftIO $ readIORef ticks
               stopWithMsg $ "Listing solution(s) " ++ show pick ++ "-" ++ show (pick + length rsols - 1) ++ timeoutString ++
                         "\n" ++ unlines (map (\(x, y) -> show y ++ "  " ++ disp x) $ zip cexprss [pick..])
@@ -340,7 +339,7 @@ auto ii rng argstr = liftTCM $ do
                                         let scope = getMetaScope mv
                                         ce <- abstractToConcreteScope scope ae
                                         let cmnt = if ii' == ii then agsyinfo ticks else ""
-                                        return (Just (ii', show ce ++ cmnt), Nothing)
+                                        return (Just (ii', prettyShow ce ++ cmnt), Nothing)
                            -- Andreas, 2015-05-17, Issue 1504
                            -- When Agsy produces an ill-typed solution, return nothing.
                            -- TODO: try other solution.
@@ -426,7 +425,7 @@ auto ii rng argstr = liftTCM $ do
               cdfv <- withMetaInfo minfo $ getDefFreeVars n
               return $ case matchType cdfv tctx ctyp targettyp of
                Nothing -> Nothing
-               Just score -> Just (show cn, score)
+               Just score -> Just (prettyShow cn, score)
          ) alldefs
        else do
         let scopeinfo = clScope (getMetaInfo mv)
@@ -442,7 +441,7 @@ auto ii rng argstr = liftTCM $ do
           cdfv <- withMetaInfo minfo $ getDefFreeVars n
           return $ case matchType cdfv tctx ctyp targettyp of
            Nothing -> Nothing
-           Just score -> Just (show cn, score)
+           Just score -> Just (prettyShow cn, score)
          ) modnames
 
       let sorthits = List.sortBy (\(_, (pa1, pb1)) (_, (pa2, pb2)) -> case compare pa2 pa1 of {EQ -> compare pb1 pb2; o -> o}) hits

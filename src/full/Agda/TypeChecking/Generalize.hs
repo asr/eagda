@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 
 module Agda.TypeChecking.Generalize
   ( generalizeType
@@ -7,22 +6,30 @@ module Agda.TypeChecking.Generalize
 
 import Control.Arrow ((***), first, second)
 import Control.Monad
+import Data.IntSet (IntSet)
+import qualified Data.IntSet as IntSet
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.List (nub, partition, init, sortBy)
+import Data.Monoid
 import Data.Function (on)
+import Data.Traversable
 
 import Agda.Syntax.Common
 import Agda.Syntax.Concrete.Name (LensInScope(..))
 import Agda.Syntax.Position
 import Agda.Syntax.Internal
+import Agda.Syntax.Internal.Generic
 import Agda.Syntax.Literal
+import Agda.Syntax.Scope.Monad (bindVariable)
+import Agda.Syntax.Scope.Base (Binder(..))
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Abstract
 import Agda.TypeChecking.Constraints
 import Agda.TypeChecking.Conversion
+import Agda.TypeChecking.Free
 import Agda.TypeChecking.Irrelevance
 import Agda.TypeChecking.InstanceArguments (postponeInstanceConstraints)
 import Agda.TypeChecking.MetaVars
@@ -32,27 +39,30 @@ import Agda.TypeChecking.Substitute
 import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.Warnings
 
-import Agda.Benchmarking
+import Agda.Benchmarking (Phase(Typing, Generalize))
 import Agda.Utils.Benchmark
+import Agda.Utils.Except
 import Agda.Utils.Functor
 import Agda.Utils.Impossible
 import Agda.Utils.Lens
 import Agda.Utils.Maybe
+import Agda.Utils.Monad
 import Agda.Utils.Size
+import Agda.Utils.Singleton
 import Agda.Utils.Permutation
 import qualified Agda.Utils.Graph.TopSort as Graph
 
-#include "undefined.h"
 
 -- | Generalize a telescope over a set of generalizable variables.
 generalizeTelescope :: Map QName Name -> (forall a. (Telescope -> TCM a) -> TCM a) -> ([Maybe Name] -> Telescope -> TCM a) -> TCM a
 generalizeTelescope vars typecheckAction ret | Map.null vars = typecheckAction (ret [])
 generalizeTelescope vars typecheckAction ret = billTo [Typing, Generalize] $ withGenRecVar $ \ genRecMeta -> do
   let s = Set.fromList (Map.keys vars)
-  ((cxtNames, tel), namedMetas, allmetas) <-
+  ((cxtNames, tel, letbinds), namedMetas, allmetas) <-
     createMetasAndTypeCheck s $ typecheckAction $ \ tel -> do
       cxt <- take (size tel) <$> getContext
-      return (map (fst . unDom) cxt, tel)
+      lbs <- getLetBindings -- This gives let-bindings valid in the current context
+      return (map (fst . unDom) cxt, tel, lbs)
   -- Translate the QName to the corresponding bound variable
   (genTel, genTelNames, sub) <- computeGeneralization genRecMeta namedMetas allmetas
 
@@ -78,12 +88,20 @@ generalizeTelescope vars typecheckAction ret = billTo [Typing, Generalize] $ wit
 
   -- We are in context Γ (r : R) and should call the continuation in context Γ Δ Θρ passing it Δ Θρ
   -- We have
-  -- Γ (r : R) ⊢ Θ            Θ = tel
-  -- Γ ⊢ Δ                    Δ = genTel
-  -- Γ Δ ⊢ ρ : Γ (r : R)      ρ = sub
-  -- Γ ⊢ Δ Θρ                 Θρ = tel'
+  --   Γ (r : R) ⊢ Θ            Θ = tel
+  --   Γ ⊢ Δ                    Δ = genTel
+  --   Γ Δ ⊢ ρ : Γ (r : R)      ρ = sub
+  --   Γ ⊢ Δ Θρ                 Θρ = tel'
+  -- And we shouldn't forget about the let-bindings (#3470)
+  --   Γ (r : R) Θ ⊢ letbinds
+  --   Γ Δ Θρ      ⊢ letbinds' = letbinds(lift |Θ| ρ)
+  letbinds' <- applySubst (liftS (size tel) sub) <$> instantiateFull letbinds
+  let addLet (x, (v, dom)) = addLetBinding' x v dom
+
   updateContext sub ((genTelCxt ++) . drop 1) $
-    updateContext (raiseS (size tel')) (newTelCxt ++) $ ret genTelVars (abstract genTel tel')
+    updateContext (raiseS (size tel')) (newTelCxt ++) $
+      foldr addLet (ret genTelVars $ abstract genTel tel') letbinds'
+
 
 -- | Generalize a type over a set of (used) generalizable variables.
 generalizeType :: Set QName -> TCM Type -> TCM ([Maybe QName], Type)
@@ -107,7 +125,7 @@ generalizeType' s typecheckAction = billTo [Typing, Generalize] $ withGenRecVar 
   return (genTelNames, t', userdata)
 
 -- | Create metas for the generalizable variables and run the type check action.
-createMetasAndTypeCheck :: Set QName -> TCM a -> TCM (a, Map MetaId QName, Set MetaId)
+createMetasAndTypeCheck :: Set QName -> TCM a -> TCM (a, Map MetaId QName, IntSet)
 createMetasAndTypeCheck s typecheckAction = do
   ((namedMetas, x), allmetas) <- metasCreatedBy $ do
     (metamap, genvals) <- createGenValues s
@@ -130,20 +148,30 @@ withGenRecVar ret = do
 --   generalized. Called in the context extended with the telescope record variable (whose type is
 --   the first argument). Returns the telescope of generalized variables and a substitution from
 --   this telescope to the current context.
-computeGeneralization :: Type -> Map MetaId name -> Set MetaId -> TCM (Telescope, [Maybe name], Substitution)
+computeGeneralization :: Type -> Map MetaId name -> IntSet -> TCM (Telescope, [Maybe name], Substitution)
 computeGeneralization genRecMeta nameMap allmetas = postponeInstanceConstraints $ do
   -- Pair metas with their metaInfo
-  mvs <- mapM (\ x -> (x,) <$> lookupMeta x) (Set.toList allmetas)
+  mvs <- mapM ((\ x -> (x,) <$> lookupMeta x) . MetaId) $ IntSet.toList allmetas
 
-  let isGeneralizable (_, mv) = YesGeneralize == unArg (miGeneralizable (mvInfo mv))
+  constrainedMetas <- Set.unions <.> mapM (constraintMetas . clValue . theConstraint) =<<
+                        ((++) <$> useTC stAwakeConstraints
+                              <*> useTC stSleepingConstraints)
+
+  let isConstrained x = Set.member x constrainedMetas
+      -- Note: Always generalize named metas even if they are constrained. We
+      -- freeze them so they won't be instantiated by the constraint, and we do
+      -- want the nice error from checking the constraint after generalization.
+      -- See #3276.
+      isGeneralizable (x, mv) = Map.member x nameMap ||
+                                not (isConstrained x) && YesGeneralize == unArg (miGeneralizable (mvInfo mv))
       isSort = isSortMeta_ . snd
       isOpen = isOpenMeta . mvInstantiation . snd
 
   -- Split the generalizable metas in open and closed
-  let (generalizable, nongeneralizable) = partition isGeneralizable mvs
+  let (generalizable, nongeneralizable)         = partition isGeneralizable mvs
       (generalizableOpen', generalizableClosed) = partition isOpen generalizable
-      (openSortMetas, generalizableOpen) = partition isSort generalizableOpen'
-      nongeneralizableOpen = filter isOpen nongeneralizable
+      (openSortMetas, generalizableOpen)        = partition isSort generalizableOpen'
+      nongeneralizableOpen                      = filter isOpen nongeneralizable
 
   -- Issue 3301: We can't generalize over sorts
   case openSortMetas of
@@ -152,22 +180,23 @@ computeGeneralization genRecMeta nameMap allmetas = postponeInstanceConstraints 
 
   -- Any meta in the solution of a generalizable meta should be generalized over (if possible).
   cp <- viewTC eCurrentCheckpoint
-  let canGeneralize x = do
-          mv  <- lookupMeta x
-          sub <- enterClosure (miClosRange $ mvInfo mv) $ \ _ ->
-                   checkpointSubstitution cp
+  let canGeneralize x | isConstrained x = return False
+      canGeneralize x = do
+          mv   <- lookupMeta x
+          msub <- enterClosure (miClosRange $ mvInfo mv) $ \ _ ->
+                    checkpointSubstitution' cp
           let sameContext =
                 -- We can only generalize if the metavariable takes the context variables of the
                 -- current context as arguments. This happens either when the context of the meta
                 -- is the same as the current context and there is no pruning, or the meta context
-                -- is a weakening but the extra variables have been prune.
+                -- is a weakening but the extra variables have been pruned.
                 -- It would be possible to generalize also in the case when some context variables
                 -- (other than genTel) have been pruned, but it's hard to construct an example
                 -- where this actually happens.
-                case (sub, mvPermutation mv) of
-                  (IdS, Perm m xs)      -> xs == [0 .. m - 1]
-                  (Wk n IdS, Perm m xs) -> xs == [0 .. m - n - 1]
-                  _                     -> False
+                case (msub, mvPermutation mv) of
+                  (Just IdS, Perm m xs)        -> xs == [0 .. m - 1]
+                  (Just (Wk n IdS), Perm m xs) -> xs == [0 .. m - n - 1]
+                  _                            -> False
           when (not sameContext) $ do
             ty <- getMetaType x
             let Perm m xs = mvPermutation mv
@@ -177,13 +206,13 @@ computeGeneralization genRecMeta nameMap allmetas = postponeInstanceConstraints 
               , text "in context"
               , nest 2 $ inTopContext . prettyTCM =<< getContextTelescope
               , text "permutation:" <+> text (show (m, xs))
-              , text "subst:" <+> pretty sub ]
+              , text "subst:" <+> pretty msub ]
           return sameContext
   inherited <- fmap Set.unions $ forM generalizableClosed $ \ (x, mv) ->
     case mvInstantiation mv of
       InstV _ v -> do
         parentName <- getMetaNameSuggestion x
-        metas <- filterM canGeneralize . allMetas =<< instantiateFull v
+        metas <- filterM canGeneralize . allMetasList =<< instantiateFull v
         let suggestNames i [] = return ()
             suggestNames i (m : ms)  = do
               name <- getMetaNameSuggestion m
@@ -196,10 +225,14 @@ computeGeneralization genRecMeta nameMap allmetas = postponeInstanceConstraints 
       _ -> __IMPOSSIBLE__
 
   let (alsoGeneralize, reallyDontGeneralize) = partition (`Set.member` inherited) $ map fst nongeneralizableOpen
-      generalizeOver = map fst generalizableOpen ++ alsoGeneralize
+      generalizeOver   = map fst generalizableOpen ++ alsoGeneralize
+      shouldGeneralize = (`Set.member` Set.fromList generalizeOver)
 
-  -- Sort metas in dependency order
-  sortedMetas <- sortMetas generalizeOver
+  -- Sort metas in dependency order. Include open metas that we are not
+  -- generalizing over, since they will need to be pruned appropriately (see
+  -- Issue 3672).
+  allSortedMetas <- sortMetas (generalizeOver ++ reallyDontGeneralize)
+  let sortedMetas = filter shouldGeneralize allSortedMetas
 
   let dropCxt err = updateContext (strengthenS err 1) (drop 1)
 
@@ -210,7 +243,12 @@ computeGeneralization genRecMeta nameMap allmetas = postponeInstanceConstraints 
   -- Solve the generalizable metas. Each generalizable meta is solved by projecting the
   -- corresponding field from the genTel record.
   cxtTel <- getContextTelescope
-  let solve m field = assignTerm' m (telToArgs cxtTel) $ Var 0 [Proj ProjSystem field]
+  let solve m field = do
+        -- m should not be instantiated, but if we don't check constraints
+        -- properly it could be (#3666 and #3667). Fail hard instead of
+        -- generating bogus types.
+        whenM (isInstantiatedMeta m) __IMPOSSIBLE__
+        assignTerm' m (telToArgs cxtTel) $ Var 0 [Proj ProjSystem field]
   zipWithM_ solve sortedMetas genRecFields
 
   -- Record the named variables in the telescope
@@ -225,8 +263,17 @@ computeGeneralization genRecMeta nameMap allmetas = postponeInstanceConstraints 
           HasType{ jMetaType = t } = mvJudgement mv
       return [(Arg info $ miNameSuggestion $ mvInfo mv, piApply t args)]
   let genTel = buildGeneralizeTel genRecCon teleTypes
+
   reportSDoc "tc.generalize" 40 $ vcat
     [ text "genTel =" <+> prettyTCM genTel ]
+
+  -- Now we need to prune the unsolved metas to make sure they respect the new
+  -- dependencies (#3672). Also update interaction points to point to pruned metas.
+  let inscope (ii, InteractionPoint{ipMeta = Just x})
+        | IntSet.member (metaId x) allmetas = [(x, ii)]
+      inscope _ = []
+  ips <- Map.fromList . concatMap inscope . Map.toList <$> useTC stInteractionPoints
+  pruneUnsolvedMetas genRecName genRecCon genTel genRecFields ips shouldGeneralize allSortedMetas
 
   -- Fill in the missing details of the telescope record.
   dropCxt __IMPOSSIBLE__ $ fillInGenRecordDetails genRecName genRecCon genRecFields genRecMeta genTel
@@ -234,7 +281,312 @@ computeGeneralization genRecMeta nameMap allmetas = postponeInstanceConstraints 
   -- Now abstract over the telescope. We need to apply the substitution that subsitutes a record
   -- value packing up the generalized variables for the genTel variable.
   let sub = unpackSub genRecCon (map (argInfo . fst) teleTypes) (length teleTypes)
+
   return (genTel, telNames, sub)
+
+-- | Prune unsolved metas (#3672). The input includes also the generalized metas and is sorted in
+-- dependency order. The telescope is the generalized telescope.
+pruneUnsolvedMetas :: QName -> ConHead -> Telescope -> [QName] -> Map MetaId InteractionId -> (MetaId -> Bool) -> [MetaId] -> TCM ()
+pruneUnsolvedMetas genRecName genRecCon genTel genRecFields interactionPoints isGeneralized metas
+  | all isGeneralized metas = return ()
+  | otherwise               = prune [] genTel metas
+  where
+    prune _ _ [] = return ()
+    prune cxt tel (x : xs) | not (isGeneralized x) = do
+      -- If x is a blocked term we shouldn't instantiate it.
+      whenM (not <$> isBlockedTerm x) $ do
+        x <- if size tel > 0 then prePrune x
+                             else return x
+        pruneMeta (telFromList $ reverse cxt) x
+      prune cxt tel xs
+    prune cxt (ExtendTel a tel) (x : xs) = prune (fmap (x,) a : cxt) (unAbs tel) xs
+      where x = absName tel
+    prune _ _ _ = __IMPOSSIBLE__
+
+    sub = unpackSub genRecCon $ map getArgInfo $ telToList genTel
+
+    prepruneError :: MetaId -> String -> TCM a
+    prepruneError x code = do
+      r <- getMetaRange x
+      let msg = "Congratulations! You have found an easter egg (#" ++ code ++ "). " ++
+                "Be the first to submit a self-contained test case (max 50 lines of code) " ++
+                "producing this error message to https://github.com/agda/agda/issues/3672 " ++
+                "to receive a small prize."
+          cause = "The error is caused by complicated dependencies between unsolved " ++
+                  "metavariables and generalized variables. In particular, this meta:"
+      genericDocError =<<
+        (fwords msg $+$
+         sep [fwords cause, nest 2 $ prettyTCM (MetaV x []) <+> "at" <+> pretty r]
+        )
+
+    -- If one of the fields depend on this meta, we have to make sure that this meta doesn't depend
+    -- on any variables introduced after the genRec. See test/Fail/Issue3672b.agda for a test case.
+    prePrune x = do
+      cp <- viewTC eCurrentCheckpoint
+      mv <- lookupMeta x
+      (i, _A) <- enterClosure (miClosRange $ mvInfo mv) $ \ _ -> do
+        δ <- checkpointSubstitution cp
+        _A <- case mvJudgement mv of
+                IsSort{}  -> return Nothing
+                HasType{} -> Just <$> getMetaTypeInContext x
+        case δ of
+          Wk n IdS -> return (n, _A)
+          IdS      -> return (0, _A)
+          _        -> prepruneError x "RFCX"
+      if i == 0 then return x else do
+        reportSDoc "tc.generalize.prune.pre" 40 $ vcat
+          [ "prepruning"
+          , nest 2 $ pretty x <+> ":" <+> pretty (jMetaType $ mvJudgement mv)
+          , nest 2 $ "|Δ| =" <+> pshow i ]
+
+        -- We have
+        --   Γ (r : GenRec)            current context
+        --   Γ (r : GenRec) Δ ⊢ x : A  with |Δ| = i
+        -- and we need to get rid of the dependency on Δ.
+
+        -- We can only do this if A does not depend on Δ, so check this first.
+        case IntSet.minView (allFreeVars _A) of
+          Just (j, _) | j < i -> prepruneError x "FVTY"
+          _                   -> return ()
+
+        -- If it doesn't we can strenghten it to the current context (this is done by
+        -- newMetaFromOld).
+        --   Γ (r : GenRec) ⊢ ρ : Γ (r : GenRec) Δ
+        let ρ  = strengthenS __IMPOSSIBLE__ i
+            ρ' = raiseS i
+
+        (y, u) <- newMetaFromOld mv ρ _A
+
+        let uρ' = applySubst ρ' u
+
+        reportSDoc "tc.generalize.prune.pre" 40 $ nest 2 $ vcat
+          [ "u    =" <+> pretty u
+          , "uρ⁻¹ =" <+> pretty uρ' ]
+
+        -- To solve it we enter the context of x again
+        enterClosure (miClosRange $ mvInfo mv) $ \ _ -> do
+          -- v is x applied to the context variables
+          v <- case _A of
+                 Nothing -> Sort . MetaS x . map Apply <$> getMetaContextArgs mv
+                 Just{}  -> MetaV x . map Apply <$> getMetaContextArgs mv
+          noConstraints (doPrune x mv _A v uρ') `catchError` \ _ -> prepruneError x "INST"
+          setInteractionPoint x y
+          return y
+
+    pruneMeta _Θ x = do
+      cp <- viewTC eCurrentCheckpoint
+      mv <- lookupMeta x
+      -- The reason we are doing all this inside the closure of x is so that if x is an interaction
+      -- meta we get the right context for the pruned interaction meta.
+      enterClosure (miClosRange $ mvInfo mv) $ \ _ ->
+        -- If we can't find the generalized record, it's already been pruned and we don't have to do
+        -- anything.
+        whenJustM (findGenRec mv) $ \ i -> do
+
+        reportSDoc "tc.generalize.prune" 30 $ vcat
+          [ "pruning"
+          , nest 2 $ inTopContext $ prettyTCM (mvJudgement mv)
+          , nest 2 $ "GenRecTel is var" <+> pretty i ]
+
+        _ΓrΔ <- getContextTelescope
+        let (_Γ, _Δ) = (telFromList gs, telFromList ds)
+              where (gs, _ : ds) = splitAt (size _ΓrΔ - i - 1) (telToList _ΓrΔ)
+
+        -- Get the type of x. By doing this here we let the checkpoint machinery sort out the
+        _A <- case mvJudgement mv of
+                IsSort{}  -> return Nothing
+                HasType{} -> Just <$> getMetaTypeInContext x
+
+        -- We have
+        --   Γ  (r : GenTel) Δ         current context
+        --   Γ₀ (r : GenTel)           top context
+        --   Γ₀ ⊢ Θ                    prefix of the generalized telescope currently in scope
+        --   Γ (r : GenTel) Δ ⊢ x : A  the meta to prune
+
+        -- Get the substitution from the point of generalization to the current context. This always
+        -- succeeds since if the meta depends on GenTel it must have been created inside the
+        -- generalization:
+        --   Γ (r : GenTel) Δ ⊢ δ : Γ₀ (r : GenTel)
+        δ <- checkpointSubstitution cp
+
+        -- v is x applied to the context variables
+        v <- case _A of
+               Nothing -> Sort . MetaS x . map Apply <$> getMetaContextArgs mv
+               Just{}  -> MetaV x . map Apply <$> getMetaContextArgs mv
+
+        -- Now ultimately we want to create the fresh meta in the context
+        --   Γ Θγ Δσ where Γ    ⊢ γ : Γ₀
+        --                 Γ Θγ ⊢ σ : Γ (r : GenTel)
+        -- σ is the unpacking substitution (which is polymorphic in Γ)
+        let σ   = sub (size _Θ)
+            --    Γ <- Γ (r : GenTel) Δ <- Γ₀ (r : GenTel) <- Γ₀
+            γ   = strengthenS __IMPOSSIBLE__ (i + 1) `composeS` δ `composeS` raiseS 1
+            _Θγ = applySubst γ _Θ
+            _Δσ = applySubst σ _Δ
+
+        -- The substitution into the new context is simply lifting σ over Δ:
+        --   Γ Θγ Δσ ⊢ lift i σ : Γ (r : GenTel) Δ
+        let ρ  = liftS i σ
+            -- We also need ρ⁻¹, which is a lot easier to construct.
+            ρ' = liftS i $ [ Var 0 [Proj ProjSystem fld] | fld <- reverse $ take (size _Θ) $ genRecFields ] ++# raiseS 1
+
+        reportSDoc "tc.generalize.prune" 30 $ nest 2 $ vcat
+          [ "Γ   =" <+> pretty _Γ
+          , "Θ   =" <+> pretty _Θ
+          , "Δ   =" <+> pretty _Δ
+          , "σ   =" <+> pretty σ
+          , "γ   =" <+> pretty γ
+          , "δ   =" <+> pretty δ
+          , "ρ   =" <+> pretty ρ
+          , "ρ⁻¹ =" <+> pretty ρ'
+          , "Θγ  =" <+> pretty _Θγ
+          , "Δσ  =" <+> pretty _Δσ
+          , "_A  =" <+> pretty _A
+          ]
+
+        -- When updating the context we also need to pick names for the variables. Get them from the
+        -- current context and generate fresh ones for the generalized variables in Θ.
+        (newCxt, rΘ) <- do
+          (rΔ, _ : rΓ) <- splitAt i <$> getContext
+          let setName = traverse $ \ (s, ty) -> (,ty) <$> freshName_ s
+          rΘ <- mapM setName $ reverse $ telToList _Θγ
+          let rΔσ = zipWith (\ name dom -> first (const name) <$> dom)
+                            (map (fst . unDom) rΔ)
+                            (reverse $ telToList _Δσ)
+          return (rΔσ ++ rΘ ++ rΓ, rΘ)
+
+        -- Now we can enter the new context and create our meta variable.
+        (y, u) <- updateContext ρ (const newCxt) $ localScope $ do
+
+          -- First, we add the named variables to the scope, to allow
+          -- them to be used in holes (#3341).
+          addNamedVariablesToScope rΘ
+
+          -- Now we can create the new meta
+          newMetaFromOld mv ρ _A
+
+        -- Finally we solve x := yρ⁻¹. The reason for solving it this way instead of xρ := y is that
+        -- ρ contains dummy terms for the variables that are not in scope.
+        -- If x has been instantiated by some constraint unblocked by previous pruning or
+        -- generalization, use equalTerm instead of assigning to x. If this fails (see
+        -- test/Fail/Issue3655b.agda for a test case), we need to give an error. This can happen if
+        -- there are dependencies between generalized variables that are hidden by constraints and
+        -- the dependency sorting happens to pick the wrong order. For instance, if we have
+        --    α : Nat   (unsolved meta)
+        --    t : F α   (named variable)
+        --    n : Nat   (named variable)
+        -- and a constraint F α == F n, where F does some pattern matching preventing the constraint
+        -- to be solved when n is still a meta. If t appears before n in the type these will be sorted
+        -- as α, t, n, but we will solve α := n before we get to the pruning here. It's good that we
+        -- solve first though, because that means we can give a more informative error message than
+        -- the "Cannot instantiate..." we would otherwise get.
+        let uρ' = applySubst ρ' u
+        reportSDoc "tc.generalize.prune" 80 $ vcat
+          [ "solving"
+          , nest 2 $ sep [ pretty v   <+> "=="
+                         , pretty uρ' <+> ":"
+                         , pretty _A ] ]
+        noConstraints (doPrune x mv _A v uρ') `catchError` niceError x v
+
+        reportSDoc "tc.generalize.prune" 80 $ vcat
+          [ "solved"
+          , nest 2 $ "v    =" <+> (pretty =<< instantiateFull v)
+          , nest 2 $ "uρ⁻¹ =" <+> (pretty =<< instantiateFull uρ') ]
+
+        setInteractionPoint x y
+
+    findGenRec :: MetaVariable -> TCM (Maybe Int)
+    findGenRec mv = do
+      cxt <- instantiateFull =<< getContext
+      let notPruned = [ i | i <- permute (takeP (length cxt) $ mvPermutation mv) $
+                                 reverse $ zipWith const [0..] cxt ]
+      case [ i | (i, Dom{unDom = (_, El _ (Def q _))}) <- zip [0..] cxt,
+                 q == genRecName, elem i notPruned ] of
+        []    -> return Nothing
+        _:_:_ -> __IMPOSSIBLE__
+        [i]   -> return (Just i)
+                                                    -- Nothing if sort meta
+    newMetaFromOld :: MetaVariable -> Substitution -> Maybe Type -> TCM (MetaId, Term)
+    newMetaFromOld mv ρ mA = setCurrentRange mv $
+      case mA of
+        Nothing -> do
+          s @ (MetaS y _) <- newSortMeta
+          return (y, Sort s)
+        Just _A -> do
+          let _Aρ = applySubst ρ _A
+          newNamedValueMeta DontRunMetaOccursCheck
+                            (miNameSuggestion $ mvInfo mv) _Aρ
+
+    -- If x is a hole, update the hole to point to y instead.
+    setInteractionPoint x y =
+      whenJust (Map.lookup x interactionPoints) (`connectInteractionPoint` y)
+
+    doPrune :: MetaId -> MetaVariable -> Maybe Type -> Term -> Term -> TCM ()
+    doPrune x mv _A v u =
+      case _A of
+        _ | isOpen -> assign DirEq x (getArgs v) u
+        Nothing    -> equalSort (unwrapSort v) (unwrapSort u)
+        Just _A    -> equalTerm _A v u
+      where
+        isOpen = isOpenMeta $ mvInstantiation mv
+        getArgs v = case v of
+            Sort (MetaS _ es) -> unApply es
+            MetaV _ es        -> unApply es
+            _                 -> __IMPOSSIBLE__
+          where unApply es = fromMaybe __IMPOSSIBLE__ $ allApplyElims es
+        unwrapSort (Sort s) = s
+        unwrapSort _        = __IMPOSSIBLE__
+
+    niceError x u err = do
+      u <- instantiateFull u
+      let err' = case err of
+                   TypeError{tcErrClosErr = cl} ->
+                     -- Remove the 'when' part from the error since it's most like the same as ours.
+                     err{ tcErrClosErr = cl{ clEnv = (clEnv cl) { envCall = Nothing } } }
+                   _ -> err
+          telList = telToList genTel
+          names   = map (fst . unDom) telList
+          late    = map (fst . unDom) $ filter (getAny . allMetas (Any . (== x))) telList
+          projs (Proj _ q)
+            | elem q genRecFields = Set.fromList [x | Just x <- [getGeneralizedFieldName q]]
+          projs _                 = Set.empty
+          early = Set.toList $ flip foldTerm u $ \ case
+                  Var _ es   -> foldMap projs es
+                  Def _ es   -> foldMap projs es
+                  MetaV _ es -> foldMap projs es
+                  _          -> Set.empty
+          commas []       = __IMPOSSIBLE__
+          commas [x]      = x
+          commas [x, y]   = x ++ ", and " ++ y
+          commas (x : xs) = x ++ ", " ++ commas xs
+          cause = "There were unsolved constraints that obscured the " ++
+                  "dependencies between the generalized variables."
+          solution = "The most reliable solution is to provide enough information to make the dependencies " ++
+                     "clear, but simply mentioning the variables in the right order should also work."
+          order = sep [ fwords "Dependency analysis suggested this (likely incorrect) order:",
+                        nest 2 $ fwords (unwords names) ]
+          guess = "After constraint solving it looks like " ++ commas late ++ " actually depend" ++ s ++
+                  " on " ++ commas early
+            where
+              s | length late == 1 = "s"
+                | otherwise        = ""
+      genericDocError =<< vcat
+        [ fwords $ "Variable generalization failed."
+        , nest 2 $ sep ["- Probable cause", nest 4 $ fwords cause]
+        , nest 2 $ sep ["- Suggestion", nest 4 $ fwords solution]
+        , nest 2 $ sep $ ["- Further information"
+                         , nest 2 $ "-" <+> order ] ++
+                         [ nest 2 $ "-" <+> fwords guess | not (null late), not (null early) ] ++
+                         [ nest 2 $ "-" <+> sep [ fwords "The dependency I error is", prettyTCM err' ] ]
+        ]
+
+    addNamedVariablesToScope cxt =
+      forM_ cxt $ \ Dom{ unDom = (x, _) } -> do
+        -- Recognize named variables by lack of '.' (TODO: hacky!)
+        reportSLn "tc.generalize.eta.scope" 40 $ "Adding (or not) " ++ show (nameConcrete x) ++ " to the scope"
+        when ('.' `notElem` show (nameConcrete x)) $ do
+          reportSLn "tc.generalize.eta.scope" 40 "  (added)"
+          bindVariable LambdaBound (nameConcrete x) x
 
 -- | Create a substition from a context where the i first record fields are variables to a context
 --   where you have a single variable of the record type. Packs up the field variables in a record
@@ -286,7 +638,7 @@ createGenValues s = do
 
 -- | Create a generalisable meta for a generalisable variable.
 createGenValue :: QName -> TCM (QName, MetaId, GeneralizedValue)
-createGenValue x = do
+createGenValue x = setCurrentRange x $ do
   cp  <- viewTC eCurrentCheckpoint
   def <- instantiateDef =<< getConstInfo x
                    -- Only prefix of generalizable arguments (for now?)
@@ -308,10 +660,7 @@ createGenValue x = do
   (m, term) <- newNamedValueMeta DontRunMetaOccursCheck name metaType
 
   -- Freeze the meta to prevent named generalizable metas to be instantiated.
-  let fromJust' :: Lens' a (Maybe a)
-      fromJust' f (Just x) = Just <$> f x
-      fromJust' f Nothing  = {-'-} __IMPOSSIBLE__
-  stMetaStore . key m . fromJust' . metaFrozen `setTCLens` Frozen
+  updateMetaVar m $ \ mv -> mv { mvFrozen = Frozen }
 
   -- Set up names of arg metas
   forM_ (zip3 [1..] (map unArg args) (telToList argTel)) $ \ case
@@ -342,13 +691,22 @@ createGenValue x = do
 -- | Sort metas in dependency order.
 sortMetas :: [MetaId] -> TCM [MetaId]
 sortMetas metas = do
-  metaGraph <- fmap concat $ forM metas $ \ m -> do
-                  deps <- nub . filter (`elem` metas) . allMetas <$> (instantiateFull =<< getMetaType m)
-                  return [ (m, m') | m' <- deps ]
+  metaGraph <- concat <$> do
+    forM metas $ \ m -> do
+      deps <- allMetas (\ m' -> if m' `elem` metas then singleton m' else mempty) <$> getType m
+      return [ (m, m') | m' <- Set.toList deps ]
 
   caseMaybe (Graph.topSort metas metaGraph)
             (typeError GeneralizeCyclicDependency)
             return
+
+  where
+    -- Sort metas don't have types, but we still want to sort them.
+    getType m = do
+      mv <- lookupMeta m
+      case mvJudgement mv of
+        IsSort{}                 -> return Nothing
+        HasType{ jMetaType = t } -> Just <$> instantiateFull t
 
 -- | Create a not-yet correct record type for the generalized telescope. It's not yet correct since
 --   we haven't computed the telescope yet, and we need the record type to do it.
@@ -363,9 +721,9 @@ createGenRecordType genRecMeta@(El genRecSort _) sortedMetas = do
                   { conName      = con
                   , conInductive = Inductive
                   , conFields    = genRecFields }
-  forM_ genRecFields $ \ fld -> do
-    let field   = unArg fld     -- Filled in later
-        fieldTy = El __DUMMY_SORT__ $ Pi (defaultDom __DUMMY_TYPE__) (Abs "_" __DUMMY_TYPE__)
+  forM_ (zip sortedMetas genRecFields) $ \ (meta, fld) -> do
+    fieldTy <- getMetaType meta
+    let field = unArg fld
     addConstant field $ defaultDefn (argInfo fld) field fieldTy $
       let proj = Projection { projProper   = Just genRecName
                             , projOrig     = field
@@ -374,6 +732,7 @@ createGenRecordType genRecMeta@(El genRecSort _) sortedMetas = do
                             , projLams     = ProjLams [defaultArg "gtel"] } in
       Function { funClauses      = []
                , funCompiled     = Nothing
+               , funSplitTree    = Nothing
                , funTreeless     = Nothing
                , funInv          = NotInjective
                , funMutual       = Just []
@@ -385,6 +744,7 @@ createGenRecordType genRecMeta@(El genRecSort _) sortedMetas = do
                , funExtLam       = Nothing
                , funWith         = Nothing
                , funCopatternLHS = False
+               , funCovering     = []
                , funTPTPRole     = Nothing
                }
   addConstant (conName genRecCon) $ defaultDefn defaultArgInfo (conName genRecCon) __DUMMY_TYPE__ $ -- Filled in later

@@ -7,7 +7,7 @@
 --
 -- but using that gives warnings and doesn't silence -Wsemigroup in
 -- some versions of GHC.
-#if __GLASGOW_HASKELL__ >= 800 && __GLASGOW_HASKELL__ < 804
+#if __GLASGOW_HASKELL__ < 804
 {-# OPTIONS_GHC -Wno-semigroup #-}
 #endif
 
@@ -47,6 +47,7 @@ import qualified Agda.Syntax.Concrete.Pretty as CP
 import qualified Agda.Syntax.Info as A
 import Agda.Syntax.Scope.Monad (withContextPrecedence)
 
+import Agda.TypeChecking.Coverage.SplitTree
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Monad.Builtin (equalityUnview)
 import Agda.TypeChecking.Positivity.Occurrence
@@ -60,7 +61,6 @@ import Agda.Utils.Permutation (Permutation)
 import Agda.Utils.Pretty (Pretty, prettyShow)
 import qualified Agda.Utils.Pretty as P
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 ---------------------------------------------------------------------------
@@ -320,11 +320,14 @@ instance PrettyTCM Constraint where
             "Is not empty type of sizes:" <?> prettyTCMCtx TopCtx t
         CheckFunDef d i q cs -> do
             t <- defType <$> getConstInfo q
-            prettyTCM q <+> ":" <+> prettyTCM t
+            "Check definition of" <+> prettyTCM q <+> ":" <+> prettyTCM t
         HasBiggerSort a -> "Has bigger sort:" <+> prettyTCM a
         HasPTSRule a b -> "Has PTS rule:" <+> case b of
           NoAbs _ b -> prettyTCM (a,b)
           Abs x b   -> "(" <> prettyTCM a <+> "," <+> addContext x (prettyTCM b) <> ")"
+        UnquoteTactic _ v _ _ -> do
+          e <- reify v
+          prettyTCM (A.App A.defaultAppInfo_ (A.Unquote A.exprNoRange) (defaultNamedArg e))
 
       where
         prettyCmp :: (PrettyTCM a, PrettyTCM b) => TCM Doc -> a -> b -> TCM Doc
@@ -338,6 +341,7 @@ instance PrettyTCM TypeCheckingProblem where
     sep [ parens $ "_ :" <+> prettyTCM t0
         , nest 2 $ prettyList $ map prettyA es
         , nest 2 $ ":?" <+> prettyTCM t1 ]
+  prettyTCM (CheckProjAppToKnownPrincipalArg cmp e _ _ _ t _ _ _) = prettyTCM (CheckExpr cmp e t)
   prettyTCM (CheckLambda cmp (Arg ai (xs, mt)) e t) =
     sep [ return CP.lambda <+>
           (CP.prettyRelevance ai .
@@ -351,9 +355,6 @@ instance PrettyTCM TypeCheckingProblem where
           ":?"
         , prettyTCM t
         ]
-  prettyTCM (UnquoteTactic v _ _) = do
-    e <- reify v
-    prettyTCM (A.App A.defaultAppInfo_ (A.Unquote A.exprNoRange) (defaultNamedArg e))
   prettyTCM (DoQuoteTerm _ v _) = do
     e <- reify v
     prettyTCM (A.App A.defaultAppInfo_ (A.QuoteTerm A.exprNoRange) (defaultNamedArg e))
@@ -477,3 +478,8 @@ instance (PrettyTCM n, PrettyTCM (WithNode n e)) => PrettyTCM (Graph n e) where
         [ prettyTCM n
         , nest 2 $ vcat $ map (prettyTCM . uncurry WithNode) $ Map.assocs es
         ]
+
+instance PrettyTCM SplitTag where
+  prettyTCM (SplitCon c)  = prettyTCM c
+  prettyTCM (SplitLit l)  = prettyTCM l
+  prettyTCM SplitCatchall = return underscore

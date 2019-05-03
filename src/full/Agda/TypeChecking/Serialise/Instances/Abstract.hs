@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
@@ -21,7 +20,6 @@ import Agda.TypeChecking.Monad
 
 import Agda.Utils.Except
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 instance EmbPrj A.BindName where
@@ -135,6 +133,8 @@ instance EmbPrj ConPatInfo where
   icod_ (ConPatInfo a _ b) = icodeN' (\a b -> ConPatInfo a patNoRange b) a b
 
   value = valueN $ \a b -> ConPatInfo a patNoRange b
+
+instance EmbPrj ConPatLazy
 
 -- Only for pattern synonyms (where a is Void)
 instance EmbPrj a => EmbPrj (A.Pattern' a) where

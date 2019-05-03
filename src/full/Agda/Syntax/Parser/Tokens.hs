@@ -22,13 +22,11 @@ data Keyword
         | KwEta | KwNoEta
         | KwHiding | KwUsing | KwRenaming | KwTo | KwPublic
         | KwOPTIONS | KwBUILTIN | KwLINE
-        | KwCOMPILED_DATA | KwCOMPILED_TYPE | KwCOMPILED | KwCOMPILED_EXPORT
-        | KwHASKELL | KwFOREIGN | KwCOMPILE
-        | KwCOMPILED_JS | KwCOMPILED_UHC | KwCOMPILED_DATA_UHC
-        | KwIMPORT | KwIMPORT_UHC | KwIMPOSSIBLE | KwSTATIC | KwINJECTIVE | KwINLINE | KwNOINLINE
+        | KwFOREIGN | KwCOMPILE
+        | KwIMPOSSIBLE | KwSTATIC | KwINJECTIVE | KwINLINE | KwNOINLINE
         | KwETA
         | KwNO_TERMINATION_CHECK | KwTERMINATING | KwNON_TERMINATING
-        | KwWARNING_ON_USAGE
+        | KwWARNING_ON_USAGE | KwWARNING_ON_IMPORT
         | KwMEASURE | KwDISPLAY
         | KwREWRITE
         | KwQuoteGoal | KwQuoteContext | KwQuote | KwQuoteTerm

@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 
 ------------------------------------------------------------------------
 -- | Data type for all interactive responses
@@ -25,7 +24,6 @@ import Control.Monad.Trans
 import Data.Int
 import System.IO
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- | Responses for any interactive interface
@@ -82,7 +80,6 @@ data DisplayInfo
     | Info_Error String
         -- ^ When an error message is displayed this constructor should be
         -- used, if appropriate.
---    | Info_Warning String --FNF: currently unused
     | Info_Intro Doc
         -- ^ 'Info_Intro' denotes two different types of errors
         --   TODO: split these into separate constructors

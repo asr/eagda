@@ -16,6 +16,7 @@ import Agda.Syntax.Common
 import Agda.Syntax.Abstract as A hiding (Apply)
 import Agda.Syntax.Abstract.Pattern
 import Agda.Syntax.Reflected as R
+import Agda.Syntax.Internal (Dom(..))
 
 import Agda.TypeChecking.Monad as M hiding (MetaInfo)
 import Agda.Syntax.Scope.Monad (getCurrentModule)
@@ -142,7 +143,7 @@ instance ToAbstract R.Pattern (Names, A.Pattern) where
   toAbstract pat = case pat of
     R.ConP c args -> do
       (names, args) <- toAbstractPats args
-      return (names, A.ConP (ConPatInfo ConOCon patNoRange False) (unambiguous $ killRange c) args)
+      return (names, A.ConP (ConPatInfo ConOCon patNoRange ConPatEager) (unambiguous $ killRange c) args)
     R.DotP    -> return ([], A.WildP patNoRange)
     R.VarP s | isNoName s -> withName "z" $ \ name -> return ([name], A.VarP $ BindName name)
         -- Ulf, 2016-08-09: Also bind noNames (#2129). This to make the

@@ -53,7 +53,6 @@ import Agda.Compiler.CallCompiler
 import qualified Agda.Utils.IO.UTF8 as UTF8
 import Agda.Utils.FileName (filePath, AbsolutePath, mkAbsolute)
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 ------------------------------------------------------------------------
@@ -449,7 +448,7 @@ processCode toks' = do
             -- to its aspect (if any) and other aspects (e.g. error, unsolved meta)
             foldr (\c t -> cmdPrefix <+> T.pack c <+> cmdArg t)
                   (escape tok)
-                  $ map fromOtherAspect (otherAspects $ info tok') ++
+                  $ map fromOtherAspect (toList $ otherAspects $ info tok') ++
                     concatMap fromAspect (toList $ aspect $ info tok')
 
     -- Non-whitespace tokens at the start of a line trigger an
@@ -488,6 +487,7 @@ processCode toks' = do
         (\c -> if isOp then ["Operator", c] else [c]) $
         case kind of
           Bound                     -> s
+          Generalizable             -> s
           Constructor Inductive     -> "InductiveConstructor"
           Constructor CoInductive   -> "CoinductiveConstructor"
           Datatype                  -> s
@@ -585,7 +585,7 @@ spaces [ s ] = do
 -- properly
 stringLiteral :: Token -> Tokens
 stringLiteral t | aspect (info t) == Just String =
-  reverse $ foldl (\xs x -> t { text = x } : xs) []
+  map (\ x -> t { text = x })
           $ concatMap leadingSpaces
           $ List.intersperse "\n"
           $ T.lines (text t)

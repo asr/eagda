@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP                      #-}
 {-# LANGUAGE NondecreasingIndentation #-}
 
 module Agda.TypeChecking.Conversion where
@@ -11,10 +10,6 @@ import qualified Data.List as List
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified Data.IntSet as IntSet
-
-#if __GLASGOW_HASKELL__ <= 708
-import Data.Traversable ( traverse )
-#endif
 
 import Agda.Syntax.Abstract.Views (isSet)
 import Agda.Syntax.Common
@@ -57,7 +52,6 @@ import Agda.Utils.Size
 import Agda.Utils.Tuple
 import Agda.Utils.Lens
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- | Try whether a computation runs without errors or new constraints
@@ -1050,8 +1044,9 @@ coerce cmp v t1 t2 = blockTerm t2 $ do
 --
 --   Precondition: types are reduced.
 coerceSize :: (Type -> Type -> TCM ()) -> Term -> Type -> Type -> TCM ()
-coerceSize leqType v t1 t2 = workOnTypes $ do
-    reportSDoc "tc.conv.coerce" 70 $
+coerceSize leqType v t1 t2 = verboseBracket "tc.conv.size.coerce" 45 "coerceSize" $
+  workOnTypes $ do
+    reportSDoc "tc.conv.size.coerce" 70 $
       "coerceSize" <+> vcat
         [ "term      v  =" <+> pretty v
         , "from type t1 =" <+> pretty t1
@@ -1072,7 +1067,7 @@ coerceSize leqType v t1 t2 = workOnTypes $ do
       unlessM (tryConversion $ dontAssignMetas $ leqType t1 t2) $ do
         -- A (most probably weaker) alternative is to just check syn.eq.
         -- ifM (snd <$> checkSyntacticEquality t1 t2) (return v) $ {- else -} do
-        reportSDoc "tc.conv.coerce" 20 $ "coercing to a size type"
+        reportSDoc "tc.conv.size.coerce" 20 $ "coercing to a size type"
         case b2 of
           -- @t2 = Size@.  We are done!
           BoundedNo -> done
@@ -1458,9 +1453,9 @@ equalLevel' a b = do
 
         hasMeta ClosedLevel{}               = False
         hasMeta (Plus _ MetaLevel{})        = True
-        hasMeta (Plus _ (BlockedLevel _ v)) = not $ null $ allMetas v
-        hasMeta (Plus _ (NeutralLevel _ v)) = not $ null $ allMetas v
-        hasMeta (Plus _ (UnreducedLevel v)) = not $ null $ allMetas v
+        hasMeta (Plus _ (BlockedLevel _ v)) = isJust $ firstMeta v
+        hasMeta (Plus _ (NeutralLevel _ v)) = isJust $ firstMeta v
+        hasMeta (Plus _ (UnreducedLevel v)) = isJust $ firstMeta v
 
         isThisMeta x (Plus _ (MetaLevel y _)) = x == y
         isThisMeta _ _                      = False
@@ -1617,6 +1612,10 @@ equalSort s1 s2 = do
 
 forallFaceMaps :: Term -> (Map.Map Int Bool -> MetaId -> Term -> TCM a) -> (Substitution -> TCM a) -> TCM [a]
 forallFaceMaps t kb k = do
+  reportSDoc "conv.forall" 20 $
+      fsep ["forallFaceMaps"
+           , prettyTCM t
+           ]
   as <- decomposeInterval t
   boolToI <- do
     io <- primIOne
@@ -1625,7 +1624,12 @@ forallFaceMaps t kb k = do
   forM as $ \ (ms,ts) -> do
    ifBlockeds ts (kb ms) $ \ _ _ -> do
     let xs = map (id -*- boolToI) $ Map.toAscList ms
-    cxt <- asksTC envContext
+    cxt <- getContext
+    reportSDoc "conv.forall" 20 $
+      fsep ["substContextN"
+           , prettyTCM cxt
+           , prettyTCM xs
+           ]
     (cxt',sigma) <- substContextN cxt xs
     resolved <- forM xs (\ (i,t) -> (,) <$> lookupBV i <*> return (applySubst sigma t))
     updateContext sigma (const cxt') $
@@ -1667,6 +1671,12 @@ forallFaceMaps t kb k = do
     substContext i t [] = __IMPOSSIBLE__
     substContext i t (x:xs) | i == 0 = return $ (xs , singletonS 0 t)
     substContext i t (x:xs) | i > 0 = do
+                                  reportSDoc "conv.forall" 20 $
+                                    fsep ["substContext"
+                                        , text (show (i-1))
+                                        , prettyTCM t
+                                        , prettyTCM xs
+                                        ]
                                   (c,sigma) <- substContext (i-1) t xs
                                   let e = applySubst sigma x
                                   return (e:c, liftS 1 sigma)

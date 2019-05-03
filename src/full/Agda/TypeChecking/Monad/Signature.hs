@@ -1,5 +1,4 @@
 {-# LANGUAGE BangPatterns      #-}
-{-# LANGUAGE CPP                      #-}
 {-# LANGUAGE NondecreasingIndentation #-}
 
 module Agda.TypeChecking.Monad.Signature where
@@ -9,9 +8,7 @@ import Prelude hiding (null)
 import Control.Arrow (first, second, (***))
 import Control.Applicative hiding (empty)
 
-#if __GLASGOW_HASKELL__ >= 800
 import qualified Control.Monad.Fail as Fail
-#endif
 
 import Control.Monad.State
 import Control.Monad.Reader
@@ -50,6 +47,7 @@ import Agda.TypeChecking.Positivity.Occurrence
 import Agda.TypeChecking.Substitute
 import {-# SOURCE #-} Agda.TypeChecking.Telescope
 import Agda.TypeChecking.CompiledClause
+import Agda.TypeChecking.Coverage.SplitTree
 import {-# SOURCE #-} Agda.TypeChecking.CompiledClause.Compile
 import {-# SOURCE #-} Agda.TypeChecking.Polarity
 import {-# SOURCE #-} Agda.TypeChecking.ProjectionLike
@@ -68,7 +66,6 @@ import Agda.Utils.Pretty
 import Agda.Utils.Size
 import qualified Agda.Utils.HashMap as HMap
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- | Add a constant to the signature. Lifts the definition to top level.
@@ -108,6 +105,13 @@ setCompiledClauses q cc = modifySignature $ updateDefinition q $ updateTheDef $ 
     setT def@Function{} = def { funCompiled = Just cc }
     setT def            = def
 
+-- | Set SplitTree of a defined function symbol.
+setSplitTree :: QName -> SplitTree -> TCM ()
+setSplitTree q st = modifySignature $ updateDefinition q $ updateTheDef $ setT
+  where
+    setT def@Function{} = def { funSplitTree = Just st }
+    setT def            = def
+
 -- | Modify the clauses of a function.
 modifyFunClauses :: QName -> ([Clause] -> [Clause]) -> TCM ()
 modifyFunClauses q f =
@@ -128,48 +132,6 @@ mkPragma s = CompilerPragma <$> getCurrentRange <*> pure s
 -- | Add a compiler pragma `{-\# COMPILE <backend> <name> <text> \#-}`
 addPragma :: BackendName -> QName -> String -> TCM ()
 addPragma b q s = modifySignature . updateDefinition q . addCompilerPragma b =<< mkPragma s
-
--- ** Temporary **
---  The functions below are only needed while we still parse the old COMPILED
---  pragmas.
-
-type HaskellCode = String
-type HaskellType = String
-type JSCode = String
-type CoreCode = String
-
-addDeprecatedPragma :: String -> BackendName -> QName -> String -> TCM ()
-addDeprecatedPragma old b q s = do
-  let pq = prettyShow $ nameConcrete $ qnameName q
-  warning $ DeprecationWarning (unwords ["The", old, "pragma"])
-                               (unwords ["{-# COMPILE", b, pq, s, "#-}"]) "2.6"
-  addPragma b q s
-
-dataFormat :: String -> [String] -> String
-dataFormat ty cons = "= data " ++ ty ++ " (" ++ List.intercalate " | " cons ++ ")"
-
-addHaskellCode :: QName -> HaskellCode -> TCM ()
-addHaskellCode q hsCode = addDeprecatedPragma "COMPILED" ghcBackendName q $ "= " ++ hsCode
-
-addHaskellExport :: QName -> String -> TCM ()
-addHaskellExport q hsName = addDeprecatedPragma "COMPILED_EXPORT" ghcBackendName q $ "as " ++ hsName
-
-addHaskellType :: QName -> HaskellType -> TCM ()
-addHaskellType q hsTy = addDeprecatedPragma "COMPILED_TYPE" ghcBackendName q $ "= type " ++ hsTy
-
-addHaskellData :: QName -> HaskellType -> [HaskellCode] -> TCM ()
-addHaskellData q hsTy hsCons = addDeprecatedPragma "COMPILED_DATA" ghcBackendName q $ dataFormat hsTy hsCons
-
-addJSCode :: QName -> JSCode -> TCM ()
-addJSCode q jsDef = addDeprecatedPragma "COMPILED_JS" jsBackendName q ("= " ++ jsDef)
-
-addCoreCode :: QName -> CoreCode -> TCM ()
-addCoreCode q crDef = addDeprecatedPragma "COMPILED_UHC" uhcBackendName q $ "= " ++ crDef
-
-addCoreType :: QName -> CoreCode -> [CoreCode] -> TCM ()
-addCoreType q crTy crCons = addDeprecatedPragma "COMPILED_DATA_UHC" uhcBackendName q $ dataFormat crTy crCons
-
--- ** End of temporary functions **
 
 getUniqueCompilerPragma :: BackendName -> QName -> TCM (Maybe CompilerPragma)
 getUniqueCompilerPragma backend q = do
@@ -546,7 +508,7 @@ applySection' new ptel old ts ScopeCopyInfo{ renNames = rd, renModules = rm } = 
                          }
                 GeneralizableVar -> return GeneralizableVar
                 _ -> do
-                  cc <- compileClauses Nothing [cl] -- Andreas, 2012-10-07 non need for record pattern translation
+                  (mst, cc) <- compileClauses Nothing [cl] -- Andreas, 2012-10-07 non need for record pattern translation
                   let newDef =
                         set funMacro  (oldDef ^. funMacro) $
                         set funStatic (oldDef ^. funStatic) $
@@ -554,6 +516,7 @@ applySection' new ptel old ts ScopeCopyInfo{ renNames = rd, renModules = rm } = 
                         emptyFunction
                         { funClauses        = [cl]
                         , funCompiled       = Just cc
+                        , funSplitTree      = mst
                         , funMutual         = mutual
                         , funProjection     = proj
                         , funTerminates     = Just True
@@ -724,11 +687,7 @@ sigError f a = \case
 
 class ( Functor m
       , Applicative m
-#if __GLASGOW_HASKELL__ == 710
-      , Monad m
-#else
       , Fail.MonadFail m
-#endif
       , HasOptions m
       , MonadDebug m
       , MonadTCEnv m
@@ -1167,7 +1126,7 @@ treatAbstractly' q env = case envAbstractMode env of
   where
     current = dropAnon $ envCurrentModule env
     m       = dropAnon $ qnameModule q
-    dropAnon (MName ms) = MName $ reverse $ dropWhile isNoName $ reverse ms
+    dropAnon (MName ms) = MName $ List.dropWhileEnd isNoName ms
 
 -- | Get type of a constant, instantiated to the current context.
 {-# SPECIALIZE typeOfConst :: QName -> TCM Type #-}

@@ -71,7 +71,7 @@ import Agda.TypeChecking.Monad.State
 import Agda.TypeChecking.Monad.MetaVars (registerInteractionPoint)
 import Agda.TypeChecking.Monad.Debug
 import Agda.TypeChecking.Monad.Options
-import Agda.TypeChecking.Monad.Env (insideDotPattern, isInsideDotPattern)
+import Agda.TypeChecking.Monad.Env (insideDotPattern, isInsideDotPattern, getCurrentPath)
 import Agda.TypeChecking.Rules.Builtin (isUntypedBuiltin, bindUntypedBuiltin, builtinKindOfName)
 
 import Agda.TypeChecking.Patterns.Abstract (expandPatternSynonyms)
@@ -83,6 +83,7 @@ import Agda.Interaction.FindFile (checkModuleName)
 import {-# SOURCE #-} Agda.Interaction.Imports (scopeCheckImport)
 import Agda.Interaction.Options
 import qualified Agda.Interaction.Options.Lenses as Lens
+import Agda.Interaction.Options.Warnings
 
 import Agda.Utils.AssocList (AssocList)
 import qualified Agda.Utils.AssocList as AssocList
@@ -101,7 +102,6 @@ import Agda.Utils.Pretty (render, Pretty, pretty, prettyShow)
 import Agda.Utils.Tuple
 import Agda.Interaction.FindFile ( rootNameModule )
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 import Agda.ImpossibleTest (impossibleTest)
 
@@ -180,7 +180,7 @@ recordConstructorType decls =
     -- module.
     niceDecls NoWarn decls $ buildType . takeFields
   where
-    takeFields = reverse . dropWhile notField . reverse
+    takeFields = List.dropWhileEnd notField
 
     notField NiceField{} = False
     notField _           = True
@@ -1225,26 +1225,37 @@ instance ToAbstract (TopLevel [C.Declaration]) TopLevelInfo where
 niceDecls :: DoWarn -> [C.Declaration] -> ([NiceDeclaration] -> ScopeM a) -> ScopeM a
 niceDecls warn ds ret = setCurrentRange ds $ computeFixitiesAndPolarities warn ds $ do
   fixs <- scopeFixities <$> getScope  -- We need to pass the fixities to the nicifier for clause grouping
-  let (result, warns) = runNice $ niceDeclarations fixs ds
+  let (result, warns') = runNice $ niceDeclarations fixs ds
+
+  -- COMPILED pragmas are not allowed in safe mode unless we are in a builtin module.
+  -- So we start by filtering out all the PragmaCompiled warnings if one of these two
+  -- conditions is not met.
+  isSafe    <- Lens.getSafeMode <$> pragmaOptions
+  isBuiltin <- Lens.isBuiltinModule . filePath =<< getCurrentPath
+  let warns = if isSafe && not isBuiltin then warns' else filter notOnlyInSafeMode warns'
+
   unless (null warns) $ do
     -- If there are some warnings and the --safe flag is set,
     -- we check that none of the NiceWarnings are fatal
-    whenM (optSafe <$> pragmaOptions) $ do
-      let isUnsafe = \case
-            PragmaNoTerminationCheck{} -> True
-            MissingDefinitions{}       -> True
-            _ -> False
+    when isSafe $ do
+      let isUnsafe w = declarationWarningName w `elem`
+            [ PragmaNoTerminationCheck_
+            , PragmaCompiled_
+            , MissingDefinitions_
+            ]
       let (errs, ws) = List.partition isUnsafe warns
       -- If some of them are, we fail
       unless (null errs) $ do
-        mapM_ warning $ NicifierIssue <$> ws
+        warnings $ NicifierIssue <$> ws
         tcerrs <- mapM warning_ $ NicifierIssue <$> errs
-        typeError $ NonFatalErrors tcerrs
+        setCurrentRange errs $ typeError $ NonFatalErrors tcerrs
     -- Otherwise we simply record the warnings
     warnings $ NicifierIssue <$> warns
   case result of
     Left e   -> throwError $ Exception (getRange e) $ pretty e
     Right ds -> ret ds
+
+  where notOnlyInSafeMode = (PragmaCompiled_ /=) . declarationWarningName
 
 instance {-# OVERLAPPING #-} ToAbstract [C.Declaration] [A.Declaration] where
   toAbstract ds = do
@@ -1435,9 +1446,11 @@ instance ToAbstract NiceDeclaration A.Declaration where
 
   -- Axiom (actual postulate)
     C.Axiom r p a i rel x t -> do
-      -- check that we do not postulate in --safe mode
-      clo <- commandLineOptions
-      when (Lens.getSafeMode clo) (warning $ SafeFlagPostulate x)
+      -- check that we do not postulate in --safe mode, unless it is a
+      -- builtin module with safe postulates
+      whenM ((return . Lens.getSafeMode =<< commandLineOptions) `and2M`
+             (not <$> (Lens.isBuiltinModuleWithSafePostulates . filePath =<< getCurrentPath)))
+            (warning $ SafeFlagPostulate x)
       -- check the postulate
       toAbstractNiceAxiom A.NoFunSig NotMacroDef d
 
@@ -1655,15 +1668,18 @@ instance ToAbstract NiceDeclaration A.Declaration where
       notPublicWithoutOpen open dir
 
       -- Andreas, 2018-11-03, issue #3364, parse expression in as-clause as Name.
+      let illformedAs s = traceCall (SetRange $ getRange as) $ do
+            -- If @as@ is followed by something that is not a simple name,
+            -- throw a warning and discard the as-clause.
+            Nothing <$ warning (IllformedAsClause s)
       as <- case as of
         -- Ok if no as-clause or it (already) contains a Name.
         Nothing -> return Nothing
         Just (AsName (Right asName) r)                    -> return $ Just $ AsName asName r
         Just (AsName (Left (C.Ident (C.QName asName))) r) -> return $ Just $ AsName asName r
-        Just (AsName (Left e) r) -> traceCall (SetRange $ getRange as) $ do
-          -- If @as@ is followed by something that is not a simple name,
-          -- throw a warning and discard the as-clause.
-          Nothing <$ warning IllformedAsClause
+        Just (AsName (Left (C.Ident C.Qual{})) r) -> illformedAs "; a qualified name is not allowed here"
+        Just (AsName (Left C.Underscore{})     r) -> illformedAs "; an underscore is not allowed here"
+        Just (AsName (Left e)                  r) -> illformedAs ""
 
       -- First scope check the imported module and return its name and
       -- interface. This is done with that module as the top-level module.
@@ -1783,15 +1799,18 @@ collectGeneralizables m = bracket_ open close $ do
         pure gvs
     close = (stGeneralizedVars `setTCLens`)
 
+createBoundNamesForGeneralizables :: Set I.QName -> ScopeM (Map I.QName I.Name)
+createBoundNamesForGeneralizables vs =
+  flip Map.traverseWithKey (Map.fromSet (const ()) vs) $ \ q _ -> do
+    let x  = nameConcrete $ qnameName q
+        fx = nameFixity   $ qnameName q
+    freshAbstractName fx x
+
 collectAndBindGeneralizables :: ScopeM a -> ScopeM (Map I.QName I.Name, a)
 collectAndBindGeneralizables m = do
   (s, res) <- collectGeneralizables m
-  binds <- fmap Map.fromList $ forM (Set.toList s) $ \ q -> do
-    let x  = nameConcrete $ qnameName q
-        fx = nameFixity   $ qnameName q
-    y <- freshAbstractName fx x
-    return (q, y)
   -- We should bind the named generalizable variables as fresh variables
+  binds <- createBoundNamesForGeneralizables s
   bindGeneralizables binds
   return (binds, res)
 
@@ -1901,54 +1920,6 @@ instance ToAbstract C.Pragma [A.Pragma] where
       A.Con x          -> genericError $ "REWRITE used on ambiguous name " ++ prettyShow x
       A.Var x          -> genericError $ "REWRITE used on parameter " ++ prettyShow x ++ " instead of on a defined symbol"
       _       -> __IMPOSSIBLE__
-  toAbstract (C.CompiledTypePragma _ x hs) = do
-    e <- toAbstract $ OldQName x Nothing
-    case e of
-      A.Def x -> return [ A.CompiledTypePragma x hs ]
-      _       -> genericError $ "Bad compiled type: " ++ prettyShow x  -- TODO: error message
-  toAbstract (C.CompiledDataPragma _ x hs hcs) = do
-    e <- toAbstract $ OldQName x Nothing
-    case e of
-      A.Def x -> return [ A.CompiledDataPragma x hs hcs ]
-      _       -> genericError $ "Not a datatype: " ++ prettyShow x  -- TODO: error message
-  toAbstract (C.CompiledPragma _ x hs) = do
-    e <- toAbstract $ OldQName x Nothing
-    y <- case e of
-          A.Def x -> return x
-          A.Proj _ c | Just x <- getUnambiguous c -> return x -- TODO: do we need to do s.th. special for projections? (Andreas, 2014-10-12)
-          A.Proj _ x -> genericError $ "COMPILED on ambiguous name " ++ prettyShow x
-          A.Con _ -> genericError "Use COMPILED_DATA for constructors" -- TODO
-          _       -> __IMPOSSIBLE__
-    return [ A.CompiledPragma y hs ]
-  toAbstract (C.CompiledExportPragma _ x hs) = do
-    e <- toAbstract $ OldQName x Nothing
-    y <- case e of
-          A.Def x -> return x
-          _       -> __IMPOSSIBLE__
-    return [ A.CompiledExportPragma y hs ]
-  toAbstract (C.CompiledJSPragma _ x ep) = do
-    e <- toAbstract $ OldQName x Nothing
-    y <- case e of
-          A.Def x -> return x
-          A.Proj _ p | Just x <- getUnambiguous p -> return x
-          A.Proj _ x -> genericError $
-            "COMPILED_JS used on ambiguous name " ++ prettyShow x
-          A.Con c | Just x <- getUnambiguous c -> return x
-          A.Con x -> genericError $
-            "COMPILED_JS used on ambiguous name " ++ prettyShow x
-          _       -> __IMPOSSIBLE__
-    return [ A.CompiledJSPragma y ep ]
-  toAbstract (C.CompiledUHCPragma _ x cr) = do
-    e <- toAbstract $ OldQName x Nothing
-    y <- case e of
-          A.Def x -> return x
-          _       -> __IMPOSSIBLE__
-    return [ A.CompiledUHCPragma y cr ]
-  toAbstract (C.CompiledDataUHCPragma _ x crd crcs) = do
-    e <- toAbstract $ OldQName x Nothing
-    case e of
-      A.Def x -> return [ A.CompiledDataUHCPragma x crd crcs ]
-      _       -> fail $ "Bad compiled type: " ++ prettyShow x  -- TODO: error message
   toAbstract (C.ForeignPragma _ b s) = [] <$ addForeignCode b s
   toAbstract (C.CompilePragma _ b x s) = do
     e <- toAbstract $ OldQName x Nothing
@@ -2020,15 +1991,6 @@ instance ToAbstract C.Pragma [A.Pragma] where
     else do
       q <- toAbstract $ ResolveQName q
       return [ A.BuiltinPragma b q ]
-  toAbstract (C.ImportPragma _ i) = do
-    addHaskellImport i
-    return []
-  toAbstract (C.ImportUHCPragma _ i) = do
-    addHaskellImportUHC i
-    return []
-  toAbstract (C.HaskellCodePragma _ s) = do
-    addInlineHaskell s
-    return []
   toAbstract (C.EtaPragma _ x) = do
     e <- toAbstract $ OldQName x Nothing
     case e of
@@ -2081,6 +2043,10 @@ instance ToAbstract C.Pragma [A.Pragma] where
   toAbstract (C.WarningOnUsage _ oqn str) = do
     qn <- toAbstract $ OldName oqn
     stLocalUserWarnings `modifyTCLens` Map.insert qn str
+    pure []
+
+  toAbstract (C.WarningOnImport _ str) = do
+    stWarningOnImport `setTCLens` Just str
     pure []
 
   -- Termination checking pragmes are handled by the nicifier
@@ -2412,10 +2378,46 @@ resolvePatternIdentifier r x ns = do
     VarPatName y         -> do
       reportSLn "scope.pat" 60 $ "  resolved to VarPatName " ++ show y ++ " with range " ++ show (getRange y)
       return $ VarP $ A.BindName y
-    ConPatName ds        -> return $ ConP (ConPatInfo ConOCon (PatRange r) False)
+    ConPatName ds        -> return $ ConP (ConPatInfo ConOCon (PatRange r) ConPatEager)
                                           (AmbQ $ fmap anameName ds) []
     PatternSynPatName ds -> return $ PatternSynP (PatRange r)
                                                  (AmbQ $ fmap anameName ds) []
+
+-- | Apply an abstract syntax pattern head to pattern arguments.
+--
+--   Fails with 'InvalidPattern' if head is not a constructor pattern
+--   (or similar) that can accept arguments.
+--
+applyAPattern
+  :: C.Pattern            -- ^ The application pattern in concrete syntax.
+  -> A.Pattern' C.Expr    -- ^ Head of application.
+  -> NAPs C.Expr          -- ^ Arguments of application.
+  -> ScopeM (A.Pattern' C.Expr)
+applyAPattern p0 p ps = do
+  setRange (getRange p0) <$> do
+    case p of
+      A.ConP i x as        -> return $ A.ConP        i x (as ++ ps)
+      A.DefP i x as        -> return $ A.DefP        i x (as ++ ps)
+      A.PatternSynP i x as -> return $ A.PatternSynP i x (as ++ ps)
+      -- Dotted constructors are turned into "lazy" constructor patterns.
+      A.DotP i (Ident x)   -> resolveName x >>= \case
+        ConstructorName ds -> do
+          let cpi = ConPatInfo ConOCon i ConPatLazy
+              c   = AmbQ (fmap anameName ds)
+          return $ A.ConP cpi c ps
+        _ -> failure
+      A.DotP{}    -> failure
+      A.VarP{}    -> failure
+      A.ProjP{}   -> failure
+      A.WildP{}   -> failure
+      A.AsP{}     -> failure
+      A.AbsurdP{} -> failure
+      A.LitP{}    -> failure
+      A.RecP{}    -> failure
+      A.EqualP{}  -> failure
+      A.WithP{}   -> failure
+  where
+    failure = typeError $ InvalidPattern p0
 
 instance ToAbstract C.Pattern (A.Pattern' C.Expr) where
 
@@ -2446,25 +2448,9 @@ instance ToAbstract C.Pattern (A.Pattern' C.Expr) where
         p <- distributeDots p
         reportSLn "scope.pat" 50 $ "distributeDots after  = " ++ show p
         (p', q') <- toAbstract (p, q)
-        case p' of
-            ConP i x as        -> return $ ConP (i {patInfo = info}) x (as ++ [q'])
-            ProjP i o x        -> failure
-            DefP _ x as        -> return $ DefP info x (as ++ [q'])
-            PatternSynP _ x as -> return $ PatternSynP info x (as ++ [q'])
-            A.DotP i e         -> case e of
-              Ident x -> resolveName x >>= \case
-                ConstructorName ds -> do
-                  let cpi = ConPatInfo ConOCon i True
-                      c   = AmbQ (fmap anameName ds)
-                  return $ ConP cpi c [q']
-                _ -> failure
-              _ -> failure
-            _ -> failure
-        where
-            r = getRange p0
-            info = PatRange r
-            failure = typeError $ InvalidPattern p0
+        applyAPattern p0 p' [q']
 
+        where
             distributeDots :: C.Pattern -> ScopeM C.Pattern
             distributeDots p@(C.DotP r e) = distributeDotsExpr r e
             distributeDots p = return p
@@ -2491,15 +2477,10 @@ instance ToAbstract C.Pattern (A.Pattern' C.Expr) where
             parseRawApp e             = return e
 
     toAbstract p0@(OpAppP r op ns ps) = do
+        reportSLn "scope.pat" 60 $ "ConcreteToAbstract.toAbstract OpAppP{}: " ++ show p0
         p  <- resolvePatternIdentifier (getRange op) op (Just ns)
         ps <- toAbstract ps
-        case p of
-          ConP        i x as -> return $ ConP (i {patInfo = info}) x (as ++ ps)
-          DefP        _ x as -> return $ DefP               info   x (as ++ ps)
-          PatternSynP _ x as -> return $ PatternSynP        info   x (as ++ ps)
-          _                  -> __IMPOSSIBLE__
-        where
-        info = PatRange r
+        applyAPattern p0 p ps
 
     -- Removed when parsing
     toAbstract (HiddenP _ _)   = __IMPOSSIBLE__

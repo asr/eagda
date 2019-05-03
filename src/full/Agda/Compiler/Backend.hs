@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE TypeOperators #-}
@@ -50,7 +49,6 @@ import Agda.Utils.Pretty
 import Agda.Compiler.ToTreeless
 import Agda.Compiler.Common
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- Public interface -------------------------------------------------------
@@ -82,7 +80,7 @@ data Backend' opts env menv mod def = Backend'
       --   required.
   , postModule       :: env -> menv -> IsMain -> ModuleName -> [def] -> TCM mod
       -- ^ Called after all definitions of a module has been compiled.
-  , compileDef       :: env -> menv -> Definition -> TCM def
+  , compileDef       :: env -> menv -> IsMain -> Definition -> TCM def
       -- ^ Compile a single definition.
   , scopeCheckingSuffices :: Bool
     -- ^ True if the backend works if @--only-scope-checking@ is used.
@@ -129,18 +127,19 @@ embedFlag l flag = l flag
 embedOpt :: Lens' a b -> OptDescr (Flag a) -> OptDescr (Flag b)
 embedOpt l = fmap (embedFlag l)
 
-parseBackendOptions :: [Backend] -> [String] -> OptM ([Backend], CommandLineOptions)
-parseBackendOptions backends argv =
+parseBackendOptions :: [Backend] -> [String] -> CommandLineOptions -> OptM ([Backend], CommandLineOptions)
+parseBackendOptions backends argv opts0 =
   case makeAll backendWithOpts backends of
     Some bs -> do
-      let agdaFlags    = map (embedOpt lSnd) standardOptions
+      let agdaFlags    = map (embedOpt lSnd) (deadStandardOptions ++ standardOptions)
           backendFlags = do
             Some i            <- forgetAll Some $ allIndices bs
             BackendWithOpts b <- [lookupIndex bs i]
             opt               <- commandLineFlags b
             return $ embedOpt (lFst . lIndex i . bOptions) opt
-      (backends, opts) <- getOptSimple argv (agdaFlags ++ backendFlags) (embedFlag lSnd . inputFlag)
-                                            (bs, defaultOptions)
+      (backends, opts) <- getOptSimple (stripRTS argv)
+                                       (agdaFlags ++ backendFlags) (embedFlag lSnd . inputFlag)
+                                       (bs, opts0)
       opts <- checkOpts opts
       return (forgetAll forgetOpts backends, opts)
 
@@ -200,8 +199,8 @@ compileModule backend env isMain i = do
     Skip m         -> return m
     Recompile menv -> do
       defs <- map snd . sortDefs <$> curDefs
-      res  <- mapM (compileDef' backend env menv <=< instantiateFull) defs
+      res  <- mapM (compileDef' backend env menv isMain <=< instantiateFull) defs
       postModule backend env menv isMain (iModuleName i) res
 
-compileDef' :: Backend' opts env menv mod def -> env -> menv -> Definition -> TCM def
-compileDef' backend env menv def = setCurrentRange (defName def) $ compileDef backend env menv def
+compileDef' :: Backend' opts env menv mod def -> env -> menv -> IsMain -> Definition -> TCM def
+compileDef' backend env menv isMain def = setCurrentRange (defName def) $ compileDef backend env menv isMain def

@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 
 module Agda.Interaction.CommandLine where
 
@@ -20,8 +19,6 @@ import Agda.Syntax.Scope.Base
 import Agda.Syntax.Translation.ConcreteToAbstract
 import Agda.Syntax.Abstract.Pretty
 
-import Text.PrettyPrint
-
 import Agda.TheTypeChecker
 import Agda.TypeChecking.Constraints
 import Agda.TypeChecking.Monad
@@ -33,8 +30,8 @@ import Agda.TypeChecking.Warnings (runPM)
 
 import Agda.Utils.Except ( MonadError(catchError) )
 import Agda.Utils.Monad
+import Agda.Utils.Pretty
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 data ExitCode a = Continue | ContinueIn TCEnv | Return a
@@ -136,7 +133,7 @@ loadFile _ _ = liftIO $ putStrLn ":load file"
 showConstraints :: [String] -> TCM ()
 showConstraints [] =
     do  cs <- BasicOps.getConstraints
-        liftIO $ putStrLn $ unlines (List.map show cs)
+        liftIO $ putStrLn $ unlines (List.map prettyShow cs)
 showConstraints _ = liftIO $ putStrLn ":constraints [cid]"
 
 
@@ -146,22 +143,22 @@ showMetas [m] =
         withInteractionId i $ do
           s <- typeOfMeta AsIs i
           r <- getInteractionRange i
-          d <- showA s
-          liftIO $ putStrLn $ d ++ " " ++ show r
+          d <- prettyA s
+          liftIO $ putStrLn $ show d ++ " " ++ show r
 showMetas [m,"normal"] =
     do  i <- InteractionId <$> readM m
         withInteractionId i $ do
-          s <- showA =<< typeOfMeta Normalised i
+          s <- prettyA =<< typeOfMeta Normalised i
           r <- getInteractionRange i
-          liftIO $ putStrLn $ s ++ " " ++ show r
+          liftIO $ putStrLn $ show s ++ " " ++ show r
 showMetas [] =
     do  interactionMetas <- typesOfVisibleMetas AsIs
         hiddenMetas      <- typesOfHiddenMetas  AsIs
-        mapM_ (liftIO . putStrLn) =<< mapM showII interactionMetas
+        mapM_ (liftIO . print) =<< mapM showII interactionMetas
         mapM_ print' hiddenMetas
     where
-        showII o = withInteractionId (outputFormId $ OutputForm noRange [] o) $ showA o
-        showM  o = withMetaId (nmid $ outputFormId $ OutputForm noRange [] o) $ showA o
+        showII o = withInteractionId (outputFormId $ OutputForm noRange [] o) $ prettyA o
+        showM  o = withMetaId (nmid $ outputFormId $ OutputForm noRange [] o) $ prettyA o
 
         metaId (OfType i _) = i
         metaId (JustType i) = i
@@ -171,7 +168,7 @@ showMetas [] =
         print' x = do
             r <- getMetaRange $ nmid $ metaId x
             d <- showM x
-            liftIO $ putStrLn $ d ++ "  [ at " ++ show r ++ " ]"
+            liftIO $ putStrLn $ show d ++ "  [ at " ++ show r ++ " ]"
 showMetas _ = liftIO $ putStrLn $ ":meta [metaid]"
 
 
@@ -266,7 +263,7 @@ showContext (meta:args) = do
     i <- InteractionId <$> readM meta
     mi <- lookupMeta =<< lookupInteractionId i
     withMetaInfo (getMetaInfo mi) $ do
-      ctx <- List.map unDom . telToList <$> getContextTelescope
+      ctx <- List.map I.unDom . telToList <$> getContextTelescope
       zipWithM_ display ctx $ reverse $ zipWith const [1..] ctx
     where
         display (x, t) n = do

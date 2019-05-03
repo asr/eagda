@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP             #-}
 {-# LANGUAGE NondecreasingIndentation #-}
 
 module Agda.Interaction.MakeCase where
@@ -31,6 +30,7 @@ import Agda.Syntax.Translation.InternalToAbstract
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Coverage
 import Agda.TypeChecking.Coverage.Match ( SplitPatVar(..) , SplitPattern , applySplitPSubst , fromSplitPatterns )
+import Agda.TypeChecking.Empty ( isEmptyTel )
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.RecordPatterns
 import Agda.TypeChecking.Reduce
@@ -53,7 +53,6 @@ import Agda.Utils.Singleton
 import Agda.Utils.Size
 import qualified Agda.Utils.HashMap as HMap
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 type CaseContext = Maybe ExtLamInfo
@@ -112,11 +111,14 @@ parseVariables f tel ii rng ss = do
           failModuleBound = typeError $ GenericError $
             "Cannot split on module parameter " ++ s
           failLetBound v  = typeError . GenericError $
-            "cannot split on let-bound variable " ++ s
+            "Cannot split on let-bound variable " ++ s
           failInstantiatedVar v = typeError . GenericDocError =<< sep
               [ text $ "Cannot split on variable " ++ s ++ ", because it is bound to"
               , prettyTCM v
               ]
+          failCaseLet     = typeError $ GenericError $
+            "Cannot split on variable " ++ s ++
+            ", because let-declarations may not be defined by pattern-matching"
 
       -- Jesper, 2018-12-19: Don't consider generalizable names since
       -- they can be shadowed by hidden variables.
@@ -142,7 +144,8 @@ parseVariables f tel ii rng ss = do
             -- case the instantiation could as well be the other way
             -- around, so the new clauses will still make sense.
             (Var i [] , PatternBound) -> do
-              when (i < nlocals) __IMPOSSIBLE__
+              reportSLn "interaction.case" 30 $ "resolved variable " ++ show x ++ " = " ++ show i
+              when (i < nlocals) failCaseLet
               return (i - nlocals , C.InScope)
             (Var i [] , LambdaBound)
               | i < nlocals -> failLocal
@@ -169,25 +172,29 @@ parseVariables f tel ii rng ss = do
             _   -> failAmbiguous
 
 -- | Lookup the clause for an interaction point in the signature.
---   Returns the CaseContext, the clause itself, and a list of previous clauses
+--   Returns the CaseContext, the previous clauses, the clause itself,
+--   and a list of the remaining ones.
 
--- Andreas, 2016-06-08, issue #289 and #2006.
--- This replace the old findClause hack (shutter with disgust).
-getClauseForIP :: QName -> Int -> TCM (CaseContext, Clause, [Clause])
-getClauseForIP f clauseNo = do
+type ClauseZipper =
+   ( [Clause] -- previous clauses
+   , Clause   -- clause of interest
+   , [Clause] -- other clauses
+   )
+
+getClauseZipperForIP :: QName -> Int -> TCM (CaseContext, ClauseZipper)
+getClauseZipperForIP f clauseNo = do
   (theDef <$> getConstInfo f) >>= \case
     Function{funClauses = cs, funExtLam = extlam} -> do
-      let (cs1,cs2) = fromMaybe __IMPOSSIBLE__ $ splitExactlyAt clauseNo cs
-          c         = fromMaybe __IMPOSSIBLE__ $ headMaybe cs2
-      return (extlam, c, cs1)
+      let (cs1,ccs2) = fromMaybe __IMPOSSIBLE__ $ splitExactlyAt clauseNo cs
+          (c,cs2)    = fromMaybe __IMPOSSIBLE__ $ uncons ccs2
+      return (extlam, (cs1, c, cs2))
     d -> do
       reportSDoc "impossible" 10 $ vcat
-        [ "getClauseForIP" <+> prettyTCM f <+> text (show clauseNo)
+        [ "getClauseZipperForIP" <+> prettyTCM f <+> text (show clauseNo)
           <+> "received"
         , text (show d)
         ]
       __IMPOSSIBLE__
-
 
 -- | Entry point for case splitting tactic.
 
@@ -198,14 +205,13 @@ makeCase hole rng s = withInteractionId hole $ do
   localTC (\ e -> e { envPrintMetasBare = True }) $ do
 
   -- Get function clause which contains the interaction point.
-
   InteractionPoint { ipMeta = mm, ipClause = ipCl} <- lookupInteractionPoint hole
   let meta = fromMaybe __IMPOSSIBLE__ mm
   (f, clauseNo, rhs) <- case ipCl of
     IPClause f clauseNo rhs -> return (f, clauseNo, rhs)
     IPNoClause -> typeError $ GenericError $
       "Cannot split here, as we are not in a function definition"
-  (casectxt, clause, prevClauses) <- getClauseForIP f clauseNo
+  (casectxt, (prevClauses, clause, follClauses)) <- getClauseZipperForIP f clauseNo
   let perm = fromMaybe __IMPOSSIBLE__ $ clausePerm clause
       tel  = clauseTel  clause
       ps   = namedClausePats clause
@@ -216,7 +222,7 @@ makeCase hole rng s = withInteractionId hole $ do
       , "context =" <+> ((inTopContext . prettyTCM) =<< getContextTelescope)
       , "tel     =" <+> (inTopContext . prettyTCM) tel
       , "perm    =" <+> text (show perm)
-      , "ps      =" <+> text (show ps)
+      , "ps      =" <+> prettyTCMPatternList ps
       ]
     ]
 
@@ -288,13 +294,32 @@ makeCase hole rng s = withInteractionId hole $ do
           if (nis == C.NotInScope) then Left x else Right x
     let sc = makePatternVarsVisible toShow $ clauseToSplitClause clause
     scs <- split f toSplit sc
-    -- filter out clauses that are already covered
+    reportSLn "interaction.case" 70 $ "makeCase: survived the splitting"
+
+    -- CLEAN UP OF THE GENERATED CLAUSES
+    -- 1. filter out clauses that are already covered
     scs <- filterM (not <.> isCovered f prevClauses . fst) scs
-    cs <- forM scs $ \(sc, isAbsurd) -> do
-            if isAbsurd then makeAbsurdClause f sc else makeAbstractClause f rhs sc
+    reportSLn "interaction.case" 70 $ "makeCase: survived filtering out already covered clauses"
+    -- 2. filter out trivially impossible clauses not asked for by the user
+    cs <- catMaybes <$> do
+     forM scs $ \ (sc, isAbsurd) -> if isAbsurd
+      -- absurd clause coming from a split asked for by the user
+      then Just <$> makeAbsurdClause f sc
+      -- trivially empty clause due to the refined patterns
+      else
+        ifM (liftTCM $ isEmptyTel (scTel sc))
+          {- then -} (pure Nothing)
+          {- else -} (Just <$> makeAbstractClause f rhs sc)
+    reportSLn "interaction.case" 70 $ "makeCase: survived filtering out impossible clauses"
+    -- 3. If the cleanup removed everything then we know that none of the clauses where
+    --    absurd but that all of them were trivially empty. In this case we rewind and
+    --    insert all the clauses (garbage in, garbage out!)
+    cs <- if not (null cs) then pure cs
+          else mapM (makeAbstractClause f rhs . fst) scs
+
     reportSDoc "interaction.case" 65 $ vcat
       [ "split result:"
-      , nest 2 $ vcat $ map (text . show . A.deepUnscope) cs
+      , nest 2 $ vcat $ map prettyA cs
       ]
     checkClauseIsClean ipCl
     return (f, casectxt, cs)
@@ -367,7 +392,7 @@ makeAbsurdClause f (SClause tel sps _ _ t) = do
     let c = Clause noRange noRange tel ps Nothing t False Nothing
     -- Normalise the dot patterns
     ps <- addContext tel $ normalise $ namedClausePats c
-    reportSDoc "interaction.case" 60 $ "normalized patterns: " <+> text (show ps)
+    reportSDoc "interaction.case" 60 $ "normalized patterns: " <+> prettyTCMPatternList ps
     inTopContext $ reify $ QNamed f $ c { namedClausePats = ps }
 
 
@@ -377,7 +402,7 @@ makeAbstractClause :: QName -> A.RHS -> SplitClause -> TCM A.Clause
 makeAbstractClause f rhs cl = do
 
   lhs <- A.clauseLHS <$> makeAbsurdClause f cl
-  reportSDoc "interaction.case" 60 $ "reified lhs: " <+> text (show lhs)
+  reportSDoc "interaction.case" 60 $ "reified lhs: " <+> prettyA lhs
   return $ A.Clause lhs [] rhs A.noWhereDecls False
   -- let ii = InteractionId (-1)  -- Dummy interaction point since we never type check this.
   --                              -- Can end up in verbose output though (#1842), hence not __IMPOSSIBLE__.

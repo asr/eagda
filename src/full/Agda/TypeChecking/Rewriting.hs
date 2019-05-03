@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP               #-}
 {-# LANGUAGE NondecreasingIndentation #-}
 
 {-# OPTIONS_GHC -fno-warn-orphans #-}
@@ -92,7 +91,6 @@ import Agda.Utils.Size
 import Agda.Utils.Lens
 import qualified Agda.Utils.HashMap as HMap
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 requireOptionRewriting :: TCM ()
@@ -167,8 +165,7 @@ addRewriteRule q = do
       ]
   -- We know that the type of rel is that of a relation.
   relV <- relView =<< do defType <$> getConstInfo rel
-  let RelView _tel delta a _a' _core = -- line break for CPP
-        fromMaybe __IMPOSSIBLE__ relV
+  let RelView _tel delta a _a' _core = fromMaybe __IMPOSSIBLE__ relV
   reportSDoc "rewriting" 30 $ do
     "rewrite relation at type " <+> do
       inTopContext $ prettyTCM (telFromList delta) <+> " |- " <+> do
@@ -207,8 +204,8 @@ addRewriteRule q = do
       gamma1 <- instantiateFull gamma1
       let gamma = gamma0 `abstract` gamma1
 
-      unless (null $ allMetas (telToList gamma1)) $ do
-        reportSDoc "rewriting" 30 $ "metas in gamma1: " <+> text (show $ allMetas $ telToList gamma1)
+      unless (noMetas (telToList gamma1)) $ do
+        reportSDoc "rewriting" 30 $ "metas in gamma1: " <+> text (show $ allMetasList $ telToList gamma1)
         failureMetas
 
       -- 2017-06-18, Jesper: Unfold inlined definitions on the LHS.
@@ -236,10 +233,10 @@ addRewriteRule q = do
 
         checkNoLhsReduction f es
 
-        unless (null $ allMetas (es, rhs, b)) $ do
-          reportSDoc "rewriting" 30 $ "metas in lhs: " <+> text (show $ allMetas es)
-          reportSDoc "rewriting" 30 $ "metas in rhs: " <+> text (show $ allMetas rhs)
-          reportSDoc "rewriting" 30 $ "metas in b  : " <+> text (show $ allMetas b)
+        unless (noMetas (es, rhs, b)) $ do
+          reportSDoc "rewriting" 30 $ "metas in lhs: " <+> text (show $ allMetasList es)
+          reportSDoc "rewriting" 30 $ "metas in rhs: " <+> text (show $ allMetasList rhs)
+          reportSDoc "rewriting" 30 $ "metas in b  : " <+> text (show $ allMetasList b)
           failureMetas
 
         ps <- patternFrom Relevant 0 (t , Def f []) es

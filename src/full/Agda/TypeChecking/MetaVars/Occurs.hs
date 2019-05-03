@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
 {-# LANGUAGE NondecreasingIndentation #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -62,7 +61,6 @@ import Agda.Utils.Permutation
 import Agda.Utils.Pretty (prettyShow)
 import Agda.Utils.Size
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 {- To address issue 585 (meta var occurrences in mutual defs)
@@ -871,7 +869,7 @@ performKill kills m a = do
       judg = case mvJudgement mv of
         HasType{} -> HasType __IMPOSSIBLE__ a
         IsSort{}  -> IsSort  __IMPOSSIBLE__ a
-  m' <- newMeta (mvInfo mv) (mvPriority mv) perm judg
+  m' <- newMeta Instantiable (mvInfo mv) (mvPriority mv) perm judg
   -- Andreas, 2010-10-15 eta expand new meta variable if necessary
   etaExpandMetaSafe m'
   let -- Arguments to new meta (de Bruijn indices)

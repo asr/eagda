@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 module Agda.TypeChecking.DeadCode (eliminateDeadCode) where
 
 import Control.Monad
@@ -31,7 +30,6 @@ import qualified Agda.Utils.HashMap as HMap
 import Agda.Utils.Lens
 
 import Agda.Utils.Impossible
-#include "undefined.h"
 
 -- ASR TODO (2016-04-13): We remove the use of
 -- @eliminateDeadCode@ because Apia is not supporting it.

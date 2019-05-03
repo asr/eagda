@@ -118,7 +118,7 @@ Record values are constructed by giving a value for each record field:
 
    record { <fieldname1> = <term1> ; <fieldname2> = <term2> ; ... }
 
-where the types of the terms matches the types of the fields. If a
+where the types of the terms match the types of the fields. If a
 constructor ``<constructorname>`` has been declared for the record,
 this can also be written
 
@@ -143,7 +143,7 @@ Records can also be constructed by :ref:`updating other records
 Building records from modules
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The ``record { <fields> }`` syntax also accept module names. Fields
+The ``record { <fields> }`` syntax also accepts module names. Fields
 are defined using the corresponding definitions from the given module.
 For instance assuming this record type R and module M:
 
@@ -194,12 +194,12 @@ records:
   sum : Pair Nat Nat → Nat
   sum (x , y) = x + y
 
-Internally, this is translated to
+Or, using a :ref:`let binding record pattern<let-record-pattern>`:
 
 ::
 
   sum' : Pair Nat Nat → Nat
-  sum' p = (Pair.fst p) + (Pair.snd p)
+  sum' p = let (x , y) = p in x + y
 
 
 .. note::

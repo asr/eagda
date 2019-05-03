@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE BangPatterns #-}
 
 -- | Lenses for 'TCState' and more.
@@ -8,7 +7,7 @@ module Agda.TypeChecking.Monad.State where
 import Control.Arrow (first)
 import qualified Control.Exception as E
 import Control.Monad.Reader (asks)
-import Control.Monad.State (put, get, gets, modify, modify')
+import Control.Monad.State (put, get, gets, modify, modify', void)
 import Control.Monad.Trans (liftIO)
 
 import Data.Maybe
@@ -48,7 +47,6 @@ import Agda.Utils.NonemptyList
 import Agda.Utils.Pretty
 import Agda.Utils.Tuple
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- | Resets the non-persistent part of the type checking state.
@@ -92,6 +90,19 @@ localTCStateSaving compute = do
     putTC oldState
     modifyBenchmark $ const b
   return (result, newState)
+
+data SpeculateResult = SpeculateAbort | SpeculateCommit
+
+-- | Allow rolling back the state changes of a TCM computation.
+speculateTCState :: TCM (a, SpeculateResult) -> TCM a
+speculateTCState m = do
+  ((x, res), newState) <- localTCStateSaving m
+  case res of
+    SpeculateAbort  -> return x
+    SpeculateCommit -> x <$ putTC newState
+
+speculateTCState_ :: TCM SpeculateResult -> TCM ()
+speculateTCState_ m = void $ speculateTCState $ ((),) <$> m
 
 -- | A fresh TCM instance.
 --
@@ -278,6 +289,10 @@ updateFunClauses :: ([Clause] -> [Clause]) -> (Defn -> Defn)
 updateFunClauses f def@Function{ funClauses = cs} = def { funClauses = f cs }
 updateFunClauses f _                              = __IMPOSSIBLE__
 
+updateCovering :: ([Closure Clause] -> [Closure Clause]) -> (Defn -> Defn)
+updateCovering f def@Function{ funCovering = cs} = def { funCovering = f cs }
+updateCovering f _                               = __IMPOSSIBLE__
+
 updateCompiledClauses :: (Maybe CompiledClauses -> Maybe CompiledClauses) -> (Defn -> Defn)
 updateCompiledClauses f def@Function{ funCompiled = cc} = def { funCompiled = f cc }
 updateCompiledClauses f _                              = __IMPOSSIBLE__
@@ -317,34 +332,6 @@ addForeignCode :: BackendName -> String -> TCM ()
 addForeignCode backend code = do
   r <- asksTC envRange  -- can't use TypeChecking.Monad.Trace.getCurrentRange without cycle
   modifyTCLens (stForeignCode . key backend) $ Just . (ForeignCode r code :) . fromMaybe []
-
----------------------------------------------------------------------------
--- * Temporary: Haskell imports
---   These will go away when we remove the IMPORT and HASKELL pragmas in
---   favour of the FOREIGN pragma.
----------------------------------------------------------------------------
-
-addDeprecatedForeignCode :: String -> BackendName -> String -> TCM ()
-addDeprecatedForeignCode old backend code = do
-  warning $ DeprecationWarning (unwords ["The", old, "pragma"])
-                               foreignPragma "2.6"
-  addForeignCode backend code
-  where
-    spc | length (lines code) > 1 = "\n"
-        | otherwise               = " "
-    foreignPragma =
-      "{-# FOREIGN " ++ backend ++ spc ++ code ++ spc ++ "#-}"
-
--- | Tell the compiler to import the given Haskell module.
-addHaskellImport :: String -> TCM ()
-addHaskellImport i = addDeprecatedForeignCode "IMPORT" ghcBackendName $ "import qualified " ++ i
-
--- | Tell the compiler to import the given Haskell module.
-addHaskellImportUHC :: String -> TCM ()
-addHaskellImportUHC i = addDeprecatedForeignCode "IMPORT_UHC" ghcBackendName $ "__IMPORT__ " ++ i
-
-addInlineHaskell :: String -> TCM ()
-addInlineHaskell s = addDeprecatedForeignCode "HASKELL" ghcBackendName s
 
 ---------------------------------------------------------------------------
 -- * Interaction output callback

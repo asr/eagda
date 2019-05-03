@@ -27,7 +27,7 @@ import Control.Monad.Reader
 import Control.Monad.State
 
 import Data.Function
-import Data.List (nub, sortBy, intersperse, isInfixOf)
+import Data.List (nub, sortBy, intersperse, isInfixOf, dropWhileEnd)
 import Data.Maybe
 import Data.Char (toLower)
 import qualified Data.Set as Set
@@ -80,7 +80,6 @@ import Agda.Utils.Pretty ( prettyShow )
 import qualified Agda.Utils.Pretty as P
 import Agda.Utils.Size
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 ---------------------------------------------------------------------------
@@ -185,7 +184,8 @@ prettyWarning wng = liftTCM $ case wng of
 
     EmptyRewritePragma -> fsep . pwords $ "Empty REWRITE pragma"
 
-    IllformedAsClause -> fsep . pwords $ "`as' must be followed by an unqualified name"
+    IllformedAsClause s -> fsep . pwords $
+      "`as' must be followed by an identifier" ++ s
 
     UselessPublic -> fwords $ "Keyword `public' is ignored here"
 
@@ -193,9 +193,19 @@ prettyWarning wng = liftTCM $ case wng of
       pwords "It is pointless for INLINE'd function" ++ [prettyTCM q] ++
       pwords "to have a separate Haskell definition"
 
+    WrongInstanceDeclaration -> fwords "Terms marked as eligible for instance search should end with a name, so `instance' is ignored here."
+
     InstanceWithExplicitArg q -> fsep $
       pwords "Instance declarations with explicit arguments are never considered by instance search," ++
       pwords "so making" ++ [prettyTCM q] ++ pwords "into an instance has no effect."
+
+    InstanceNoOutputTypeName b -> fsep $
+      pwords "Instance arguments whose type does not end in a named or variable type are never considered by instance search," ++
+      pwords "so having an instance argument" ++ [return b] ++ pwords "has no effect."
+
+    InstanceArgWithExplicitArg b -> fsep $
+      pwords "Instance arguments with explicit arguments are never considered by instance search," ++
+      pwords "so having an instance argument" ++ [return b] ++ pwords "has no effect."
 
     InversionDepthReached f -> do
       maxDepth <- maxInversionDepth
@@ -226,7 +236,7 @@ prettyWarning wng = liftTCM $ case wng of
 
     SafeFlagWithoutKFlagPrimEraseEquality -> fsep (pwords "Cannot use primEraseEquality with safe and without-K flags.")
 
-    WithoutKFlagPrimEraseEquality -> fsep (pwords "Using primEraseEquality with the without-K flag is inconsistent.")
+    WithoutKFlagPrimEraseEquality -> fsep (pwords "Using primEraseEquality implies K, but you have the without-K flag enabled.")
 
     SafeFlagNoPositivityCheck -> fsep $
       pwords "Cannot use NO_POSITIVITY_CHECK pragma with safe flag."
@@ -253,6 +263,13 @@ prettyWarning wng = liftTCM $ case wng of
 
     LibraryWarning lw -> pretty lw
 
+    InfectiveImport o m -> fsep $
+      pwords "Importing module" ++ [pretty m] ++ pwords "using the" ++
+      [pretty o] ++ pwords "flag from a module which does not."
+
+    CoInfectiveImport o m -> fsep $
+      pwords "Importing module" ++ [pretty m] ++ pwords "not using the" ++
+      [pretty o] ++ pwords "flag from a module which does."
 
 prettyTCWarnings :: [TCWarning] -> TCM String
 prettyTCWarnings = fmap (unlines . intersperse "") . prettyTCWarnings'
@@ -434,7 +451,6 @@ errorString err = case err of
   ShouldEndInApplicationOfTheDatatype{}    -> "ShouldEndInApplicationOfTheDatatype"
   SplitError{}                             -> "SplitError"
   ImpossibleConstructor{}                  -> "ImpossibleConstructor"
-  TooFewFields{}                           -> "TooFewFields"
   TooManyFields{}                          -> "TooManyFields"
   TooManyPolarities{}                      -> "TooManyPolarities"
   SplitOnIrrelevant{}                      -> "SplitOnIrrelevant"
@@ -463,7 +479,6 @@ errorString err = case err of
   WrongHidingInApplication{}               -> "WrongHidingInApplication"
   WrongHidingInLHS{}                       -> "WrongHidingInLHS"
   WrongHidingInLambda{}                    -> "WrongHidingInLambda"
-  WrongInstanceDeclaration{}               -> "WrongInstanceDeclaration"
   WrongIrrelevanceInLambda{}               -> "WrongIrrelevanceInLambda"
   WrongQuantityInLambda{}                  -> "WrongQuantityInLambda"
   WrongNamedArgument{}                     -> "WrongNamedArgument"
@@ -577,8 +592,6 @@ instance PrettyTCM TypeError where
     WrongHidingInApplication t ->
       fwords "Found an implicit application where an explicit application was expected"
 
-    WrongInstanceDeclaration -> fwords "Terms marked as eligible for instance search should end with a name"
-
     HidingMismatch h h' -> fwords $
       "Expected " ++ verbalize (Indefinite h') ++ " argument, but found " ++
       verbalize (Indefinite h) ++ " argument"
@@ -605,12 +618,14 @@ instance PrettyTCM TypeError where
     CannotEliminateWithPattern p a -> do
       let isProj = isJust (isProjP p)
       fsep $
-        pwords "Cannot eliminate type" ++ prettyTCM a :
-        if isProj then
-           pwords "with projection pattern" ++ [prettyA p]
-         else
-           "with" : text (kindOfPattern (namedArg p)) : "pattern" : prettyA p :
-           pwords "(did you supply too many arguments?)"
+        pwords "Cannot eliminate type" ++ prettyTCM a : if
+         | isProj -> pwords "with projection pattern" ++ [prettyA p]
+         | A.ProjP _ _ f <- namedArg p -> pwords "with pattern" ++ [prettyA p] ++
+             pwords "(suggestion: write" ++ [".(" <> prettyA (A.Proj ProjPrefix f) <> ")"] ++ pwords "for a dot pattern," ++
+             pwords "or remove the braces for a postfix projection)"
+         | otherwise ->
+             "with" : text (kindOfPattern (namedArg p)) : "pattern" : prettyA p :
+             pwords "(did you supply too many arguments?)"
       where
       kindOfPattern = \case
         A.VarP{}    -> "variable"
@@ -780,13 +795,11 @@ instance PrettyTCM TypeError where
     NotLeqSort s1 s2 -> fsep $
       [prettyTCM s1] ++ pwords "is not less or equal than" ++ [prettyTCM s2]
 
-    TooFewFields r xs -> fsep $
-      pwords "Missing fields" ++ punctuate comma (map pretty xs) ++
-      pwords "in an element of the record" ++ [prettyTCM r]
-
-    TooManyFields r xs -> fsep $
+    TooManyFields r missing xs -> fsep $
       pwords "The record type" ++ [prettyTCM r] ++
-      pwords "does not have the fields" ++ punctuate comma (map pretty xs)
+      pwords "does not have the fields" ++ punctuate comma (map pretty xs) ++
+      if null missing then [] else
+        pwords "but it would have the fields"  ++ punctuate comma (map pretty missing)
 
     DuplicateConstructors xs -> fsep $
       pwords "Duplicate constructors" ++ punctuate comma (map pretty xs) ++
@@ -1147,7 +1160,7 @@ instance PrettyTCM TypeError where
                filter (not . closedWithoutHoles) sects))
       where
       trimLeft  = dropWhile isNormalHole
-      trimRight = reverse . dropWhile isNormalHole . reverse
+      trimRight = dropWhileEnd isNormalHole
 
       closedWithoutHoles sect =
         sectKind sect == NonfixNotation
@@ -1194,7 +1207,7 @@ instance PrettyTCM TypeError where
                     (trim (notation nota))
 
         qualifyFirstIdPart _ []              = []
-        qualifyFirstIdPart q (IdPart x : ps) = IdPart (q ++ x) : ps
+        qualifyFirstIdPart q (IdPart x : ps) = IdPart (fmap (q ++) x) : ps
         qualifyFirstIdPart q (p : ps)        = p : qualifyFirstIdPart q ps
 
         trim = case sectKind sect of
@@ -1438,6 +1451,16 @@ instance PrettyTCM SplitError where
     CosplitNoRecordType t -> enterClosure t $ \t -> fsep $
       pwords "Cannot split into projections because the target type "
       ++ [prettyTCM t] ++ pwords " is not a record type"
+
+    CannotCreateMissingClause f cl msg t -> fsep (
+      pwords "Cannot generate inferred clause for" ++ [prettyTCM f <> "."] ++
+      pwords "Case to handle:") $$ nest 2 (vcat $ [display cl])
+                                $$ (pure msg <+> enterClosure t displayAbs <> ".")
+        where
+        displayAbs (Abs x t) = addContext x $ prettyTCM t
+        displayAbs (NoAbs x t) = prettyTCM t
+        display (tel, ps) = prettyTCM $ NamedClause f True $
+          empty { clauseTel = tel, namedClausePats = ps }
 
 
     GenericSplitError s -> fsep $ pwords "Split failed:" ++ pwords s

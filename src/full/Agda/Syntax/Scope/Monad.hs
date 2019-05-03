@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP                      #-}
 {-# LANGUAGE NondecreasingIndentation #-}
 
 {-| The scope monad with operations.
@@ -53,7 +52,6 @@ import Agda.Utils.Pretty
 import Agda.Utils.Size
 import Agda.Utils.Tuple
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- * The scope checking monad
@@ -212,6 +210,7 @@ freshAbstractName fx x = do
     , nameConcrete    = x
     , nameBindingSite = getRange x
     , nameFixity      = fx
+    , nameIsRecordName = False
     }
 
 -- | @freshAbstractName_ = freshAbstractName noFixity'@
@@ -609,7 +608,7 @@ applyImportDirectiveM m (ImportDirective rng usn' hdn' ren' public) scope = do
     -- Look up the defined names in the new scope.
     let namesInScope'   = (allNamesInScope scope' :: ThingsInScope AbstractName)
     let modulesInScope' = (allNamesInScope scope' :: ThingsInScope AbstractModule)
-    let look x = head . Map.findWithDefault __IMPOSSIBLE__ x
+    let look x = headWithDefault __IMPOSSIBLE__ . Map.findWithDefault __IMPOSSIBLE__ x
     -- We set the ranges to the ranges of the concrete names in order to get
     -- highlighting for the names in the import directive.
     let definedA = for definedNames $ \case
@@ -669,8 +668,6 @@ applyImportDirectiveM m (ImportDirective rng usn' hdn' ren' public) scope = do
 
       where resolve :: Ord a => err -> a -> Map a [b] -> Either err b
             resolve err x m = maybe (Left err) (Right . head) $ Map.lookup x m
-
-    head = headWithDefault __IMPOSSIBLE__
 
 
 -- | A finite map for @ImportedName@s.

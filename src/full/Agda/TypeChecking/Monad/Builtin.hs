@@ -1,13 +1,10 @@
-{-# LANGUAGE CPP #-}
 
 module Agda.TypeChecking.Monad.Builtin
   ( module Agda.TypeChecking.Monad.Builtin
   , module Agda.Syntax.Builtin  -- The names are defined here.
   ) where
 
-#if __GLASGOW_HASKELL__ >= 800
 import qualified Control.Monad.Fail as Fail
-#endif
 
 import Control.Monad.State
 import Control.Monad.Trans.Maybe
@@ -30,16 +27,11 @@ import Agda.Utils.Monad
 import Agda.Utils.Maybe
 import Agda.Utils.Tuple
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 class ( Functor m
       , Applicative m
-#if __GLASGOW_HASKELL__ == 710
-      , Monad m
-#else
       , Fail.MonadFail m
-#endif
       ) => HasBuiltins m where
   getBuiltinThing :: String -> m (Maybe (Builtin PrimFun))
 
@@ -200,7 +192,9 @@ primInteger, primIntegerPos, primIntegerNegSuc,
     primAgdaTCMGetType, primAgdaTCMGetDefinition,
     primAgdaTCMQuoteTerm, primAgdaTCMUnquoteTerm,
     primAgdaTCMBlockOnMeta, primAgdaTCMCommit, primAgdaTCMIsMacro,
-    primAgdaTCMWithNormalisation, primAgdaTCMDebugPrint
+    primAgdaTCMWithNormalisation, primAgdaTCMDebugPrint,
+    primAgdaTCMNoConstraints,
+    primAgdaTCMRunSpeculative
     :: TCM Term
 
 primInteger      = getBuiltin builtinInteger
@@ -375,6 +369,8 @@ primAgdaTCMCommit             = getBuiltin builtinAgdaTCMCommit
 primAgdaTCMIsMacro            = getBuiltin builtinAgdaTCMIsMacro
 primAgdaTCMWithNormalisation  = getBuiltin builtinAgdaTCMWithNormalisation
 primAgdaTCMDebugPrint         = getBuiltin builtinAgdaTCMDebugPrint
+primAgdaTCMNoConstraints      = getBuiltin builtinAgdaTCMNoConstraints
+primAgdaTCMRunSpeculative     = getBuiltin builtinAgdaTCMRunSpeculative
 
 -- | The coinductive primitives.
 

@@ -16,11 +16,11 @@ import Agda.TypeChecking.Free
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Substitute
 
+import Agda.Utils.List ( dropEnd )
 import Agda.Utils.Pretty
 import Agda.Utils.Size
 import Agda.Utils.Impossible
 
-#include "undefined.h"
 
 sanityCheckVars :: (Pretty a, Free a) => Telescope -> a -> TCM ()
 sanityCheckVars tel v =
@@ -63,7 +63,7 @@ sanityCheckSubst gamma rho delta = go gamma rho delta
           sanityCheckSubst (dropLastN n gamma) rho (dropLastN n delta)
 
     dropLast = telFromList . init . telToList
-    dropLastN n = telFromList . reverse . drop n . reverse . telToList
+    dropLastN n = telFromList . dropEnd n . telToList
 
     err reason = do
       reportSDoc "impossible" 1 . return $

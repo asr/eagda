@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP                #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 
 -- | Case trees.
@@ -29,7 +28,6 @@ import Agda.Syntax.Position
 import Agda.Utils.Null
 import Agda.Utils.Pretty hiding ((<>))
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 data WithArity c = WithArity { arity :: Int, content :: c }
@@ -179,7 +177,7 @@ prettyMap m = [ sep [ pretty k <+> "->"
               | (k, v) <- Map.toList m ]
 
 instance Pretty CompiledClauses where
-  pretty (Done hs t) = text ("done" ++ show hs) <?> pretty t
+  pretty (Done hs t) = ("done" <> pretty hs) <?> pretty t
   pretty Fail        = "fail"
   pretty (Case n bs) | projPatterns bs =
     sep [ "record"

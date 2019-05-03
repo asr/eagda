@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE NondecreasingIndentation #-}
 
 module Agda.TypeChecking.With where
@@ -53,7 +52,6 @@ import Agda.Utils.Pretty (prettyShow)
 import qualified Agda.Utils.Pretty as P
 import Agda.Utils.Size
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 
@@ -420,7 +418,7 @@ stripWithClausePatterns cxtNames parent f t delta qs npars perm ps = do
         , nest 2 $ "t   =" <+> prettyTCM t
         ]
       case namedArg q of
-        ProjP o d -> case A.maybeProjP p of
+        ProjP o d -> case A.isProjP p of
           Just (o', AmbQ ds) -> do
             -- Andreas, 2016-12-28, issue #2360:
             -- We disambiguate the projection in the with clause

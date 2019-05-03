@@ -1,11 +1,6 @@
 {-# LANGUAGE BangPatterns  #-}
-{-# LANGUAGE CPP           #-}
 
 module Agda.TypeChecking.Rules.LHS.ProblemRest where
-
-#if __GLASGOW_HASKELL__ <= 708
-import Data.Functor ( (<$), (<$>) )
-#endif
 
 import Control.Arrow (first, second)
 import Control.Monad
@@ -32,7 +27,6 @@ import Agda.Utils.List
 import Agda.Utils.Size
 import Agda.Utils.Permutation
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- | Rename the variables in a telescope using the names from a given pattern.
@@ -110,7 +104,7 @@ updateProblemRest st@(LHSState tel0 qs0 p@(Problem oldEqs ps ret) a psplit) = do
   reportSDoc "tc.lhs.imp" 20 $
     "insertImplicitPatternsT returned" <+> fsep (map prettyA ps)
   -- (Issue 734: Do only the necessary telView to preserve clause types as much as possible.)
-  let m = length $ takeWhile (isNothing . A.maybeProjP) ps
+  let m = length $ takeWhile (isNothing . A.isProjP) ps
   (TelV gamma b, boundary) <- telViewUpToPathBoundaryP m $ unArg a
   forM_ (zip ps (telToList gamma)) $ \(p, a) ->
     unless (sameHiding p a) $ typeError WrongHidingInLHS

@@ -84,7 +84,6 @@ import Agda.Utils.Tuple
 
 import Paths_Agda
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- The backend callbacks --------------------------------------------------
@@ -181,7 +180,7 @@ ghcPostModule _ _ _ _ defs = do
     (map fakeDecl (hsImps ++ code) ++ concat defs)
   hasMainFunction <$> curIF
 
-ghcCompileDef :: GHCOptions -> GHCModuleEnv -> Definition -> TCM [HS.Decl]
+ghcCompileDef :: GHCOptions -> GHCModuleEnv -> IsMain -> Definition -> TCM [HS.Decl]
 ghcCompileDef _ = definition
 
 -- Compilation ------------------------------------------------------------
@@ -224,16 +223,16 @@ imports = (hsImps ++) <$> imps where
 -- Main compiling clauses
 --------------------------------------------------
 
-definition :: GHCModuleEnv -> Definition -> TCM [HS.Decl]
+definition :: GHCModuleEnv -> IsMain -> Definition -> TCM [HS.Decl]
 -- ignore irrelevant definitions
 {- Andreas, 2012-10-02: Invariant no longer holds
 definition kit (Defn NonStrict _ _  _ _ _ _ _ _) = __IMPOSSIBLE__
 -}
-definition env Defn{defArgInfo = info, defName = q} | not $ usableModality info = do
+definition _env _isMain Defn{defArgInfo = info, defName = q} | not $ usableModality info = do
   reportSDoc "compile.ghc.definition" 10 $
     "Not compiling" <+> prettyTCM q <> "."
   return []
-definition env Defn{defName = q, defType = ty, theDef = d} = do
+definition env isMain def@Defn{defName = q, defType = ty, theDef = d} = do
   reportSDoc "compile.ghc.definition" 10 $ vcat
     [ "Compiling" <+> prettyTCM q <> ":"
     , nest 2 $ text (show d)
@@ -243,7 +242,7 @@ definition env Defn{defName = q, defType = ty, theDef = d} = do
   mlist  <- getBuiltinName builtinList
   minf   <- getBuiltinName builtinInf
   mflat  <- getBuiltinName builtinFlat
-  checkTypeOfMain q ty $ do
+  checkTypeOfMain isMain q def $ do
     infodecl q <$> case d of
 
       _ | Just HsDefn{} <- pragma, Just q == mflat ->
@@ -314,12 +313,19 @@ definition env Defn{defName = q, defType = ty, theDef = d} = do
       Function{} -> function pragma $ functionViaTreeless q
 
       Datatype{ dataPars = np, dataIxs = ni, dataClause = cl, dataCons = cs }
-        | Just (HsData r ty hsCons) <- pragma -> setCurrentRange r $ do
+        | Just hsdata@(HsData r ty hsCons) <- pragma -> setCurrentRange r $ do
+        reportSDoc "compile.ghc.definition" 40 $ hsep $
+          [ "Compiling data type with COMPILE pragma ...", pretty hsdata ]
         computeErasedConstructorArgs q
         ccscov <- constructorCoverageCode q (np + ni) cs ty hsCons
         cds <- mapM compiledcondecl cs
-        return $ tvaldecl q (dataInduction d) (np + ni) [] (Just __IMPOSSIBLE__) ++
-                 [compiledTypeSynonym q ty np] ++ cds ++ ccscov
+        let result = concat $
+              [ tvaldecl q (dataInduction d) (np + ni) [] (Just __IMPOSSIBLE__)
+              , [ compiledTypeSynonym q ty np ]
+              , cds
+              , ccscov
+              ]
+        return result
       Datatype{ dataPars = np, dataIxs = ni, dataClause = cl,
                 dataCons = cs, dataInduction = ind } -> do
         computeErasedConstructorArgs q
@@ -366,7 +372,7 @@ definition env Defn{defName = q, defType = ty, theDef = d} = do
       _ -> return ccls
 
   functionViaTreeless :: QName -> TCM [HS.Decl]
-  functionViaTreeless q = caseMaybeM (toTreeless q) (pure []) $ \ treeless -> do
+  functionViaTreeless q = caseMaybeM (toTreeless LazyEvaluation q) (pure []) $ \ treeless -> do
 
     used <- getCompiledArgUse q
     let dostrip = any not used
@@ -488,9 +494,7 @@ checkCover q ty n cs hsCons = do
         return $ HS.Alt pat (HS.UnGuardedRhs $ HS.unit_con) emptyBinds
 
   cs <- zipWithM makeClause cs hsCons
-  let rhs = case cs of
-              [] -> fakeExp "()" -- There is no empty case statement in Haskell
-              _  -> HS.Case (HS.Var $ HS.UnQual $ HS.Ident "x") cs
+  let rhs = HS.Case (HS.Var $ HS.UnQual $ HS.Ident "x") cs
 
   return [ HS.TypeSig [unqhname "cover" q] $ fakeType $ unwords (ty : tvs) ++ " -> ()"
          , HS.FunBind [HS.Match (unqhname "cover" q) [HS.PVar $ HS.Ident "x"]
@@ -786,6 +790,7 @@ writeModule (HS.Module m ps imp ds) = do
   where
   p = HS.LanguagePragma $ List.map HS.Ident $
         [ "EmptyDataDecls"
+        , "EmptyCase"
         , "ExistentialQuantification"
         , "ScopedTypeVariables"
         , "NoMonomorphismRestriction"

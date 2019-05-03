@@ -1,5 +1,4 @@
 {-# LANGUAGE BangPatterns               #-}
-{-# LANGUAGE CPP                        #-}
 {-# LANGUAGE DeriveDataTypeable         #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TemplateHaskell            #-}
@@ -12,6 +11,7 @@ module Agda.Syntax.Internal
     ) where
 
 import Prelude hiding (foldr, mapM, null)
+import GHC.Stack (HasCallStack, freezeCallStack, callStack)
 
 import Control.Applicative hiding (empty)
 import Control.Monad.Identity hiding (mapM)
@@ -48,8 +48,108 @@ import qualified Agda.Utils.Pretty as P
 import Agda.Utils.Pretty hiding ((<>))
 import Agda.Utils.Tuple
 
-#include "undefined.h"
 import Agda.Utils.Impossible
+
+---------------------------------------------------------------------------
+-- * Function type domain
+---------------------------------------------------------------------------
+
+-- | Similar to 'Arg', but we need to distinguish
+--   an irrelevance annotation in a function domain
+--   (the domain itself is not irrelevant!)
+--   from an irrelevant argument.
+--
+--   @Dom@ is used in 'Pi' of internal syntax, in 'Context' and 'Telescope'.
+--   'Arg' is used for actual arguments ('Var', 'Con', 'Def' etc.)
+--   and in 'Abstract' syntax and other situations.
+--
+--   [ cubical ] When @domFinite = True@ for the domain of a 'Pi'
+--   type, the elements should be compared by tabulating the domain type.
+--   Only supported in case the domain type is primIsOne, to obtain
+--   the correct equality for partial elements.
+data Dom e = Dom
+  { domInfo   :: ArgInfo
+  , domFinite :: !Bool
+  , domName   :: Maybe RString
+  , unDom     :: e
+  } deriving (Data, Ord, Show, Functor, Foldable, Traversable)
+
+instance Decoration Dom where
+  traverseF f (Dom ai b x a) = Dom ai b x <$> f a
+
+instance HasRange a => HasRange (Dom a) where
+  getRange = getRange . unDom
+
+instance KillRange a => KillRange (Dom a) where
+  killRange (Dom info b x a) = killRange4 Dom info b x a
+
+-- | Ignores 'Origin' and 'FreeVariables'.
+instance Eq a => Eq (Dom a) where
+  Dom (ArgInfo h1 m1 _ _) b1 s1 x1 == Dom (ArgInfo h2 m2 _ _) b2 s2 x2 =
+    (h1, m1, b1, s1, x1) == (h2, m2, b2, s2, x2)
+
+-- instance Show a => Show (Dom a) where
+--   show = show . argFromDom
+
+instance LensArgInfo (Dom e) where
+  getArgInfo        = domInfo
+  setArgInfo ai dom = dom { domInfo = ai }
+  mapArgInfo f  dom = dom { domInfo = f $ domInfo dom }
+
+-- The other lenses are defined through LensArgInfo
+
+instance LensHiding (Dom e) where
+  getHiding = getHidingArgInfo
+  setHiding = setHidingArgInfo
+  mapHiding = mapHidingArgInfo
+
+instance LensModality (Dom e) where
+  getModality = getModalityArgInfo
+  setModality = setModalityArgInfo
+  mapModality = mapModalityArgInfo
+
+instance LensOrigin (Dom e) where
+  getOrigin = getOriginArgInfo
+  setOrigin = setOriginArgInfo
+  mapOrigin = mapOriginArgInfo
+
+instance LensFreeVariables (Dom e) where
+  getFreeVariables = getFreeVariablesArgInfo
+  setFreeVariables = setFreeVariablesArgInfo
+  mapFreeVariables = mapFreeVariablesArgInfo
+
+-- Since we have LensModality, we get relevance and quantity by default
+
+instance LensRelevance (Dom e) where
+  getRelevance = getRelevanceMod
+  setRelevance = setRelevanceMod
+  mapRelevance = mapRelevanceMod
+
+instance LensQuantity (Dom e) where
+  getQuantity = getQuantityMod
+  setQuantity = setQuantityMod
+  mapQuantity = mapQuantityMod
+
+argFromDom :: Dom a -> Arg a
+argFromDom (Dom i _ _ a) = Arg i a
+
+namedArgFromDom :: Dom a -> NamedArg a
+namedArgFromDom (Dom i _ s a) = Arg i $ Named s a
+
+domFromArg :: Arg a -> Dom a
+domFromArg (Arg i a) = Dom i False Nothing a
+
+domFromNamedArg :: NamedArg a -> Dom a
+domFromNamedArg (Arg i a) = Dom i False (nameOf a) (namedThing a)
+
+defaultDom :: a -> Dom a
+defaultDom = defaultArgDom defaultArgInfo
+
+defaultArgDom :: ArgInfo -> a -> Dom a
+defaultArgDom info x = Dom info False Nothing x
+
+defaultNamedArgDom :: ArgInfo -> String -> a -> Dom a
+defaultNamedArgDom info s = Dom info False (Just $ unranged s)
 
 -- | Type of argument lists.
 --
@@ -372,6 +472,9 @@ stuckOn e r =
 -- * Definitions
 ---------------------------------------------------------------------------
 
+-- | Named pattern arguments.
+type NAPs = [NamedArg DeBruijnPattern]
+
 -- | A clause is a list of patterns and the clause body.
 --
 --  The telescope contains the types of the pattern variables and the
@@ -390,7 +493,7 @@ data Clause = Clause
     , clauseFullRange :: Range
     , clauseTel       :: Telescope
       -- ^ @Δ@: The types of the pattern variables in dependency order.
-    , namedClausePats :: [NamedArg DeBruijnPattern]
+    , namedClausePats :: NAPs
       -- ^ @Δ ⊢ ps@.  The de Bruijn indices refer to @Δ@.
     , clauseBody      :: Maybe Term
       -- ^ @Just v@ with @Δ ⊢ v@ for a regular clause, or @Nothing@ for an
@@ -485,6 +588,10 @@ namedVarP x = Named named $ varP x
 
 namedDBVarP :: Int -> PatVarName -> Named_ DeBruijnPattern
 namedDBVarP m = (fmap . fmap) (\x -> DBPatVar x m) . namedVarP
+
+-- | Make an absurd pattern with the given de Bruijn index.
+absurdP :: Int -> DeBruijnPattern
+absurdP = VarP PatOAbsurd . DBPatVar absurdPatternName
 
 -- | The @ConPatternInfo@ states whether the constructor belongs to
 --   a record type (@Just@) or data type (@Nothing@).
@@ -757,25 +864,40 @@ dummyLevel' file line = unreducedLevel $ dummyTerm' file line
 dummyTerm :: String -> Int -> Term
 dummyTerm file line = dummyTerm' ("dummyTerm: " ++ file) line
 
+__DUMMY_TERM__ :: HasCallStack => Term
+__DUMMY_TERM__ = withFileAndLine' (freezeCallStack callStack) dummyTerm
+
 -- | A dummy level created at location.
 --   Note: use macro __DUMMY_LEVEL__ !
 dummyLevel :: String -> Int -> Level
 dummyLevel file line = dummyLevel' ("dummyLevel: " ++ file) line
+
+__DUMMY_LEVEL__ :: HasCallStack => Level
+__DUMMY_LEVEL__ = withFileAndLine' (freezeCallStack callStack) dummyLevel
 
 -- | A dummy sort created at location.
 --   Note: use macro __DUMMY_SORT__ !
 dummySort :: String -> Int -> Sort
 dummySort file line = DummyS $ file ++ ":" ++ show line
 
+__DUMMY_SORT__ :: HasCallStack => Sort
+__DUMMY_SORT__ = withFileAndLine' (freezeCallStack callStack) dummySort
+
 -- | A dummy type created at location.
 --   Note: use macro __DUMMY_TYPE__ !
 dummyType :: String -> Int -> Type
 dummyType file line = El (DummyS "") $ dummyTerm' ("dummyType: " ++ file) line
 
+__DUMMY_TYPE__ :: HasCallStack => Type
+__DUMMY_TYPE__ = withFileAndLine' (freezeCallStack callStack) dummyType
+
 -- | Context entries without a type have this dummy type.
 --   Note: use macro __DUMMY_DOM__ !
 dummyDom :: String -> Int -> Dom Type
 dummyDom file line = defaultDom $ dummyType file line
+
+__DUMMY_DOM__ :: HasCallStack => Dom Type
+__DUMMY_DOM__ = withFileAndLine' (freezeCallStack callStack) dummyDom
 
 unreducedLevel :: Term -> Level
 unreducedLevel v = Max [ Plus 0 $ UnreducedLevel v ]

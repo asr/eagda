@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 
 {-# OPTIONS_GHC -fno-cse #-}
 
@@ -15,6 +14,7 @@ import Control.Applicative hiding (empty)
 import Control.Concurrent
 import Control.Concurrent.Async
 import Control.Concurrent.STM.TChan
+import Control.Concurrent.STM.TVar
 import qualified Control.Exception as E
 import Control.Monad.Identity
 import Control.Monad.Reader
@@ -41,6 +41,7 @@ import qualified Agda.TypeChecking.Monad as TM
 import qualified Agda.TypeChecking.Pretty as TCP
 import Agda.TypeChecking.Rules.Term (checkExpr, isType_)
 import Agda.TypeChecking.Errors
+import Agda.TypeChecking.MetaVars.Mention
 
 import Agda.Syntax.Fixity
 import Agda.Syntax.Position
@@ -67,7 +68,7 @@ import Agda.Interaction.Response hiding (Function, ExtendedLambda)
 import qualified Agda.Interaction.Response as R
 import qualified Agda.Interaction.BasicOps as B
 import Agda.Interaction.BasicOps hiding (whyInScope)
-import Agda.Interaction.Highlighting.Precise hiding (Postulate)
+import Agda.Interaction.Highlighting.Precise hiding (Error, Postulate)
 import qualified Agda.Interaction.Imports as Imp
 import Agda.TypeChecking.Warnings
 import Agda.Interaction.Highlighting.Generate
@@ -101,7 +102,6 @@ import Agda.Utils.String
 import Agda.Utils.Time
 import Agda.Utils.Tuple
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 ------------------------------------------------------------------------
@@ -127,15 +127,11 @@ data CommandState = CommandState
     -- ^ We remember (the scope of) old interaction points to make it
     --   possible to parse and compute highlighting information for the
     --   expression that it got replaced by.
-  , commandQueue :: CommandQueue
-    -- ^ Command queue.
+  , commandQueue :: !CommandQueue
+    -- ^ The command queue.
     --
-    -- The commands in the queue are processed in the order in which
-    -- they are received. Abort commands do not have precedence over
-    -- other commands, they only abort the immediately preceding
-    -- command. (The Emacs mode is expected not to send a new command,
-    -- other than the abort command, before the previous command has
-    -- completed.)
+    -- This queue should only be manipulated by
+    -- 'initialiseCommandQueue' and 'maybeAbort'.
   }
 
 type OldInteractionScopes = Map InteractionId ScopeInfo
@@ -376,73 +372,123 @@ runInteraction (IOTCM current highlighting highlightingMethod cmd) =
 ------------------------------------------------------------------------
 -- Command queues
 
--- | Commands.
+-- | A generalised command type.
 
-data Command
-  = Command IOTCM
-    -- ^ An 'IOTCM' command.
+data Command' a
+  = Command !a
+    -- ^ A command.
   | Done
     -- ^ Stop processing commands.
   | Error String
     -- ^ An error message for a command that could not be parsed.
   deriving Show
 
+-- | IOTCM commands.
+
+type Command = Command' IOTCM
+
 -- | Command queues.
 
-type CommandQueue = TChan Command
+data CommandQueue = CommandQueue
+  { commands :: !(TChan (Integer, Command))
+    -- ^ Commands that should be processed, in the order in which they
+    -- should be processed. Each command is associated with a number,
+    -- and the numbers are strictly increasing. Abort commands are not
+    -- put on this queue.
+  , abort :: !(TVar (Maybe Integer))
+    -- ^ When this variable is set to @Just n@ an attempt is made to
+    -- abort all commands with a command number that is at most @n@.
+  }
 
--- | The next command.
-
-nextCommand :: CommandM Command
-nextCommand =
-  liftIO . atomically . readTChan =<< gets commandQueue
-
--- | Runs the given computation, but if an abort command is
--- encountered (and acted upon), then the computation is interrupted,
--- the persistent state and all options are restored, and some
--- commands are sent to the frontend.
+-- | If the next command from the command queue is anything but an
+-- actual command, then the command is returned.
+--
+-- If the command is an 'IOTCM' command, then the following happens:
+-- The given computation is applied to the command and executed. If an
+-- abort command is encountered (and acted upon), then the computation
+-- is interrupted, the persistent state and all options are restored,
+-- and some commands are sent to the frontend. If the computation was
+-- not interrupted, then its result is returned.
 
 -- TODO: It might be nice if some of the changes to the persistent
 -- state inflicted by the interrupted computation were preserved.
 
-maybeAbort :: CommandM () -> CommandM ()
-maybeAbort c = do
+maybeAbort :: (IOTCM -> CommandM a) -> CommandM (Command' (Maybe a))
+maybeAbort m = do
   commandState <- get
-  tcState      <- getTC
-  tcEnv        <- askTC
-  result       <- liftIO $ race
-                    (runTCM tcEnv tcState $ runStateT c commandState)
-                    (waitForAbort $ commandQueue commandState)
-  case result of
-    Left (((), commandState), tcState) -> do
-      putTC tcState
-      put commandState
-    Right () -> do
-      putTC $ initState
-        { stPersistentState = stPersistentState tcState
-        , stPreScopeState   =
-            (stPreScopeState initState)
-              { stPrePragmaOptions =
-                  stPrePragmaOptions
-                    (stPreScopeState tcState)
-              }
-        }
-      put $ (initCommandState (commandQueue commandState))
-        { optionsOnReload = optionsOnReload commandState
-        }
-      putResponse Resp_DoneAborting
-      displayStatus
+  let q = commandQueue commandState
+  (n, c) <- liftIO $ atomically $ readTChan (commands q)
+  case c of
+    Done      -> return Done
+    Error e   -> return (Error e)
+    Command c -> do
+      tcState <- getTC
+      tcEnv   <- askTC
+      result  <- liftIO $ race
+                   (runTCM tcEnv tcState $ runStateT (m c) commandState)
+                   (waitForAbort n q)
+      case result of
+        Left ((x, commandState), tcState) -> do
+          putTC tcState
+          put commandState
+          return (Command (Just x))
+        Right a -> do
+          liftIO $ popAbortedCommands q a
+          putTC $ initState
+            { stPersistentState = stPersistentState tcState
+            , stPreScopeState   =
+                (stPreScopeState initState)
+                  { stPrePragmaOptions =
+                      stPrePragmaOptions
+                        (stPreScopeState tcState)
+                  }
+            }
+          put $ (initCommandState (commandQueue commandState))
+            { optionsOnReload = optionsOnReload commandState
+            }
+          putResponse Resp_DoneAborting
+          displayStatus
+          return (Command Nothing)
   where
 
-  -- | Returns if the first element in the queue is an abort command.
-  -- The abort command is removed from the queue.
+  -- | Returns if the currently executing command should be aborted.
+  -- The "abort number" is returned.
 
-  waitForAbort :: CommandQueue -> IO ()
-  waitForAbort q = atomically $ do
-    c <- peekTChan q
-    case c of
-      Command (IOTCM _ _ _ Cmd_abort) -> void $ readTChan q
-      _                               -> retry
+  waitForAbort
+    :: Integer
+       -- ^ The number of the currently executing command.
+    -> CommandQueue
+       -- ^ The command queue.
+    -> IO Integer
+  waitForAbort n q = do
+    atomically $ do
+      a <- readTVar (abort q)
+      case a of
+        Just a | n <= a -> return a
+        _               -> retry
+
+  -- | Removes every command for which the command number is at most
+  -- the given number (the "abort number") from the command queue.
+  --
+  -- New commands could be added to the end of the queue while this
+  -- computation is running. This does not lead to a race condition,
+  -- because those commands have higher command numbers, so they will
+  -- not be removed.
+
+  popAbortedCommands :: CommandQueue -> Integer -> IO ()
+  popAbortedCommands q n = do
+    done <- atomically $ do
+      c <- tryReadTChan (commands q)
+      case c of
+        Nothing -> return True
+        Just c  ->
+          if fst c <= n then
+            return False
+           else do
+            unGetTChan (commands q) c
+            return True
+    unless done $
+      popAbortedCommands q n
 
 -- | Creates a command queue, and forks a thread that writes commands
 -- to the queue. The queue is returned.
@@ -452,15 +498,27 @@ initialiseCommandQueue
      -- ^ Returns the next command.
   -> IO CommandQueue
 initialiseCommandQueue next = do
-  q <- newTChanIO
-  let readCommands = do
+  commands <- newTChanIO
+  abort    <- newTVarIO Nothing
+
+  let -- Read commands. The argument is the number of the previous
+      -- command (other than abort commands) that was read, if any.
+      readCommands n = do
         c <- next
-        atomically $ writeTChan q c
         case c of
-          Done -> return ()
-          _    -> readCommands
-  _ <- forkIO readCommands
-  return q
+          Command (IOTCM _ _ _ Cmd_abort) -> do
+            atomically $ writeTVar abort (Just n)
+            readCommands n
+          _ -> do
+            n <- return (succ n)
+            atomically $ writeTChan commands (n, c)
+            case c of
+              Done -> return ()
+              _    -> readCommands n
+
+  _ <- forkIO (readCommands 0)
+
+  return (CommandQueue { .. })
 
 ----------------------------------------------------------------------------
 -- | An interactive computation.
@@ -799,7 +857,7 @@ interpret (Cmd_compile b file argv) =
           ]
 
 interpret Cmd_constraints =
-    display_info . Info_Constraints . unlines . map show =<< lift B.getConstraints
+    display_info . Info_Constraints . show . vcat . map pretty =<< lift B.getConstraints
 
 interpret Cmd_metas = do -- CL.showMetas []
   unsolvedNotOK <- lift $ not . optAllowUnsolved <$> pragmaOptions
@@ -1150,12 +1208,12 @@ showOpenMetas = do
   ims <- B.typesOfVisibleMetas B.AsIs
   di <- forM ims $ \ i ->
     B.withInteractionId (B.outputFormId $ B.OutputForm noRange [] i) $
-      showATop i
+      prettyATop i
   -- Show unsolved implicit arguments simplified.
   unsolvedNotOK <- not . optAllowUnsolved <$> pragmaOptions
   hms <- (guard unsolvedNotOK >>) <$> B.typesOfHiddenMetas B.Simplified
   dh <- mapM showA' hms
-  return $ di ++ dh
+  return $ map show di ++ dh
   where
     metaId (B.OfType i _) = i
     metaId (B.JustType i) = i
@@ -1166,8 +1224,8 @@ showOpenMetas = do
     showA' m = do
       let i = nmid $ metaId m
       r <- getMetaRange i
-      d <- B.withMetaId i (showATop m)
-      return $ d ++ "  [ at " ++ show r ++ " ]"
+      d <- B.withMetaId i (prettyATop m)
+      return $ show d ++ "  [ at " ++ show r ++ " ]"
 
 
 -- | @cmd_load' file argv unsolvedOk cmd@
@@ -1203,10 +1261,11 @@ cmd_load' file argv unsolvedOK mode cmd = do
     -- All options are reset when a file is reloaded, including the
     -- choice of whether or not to display implicit arguments.
     opts0 <- gets optionsOnReload
-    z <- liftIO $ runOptM $ parseStandardOptions' argv opts0
+    backends <- useTC stBackends
+    z <- liftIO $ runOptM $ parseBackendOptions backends argv opts0
     case z of
       Left err   -> lift $ typeError $ GenericError err
-      Right opts -> do
+      Right (_, opts) -> do
         let update o = o { optAllowUnsolved = unsolvedOK && optAllowUnsolved o}
             root     = projectRoot f (Imp.siModuleName si)
         lift $ TM.setCommandLineOptions' root $ mapPragmaOptions update opts
@@ -1350,7 +1409,7 @@ give_gen force ii rng s0 giveRefine = do
     mkNewTxt True  C.Paren{} = Give_Paren
     mkNewTxt True  _         = Give_NoParen
     -- Otherwise, we replace it by the reified value Agda computed.
-    mkNewTxt False ce        = Give_String $ show ce
+    mkNewTxt False ce        = Give_String $ prettyShow ce
 
 highlightExpr :: A.Expr -> TCM ()
 highlightExpr e =
@@ -1378,7 +1437,7 @@ prettyTypeOfMeta norm ii = do
   form <- B.typeOfMeta norm ii
   case form of
     B.OfType _ e -> prettyATop e
-    _            -> text <$> showATop form
+    _            -> prettyATop form
 
 -- | Pretty-prints the context of the given meta-variable.
 
@@ -1388,20 +1447,21 @@ prettyContext
   -> InteractionId
   -> TCM Doc
 prettyContext norm rev ii = B.withInteractionId ii $ do
-  ctx <- B.contextOfMeta ii norm
+  ctx <- filter (not . shouldHide) <$> B.contextOfMeta ii norm
   es  <- mapM (prettyATop . B.ofExpr) ctx
   xs  <- mapM (abstractToConcrete_ . B.ofName) ctx
   let ns = map (nameConcrete . B.ofName) ctx
       ss = map C.isInScope xs
   return $ align 10 $ applyWhen rev reverse $
-    filter (not . null . fst) $
       zip (zipWith prettyCtxName ns xs)
           (zipWith prettyCtxType es ss)
   where
+    shouldHide (OfType' n e) = isNoName n || nameIsRecordName n
+    prettyCtxName :: C.Name -> C.Name -> String
     prettyCtxName n x
-      | n == x                 = show x
-      | isInScope n == InScope = show n ++ " = " ++ show x
-      | otherwise              = show x
+      | n == x                 = prettyShow x
+      | isInScope n == InScope = prettyShow n ++ " = " ++ prettyShow x
+      | otherwise              = prettyShow x
     prettyCtxType e nis = ":" <+> (e P.<> notInScopeMarker nis)
     notInScopeMarker nis = case isInScope nis of
       C.InScope    -> ""
@@ -1424,12 +1484,18 @@ cmd_goal_type_context_and doc norm ii _ _ = display_info . Info_GoalType =<< do
   lift $ do
     goal <- B.withInteractionId ii $ prettyTypeOfMeta norm ii
     ctx  <- prettyContext norm True ii
-    return $ vcat
+    m    <- lookupInteractionId ii
+    constr <- vcat . map pretty <$> B.getConstraints' (mentionsMeta m)
+    let constrDoc = ifNull constr [] $ \constr ->
+          [ text $ delimiter "Constraints"
+          , constr
+          ]
+    return $ vcat $
       [ "Goal:" <+> goal
       , doc
       , text (replicate 60 '\x2014')
       , ctx
-      ]
+      ] ++ constrDoc
 
 -- | Shows all the top-level names in the given module, along with
 -- their types.
@@ -1437,13 +1503,13 @@ cmd_goal_type_context_and doc norm ii _ _ = display_info . Info_GoalType =<< do
 showModuleContents :: B.Rewrite -> Range -> String -> CommandM ()
 showModuleContents norm rng s = display_info . Info_ModuleContents =<< do
   liftLocalState $ do
-    (modules, types) <- B.moduleContents norm rng s
-    types' <- forM types $ \ (x, t) -> do
+    (modules, tel, types) <- B.moduleContents norm rng s
+    types' <- addContext tel $ forM types $ \ (x, t) -> do
       t <- TCP.prettyTCM t
       return (prettyShow x, ":" <+> t)
     return $ vcat
       [ "Modules"
-      , nest 2 $ vcat $ map (text . show) modules
+      , nest 2 $ vcat $ map pretty modules
       , "Names"
       , nest 2 $ align 10 types'
       ]
@@ -1481,9 +1547,9 @@ whyInScope s = display_info . Info_WhyInScope =<< do
       ]
       where
         prettyRange :: Range -> TCM Doc
-        prettyRange r = text . show . (fmap . fmap) mkRel <$> do
+        prettyRange r = pretty . (fmap . fmap) mkRel <$> do
           return r
-        mkRel = Str . makeRelative cwd . filePath
+        mkRel = makeRelative cwd . filePath
 
         -- variable :: Maybe _ -> [_] -> TCM Doc
         variable Nothing xs = names xs
@@ -1532,14 +1598,14 @@ whyInScope s = display_info . Info_WhyInScope =<< do
         pWhy r (Opened (C.QName x) w) | isNoName x = pWhy r w
         pWhy r (Opened m w) =
           "- the opening of"
-          TCP.<+> TCP.text (show m)
+          TCP.<+> TCP.prettyTCM m
           TCP.<+> "at"
           TCP.<+> TCP.prettyTCM (getRange m)
           TCP.$$
           pWhy r w
         pWhy r (Applied m w) =
           "- the application of"
-          TCP.<+> TCP.text (show m)
+          TCP.<+> TCP.prettyTCM m
           TCP.<+> "at"
           TCP.<+> TCP.prettyTCM (getRange m)
           TCP.$$

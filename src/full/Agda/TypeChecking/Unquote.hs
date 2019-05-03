@@ -26,8 +26,10 @@ import Agda.Syntax.Fixity
 import Agda.Syntax.Info
 import Agda.Syntax.Translation.ReflectedToAbstract
 
+import Agda.TypeChecking.Constraints
 import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Monad.Builtin
+import Agda.TypeChecking.Monad.Env
 import Agda.TypeChecking.Pretty
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Substitute
@@ -54,7 +56,6 @@ import Agda.Utils.Pretty (prettyShow)
 import Agda.Utils.String ( Str(Str), unStr )
 import qualified Agda.Interaction.Options.Lenses as Lens
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 agdaTermType :: TCM Type
@@ -333,9 +334,6 @@ instance Unquote a => Unquote (R.Abs a) where
     where hint x | not (null x) = x
                  | otherwise    = "_"
 
-getCurrentPath :: MonadTCEnv m => m AbsolutePath
-getCurrentPath = fromMaybe __IMPOSSIBLE__ <$> asksTC envCurrentPath
-
 instance Unquote MetaId where
   unquote t = do
     t <- reduceQuotedTerm t
@@ -508,6 +506,8 @@ evalTCM v = do
              , (f `isDef` primAgdaTCMUnquoteTerm, tcFun1 (tcUnquoteTerm (mkT (unElim l) (unElim a))) u)
              , (f `isDef` primAgdaTCMBlockOnMeta, uqFun1 tcBlockOnMeta u)
              , (f `isDef` primAgdaTCMDebugPrint,  tcFun3 tcDebugPrint l a u)
+             , (f `isDef` primAgdaTCMNoConstraints, tcNoConstraints (unElim u))
+             , (f `isDef` primAgdaTCMRunSpeculative, tcRunSpeculative (unElim u))
              ]
              failEval
     I.Def f [_, _, u, v] ->
@@ -603,6 +603,9 @@ evalTCM v = do
     tcDebugPrint (Str s) n msg = do
       reportSDoc s (fromIntegral n) $ fsep (map prettyTCM msg)
       primUnitUnit
+
+    tcNoConstraints :: Term -> UnquoteM Term
+    tcNoConstraints m = liftU1 noConstraints (evalTCM m)
 
     tcInferType :: R.Term -> TCM Term
     tcInferType v = do
@@ -731,3 +734,14 @@ evalTCM v = do
       let i = mkDefInfo (nameConcrete $ qnameName x) noFixity' PublicAccess ConcreteDef noRange
       checkFunDef NotDelayed i x cs
       primUnitUnit
+
+    tcRunSpeculative :: Term -> UnquoteM Term
+    tcRunSpeculative mu = do
+      oldState <- getTC
+      u <- reduce =<< evalTCM mu
+      case u of
+        Con _ _ [Apply (Arg { unArg = x }), Apply (Arg { unArg = b })] -> do
+          unlessM (unquote b) $ putTC oldState
+          return x
+        _ -> liftTCM $ typeError . GenericDocError =<<
+          "Should be a pair: " <+> prettyTCM u

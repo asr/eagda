@@ -12,12 +12,12 @@ open import Data.Unit
 open import Data.Sum
 open import Data.Product
 open import Data.List
-open import Data.List.Any
+open import Data.List.Relation.Unary.Any
+open import Data.List.Relation.Binary.Pointwise hiding (refl)
 open import Data.Container.FreeMonad using (rawMonad; inn)
     renaming (_⋆_ to _⋆^C_)
 open import Data.W
 open import Relation.Binary.PropositionalEquality
-open import Relation.Binary.List.Pointwise hiding (refl)
 open import Category.Monad
 
 open import Data.List.Membership.Propositional
@@ -62,7 +62,7 @@ mutual
     where
     module M = RawMonad rawMonad
 
-  ⟦ _to_ {Σ″ = Σ″}{V = V} c k p q ⟧^c γ = >>= ⟦ Σ″ ⋆ V ⟧^CType
+  ⟦ _to_ {Σ″ = Σ″}{V = V} c k p q ⟧^c γ = bind ⟦ Σ″ ⋆ V ⟧^CType
     (embed (⊆→⇒ p) (⟦ c ⟧^c γ))
     (λ u → embed (⊆→⇒ q) (⟦ k ⟧^c (γ , u)))
 

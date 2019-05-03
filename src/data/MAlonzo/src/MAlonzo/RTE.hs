@@ -1,12 +1,9 @@
-{-# LANGUAGE CPP #-}
+{-# LANGUAGE PolyKinds #-}
+
 module MAlonzo.RTE where
 
 import Unsafe.Coerce
-#if __GLASGOW_HASKELL__ >= 802
 import qualified GHC.Exts as GHC (Any)
-#else
-import qualified GHC.Prim as GHC (Any)
-#endif
 import qualified Data.Word
 import Numeric.IEEE ( IEEE(identicalIEEE) )
 
@@ -147,5 +144,5 @@ lt64 = (<)
 
 -- Support for musical coinduction.
 
-data Inf a            = Sharp { flat :: a }
-type Infinity level a = Inf a
+data Inf                   a = Sharp { flat :: a }
+type Infinity (level :: *) a = Inf a

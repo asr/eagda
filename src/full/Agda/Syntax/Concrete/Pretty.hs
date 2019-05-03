@@ -33,43 +33,44 @@ import Agda.Utils.Null
 import Agda.Utils.Pretty
 import Agda.Utils.String
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 import qualified System.IO.Unsafe as UNSAFE (unsafePerformIO)
 
 -- Andreas, 2017-10-02, TODO: restore Show to its original purpose
 --
--- deriving instance Show Expr
--- deriving instance (Show a) => Show (OpApp a)
--- deriving instance Show Declaration
--- deriving instance Show Pattern
--- deriving instance Show TypedBinding
--- deriving instance Show LamBinding
--- deriving instance Show ModuleAssignment
--- deriving instance (Show a, Show b) => Show (ImportDirective' a b)
--- deriving instance (Show a, Show b) => Show (Using' a b)
--- deriving instance (Show a, Show b) => Show (Renaming' a b)
--- deriving instance Show Pragma
--- deriving instance Show RHS
--- deriving instance Show LHS
--- deriving instance Show LHSCore
--- deriving instance Show WhereClause
--- deriving instance Show ModuleApplication
+deriving instance Show Expr
+deriving instance (Show a) => Show (OpApp a)
+deriving instance Show Declaration
+deriving instance Show Pattern
+deriving instance Show TypedBinding
+deriving instance Show LamBinding
+deriving instance Show ModuleAssignment
+deriving instance (Show a, Show b) => Show (ImportDirective' a b)
+deriving instance (Show a, Show b) => Show (Using' a b)
+deriving instance (Show a, Show b) => Show (Renaming' a b)
+deriving instance Show Pragma
+deriving instance Show RHS
+deriving instance Show LHS
+deriving instance Show LHSCore
+deriving instance Show LamClause
+deriving instance Show WhereClause
+deriving instance Show ModuleApplication
+deriving instance Show DoStmt
 
-instance Show Expr            where show = show . pretty
-instance Show Declaration     where show = show . pretty
-instance Show Pattern         where show = show . pretty
-instance Show TypedBinding    where show = show . pretty
-instance Show LamBinding      where show = show . pretty
-instance (Pretty a, Pretty b) => Show (ImportDirective' a b)
-                              where show = show . pretty
-instance Show Pragma          where show = show . pretty
-instance Show RHS             where show = show . pretty
-instance Show LHS where show = show . pretty
-instance Show LHSCore where show = show . pretty
-instance Show WhereClause where show = show . pretty
-instance Show ModuleApplication where show = show . pretty
+-- instance Show Expr            where show = show . pretty
+-- instance Show Declaration     where show = show . pretty
+-- instance Show Pattern         where show = show . pretty
+-- instance Show TypedBinding    where show = show . pretty
+-- instance Show LamBinding      where show = show . pretty
+-- instance (Pretty a, Pretty b) => Show (ImportDirective' a b)
+--                               where show = show . pretty
+-- instance Show Pragma          where show = show . pretty
+-- instance Show RHS             where show = show . pretty
+-- instance Show LHS where show = show . pretty
+-- instance Show LHSCore where show = show . pretty
+-- instance Show WhereClause where show = show . pretty
+-- instance Show ModuleApplication where show = show . pretty
 
 
 -- | Picking the appropriate set of special characters depending on
@@ -161,10 +162,6 @@ instance Pretty Relevance where
   pretty Relevant   = empty
   pretty Irrelevant = "."
   pretty NonStrict  = ".."
-
-instance Pretty Induction where
-  pretty Inductive = "data"
-  pretty CoInductive = "codata"
 
 instance Pretty (OpApp Expr) where
   pretty (Ordinary e) = pretty e
@@ -407,7 +404,7 @@ instance Pretty Declaration where
                     , nest 2 $ pretty rhs
                     ] $$ nest 2 (pretty wh)
             DataSig _ ind x tel e ->
-                sep [ hsep  [ pretty ind
+                sep [ hsep  [ "data"
                             , pretty x
                             , fcat (map pretty tel)
                             ]
@@ -417,7 +414,7 @@ instance Pretty Declaration where
                             ]
                     ]
             Data _ ind x tel e cs ->
-                sep [ hsep  [ pretty ind
+                sep [ hsep  [ "data"
                             , pretty x
                             , fcat (map pretty tel)
                             ]
@@ -428,7 +425,7 @@ instance Pretty Declaration where
                             ]
                     ] $$ nest 2 (vcat $ map pretty cs)
             DataDef _ ind x tel cs ->
-                sep [ hsep  [ pretty ind
+                sep [ hsep  [ "data"
                             , pretty x
                             , fcat (map pretty tel)
                             ]
@@ -534,22 +531,6 @@ instance Pretty Pragma where
     pretty (BuiltinPragma _ b x)   = hsep [ "BUILTIN", text b, pretty x ]
     pretty (RewritePragma _ xs)    =
       hsep [ "REWRITE", hsep $ map pretty xs ]
-    pretty (CompiledPragma _ x hs) =
-      hsep [ "COMPILED", pretty x, text hs ]
-    pretty (CompiledExportPragma _ x hs) =
-      hsep [ "COMPILED_EXPORT", pretty x, text hs ]
-    pretty (CompiledTypePragma _ x hs) =
-      hsep [ "COMPILED_TYPE", pretty x, text hs ]
-    pretty (CompiledDataPragma _ x hs hcs) =
-      hsep $ ["COMPILED_DATA", pretty x] ++ map text (hs : hcs)
-    pretty (CompiledJSPragma _ x e) =
-      hsep [ "COMPILED_JS", pretty x, text e ]
-    pretty (CompiledUHCPragma _ x e) =
-      hsep [ "COMPILED_UHC", pretty x, text e ]
-    pretty (CompiledDataUHCPragma _ x crd crcs) =
-      hsep $ [ "COMPILED_DATA_UHC", pretty x] ++ map text (crd : crcs)
-    pretty (HaskellCodePragma _ s) =
-      vcat ("HASKELL" : map text (lines s))
     pretty (CompilePragma _ b x e) =
       hsep [ "COMPILE", text b, pretty x, text e ]
     pretty (ForeignPragma _ b s) =
@@ -562,10 +543,6 @@ instance Pretty Pragma where
       hsep $ ["INLINE", pretty i]
     pretty (InlinePragma _ False i) =
       hsep $ ["NOINLINE", pretty i]
-    pretty (ImportPragma _ i) =
-      hsep $ ["IMPORT", text i]
-    pretty (ImportUHCPragma _ i) =
-      hsep $ ["IMPORT_UHC", text i]
     pretty (ImpossiblePragma _) =
       hsep $ ["IMPOSSIBLE"]
     pretty (EtaPragma _ x) =
@@ -578,6 +555,7 @@ instance Pretty Pragma where
         Terminating            -> "TERMINATING"
         TerminationMeasure _ x -> hsep $ ["MEASURE", pretty x]
     pretty (WarningOnUsage _ nm str) = hsep [ "WARNING_ON_USAGE", pretty nm, text str ]
+    pretty (WarningOnImport _ str)   = hsep [ "WARNING_ON_IMPORT", text str ]
     pretty (CatchallPragma _) = "CATCHALL"
     pretty (DisplayPragma _ lhs rhs) = "DISPLAY" <+> sep [ pretty lhs <+> "=", nest 2 $ pretty rhs ]
     pretty (NoPositivityCheckPragma _) = "NO_POSITIVITY_CHECK"
@@ -595,7 +573,7 @@ instance Pretty Fixity where
             NonAssoc   -> "infix"
 
 instance Pretty GenPart where
-    pretty (IdPart x)   = text x
+    pretty (IdPart x)   = text $ rangedThing x
     pretty BindHole{}   = underscore
     pretty NormalHole{} = underscore
     pretty WildHole{}   = underscore
@@ -649,8 +627,8 @@ prettyOpApp q es = merge [] $ prOp ms xs es
     ms = init (qnameParts q)
     -- xs: the concrete name (alternation of @Id@ and @Hole@)
     xs = case unqualify q of
-           Name _ _ xs -> xs
-           NoName{}    -> __IMPOSSIBLE__
+           Name _ _ xs    -> xs
+           NoName{}       -> __IMPOSSIBLE__
 
     prOp :: [Name] -> [NamePart] -> [NamedArg (MaybePlaceholder a)] -> [(Doc, Maybe PositionInName)]
     prOp ms (Hole : xs) (e : es) =

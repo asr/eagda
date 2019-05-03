@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP                    #-}
 {-# LANGUAGE UndecidableInstances   #-}
 
 -- {-# OPTIONS -fwarn-unused-binds #-}
@@ -45,7 +44,7 @@ import Data.List (sortBy)
 import Agda.Syntax.Common
 import Agda.Syntax.Position
 import Agda.Syntax.Literal
-import Agda.Syntax.Info
+import Agda.Syntax.Info as A
 import Agda.Syntax.Internal (MetaId(..))
 import qualified Agda.Syntax.Internal as I
 import Agda.Syntax.Fixity
@@ -55,9 +54,10 @@ import Agda.Syntax.Abstract.Views as A
 import Agda.Syntax.Abstract.Pattern as A
 import Agda.Syntax.Abstract.PatternSynonyms
 import Agda.Syntax.Scope.Base
+import Agda.Syntax.Scope.Monad ( resolveName' )
 
 import Agda.TypeChecking.Monad.State (getScope, getAllPatternSyns)
-import Agda.TypeChecking.Monad.Base  (TCM, MonadTCState(..), MonadTCEnv(..), HasOptions(..), NamedMeta(..), useTC, asksTC, modifyTCLens, stBuiltinThings, stConcreteNames, stShadowingNames, envContext, BuiltinThings , Builtin(..), pragmaOptions, isExtendedLambdaName)
+import Agda.TypeChecking.Monad.Base
 import Agda.TypeChecking.Monad.Debug
 import Agda.TypeChecking.Monad.Options
 import Agda.TypeChecking.Monad.Builtin
@@ -76,7 +76,6 @@ import Agda.Utils.Singleton
 import Agda.Utils.Tuple
 import Agda.Utils.Pretty
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- Environment ------------------------------------------------------------
@@ -106,7 +105,7 @@ makeEnv scope = do
         Just v | Just q <- name v,
                  noScopeCheck b || isNameInScope q scope -> return [(b, q)]
         _                                                -> return []
-  vars <- map (fst . unDom) <$> asksTC envContext
+  vars <- map (fst . I.unDom) <$> asksTC envContext
 
   -- pick concrete names for in-scope names now so we don't
   -- accidentally shadow them
@@ -178,7 +177,7 @@ type AbsToCon = ReaderT Env TCM
 runAbsToCon :: AbsToCon c -> TCM c
 runAbsToCon m = do
   scope <- getScope
-  reportSLn "toConcrete" 50 $ show $ "entering AbsToCon with scope:" <+> prettyList_ (map (text . C.nameToRawName . fst) $ scopeLocals scope)
+  reportSLn "toConcrete" 50 $ render $ "entering AbsToCon with scope:" <+> prettyList_ (map (text . C.nameToRawName . fst) $ scopeLocals scope)
   runReaderT m =<< makeEnv scope
 
 abstractToConcreteScope :: ToConcrete a c => ScopeInfo -> a -> TCM c
@@ -205,6 +204,8 @@ unsafeQNameToName :: C.QName -> C.Name
 unsafeQNameToName = C.unqualify
 
 lookupQName :: AllowAmbiguousNames -> A.QName -> AbsToCon C.QName
+lookupQName ambCon x | Just s <- getGeneralizedFieldName x =
+  return (C.QName $ C.Name noRange C.InScope $ C.stringNameParts s)
 lookupQName ambCon x = do
   ys <- inverseScopeLookupName' ambCon x <$> asks currentScope
   lift $ reportSLn "scope.inverse" 100 $
@@ -274,11 +275,7 @@ toConcreteName x | y <- nameConcrete x , isNoName y = return y
 toConcreteName x = (Map.findWithDefault [] x <$> useTC stConcreteNames) >>= loop
   where
     -- case: we already have picked some name(s) for x
-    loop (y:ys) = lookupNameInScope y >>= \case
-      -- name is shadowed, try next one
-      Just x' | x' /= x -> loop ys
-      -- not shadowed
-      _ -> return y
+    loop (y:ys) = ifM (isGoodName x y) (return y) (loop ys)
 
     -- case: we haven't picked a concrete name yet, or all previously
     -- picked names are shadowed, so we pick a new name now
@@ -286,6 +283,15 @@ toConcreteName x = (Map.findWithDefault [] x <$> useTC stConcreteNames) >>= loop
       y <- chooseName x
       pickConcreteName x y
       return y
+
+    -- Is 'y' a good concrete name for abstract name 'x'?
+    isGoodName :: A.Name -> C.Name -> AbsToCon Bool
+    isGoodName x y = do
+      zs <- Set.toList <$> asks takenVarNames
+      allM zs $ \z -> if x == z then return True else do
+        czs <- hasConcreteNames z
+        return $ all (/= y) czs
+
 
 -- | Choose a new unshadowed name for the given abstract name
 chooseName :: A.Name -> AbsToCon C.Name
@@ -307,10 +313,10 @@ chooseName x = lookupNameInScope (nameConcrete x) >>= \case
         InScope    -> mustAvoid
         -- If not in scope, we also rename to avoid renaming in-scope
         -- variables in the future.
-        NotInScope -> mustAvoid `Set.union` tryToAvoid'
+        C.NotInScope -> mustAvoid `Set.union` tryToAvoid'
     let shouldAvoid = (`Set.member` (taken `Set.union` toAvoid))
         y = firstNonTakenName shouldAvoid $ nameConcrete x
-    reportSLn "toConcrete.bindName" 80 $ show $ vcat
+    reportSLn "toConcrete.bindName" 80 $ render $ vcat
       [ "picking concrete name for:" <+> text (C.nameToRawName $ nameConcrete x)
       , "names already taken:      " <+> prettyList_ (map C.nameToRawName $ Set.toList taken)
       , "names to avoid:           " <+> prettyList_ (map C.nameToRawName $ Set.toList toAvoid)
@@ -323,7 +329,7 @@ chooseName x = lookupNameInScope (nameConcrete x) >>= \case
     takenConcreteNames = do
       xs <- asks takenDefNames
       ys0 <- asks takenVarNames
-      reportSLn "toConcrete.bindName" 90 $ show $ "abstract names of local vars: " <+> prettyList_ (map (C.nameToRawName . nameConcrete) $ Set.toList ys0)
+      reportSLn "toConcrete.bindName" 90 $ render $ "abstract names of local vars: " <+> prettyList_ (map (C.nameToRawName . nameConcrete) $ Set.toList ys0)
       ys <- Set.fromList . concat <$> mapM hasConcreteNames (Set.toList ys0)
       return $ xs `Set.union` ys
 
@@ -410,8 +416,8 @@ withInfixDecls = foldr (.) id . map (uncurry withInfixDecl)
 withAbstractPrivate :: DefInfo -> AbsToCon [C.Declaration] -> AbsToCon [C.Declaration]
 withAbstractPrivate i m =
     priv (defAccess i)
-      . abst (defAbstract i)
-      . addInstanceB (defInstance i == InstanceDef)
+      . abst (A.defAbstract i)
+      . addInstanceB (A.defInstance i == InstanceDef)
       <$> m
     where
         priv (PrivateAccess UserWritten)
@@ -752,7 +758,7 @@ instance ToConcrete A.Expr C.Expr where
 makeDomainFree :: A.LamBinding -> A.LamBinding
 makeDomainFree b@(A.DomainFull (A.TBind _ [x] t)) =
   case unScope t of
-    A.Underscore MetaInfo{metaNumber = Nothing} ->
+    A.Underscore A.MetaInfo{metaNumber = Nothing} ->
       A.DomainFree x
     _ -> b
 makeDomainFree b = b
@@ -922,7 +928,7 @@ instance ToConcrete A.Declaration [C.Declaration] where
   toConcrete (ScopedDecl scope ds) =
     withScope scope (declsToConcrete ds)
 
-  toConcrete (Axiom _ i info mp x t) = do
+  toConcrete (A.Axiom _ i info mp x t) = do
     x' <- unsafeQNameToName <$> toConcrete x
     withAbstractPrivate i $
       withInfixDecl i x'  $ do
@@ -945,7 +951,7 @@ instance ToConcrete A.Declaration [C.Declaration] where
     withAbstractPrivate i $
       withInfixDecl i x'  $ do
       t' <- toConcreteTop t
-      return [C.Field (defInstance i) x' t']
+      return [C.Field (A.defInstance i) x' t']
 
   toConcrete (A.Primitive i x t) = do
     x' <- unsafeQNameToName <$> toConcrete x
@@ -1042,30 +1048,9 @@ instance ToConcrete RangeAndPragma C.Pragma where
     A.BuiltinPragma b x       -> C.BuiltinPragma r b <$> toConcrete x
     A.BuiltinNoDefPragma b x  -> C.BuiltinPragma r b <$> toConcrete x
     A.RewritePragma x         -> C.RewritePragma r . singleton <$> toConcrete x
-    A.CompiledTypePragma x hs -> do
-      x <- toConcrete x
-      return $ C.CompiledTypePragma r x hs
-    A.CompiledDataPragma x hs hcs -> do
-      x <- toConcrete x
-      return $ C.CompiledDataPragma r x hs hcs
-    A.CompiledPragma x hs -> do
-      x <- toConcrete x
-      return $ C.CompiledPragma r x hs
     A.CompilePragma b x s -> do
       x <- toConcrete x
       return $ C.CompilePragma r b x s
-    A.CompiledExportPragma x hs -> do
-      x <- toConcrete x
-      return $ C.CompiledExportPragma r x hs
-    A.CompiledJSPragma x e -> do
-      x <- toConcrete x
-      return $ C.CompiledJSPragma r x e
-    A.CompiledUHCPragma x cr -> do
-      x <- toConcrete x
-      return $ C.CompiledUHCPragma r x cr
-    A.CompiledDataUHCPragma x crd crcs -> do
-      x <- toConcrete x
-      return $ C.CompiledDataUHCPragma r x crd crcs
     A.StaticPragma x -> C.StaticPragma r <$> toConcrete x
     A.InjectivePragma x -> C.InjectivePragma r <$> toConcrete x
     A.InlinePragma b x -> C.InlinePragma r b <$> toConcrete x
@@ -1094,9 +1079,9 @@ appBracketsArgs (_:_) ctx = appBrackets ctx
 newtype UserPattern a  = UserPattern a
 newtype SplitPattern a = SplitPattern a
 newtype BindingPattern = BindingPat A.Pattern
-newtype FreshName = FreshenName BindName
+newtype FreshenName = FreshenName BindName
 
-instance ToConcrete FreshName A.Name where
+instance ToConcrete FreshenName A.Name where
   bindToConcrete (FreshenName (BindName x)) ret = bindToConcrete x $ \ y -> ret x { nameConcrete = y }
 
 -- Pass 1: (Issue #2729)
@@ -1110,7 +1095,7 @@ instance ToConcrete (UserPattern A.Pattern) A.Pattern where
         let x = unBind bx
         case isInScope x of
           InScope            -> bindName' x $ ret $ A.VarP bx
-          NotInScope         -> bindName x $ \y ->
+          C.NotInScope       -> bindName x $ \y ->
                                 ret $ A.VarP $ BindName $ x { nameConcrete = y }
       A.WildP{}              -> ret p
       A.ProjP{}              -> ret p
@@ -1233,13 +1218,22 @@ instance ToConcrete A.Pattern C.Pattern where
       A.DotP i e@A.Proj{} -> C.DotP r . C.Paren r <$> toConcreteCtx TopCtx e
         where r = getRange i
 
-      A.DotP i e -> do
-        c <- toConcreteCtx DotPatternCtx e
-        case c of
-          -- Andreas, 2016-02-04 print ._ pattern as _ pattern,
-          -- following the fusing of WildP and ImplicitP.
-          C.Underscore{} -> return $ C.WildP $ getRange i
-          _ -> return $ C.DotP (getRange i) c
+      -- gallais, 2019-02-12, issue #3491
+      -- Print p as .(p) if p is a variable but there is a projection of the
+      -- same name in scope.
+      A.DotP i e@(A.Var v) -> do
+        let r = getRange i
+        -- Erase @v@ to a concrete name and resolve it back to check whether
+        -- we have a conflicting field name.
+        cn <- toConcreteName v
+        liftTCM (resolveName' [FldName] Nothing (C.QName cn)) >>= \case
+          -- If we do then we print .(v) rather than .v
+          FieldName{} -> do
+            reportSLn "print.dotted" 50 $ "Wrapping ambiguous name " ++ show (nameConcrete v)
+            C.DotP r . C.Paren r <$> toConcrete (A.Var v)
+          _ -> printDotDefault i e
+
+      A.DotP i e -> printDotDefault i e
 
       A.EqualP i es -> do
         C.EqualP (getRange i) <$> toConcrete es
@@ -1252,6 +1246,17 @@ instance ToConcrete A.Pattern C.Pattern where
       A.WithP i p -> C.WithP (getRange i) <$> toConcreteCtx WithArgCtx p
 
     where
+
+    printDotDefault :: PatInfo -> A.Expr -> AbsToCon C.Pattern
+    printDotDefault i e = do
+      c <- toConcreteCtx DotPatternCtx e
+      let r = getRange i
+      case c of
+        -- Andreas, 2016-02-04 print ._ pattern as _ pattern,
+        -- following the fusing of WildP and ImplicitP.
+        C.Underscore{} -> return $ C.WildP r
+        _ -> return $ C.DotP r c
+
     tryOp :: A.QName -> (A.Patterns -> A.Pattern) -> A.Patterns -> AbsToCon C.Pattern
     tryOp x f args = do
       -- Andreas, 2016-02-04, Issue #1792

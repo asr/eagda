@@ -1,8 +1,8 @@
-{-# LANGUAGE CPP #-}
 
 module Agda.TypeChecking.Monad.Options where
 
 import Prelude hiding (mapM)
+import GHC.Stack (HasCallStack, freezeCallStack, callStack)
 
 import Control.Monad.Reader hiding (mapM)
 import Control.Monad.Writer
@@ -41,7 +41,6 @@ import qualified Agda.Utils.Trie as Trie
 import Agda.Utils.Except
 import Agda.Utils.Either
 
-#include "undefined.h"
 import Agda.Utils.Impossible
 
 -- | Sets the pragma options.
@@ -51,7 +50,8 @@ setPragmaOptions opts = do
   stPragmaOptions `modifyTCLens` Lens.mapSafeMode (Lens.getSafeMode opts ||)
   clo <- commandLineOptions
   let unsafe = unsafePragmaOptions opts
-  when (Lens.getSafeMode clo && not (null unsafe)) $ warning $ SafeFlagPragma unsafe
+--  when (Lens.getSafeMode clo && not (null unsafe)) $ warning $ SafeFlagPragma unsafe
+  when (Lens.getSafeMode opts && not (null unsafe)) $ warning $ SafeFlagPragma unsafe
   ok <- liftIO $ runOptM $ checkOpts (clo { optPragmaOptions = opts })
   case ok of
     Left err   -> __IMPOSSIBLE__
@@ -288,6 +288,10 @@ withPragmaOptions f cont = do
 ignoreInterfaces :: TCM Bool
 ignoreInterfaces = optIgnoreInterfaces <$> commandLineOptions
 
+ignoreAllInterfaces :: TCM Bool
+ignoreAllInterfaces = optIgnoreAllInterfaces <$> commandLineOptions
+
+
 positivityCheckEnabled :: TCM Bool
 positivityCheckEnabled = not . optDisablePositivity <$> pragmaOptions
 
@@ -348,6 +352,12 @@ hasExactVerbosity k n =
 {-# SPECIALIZE whenExactVerbosity :: VerboseKey -> Int -> TCM () -> TCM () #-}
 whenExactVerbosity :: MonadTCM tcm => VerboseKey -> Int -> tcm () -> tcm ()
 whenExactVerbosity k n = whenM $ liftTCM $ hasExactVerbosity k n
+
+__CRASH_WHEN__ :: (HasCallStack, MonadTCM tcm) => VerboseKey -> Int -> tcm ()
+__CRASH_WHEN__ k n = whenExactVerbosity k n (throwImpossible err)
+  where
+    -- Create the "Unreachable" error using *our* caller as the call site.
+    err = withFileAndLine' (freezeCallStack callStack) Unreachable
 
 -- | Run a computation if a certain verbosity level is activated.
 --
